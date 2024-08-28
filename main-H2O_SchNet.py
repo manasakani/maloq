@@ -52,7 +52,7 @@ def main():
     restart_file = None                                                         
     save_file = 'model_H2O.pth'
     train_or_test = 'train'                                                     
-    num_epochs = 100                                                           
+    num_epochs = 10                                                           
     batch_size = 20                                                               
     loss_tol = 1e-8
     lr = 5e-5

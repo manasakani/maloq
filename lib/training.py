@@ -620,14 +620,14 @@ def test_model_SO2(test_structures, construct_kernel, model, loader, test_batch,
     test_node, test_edge = model(test_batch)
 
     # Edges
-    test_labels = construct_kernel.get_H(test_batch.y.cpu())
-    testing_edge = construct_kernel.get_H(test_edge.cpu())
+    test_labels = construct_kernel.get_H(test_batch.y)
+    testing_edge = construct_kernel.get_H(test_edge)
     pred_values_edge = np.concatenate([batch_edge.detach().cpu().numpy().flatten() for batch_edge in testing_edge])
     label_values_edge = np.concatenate([batch_edge.detach().cpu().numpy().flatten() for batch_edge in test_labels])
 
     # Nodes
-    test_labels = construct_kernel.get_H(test_batch.node_y.cpu())
-    testing_node = construct_kernel.get_H(test_node.cpu())
+    test_labels = construct_kernel.get_H(test_batch.node_y)
+    testing_node = construct_kernel.get_H(test_node)
     pred_values_node = np.concatenate([batch_edge.detach().cpu().numpy().flatten() for batch_edge in testing_node])
     label_values_node = np.concatenate([batch_edge.detach().cpu().numpy().flatten() for batch_edge in test_labels])
 
