@@ -185,7 +185,7 @@ def main():
             test_list = []
             test_structures = []
             for i in range(num_train):
-                test_data = data.create_input_data_SO2(training_molecules[i], equivariant_blocks, out_slices, construct_kernel, dtype=dtype)
+                test_data = data.create_input_data_SO2(training_molecules[i], equivariant_blocks, out_slices, construct_kernel, device, dtype=dtype)
                 test_list.append(test_data)
                 test_structures.append(training_molecules[i])
             data_loader = training_data_loader
