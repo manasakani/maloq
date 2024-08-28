@@ -1,8 +1,8 @@
 import lib.data as data
-import lib.models as models
+# import lib.models as models
 import lib.training as training
 import lib.structure as structure
-import lib.utils as utils
+# import lib.utils as utils
 import lib.SO2 as SO2
 import lib.so2_model as so2_model
 import lib.SO3 as SO3
@@ -36,11 +36,10 @@ def main():
 
     # Graph partitioning parameters:
     slice_list = [1000,1200,1400,]
-    test_list = None
     cutoff = 1.5 # cutoff boundary of the slice used for training 
 
     # Parameters:
-    restart_file = None
+    restart_file = 'test.pth'
     save_file = 'test.pth'
     num_MP_layers = 2                                               # Number of message passing layers 
     num_epochs = 10                                                
@@ -61,8 +60,7 @@ def main():
     edge_channels_list = [sphere_channels, sphere_channels, sphere_channels]  
 
     # *** Initialize the domain and electronic structure matrices:
-    a_HfO2s = []
-    a_HfO2s.append(structure.Structure(xyz_file, 
+    a_HfO2 = structure.Structure(xyz_file, 
                                     hamiltonian_file, 
                                     overlap_file, 
                                     pbc, 
@@ -71,17 +69,17 @@ def main():
                                     save_matrices=True,
                                     self_interaction=False,
                                     bothways=True, 
-                                    rcut = rcut))
+                                    rcut = rcut)
     print("Structure created")
 
     # *** Perform orbital analysis:
-    atom_orbitals = {'8':[0,1],'72':[0,0,1,2]}                                            # Orbital types of each atom in the structure
-    numbers = a_HfO2s[0].atomic_numbers                                                   # Atomic numbers of each atom in the structure
+    atom_orbitals = {'8':[0,1], '72':[0,0,1,2]}                                           # Orbital types of each atom in the structure
+    numbers = a_HfO2.atomic_numbers                                                       # Atomic numbers of each atom in the structure
     no_parity = True                                                                      # No parity symmetry          
     orbital_types = [[0,1],[0,0,1,2]]                                                     # basis rank of each atom in the structure 
 
     targets, net_out_irreps, net_out_irreps_simplified = SO2.orbital_analysis(atom_orbitals, targets=None, no_parity=no_parity)
-    index_to_Z,inverse_indices = torch.unique(numbers, sorted=True, return_inverse=True)
+    index_to_Z, inverse_indices = torch.unique(numbers, sorted=True, return_inverse=True)
     equivariant_blocks, out_js_list, out_slices = SO2.process_targets(orbital_types, index_to_Z, targets)
     # equivariant_blocks: start and end indices of the equivariant blocks in i and j direction for each target in targets
     # out_js_list: ll the l1 l2 interactions needed 
@@ -97,7 +95,7 @@ def main():
     print("Orbital analysis completed")
 
     # *** Create the input dataloader:
-    data_loader = data.batch_data_HfO2(a_HfO2s, slice_list, test_list, save_file, cutoff, equivariant_blocks = equivariant_blocks, out_slices = out_slices, construct_kernel=construct_kernel, dtype = torch.float32)
+    data_loader = data.batch_data_subgraph(a_HfO2, slice_list, cutoff, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
     print("Data loader created")
 
     # *** Initialize the model:
@@ -127,7 +125,7 @@ def main():
 
     # *** Train the model parameters:
     print("training...")
-    training.train_model_HfO2(model, data_loader, num_epochs, learning_rate, loss_tol, save_file=save_file, dtype=dtype)
+    training.train_model_subgraph(model, data_loader, num_epochs, learning_rate, loss_tol, save_file=save_file, dtype=dtype)
     print("Model trained")
 
 if __name__ == "__main__":

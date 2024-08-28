@@ -11,32 +11,6 @@ import lib.data as data
 import lib.utils as utils
 import time
 
-def create_mask(data, train_ratio, option):
-
-    train_mask = torch.zeros(len(data.edge_index[0]), dtype=torch.bool)
-    test_mask = torch.zeros(len(data.edge_index[0]), dtype=torch.bool)
-
-    if option == 'random':
-        test_ratio = 1 - train_ratio
-        train_nodes, test_nodes = train_test_split(range(len(data.edge_index[0])), test_size=test_ratio, random_state=42)
-
-        train_mask[train_nodes] = 1
-        test_mask[test_nodes] = 1
-    
-    # use all nodes for training and testing
-    if option ==  'none':
-        train_mask[:] = 1
-        test_mask[:] = 1
-
-    if option == 'onsite':
-        for i in range(len(data.edge_index[0])):
-            if data.edge_index[0][i] == data.edge_index[1][i]:
-                train_mask[i] = 1
-            else:
-                test_mask[i] = 1
-
-    return train_mask, test_mask
-
 # update loss after each epoch --> use for multiple graphs
 def train_model_SO2(model, loader, node_embedding_type, num_epochs=5000, loss_tol=0.0001, mask_type='none', save_file='model_in_training.pth', dtype=torch.float32):
     device = next(model.parameters()).device  # Get the device of the model
@@ -48,13 +22,11 @@ def train_model_SO2(model, loader, node_embedding_type, num_epochs=5000, loss_to
     track_loss_edge = []
 
     for epoch in range(num_epochs):
-        # total_loss = 0.0  # Initialize total loss for the epoch
     
-        for id, batch in enumerate(loader):
+        for batch in loader:
 
             optimizer.zero_grad() 
 
-            # Move input data to the same device as the model
             batch = batch.to(device)
 
             node_output, edge_output = model(batch)
@@ -70,7 +42,7 @@ def train_model_SO2(model, loader, node_embedding_type, num_epochs=5000, loss_to
         track_loss_node.append(loss_node.cpu().detach().numpy())
         track_loss_edge.append(loss_edge.cpu().detach().numpy())
 
-        print("epoch: "+str(epoch)+" "+str(loss*1000))
+        print("epoch: "+str(epoch)+" "+str(loss))
 
         if epoch % 100 == 0:
             torch.save(model.state_dict(), save_file)
@@ -79,7 +51,6 @@ def train_model_SO2(model, loader, node_embedding_type, num_epochs=5000, loss_to
             break
     
     print("Final loss: ", loss)
-
     plt.figure(figsize=(4, 3))
     plt.plot(track_loss_node, label='node')
     plt.plot(track_loss_edge, label='edge')
@@ -93,58 +64,81 @@ def train_model_SO2(model, loader, node_embedding_type, num_epochs=5000, loss_to
     torch.save(model, save_file)
 
 
-def train_model_HfO2(model, loader, num_epochs=5000, learning_rate = 1e-4, loss_tol=0.0001, mask_type='none', save_file='model_in_training.pth', dtype=torch.float32):
+# Training scheme which takes a dataset of subgraphs, and only computes the loss on undirected edges
+def train_model_subgraph(model, loader, num_epochs=5000, learning_rate=1e-4, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float32):
     device = next(model.parameters()).device  # Get the device of the model
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)  # Define optimizer.
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)  
     criterion = nn.MSELoss()
 
     track_loss_node = []
     track_loss_edge = []
 
     for epoch in range(num_epochs):
-        # total_loss = 0.0  # Initialize total loss for the epoch
     
-        for id, batch in enumerate(loader):
+        for batch in loader:
 
             start_time = time.time()
-            optimizer.zero_grad() 
 
-            # Move input data to the same device as the model
+            optimizer.zero_grad() 
+            zero_grad_time = time.time()
+
             batch = batch.to(device)
+            memory_transfer_time = time.time()
 
             node_output, edge_output = model(batch)
+            forward_pass_time = time.time()
 
             loss_node = criterion(node_output[0:batch.labelled_node_size], batch.node_y[0:batch.labelled_node_size])
             loss_edge = criterion(edge_output[0:batch.labelled_edge_size], batch.y[0:batch.labelled_edge_size])
+            loss = (loss_node*batch.labelled_node_size+loss_edge*batch.labelled_edge_size)/(batch.labelled_node_size+batch.labelled_edge_size)    
+            loss_computation_time = time.time()
 
-            loss = (loss_node*batch.labelled_node_size+loss_edge*batch.labelled_edge_size)/(batch.labelled_node_size+batch.labelled_edge_size)                       
-            loss.backward()                                  # Derive gradients.
+            loss.backward()    
+            backward_pass_time = time.time()                              
                         
             # Update parameters 
             optimizer.step()
+            optimizer_update_time = time.time()
+
             end_time = time.time()
+
+            zero_grad_duration = zero_grad_time - start_time
+            memory_transfer_duration = memory_transfer_time - zero_grad_time
+            forward_pass_duration = forward_pass_time - memory_transfer_time
+            loss_computation_duration = loss_computation_time - forward_pass_time
+            backward_pass_duration = backward_pass_time - loss_computation_time
+            optimizer_update_duration = optimizer_update_time - backward_pass_time
             epoch_duration = end_time - start_time
 
-            print("Number of Nodes: ", batch.node_y.shape[0])
-            print("Number of Edges: ", batch.y.shape[0])
-            print(f"Epoch {epoch+1} - Time: {epoch_duration:.4f} seconds")
+            # print("Number of Nodes: ", batch.node_y.shape[0])
+            # print("Number of Edges: ", batch.y.shape[0])
             
-            print("epoch: "+str(epoch)+" "+str(loss*1000))
+            print(f"--> Epoch {epoch+1} - Time: {epoch_duration:.4f} seconds")
+            print(f"--> Zero Grad Time: {zero_grad_duration:.4f} seconds")
+            print(f"--> Memory Transfer Time: {memory_transfer_duration:.4f} seconds")
+            print(f"--> Forward Pass Time: {forward_pass_duration:.4f} seconds")
+            print(f"--> Loss Computation Time: {loss_computation_duration:.4f} seconds")
+            print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
+            print(f"--> Optimizer Update Time: {optimizer_update_duration:.4f} seconds")
+            print(f"Total Epoch Duration: {epoch_duration:.4f} seconds")
+            
+            print("Epoch: " + str(epoch)+ " loss: " + str(loss))
 
-        track_loss_node.append(loss_node.cpu().detach().numpy()) #tracks loss of last batch 
+        track_loss_node.append(loss_node.cpu().detach().numpy()) 
         track_loss_edge.append(loss_edge.cpu().detach().numpy())
 
-        torch.save(track_loss_edge, 'track_loss_edge'+save_file+'.pt')
-        torch.save(track_loss_node, 'track_loss_node'+save_file+'.pt')
+        # torch.save(track_loss_edge, 'track_loss_edge'+save_file+'.pt')
+        # torch.save(track_loss_node, 'track_loss_node'+save_file+'.pt')
 
         if epoch % 100 == 0:
             torch.save(model, save_file+'.pt')
+            torch.save(track_loss_edge, save_file+'loss_edge.pt')
+            torch.save(track_loss_node, save_file+'loss_node.pt')
 
         if loss < loss_tol:
             break
             
-    
     print("Final loss: ", loss)
 
     plt.figure(figsize=(4, 3))
@@ -323,134 +317,134 @@ def evaluate_model(model, test_batch, construct_kernel, equivariant_blocks, atom
 
 
 
-# update loss after each epoch --> use for multiple graphs
-def train_model_minibatch(model, loader, node_embedding_type, num_epochs=5000, loss_tol=0.00001, mask_type='none', save_file='model_in_training.pth'):
-    device = next(model.parameters()).device  # Get the device of the model
+# # update loss after each epoch --> use for multiple graphs
+# def train_model_minibatch(model, loader, node_embedding_type, num_epochs=5000, loss_tol=0.00001, mask_type='none', save_file='model_in_training.pth'):
+#     device = next(model.parameters()).device  # Get the device of the model
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=5e-5)  # Define optimizer.
-    criterion = nn.MSELoss()
+#     optimizer = torch.optim.Adam(model.parameters(), lr=5e-5)  # Define optimizer.
+#     criterion = nn.MSELoss()
 
-    track_loss = []
+#     track_loss = []
 
-    for epoch in range(num_epochs):
-        total_loss = 0.0  # Initialize total loss for the epoch
-        optimizer.zero_grad() 
+#     for epoch in range(num_epochs):
+#         total_loss = 0.0  # Initialize total loss for the epoch
+#         optimizer.zero_grad() 
 
-        print("Epoch: ", epoch)
+#         print("Epoch: ", epoch)
 
-        for id, batch in enumerate(loader):
+#         for id, batch in enumerate(loader):
 
-            # Move input data to the same device as the model
-            batch = batch.to(device)
+#             # Move input data to the same device as the model
+#             batch = batch.to(device)
 
-            out = model(atom_attr=batch.x,
-                        node_embedding_type=node_embedding_type,
-                        edge_idx=batch.edge_index,
-                        edge_attr=batch.edge_feature,
-                        batch=batch.batch)
+#             out = model(atom_attr=batch.x,
+#                         node_embedding_type=node_embedding_type,
+#                         edge_idx=batch.edge_index,
+#                         edge_attr=batch.edge_feature,
+#                         batch=batch.batch)
 
-            if epoch == 0:
-                train_mask, test_mask = create_mask(batch,              # data batch
-                                                    0.8,                # training ratio for this batch
-                                                    mask_type)             # random or onsite or nones (how to pick training and testing subsets)
+#             if epoch == 0:
+#                 train_mask, test_mask = create_mask(batch,              # data batch
+#                                                     0.8,                # training ratio for this batch
+#                                                     mask_type)             # random or onsite or nones (how to pick training and testing subsets)
             
-            # Compute the output only based on the training nodes
-            training_output = out[train_mask]                      
-            training_label = batch.y[train_mask]        
+#             # Compute the output only based on the training nodes
+#             training_output = out[train_mask]                      
+#             training_label = batch.y[train_mask]        
 
-            # Reshape the output and label to match the training nodes
-            training_output = training_output.reshape(training_label.shape[0],training_label.shape[1],training_label.shape[2])
+#             # Reshape the output and label to match the training nodes
+#             training_output = training_output.reshape(training_label.shape[0],training_label.shape[1],training_label.shape[2])
 
-            # Compute loss, get gradients
-            loss = criterion(training_output, training_label)
-            loss.backward() 
+#             # Compute loss, get gradients
+#             loss = criterion(training_output, training_label)
+#             loss.backward() 
 
-            # Accumulate the loss for the epoch
-            total_loss += loss.item()
+#             # Accumulate the loss for the epoch
+#             total_loss += loss.item()
 
-        # Update parameters after all batches
-        optimizer.step()
+#         # Update parameters after all batches
+#         optimizer.step()
 
-        track_loss.append(total_loss)
+#         track_loss.append(total_loss)
 
-        if epoch % 100 == 0:
-            print("Epoch {}, Total Loss: {}".format(epoch, total_loss))
+#         if epoch % 100 == 0:
+#             print("Epoch {}, Total Loss: {}".format(epoch, total_loss))
 
-        if total_loss < loss_tol:
-            break
+#         if total_loss < loss_tol:
+#             break
     
-    print("Final loss: ", total_loss)
+#     print("Final loss: ", total_loss)
 
-    plt.figure(figsize=(4, 3))
-    plt.plot(track_loss)
-    plt.xlabel('Epoch (x100)')
-    plt.ylabel('Loss')
-    plt.yscale('log')
-    plt.savefig('loss.png', dpi=300, bbox_inches='tight')
-    plt.close()
+#     plt.figure(figsize=(4, 3))
+#     plt.plot(track_loss)
+#     plt.xlabel('Epoch (x100)')
+#     plt.ylabel('Loss')
+#     plt.yscale('log')
+#     plt.savefig('loss.png', dpi=300, bbox_inches='tight')
+#     plt.close()
 
-    torch.save(model, save_file)
+#     torch.save(model, save_file)
 
 
-# update loss after each graph --> use for single graph
-def train_model_singlebatch(model, loader, node_embedding_type, num_epochs=5000, loss_tol=0.00001, mask_type='none', save_file='model_in_training.pth'):
-    device = next(model.parameters()).device  # Get the device of the model
+# # update loss after each graph --> use for single graph
+# def train_model_singlebatch(model, loader, node_embedding_type, num_epochs=5000, loss_tol=0.00001, mask_type='none', save_file='model_in_training.pth'):
+#     device = next(model.parameters()).device  # Get the device of the model
     
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)  # Define optimizer.
-    criterion = nn.MSELoss()
+#     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)  # Define optimizer.
+#     criterion = nn.MSELoss()
 
-    track_loss = []
+#     track_loss = []
 
-    for epoch in range(num_epochs):
-        for id, batch in enumerate(loader):
+#     for epoch in range(num_epochs):
+#         for id, batch in enumerate(loader):
 
-            optimizer.zero_grad() 
+#             optimizer.zero_grad() 
 
-            # Move input data to the same device as the model
-            batch = batch.to(device)
+#             # Move input data to the same device as the model
+#             batch = batch.to(device)
 
-            out = model(atom_attr=batch.x,
-                        node_embedding_type=node_embedding_type,
-                        edge_idx=batch.edge_index,
-                        edge_attr=batch.edge_feature,
-                        batch=batch.batch)
+#             out = model(atom_attr=batch.x,
+#                         node_embedding_type=node_embedding_type,
+#                         edge_idx=batch.edge_index,
+#                         edge_attr=batch.edge_feature,
+#                         batch=batch.batch)
 
-            if epoch == 0:
-                train_mask, test_mask = create_mask(batch,              # data batch
-                                                    0.8,                # training ratio for this batch
-                                                    mask_type)          # random or onsite or nones (how to pick training and testing subsets)
+#             if epoch == 0:
+#                 train_mask, test_mask = create_mask(batch,              # data batch
+#                                                     0.8,                # training ratio for this batch
+#                                                     mask_type)          # random or onsite or nones (how to pick training and testing subsets)
             
-            # Compute the output only based on the training nodes
-            training_output = out[train_mask]                      
-            training_label = batch.y[train_mask]        
+#             # Compute the output only based on the training nodes
+#             training_output = out[train_mask]                      
+#             training_label = batch.y[train_mask]        
 
-            # Reshape the output and label to match the training nodes
-            training_output = training_output.reshape(training_label.shape[0],training_label.shape[1],training_label.shape[2])
+#             # Reshape the output and label to match the training nodes
+#             training_output = training_output.reshape(training_label.shape[0],training_label.shape[1],training_label.shape[2])
 
-            # Compute loss, get gradients, update parameters
-            loss = criterion(training_output, training_label)
-            loss.backward() 
-            optimizer.step()
+#             # Compute loss, get gradients, update parameters
+#             loss = criterion(training_output, training_label)
+#             loss.backward() 
+#             optimizer.step()
         
-            track_loss.append(loss.item())
-            if epoch % 100 == 0:
-                # print(loss*1000)
-                print("Epoch {}, Total Loss: {}".format(epoch, loss*1000))
+#             track_loss.append(loss.item())
+#             if epoch % 100 == 0:
+#                 # print(loss*1000)
+#                 print("Epoch {}, Total Loss: {}".format(epoch, loss*1000))
 
-        if loss*1000 < loss_tol:
-            break
+#         if loss*1000 < loss_tol:
+#             break
     
-    print("final loss: ", loss*1000)
+#     print("final loss: ", loss*1000)
 
-    plt.figure(figsize=(4, 3))
-    plt.plot(track_loss)
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.yscale('log')
-    plt.savefig('loss.png', dpi=300, bbox_inches='tight')
-    plt.close()
+#     plt.figure(figsize=(4, 3))
+#     plt.plot(track_loss)
+#     plt.xlabel('Epoch')
+#     plt.ylabel('Loss')
+#     plt.yscale('log')
+#     plt.savefig('loss.png', dpi=300, bbox_inches='tight')
+#     plt.close()
 
-    torch.save(model, save_file)
+#     torch.save(model, save_file)
 
 
 def printloss(pred,label_batch, color):
@@ -459,7 +453,6 @@ def printloss(pred,label_batch, color):
 
     criterion2 = nn.L1Loss()
     MAEloss = criterion2(pred,label_batch)
-
 
     non_zero_indices = np.nonzero(label_batch[0])
 
@@ -502,45 +495,45 @@ def printloss(pred,label_batch, color):
     plt.ylabel("Predicted  $H_{ij}$")
 
 
-def test_model(test_structures, model, loader, node_embedding_type, test_batch, mask_type='none'):
+# def test_model(test_structures, model, loader, node_embedding_type, test_batch, mask_type='none'):
 
-    for batch in loader:
-        train_mask, test_mask = create_mask(batch,              # data batch
-                                            0.8,                # training ratio for this batch
-                                            mask_type)             # random or onsite or nones (how to pick training and testing subsets)
+#     for batch in loader:
+#         train_mask, test_mask = create_mask(batch,              # data batch
+#                                             0.8,                # training ratio for this batch
+#                                             mask_type)             # random or onsite or nones (how to pick training and testing subsets)
             
-    # Move input data to the same device as the model
-    device = next(model.parameters()).device 
-    test_batch = test_batch.to(device)         
+#     # Move input data to the same device as the model
+#     device = next(model.parameters()).device 
+#     test_batch = test_batch.to(device)         
 
-    pred = model(atom_attr=test_batch.x, 
-                 node_embedding_type=node_embedding_type, 
-                 edge_idx=test_batch.edge_index, 
-                 edge_attr=test_batch.edge_feature, 
-                 batch=test_batch.batch.to(device))
+#     pred = model(atom_attr=test_batch.x, 
+#                  node_embedding_type=node_embedding_type, 
+#                  edge_idx=test_batch.edge_index, 
+#                  edge_attr=test_batch.edge_feature, 
+#                  batch=test_batch.batch.to(device))
 
-    # single graph, with transductive learning
-    if len(loader) == 1:
-        test_pred = pred[test_mask]                                                                         # make sure that there is only one batch in dataloader if a mask is used. 
-        test_label = test_batch.y[test_mask]
-        test_edges = (test_batch.edge_index.t()[test_mask]).t()
-    else:
-        test_pred = pred
-        test_label = test_batch.y
-        test_edges = (test_batch.edge_index.t()).t()
+#     # single graph, with transductive learning
+#     if len(loader) == 1:
+#         test_pred = pred[test_mask]                                                                         # make sure that there is only one batch in dataloader if a mask is used. 
+#         test_label = test_batch.y[test_mask]
+#         test_edges = (test_batch.edge_index.t()[test_mask]).t()
+#     else:
+#         test_pred = pred
+#         test_label = test_batch.y
+#         test_edges = (test_batch.edge_index.t()).t()
 
-    pred = pred.reshape(test_batch.y.shape[0],test_batch.y.shape[1],test_batch.y.shape[2])                  #reshape the prediction for each Hamiltonian block into the same shape
-    test_pred = test_pred.reshape(test_label.shape[0],test_label.shape[1],test_label.shape[2])              #reshape the testing subset for each Hamiltonian
+#     pred = pred.reshape(test_batch.y.shape[0],test_batch.y.shape[1],test_batch.y.shape[2])                  #reshape the prediction for each Hamiltonian block into the same shape
+#     test_pred = test_pred.reshape(test_label.shape[0],test_label.shape[1],test_label.shape[2])              #reshape the testing subset for each Hamiltonian
 
-    plt.figure(figsize=(4, 3))
+#     plt.figure(figsize=(4, 3))
 
-    pred, test_batch.y = utils.rotate_data_back(pred, test_batch.y, test_batch.edge_index, test_batch.rotate_dic, test_structures)
-    printloss(pred, test_batch.y, 'b')    
+#     pred, test_batch.y = utils.rotate_data_back(pred, test_batch.y, test_batch.edge_index, test_batch.rotate_dic, test_structures)
+#     printloss(pred, test_batch.y, 'b')    
 
-    test_pred, test_label = utils.rotate_data_back(test_pred, test_label, test_edges, test_batch.rotate_dic, test_structures)   
-    printloss(test_pred, test_label, 'r')
+#     test_pred, test_label = utils.rotate_data_back(test_pred, test_label, test_edges, test_batch.rotate_dic, test_structures)   
+#     printloss(test_pred, test_label, 'r')
 
-    plt.savefig('prediction.png', dpi=300, bbox_inches='tight')
+#     plt.savefig('prediction.png', dpi=300, bbox_inches='tight')
 
 
 def test_model_SO2(test_structures, construct_kernel, model, loader, test_batch, mask_type='none', dtype=torch.float32):
