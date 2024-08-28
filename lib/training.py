@@ -11,58 +11,6 @@ import lib.data as data
 import lib.utils as utils
 import time
 
-# update loss after each epoch --> use for multiple graphs
-# def train_model_SO2(model, loader, node_embedding_type, num_epochs=5000, loss_tol=0.0001, mask_type='none', save_file='model_in_training.pth', dtype=torch.float32):
-#     device = next(model.parameters()).device  # Get the device of the model
-    
-#     optimizer = torch.optim.Adam(model.parameters(), lr=5e-5)  # Define optimizer.
-#     criterion = nn.MSELoss()
-
-#     track_loss_node = []
-#     track_loss_edge = []
-
-#     for epoch in range(num_epochs):
-    
-#         for batch in loader:
-
-#             optimizer.zero_grad() 
-
-#             batch = batch.to(device)
-
-#             node_output, edge_output = model(batch)
-
-#             loss_node = criterion(node_output, batch.node_y) # node_y is the node label
-#             loss_edge = criterion(edge_output, batch.y)      # y is the edge label
-#             loss = loss_node+loss_edge
-#             loss.backward()                                  # Derive gradients.
-
-#             # Update parameters 
-#             optimizer.step()
-
-#         track_loss_node.append(loss_node.cpu().detach().numpy())
-#         track_loss_edge.append(loss_edge.cpu().detach().numpy())
-
-#         print("epoch: "+str(epoch)+" "+str(loss))
-
-#         if epoch % 100 == 0:
-#             torch.save(model.state_dict(), save_file)
-
-#         if loss < loss_tol:
-#             break
-    
-#     print("Final loss: ", loss)
-#     plt.figure(figsize=(4, 3))
-#     plt.plot(track_loss_node, label='node')
-#     plt.plot(track_loss_edge, label='edge')
-#     plt.xlabel('Epoch (x100)')
-#     plt.ylabel('Loss')
-#     plt.yscale('log')
-#     plt.legend()
-#     plt.savefig('loss.png', dpi=300, bbox_inches='tight')
-#     plt.close()
-
-#     torch.save(model, save_file)
-
 # Training scheme to train the network on small molecules stored in batches of graphs
 def train_and_validate_model_SO2(model, optimizer, training_loader, validation_loader, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float64):
     device = next(model.parameters()).device  
@@ -334,14 +282,11 @@ def train_and_validate_model_HfO2(model, loader, test_batch, node_embedding_type
     torch.save(model, save_file+'.pt')
 
 
-
-
 def evaluate_model(model, test_batch, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file='model_in_training.pth'):
     """
     Evaluate the model on the test set and return the mean absolute error for the node and edge predictions after reconstructing the Hamiltonian matrices from the predictions.
 
     """
-
 
     test_batch = test_batch.to(device)
     test_node, test_edge = model(test_batch)

@@ -1,8 +1,6 @@
 import lib.data as data
-# import lib.models as models
 import lib.training as training
 import lib.structure as structure
-# import lib.utils as utils
 import lib.SO2 as SO2
 import lib.so2_model as so2_model
 import lib.SO3 as SO3
@@ -42,7 +40,7 @@ def main():
     restart_file = None
     save_file = 'model_HfO2.pth'  
     num_MP_layers = 2                                               # Number of message passing layers 
-    num_epochs = 10                                                
+    num_epochs = 1                                                
     learning_rate = 1e-4
     loss_tol = 0                                                    
     dtype = torch.float32
