@@ -37,7 +37,7 @@ def main():
     random.seed(42)
 
     # Inputs:    
-    db_path = '/Users/manasakani/Documents/ETH/Repos/ham_predict/datasets/schnorb_hamiltonian_water.db'
+    db_path = './datasets/schnorb_hamiltonian_water.db'
     database = ASEAtomsData(db_path)
     print("Number of Molecules in the database: ", len(database))
 
@@ -49,7 +49,7 @@ def main():
     num_validate = 10                                                           # Number of validation samples             
     num_test = 40     
 
-    restart_file = 'model_H2O.pth'                                                         
+    restart_file = None                                                         
     save_file = 'model_H2O.pth'
     train_or_test = 'train'                                                     
     num_epochs = 100                                                           
@@ -169,8 +169,8 @@ def main():
 
 
     # *** Create the input dataloader:
-    training_data_loader = data.batch_data_SO2(training_molecules, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
-    validation_data_loader = data.batch_data_SO2(validation_molecules, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    training_data_loader = data.batch_data_SO2(training_molecules, device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    validation_data_loader = data.batch_data_SO2(validation_molecules, device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
     print("Data loaders created for training and validation")
 
     if train_or_test == 'train':
@@ -203,7 +203,7 @@ def main():
                                                 database_props=database.__getitem__(molecule_index), 
                                                 self_interaction=False, bothways=True, make_soap=False))
         
-        testing_data_loader = data.batch_data_SO2(testing_molecules, num_test, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+        testing_data_loader = data.batch_data_SO2(testing_molecules, device, num_test, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
 
         test_list = []
         test_structures = []

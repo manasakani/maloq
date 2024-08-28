@@ -40,7 +40,7 @@ def main():
     restart_file = None
     save_file = 'model_HfO2.pth'  
     num_MP_layers = 2                                               # Number of message passing layers 
-    num_epochs = 1                                                
+    num_epochs = 10                                                
     learning_rate = 1e-4
     loss_tol = 0                                                    
     dtype = torch.float32

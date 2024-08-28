@@ -42,7 +42,7 @@ def split_data_indices(num_train, num_validate, num_test, num_total):
     return train_indices, validate_indices, test_indices
 
 
-def create_input_data_SO2(structure, equivariant_blocks, out_slices, construct_kernel, dtype):
+def create_input_data_SO2(structure, equivariant_blocks, out_slices, construct_kernel, device, dtype):
 
     # Note: for SO2 network, edge_index has two-way edges, and does not include self-connections 
     edge_index = structure.edge_matrix
@@ -111,10 +111,10 @@ def create_input_data_SO2(structure, equivariant_blocks, out_slices, construct_k
     edge_fea = torch.tensor(edge_fea, dtype = dtype)
     x = torch.tensor(numbers)
 
-    edge_labels = torch.tensor(np.array(edge_labels),dtype = dtype)
+    edge_labels = torch.tensor(np.array(edge_labels),dtype=dtype, device=device)
     y = construct_kernel.get_net_out(edge_labels) #convert Hamiltonian labels from uncoupled space to coupled space (to avoid conversion during training)
 
-    node_labels = torch.tensor(node_labels,dtype = dtype)
+    node_labels = torch.tensor(node_labels,dtype=dtype, device=device)
     node_y = construct_kernel.get_net_out(node_labels)
 
     data = gnnData(x=x, edge_index=edge_index, edge_attr=edge_fea, y=y, node_y=node_y)
@@ -312,12 +312,12 @@ def createdata_subgraph(structure, slice_center, cutoff, equivariant_blocks, out
     return data
 
 # Creates a dataloader for a dataset with a list of molecules
-def batch_data_SO2(structures, num_graph=1, batch_size=1, equivariant_blocks = None, out_slices = None, construct_kernel=None, dtype = torch.float32):
+def batch_data_SO2(structures, device, num_graph=1, batch_size=1, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float32):
 
     data_list = []
 
     for i in range(num_graph):
-        data = create_input_data_SO2(structures[i], equivariant_blocks, out_slices, construct_kernel, dtype = dtype)
+        data = create_input_data_SO2(structures[i], equivariant_blocks, out_slices, construct_kernel, device, dtype=dtype)
         data_list.append(data)
     
     dataset = CustomDataset(data_list)

@@ -68,9 +68,9 @@ def train_and_validate_model_SO2(model, optimizer, training_loader, validation_l
             epoch_duration = end_time - start_time
 
         
-        track_loss_node.append(loss_node.detach().numpy())
-        track_loss_edge.append(loss_edge.detach().numpy())
-        track_training_loss.append(loss_node.detach().numpy() + loss_edge.detach().numpy())
+        track_loss_node.append(loss_node.cpu().detach().numpy())
+        track_loss_edge.append(loss_edge.cpu().detach().numpy())
+        track_training_loss.append(loss_node.cpu().detach().numpy() + loss_edge.cpu().detach().numpy())
         print("epoch (training error): "+str(epoch)+" "+str(loss))
 
         # validate the model after each epoch
@@ -84,7 +84,7 @@ def train_and_validate_model_SO2(model, optimizer, training_loader, validation_l
 
             loss_node = criterion(node_output, batch.node_y)
             loss_edge = criterion(edge_output, batch.y)
-            validation_loss += loss_node.detach().numpy() + loss_edge.detach().numpy()
+            validation_loss += loss_node.cpu().detach().numpy() + loss_edge.cpu().detach().numpy()
 
         print("epoch (validation error): "+str(validation_loss))
 
@@ -159,14 +159,14 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             # print("Number of Nodes: ", batch.node_y.shape[0])
             # print("Number of Edges: ", batch.y.shape[0])
             
-            # print(f"--> Epoch {epoch+1} - Time: {epoch_duration:.4f} seconds")
-            # print(f"--> Zero Grad Time: {zero_grad_duration:.4f} seconds")
-            # print(f"--> Memory Transfer Time: {memory_transfer_duration:.4f} seconds")
-            # print(f"--> Forward Pass Time: {forward_pass_duration:.4f} seconds")
-            # print(f"--> Loss Computation Time: {loss_computation_duration:.4f} seconds")
-            # print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
-            # print(f"--> Optimizer Update Time: {optimizer_update_duration:.4f} seconds")
-            # print(f"Total Epoch Duration: {epoch_duration:.4f} seconds")
+            print(f"--> Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
+            print(f"--> Zero Grad Time: {zero_grad_duration:.4f} seconds")
+            print(f"--> Memory Transfer Time: {memory_transfer_duration:.4f} seconds")
+            print(f"--> Forward Pass Time: {forward_pass_duration:.4f} seconds")
+            print(f"--> Loss Computation Time: {loss_computation_duration:.4f} seconds")
+            print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
+            print(f"--> Optimizer Update Time: {optimizer_update_duration:.4f} seconds")
+            print(f"Total Epoch Duration: {epoch_duration:.4f} seconds")
             
         print("Epoch: " + str(epoch)+ " loss: " + str(loss))
         track_loss_node.append(loss_node.cpu().detach().numpy()) 
