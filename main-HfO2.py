@@ -36,13 +36,13 @@ def main():
 
     # Graph partitioning parameters:
     slice_list = [1000,1200,1400,]
-    cutoff = 0.2# 1.5 # cutoff boundary of the slice used for training 
+    cutoff = 1.5 # cutoff boundary of the slice used for training 
 
     # Parameters:
     restart_file = None
     save_file = 'model_HfO2.pth'  
     num_MP_layers = 2                                               # Number of message passing layers 
-    num_epochs = 1                                                
+    num_epochs = 10                                                
     learning_rate = 1e-4
     loss_tol = 0                                                    
     dtype = torch.float32

@@ -5,6 +5,7 @@
 
 from lib.utils import orbital_type_dict
 import lib.utils as utils
+from scipy.sparse import csr_matrix
 import numpy as np
 import torch
 import pickle
@@ -19,12 +20,13 @@ from dscribe.descriptors import SOAP
 
 # A structure defines the atomic and electronic structure of collection of atoms
 class Structure:
-    def __init__(self, xyz_file, hamiltonian_file, overlap_file, pbc, orbital_basis, self_interaction=True, bothways=False, make_soap=False, save_matrices=False, rcut = 4):
+    def __init__(self, xyz_file, hamiltonian_file, overlap_file, pbc, orbital_basis, dataset='custom', database_props=None, self_interaction=True, bothways=False, make_soap=False, save_matrices=False, rcut=4.0):
 
         # input quantities
         self.xyz_file = xyz_file                            # XYZ file containing atomic positions              
         self.hamiltonian_file = hamiltonian_file            # File containing the Hamiltonian matrix
         self.overlap_file = overlap_file                    # File containing the overlap matrix
+        self.database_props = database_props                # SchNet database
         self.periodic_cell = None                           # Periodic cell size
 
         self.hamiltonian = None                             # Hamiltonian matrix
@@ -40,17 +42,57 @@ class Structure:
         self.atomic_numbers = None                          # Atomic numbers in the structure
 
         # parameters:
-        self.rcut = rcut                                     # cutoff radius for neighbor list
+        self.rcut = rcut                                    # cutoff radius for neighbor list
 
-        # initialize atomic structure
-        self.init_atomic_structure(self.xyz_file, pbc, self_interaction, bothways)
+        if dataset == 'schnet':
 
-         # initialize SOAP features
-        if make_soap:
-            self.make_soap_features(pbc)
+            if database_props is None:
+                raise ValueError("Database properties must be provided for SchNet dataset.")
 
-        # initialize electronic structure
-        self.init_electronic_structure(self.hamiltonian_file, self.overlap_file, save_matrices)
+            # initialize atomic structure
+            self.init_atomic_structure_schnet(self.database_props, pbc, self_interaction, bothways)
+
+            # initialize electronic structure
+            self.init_electronic_structure_schnet(self.database_props)
+
+        else: 
+
+            # initialize atomic structure
+            self.init_atomic_structure(self.xyz_file, pbc, self_interaction, bothways)
+
+            # initialize SOAP features
+            if make_soap:
+                self.make_soap_features(pbc)
+
+            # initialize electronic structure
+            self.init_electronic_structure(self.hamiltonian_file, self.overlap_file, save_matrices)
+
+
+    def init_atomic_structure_schnet(self, database_props, pbc, self_interaction, bothways):
+
+        # print("Keys:", database_props.keys())
+
+        # Extract the xyz coordinates and atomic numbers from the database properties
+        # positions = database_props['_positions']
+        # atomic_numbers = database_props['_atomic_numbers']
+        positions = np.array(database_props['_positions'], dtype=np.float64)
+        atomic_numbers = np.array(database_props['_atomic_numbers'], dtype=int)
+        
+        # Create an ASE Atoms object
+        self.atomic_structure = Atoms(numbers=atomic_numbers, positions=positions, pbc=pbc)
+        self.atomic_species = self.atomic_structure.get_chemical_symbols()
+
+        # neighbor list
+        array_rcut = np.ones(len(self.atomic_structure))*self.rcut
+        self.neighbour_list = NeighborList(array_rcut, skin=0, self_interaction=self_interaction, bothways=bothways)
+        self.neighbour_list.update(self.atomic_structure)
+
+        # adjacency matrix
+        matrix = self.neighbour_list.get_connectivity_matrix(sparse=True)
+        matrix = matrix.tocoo()
+        edge_matrix_np = np.array([matrix.row, matrix.col], dtype=np.int64)
+        edge_matrix = torch.tensor(edge_matrix_np, dtype=torch.long)
+        self.edge_matrix = edge_matrix_np
 
 
     def init_atomic_structure(self, xyz_file, pbc, self_interaction, bothways):
@@ -87,6 +129,34 @@ class Structure:
         self.edge_matrix = edge_matrix_np
 
 
+    def init_electronic_structure_schnet(self, database_props):
+
+        # initialize atomic orbital data
+        self.num_orbitals_per_atom = [np.sum(2 * np.array(orbital_type_dict[self.basis][species]) + 1) for species in self.atomic_structure.get_chemical_symbols()]    
+        unique_atomic_species = set(self.atomic_structure.get_chemical_symbols())
+        self.num_unique_orbitals = np.sum([np.sum(2*np.array(orbital_type_dict[self.basis][species])+1) for species in unique_atomic_species])
+
+        hamiltonian = database_props['hamiltonian']
+        overlap = database_props['overlap']
+
+        # convert complex spherical harmonics to real spherical harmonics by permuting the order of p-orbitals
+        hamiltonian = self.complex_to_real_SH(hamiltonian)
+
+        # increase precision of hamiltonian TEST
+        # hamiltonian = hamiltonian.to(torch.float64)
+
+        hamiltonian_csr = csr_matrix(hamiltonian)  
+        overlap_csr = csr_matrix(overlap)  
+
+        # check if hamiltonian_csr is symmetric
+        assert((hamiltonian_csr != hamiltonian_csr.T).nnz == 0)
+
+        self.hamiltonian = self.csr_to_dict(hamiltonian_csr)
+        self.overlap = self.csr_to_dict(overlap_csr)
+
+        # self.imagesc_dict(self.hamiltonian, log=True)
+        # sdfg
+
     def init_electronic_structure(self, hamiltonian_file, overlap_file, save_matrices):
         """
         Initialize the electronic structure from the Hamiltonian and overlap matrices.
@@ -120,6 +190,108 @@ class Structure:
 
         unique_atomic_species = set(self.atomic_structure.get_chemical_symbols())
         self.num_unique_orbitals = np.sum([np.sum(2*np.array(orbital_type_dict[self.basis][species])+1) for species in unique_atomic_species])
+
+
+    def complex_to_real_SH(self, hamiltonian):
+        """
+        Convert the ORCA order to CP2K order (only p and d orbitals implemented)
+        """
+
+        # iterate over atoms in structure:
+        for i in range(len(self.atomic_structure)):
+
+            species = self.atomic_structure.get_chemical_symbols()[i]
+            starting_index = int(np.sum(self.num_orbitals_per_atom[:i]))       
+            orbital_shell = orbital_type_dict[self.basis][species]
+            num_s_orbitals = orbital_shell.count(0)
+            num_p_orbitals = orbital_shell.count(1)
+            num_d_orbitals = orbital_shell.count(2)
+
+            for p in range(num_p_orbitals):
+                start_p_index = starting_index + 1*num_s_orbitals + 3*p
+
+                # ORCA order -> CP2K order: [2, 0, 1]
+                # [-1, 0, 1] -> [1, -1, 0]
+                # swap(0, 1), swap(0, 2)
+                hamiltonian = self.swap(hamiltonian, start_p_index+0, start_p_index+1)
+                hamiltonian = self.swap(hamiltonian, start_p_index+0, start_p_index+2)
+
+            for d in range(num_d_orbitals):
+
+                # ORCA order -> CP2K order: [4, 2, 0, 1, 3] 
+                # [0, 1, -1, 2, -2] -> [-2, -1, 0, 1, 2]
+                # swap(0, 4), (1, 2), (2, 4), (3, 4) 
+                start_d_index = starting_index + 1*num_s_orbitals + 3*num_p_orbitals + 5*d
+                hamiltonian = self.swap(hamiltonian, start_d_index+0, start_d_index+4)
+                hamiltonian = self.swap(hamiltonian, start_d_index+1, start_d_index+2)
+                hamiltonian = self.swap(hamiltonian, start_d_index+2, start_d_index+4)
+                hamiltonian = self.swap(hamiltonian, start_d_index+3, start_d_index+4)
+
+        return hamiltonian
+
+    def swap(self, matrix, i, j):
+        
+        matrix[[i, j]] = matrix[[j, i]]
+        matrix[:, [i, j]] = matrix[:, [j, i]]
+        
+        return matrix
+
+    def csr_to_dict(self, csr_matrix):
+
+        # Extract CSR components
+        indptr = csr_matrix.indptr
+        indices = csr_matrix.indices
+        data = csr_matrix.data
+        
+        # Initialize dictionary to store (row, col) -> value mappings
+        dict_matrix = {}
+        
+        # Populate the dictionary
+        for row in range(len(indptr) - 1):
+            start_idx = indptr[row]
+            end_idx = indptr[row + 1]
+            for idx in range(start_idx, end_idx):
+                col = indices[idx]
+                value = data[idx]
+                # Note: the SCHNET hamiltonians are zero-indexed so we add 1
+                dict_matrix[(row+1, col+1)] = value  
+
+        return dict_matrix
+
+
+    def imagesc_dict(self, dict_matrix, log=True):
+        """
+        Plot the Hamiltonian matrix as an imagesc plot.
+        """
+        
+        # Extract all row and column indices
+        rows, cols = zip(*dict_matrix.keys())
+        n_rows = max(rows) + 1
+        n_cols = max(cols) + 1
+        full_matrix = np.zeros((n_rows, n_cols))
+
+        # Populate the full matrix with the data from the sparse matrix
+        for (i, j), value in dict_matrix.items():
+            if log:
+                full_matrix[i, j] = np.log(np.abs(value))
+            else:
+                full_matrix[i, j] = value
+
+        # Plot the matrix using matplotlib
+        plt.figure()
+
+        # set color bar limits
+        # vmin = -0.5
+        # vmax = 0.5 #np.max(full_matrix)
+        # plt.imshow(full_matrix, cmap='viridis', vmin=vmin, vmax=vmax) 
+    
+        plt.imshow(full_matrix, cmap='viridis')
+        plt.colorbar()
+        plt.title('CSR Matrix Visualization')
+        plt.xlabel('Column Index')
+        plt.ylabel('Row Index')
+        plt.savefig('hamiltonian_matrix.png', dpi=300)
+
 
     def make_soap_features(self, pbc):
         """

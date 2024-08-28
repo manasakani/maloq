@@ -27,6 +27,21 @@ class CustomDataset(Dataset):
 def custom_collate_fn(batch):
     return Batch.from_data_list(batch)
 
+
+def split_data_indices(num_train, num_validate, num_test, num_total):
+    """
+    Splits the data indices into training, validation, and test sets
+    """
+    indices = np.arange(num_total)
+    np.random.shuffle(indices)
+
+    train_indices = indices[:num_train]
+    validate_indices = indices[num_train:num_train+num_validate]
+    test_indices = indices[num_train+num_validate:num_train+num_validate+num_test]
+
+    return train_indices, validate_indices, test_indices
+
+
 def create_input_data_SO2(structure, equivariant_blocks, out_slices, construct_kernel, dtype):
 
     # Note: for SO2 network, edge_index has two-way edges, and does not include self-connections 
@@ -315,6 +330,7 @@ def batch_data_SO2(structures, num_graph=1, batch_size=1, equivariant_blocks = N
         print("Edge Features (edge_attr):", batch.edge_attr.size())    
 
     return loader
+    
 
 
 # Creates a dataloader with a batch of subgraphs for a dataset of a single large graph
@@ -340,7 +356,7 @@ def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, ou
 
     print("*** Batch properties:")
     for batch in loader:
-        print("Batch #", batch.batch)
+        print("--> Batch: ")
         print("Node Features (x):", batch.x.size())
         print("Edge Index:", batch.edge_index.size())
         print("Edge Features (edge_attr):", batch.edge_attr.size())    

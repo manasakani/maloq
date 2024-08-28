@@ -20,9 +20,14 @@ periodic_table = {'Ac': 89, 'Ag': 47, 'Al': 13, 'Am': 95, 'Ar': 18, 'As': 33, 'A
 
 # for DZVP
 orbital_type_dict_DZVP = {'H':[0,0,1],'O':[0,0,1,1,2]} 
-                              #1s 2s 2p    1s 2s 2p 3s 3p 3d?           s s p d 
+                              #1s 2s 2p    1s 2s 2p 3s 3p 3d           s s p d 
 
 num_orbitals_per_atom_DZVP = {'H':5, 'O':13}
+
+orbital_type_dict_def2_SVP = {'H':[0,0,1],'O':[0, 0, 0, 1, 1, 2], 'N':[0, 0, 0, 1, 1, 2], 'C':[0, 0, 0, 1, 1, 2]}  # for Schnet
+
+num_orbitals_per_atom_def2_SVP = {'H':5, 'O':14, 'N':14, 'C':14}
+
 
 # for SZVP 
 orbital_type_dict_SZV = {'H':[0],'O':[0,1],'Hf':[0,0,1,2], 'Cl': [0, 1], 'Na': [0, 0, 1]} #Hf includes 3s, 3p and 4d orbitals
@@ -32,11 +37,13 @@ num_orbitals_per_atom_SZV = {'H':1, 'O':4, 'Hf':10, 'Cl':4, 'Na':5}
 
 orbital_type_dict = {
     'DZVP': orbital_type_dict_DZVP,
+    'def2_SVP': orbital_type_dict_def2_SVP,
     'SZV': orbital_type_dict_SZV
 }
 
 num_orbitals_per_atom = {
     'DZVP': num_orbitals_per_atom_DZVP,
+    'def2_SVP': num_orbitals_per_atom_def2_SVP,
     'SZV': num_orbitals_per_atom_SZV
 }
 
