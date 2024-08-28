@@ -1,0 +1,2 @@
+datasets/a-HfO2/memrstors-S_SPIN_1-1_0.csr filter=lfs diff=lfs merge=lfs -text
+datasets/a-HfO2/memrstors-KS_SPIN_1-1_0.csr filter=lfs diff=lfs merge=lfs -text

@@ -1,0 +1,18 @@
+# random folders:
+.DS_Store
+./lib/__pycache__/*
+lib/__pycache__/
+
+# big data folders:
+/datasets
+/data_objects
+/saved_models
+
+# saved models:
+*.pth
+
+# large data files
+*.pkl
+
+# plotting
+*.png
