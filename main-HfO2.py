@@ -48,18 +48,15 @@ def main():
     os.environ['WORLD_SIZE'] = str(world_size)
     os.environ['LOCAL_RANK'] = str(local_rank)
 
-    # os.environ['MASTER_ADDR'] = '127.0.0.1'
-    # os.environ['MASTER_PORT'] = '29500'
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
 
-    if dist.is_available() and dist.is_initialized():
-        rank = os.getenv('RANK')
-        world_size = os.getenv('WORLD_SIZE')
-        local_rank = os.getenv('LOCAL_RANK')
-        
-        print(f"RANK: {rank}")
-        print(f"WORLD_SIZE: {world_size}")
-        print(f"LOCAL_RANK: {local_rank}")
+    # if dist.is_available() and dist.is_initialized():
+    #     rank = os.getenv('RANK')
+    #     world_size = os.getenv('WORLD_SIZE')
+        # local_rank = os.getenv('LOCAL_RANK')
+        # print(f"RANK: {rank}")
+        # print(f"WORLD_SIZE: {world_size}")
+        # print(f"LOCAL_RANK: {local_rank}")
 
 
     num_gpus = dist.get_world_size()
@@ -88,6 +85,7 @@ def main():
     # Parameters:
     restart_file = None
     save_file = 'model_HfO2.pth'  
+    train_or_test = 'train'                                          
     num_MP_layers = 2                                               # Number of message passing layers 
     num_epochs = 10                                                
     learning_rate = 1e-4
@@ -174,10 +172,15 @@ def main():
     print("Model initialized")
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
 
-    # *** Train the model parameters:
-    print("training...")
-    training.train_model_subgraph(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
-    print("Model trained")
+    if train_or_test == 'test':
+        
+        # *** Train the model parameters:
+        print("training...")
+        training.train_model_subgraph(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
+        print("Model trained")
+
+        MAE_node, MAE_edge =  training.evaluate_model(model, test_batch, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+
 
 if __name__ == "__main__":
     main()

@@ -1,6 +1,6 @@
 #!/bin/bash --login 
 #SBATCH --account=s1119
-#SBATCH --nodes=9
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1  
 #SBATCH --constraint=gpu
 #SBATCH --time=00:10:00
