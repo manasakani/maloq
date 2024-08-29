@@ -2,11 +2,16 @@
 .DS_Store
 ./lib/__pycache__/*
 lib/__pycache__/
+./timing_measurements/
 
 # big data folders:
 /datasets
 /data_objects
 /saved_models
+
+# environment:
+/.myvenv
+./pyenv_gnn
 
 # saved models:
 *.pth

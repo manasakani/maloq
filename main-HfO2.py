@@ -9,16 +9,60 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import random
+import os
+
+import torch.distributed as dist
+import torch.multiprocessing as mp
+
 
 def main():
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("No GPUs are available!")
 
     # Set random seed for reproducibility
     torch.manual_seed(42)
     np.random.seed(42)
     random.seed(42)
+
+    # Distributed training
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device: ", device)
-    
+
+    if 'SLURM_PROCID' in os.environ:
+        rank = int(os.environ['SLURM_PROCID'])
+    else:
+        rank = 0  
+
+    if 'SLURM_NTASKS' in os.environ:
+        world_size = int(os.environ['SLURM_NTASKS'])
+    else:
+        world_size = 1 
+
+    if 'SLURM_LOCALID' in os.environ:
+        local_rank = int(os.environ['SLURM_LOCALID'])
+    else:
+        local_rank = 0  
+
+    os.environ['RANK'] = str(rank)
+    os.environ['WORLD_SIZE'] = str(world_size)
+    os.environ['LOCAL_RANK'] = str(local_rank)
+
+    dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+
+    # if dist.is_available() and dist.is_initialized():
+    #     rank = os.getenv('RANK')
+    #     world_size = os.getenv('WORLD_SIZE')
+        # local_rank = os.getenv('LOCAL_RANK')
+        # print(f"RANK: {rank}")
+        # print(f"WORLD_SIZE: {world_size}")
+        # print(f"LOCAL_RANK: {local_rank}")
+
+
+    num_gpus = dist.get_world_size()
+    if dist.get_rank() == 0:  
+        print(f"Number of GPUs used: {num_gpus}")
+
     # Dataset  
     data_folder = './datasets/a-HfO2/'
     xyz_file = data_folder + 'structure.xyz'
@@ -33,14 +77,17 @@ def main():
     mmax_list = [4]
 
     # Graph partitioning parameters:
-    slice_list = [1000,1200,1400,]
+    # slice_list = [1000,1200,1400,]
+    # 4 slices:
+    slice_list = [1000,1200,1400,1600,1800]
     cutoff = 1.5 # cutoff boundary of the slice used for training 
 
     # Parameters:
     restart_file = None
     save_file = 'model_HfO2.pth'  
+    train_or_test = 'train'                                          
     num_MP_layers = 2                                               # Number of message passing layers 
-    num_epochs = 50                                                
+    num_epochs = 10                                                
     learning_rate = 1e-4
     loss_tol = 0                                                    
     dtype = torch.float32
@@ -125,10 +172,15 @@ def main():
     print("Model initialized")
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
 
-    # *** Train the model parameters:
-    print("training...")
-    training.train_model_subgraph(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
-    print("Model trained")
+    if train_or_test == 'test':
+        
+        # *** Train the model parameters:
+        print("training...")
+        training.train_model_subgraph(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
+        print("Model trained")
+
+        MAE_node, MAE_edge =  training.evaluate_model(model, test_batch, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+
 
 if __name__ == "__main__":
     main()
