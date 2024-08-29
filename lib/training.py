@@ -5,6 +5,9 @@ from torch_geometric.data import Batch, Data
 from torch.utils.data import Dataset, DataLoader
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+import torch.multiprocessing as mp
+import torchvision.transforms as transforms
 import numpy as np
 import matplotlib.pyplot as plt
 import lib.data as data
@@ -114,16 +117,24 @@ def train_and_validate_model_SO2(model, optimizer, training_loader, validation_l
 def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float32):
     device = next(model.parameters()).device  # Get the device of the model
     
+    # Initialize DistributedDataParallel
+    if dist.is_available() and dist.is_initialized():
+        # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+    else:
+        model = nn.DataParallel(model)
+
     criterion = nn.MSELoss()
 
     track_loss_node = []
     track_loss_edge = []
 
     for epoch in range(num_epochs):
+        epoch_start_time = time.time()
     
         for batch in loader:
 
-            start_time = time.time()
+            batch_start_time = time.time()
 
             optimizer.zero_grad() 
             zero_grad_time = time.time()
@@ -146,36 +157,40 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             optimizer.step()
             optimizer_update_time = time.time()
 
-            end_time = time.time()
+            batch_end_time = time.time()
 
-            zero_grad_duration = zero_grad_time - start_time
+            zero_grad_duration = zero_grad_time - batch_start_time
             memory_transfer_duration = memory_transfer_time - zero_grad_time
             forward_pass_duration = forward_pass_time - memory_transfer_time
             loss_computation_duration = loss_computation_time - forward_pass_time
             backward_pass_duration = backward_pass_time - loss_computation_time
             optimizer_update_duration = optimizer_update_time - backward_pass_time
-            epoch_duration = end_time - start_time
+            batch_duration = batch_end_time - batch_start_time
 
             # print("Number of Nodes: ", batch.node_y.shape[0])
             # print("Number of Edges: ", batch.y.shape[0])
+        epoch_end_time = time.time()
+        epoch_duration = epoch_end_time - epoch_start_time
             
-            print(f"--> Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
+        if dist.get_rank() == 0:  
+            print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
             print(f"--> Zero Grad Time: {zero_grad_duration:.4f} seconds")
             print(f"--> Memory Transfer Time: {memory_transfer_duration:.4f} seconds")
             print(f"--> Forward Pass Time: {forward_pass_duration:.4f} seconds")
             print(f"--> Loss Computation Time: {loss_computation_duration:.4f} seconds")
             print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
             print(f"--> Optimizer Update Time: {optimizer_update_duration:.4f} seconds")
-            print(f"Total Epoch Duration: {epoch_duration:.4f} seconds")
+            print(f"--> Total Batch process time: {batch_duration:.4f} seconds")
             
         print("Epoch: " + str(epoch)+ " loss: " + str(loss))
         track_loss_node.append(loss_node.cpu().detach().numpy()) 
         track_loss_edge.append(loss_edge.cpu().detach().numpy())
 
         if epoch % 100 == 0:
-            torch.save(model, save_file)
-            torch.save(track_loss_edge, save_file+'loss_edge.pt')
-            torch.save(track_loss_node, save_file+'loss_node.pt')
+            if dist.get_rank() == 0:  # Save only on rank 0 to avoid multiple files
+                torch.save(model, save_file)
+                torch.save(track_loss_edge, save_file+'loss_edge.pt')
+                torch.save(track_loss_node, save_file+'loss_node.pt')
 
         if loss < loss_tol:
             break
@@ -192,9 +207,10 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
     plt.savefig('loss.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-    torch.save({'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                }, save_file)
+    if dist.get_rank() == 0:  # Save only on rank 0 to avoid multiple files
+        torch.save({'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    }, save_file)
 
 
 def train_and_validate_model_HfO2(model, loader, test_batch, node_embedding_type, num_epochs=5000, learning_rate = 1e-4, loss_tol=0.0001, save_file='model_in_training.pth', construct_kernel=None, equivariant_blocks=None, atom_orbitals=None, out_slices=None, dtype=torch.float32):

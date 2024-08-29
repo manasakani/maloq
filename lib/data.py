@@ -108,7 +108,7 @@ def create_input_data_SO2(structure, equivariant_blocks, out_slices, construct_k
     for i in range(len(edge_index[0])):
         edge_fea[i,:] = torch.cat([torch.norm(coordinates[edge_index[1][i]]-coordinates[edge_index[0][i]], dim=-1, keepdim=True), coordinates[edge_index[1][i]]-coordinates[edge_index[0][i]]])
 
-    edge_fea = torch.tensor(edge_fea, dtype = dtype)
+    edge_fea = torch.tensor(edge_fea, dtype=dtype)
     x = torch.tensor(numbers)
 
     edge_labels = torch.tensor(np.array(edge_labels),dtype=dtype, device=device)
@@ -352,7 +352,9 @@ def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, ou
         data_list.append(train_data)
 
     dataset = CustomDataset(data_list)
-    loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
+    sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+    loader = DataLoader(dataset, sampler=sampler, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
+    # loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
 
     print("*** Batch properties:")
     for batch in loader:

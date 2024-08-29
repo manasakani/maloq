@@ -85,6 +85,8 @@ def main():
     # Check if GPU is available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device: ", device)
+    print("torch.__version__", torch.__version__)  # Check PyTorch version
+    print("torch.cuda.is_available()", torch.cuda.is_available())  # Check if CUDA is available
     
     # *** Initialize the domain and electronic structure matrices:
     training_molecules = []

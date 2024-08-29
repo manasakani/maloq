@@ -10,7 +10,7 @@ import math
 import networkx as nx
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
-# from torch_scatter import scatter
+from torch_scatter import scatter
 from torch_geometric.utils import degree
 
 from e3nn.o3 import Irrep, Irreps, wigner_3j, matrix_to_angles, Linear, FullyConnectedTensorProduct, TensorProduct, SphericalHarmonics
