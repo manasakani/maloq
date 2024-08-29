@@ -45,35 +45,35 @@ def main():
     print("Number of orbitals: ", norbs)
 
     # Dataset parameters:
-    num_train = 100                                                             # Number of training samples
+    num_train = 500                                                             # Number of training samples
     num_validate = 10                                                           # Number of validation samples             
-    num_test = 40     
+    num_test = 4000     
 
-    restart_file = None                                                         
+    restart_file = 'model_H2O.pth'                                                         
     save_file = 'model_H2O.pth'
     train_or_test = 'train'                                                     
-    num_epochs = 10                                                           
-    batch_size = 20                                                               
+    num_epochs = 1000                                                           
+    batch_size = 50                                                               
     loss_tol = 1e-8
-    lr = 5e-5
+    lr = 1e-7
     rcut = 1000.0
 
     # Structure and Network parameters:
     pbc = False
     bothways = True
     orbital_basis = 'def2_SVP' 
-    num_MP_layers = 1                                                           # Number of message passing layers - note that for SO2 there is already 1 layer in the model
+    num_MP_layers = 2                                                           # Number of message passing layers
     dtype = torch.float32 # trying float64
     lmax_list = [4] 
     mmax_list = [4]
 
     # *** Initialize the hyperparameters of the SO2 model:
-    sphere_channels = 64
+    sphere_channels = 64 # fix to 64
     num_heads = 2
-    attn_hidden_channels = 64
-    attn_alpha_channels = 32
-    attn_value_channels = 32
-    ffn_hidden_channels = 64
+    attn_hidden_channels = 256 # fix to 128 or larger
+    attn_alpha_channels = 32 #32
+    attn_value_channels = 32 # 32
+    ffn_hidden_channels = 64 #64
 
     # Create the training/validation/testing datasets
     training_data_indices, validation_data_indices, testing_data_indices = data.split_data_indices(num_train, num_validate, num_test, len(database))

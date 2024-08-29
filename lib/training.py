@@ -90,6 +90,13 @@ def train_and_validate_model_SO2(model, optimizer, training_loader, validation_l
 
         track_validation_loss.append(validation_loss/len(validation_loader))
 
+        if epoch % 100 == 0:
+            torch.save({'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                }, save_file)
+            torch.save(track_loss_edge, save_file+'loss_edge.pt')
+            torch.save(track_loss_node, save_file+'loss_node.pt')
+
         # Training end condition
         if loss < loss_tol:
             break
