@@ -11,8 +11,8 @@ import torch
 
 # load ./Jd.pt from current directory    
 try:
-    os.path.exists("./lib/Jd.pt")
-    _Jd = torch.load("./lib/Jd.pt")
+    os.path.exists("./lib_equiformer/Jd.pt")
+    _Jd = torch.load("./lib_equiformer/Jd.pt")
 except FileNotFoundError:
     raise FileNotFoundError("File Jd.pt not found in the current directory")
 

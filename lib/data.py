@@ -287,11 +287,14 @@ def createdata_subgraph(structure, slice_center, cutoff, equivariant_blocks, out
     atomic_numbers = numbers[full_atom_index] 
     x = torch.tensor(atomic_numbers)
 
-    edge_labels = torch.tensor(edge_labels,dtype = dtype)
+    # data.py:290: UserWarning: Creating a tensor from a list of numpy.ndarrays is extremely slow. Please consider converting the list to a single numpy.ndarray with numpy.array() before converting to a tensor. (Triggered internally at  ../torch/csrc/utils/tensor_new.cpp:201.)
+    edge_labels_np = np.array(edge_labels)  # Convert list of numpy arrays to a single numpy ndarray
+    edge_labels = torch.tensor(edge_labels_np,dtype = dtype)
 
     # convert Hamiltonian labels from uncoupled space to coupled space (to avoid conversion during training)
     y = construct_kernel.get_net_out(edge_labels) 
-    node_labels = torch.tensor(node_labels,dtype = dtype)
+    node_labels_np = np.array(node_labels)  # Convert list of numpy arrays to a single numpy ndarray
+    node_labels = torch.tensor(node_labels_np, dtype = dtype)
     node_y = construct_kernel.get_net_out(node_labels)
 
     atom_indices = torch.tensor(full_atom_index)
@@ -370,125 +373,3 @@ def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, ou
         print("Edge Features (edge_attr):", batch.edge_attr.size())    
 
     return loader
-
-
-
-
-# from lib.utils import num_orbitals_per_atom, orbital_type_dict
-
-    # torch.save(train_data, save_file+'_structure_'+str(n)+'_training_'+str(slice_list[i])+'_'+str(cutoff)+'.pt')
-    # torch.save(test_data, save_file+'_structure_'+str(n)+'_testing_'+str(test_list[i])+'_'+str(cutoff)+'.pt')
-
-    # def create_input_data(start_index, end_index, structure, node_embedding_type):
-
-    #     atomic_species = np.array(structure.atomic_structure.get_chemical_symbols())
-    #     coordinates = structure.atomic_structure.get_positions()
-
-    #     # extract the set of orbital blocks for the specified edge indices
-    #     edge_indices = []
-    #     for i in range(len(structure.edge_matrix[0])):
-    #         if start_index <= structure.edge_matrix[0][i] < end_index and start_index <= structure.edge_matrix[1][i] < end_index:
-    #             edge_indices.append([structure.edge_matrix[0][i], structure.edge_matrix[1][i]])
-
-
-    #     edge_indices = np.transpose(np.array(edge_indices))
-    #     orbital_blocks = structure.get_orbital_blocks(edge_indices)
-
-    #     # the total number of orbitals in the system defines the padded size of each orbital block
-    #     blocksize = structure.num_unique_orbitals
-    #     print("Size of orbital block for input data: ", blocksize)
-
-    #     H_blocks_edge = [orbital_blocks[(edge_indices[0][i], edge_indices[1][i])] for i in range(len(edge_indices[0]))]
-    #     y = np.zeros((len(H_blocks_edge), blocksize, blocksize))
-
-    #     # rotations for each edge
-    #     rotate_dic = utils.create_rotation_dic(edge_indices, coordinates, structure)
-    #     H_blocks_edge = utils.rotate_data(H_blocks_edge, edge_indices, coordinates, orbital_type_dict[structure.basis], atomic_species, rotate_dic)
-
-    #     # matrix for each Hamiltonian block is ordered such that Hf is the first 10 orbitals and O is the last 4 orbitals 
-
-    #     # Calculate the starting index for each atom type in the orbital block
-    #     unique_elements = set(structure.atomic_structure.get_chemical_symbols())
-    #     mat_block_start = {}
-    #     block_start = 0
-    #     for element in unique_elements:
-    #         mat_block_start[element] = block_start
-    #         block_start += num_orbitals_per_atom[structure.basis][element]
-
-    #     for i in range(len(H_blocks_edge)):
-    #         atom_i_index = edge_indices[0][i]
-    #         atom_j_index = edge_indices[1][i]
-
-    #         atom_i_element = atomic_species[atom_i_index]
-    #         atom_j_element = atomic_species[atom_j_index]
-
-    #         atom_i_start = mat_block_start[atom_i_element]
-    #         atom_j_start = mat_block_start[atom_j_element]
-
-    #         atom_i_end = atom_i_start + structure.num_orbitals_per_atom[atom_i_index]
-    #         atom_j_end = atom_j_start + structure.num_orbitals_per_atom[atom_j_index]
-
-    #         # the orbital block is padded with zeros to match the total number of orbitals
-    #         matrix_block = np.zeros((blocksize, blocksize))
-    #         matrix_block[atom_i_start:atom_i_end,atom_j_start:atom_j_end] = torch.from_numpy(H_blocks_edge[i])
-
-    #         y[i,:,:] = matrix_block
-
-    #     # the edge feature are the interatomic distances - include periodic boundary conditions
-        
-    #     if structure.periodic_cell is not None:
-    #         distance = [utils.atom_dist(coordinates[edge_indices[0][i]], 
-    #                                     coordinates[edge_indices[1][i]], 
-    #                                     structure.periodic_cell) for i in range(len(edge_indices[0]))]
-    #     else:
-    #         distance = [np.linalg.norm(coordinates[edge_indices[0][i]]-coordinates[edge_indices[1][i]]) for i in range(len(edge_indices[0]))]
-
-    #     edge_fea = torch.tensor(distance).float()
-    #     edge_index = torch.tensor(edge_indices)-start_index #ensures that the edge_indices begin at 0 
-
-    #     # Use atomic number as node embeddings
-    #     if node_embedding_type == 'atomic_number':
-    #         x = [periodic_table[species] for species in atomic_species]
-    #         x = x[start_index:end_index]
-    #         x = torch.tensor(x).int()
-
-    #     # Use SOAP features as node embeddings
-    #     elif node_embedding_type == 'SOAP':
-    #         node_soaps = structure.soap_features[start_index:end_index]
-    #         x = torch.tensor(node_soaps, dtype=torch.float)
-        
-    #     else:
-    #         raise NotImplementedError
-
-    #     # The target is the orbital blocks
-    #     y = torch.tensor(y).float()
-
-    #     # print shape of x and y
-    #     print("Shape of x: ", torch._shape_as_tensor(x))
-    #     print("Shape of y: ", torch._shape_as_tensor(y))
-
-    #     data = gnnData(x=x, edge_index=edge_index, edge_feature=edge_fea, y=y, rotate_dic = rotate_dic)
-    #     # data = gnnData(x=x, edge_index=edge_index, edge_feature=edge_fea, y=y) # no rotations
-
-    #     return data
-
-
-    # def batch_data(graph_size, offset, structures, node_embedding_type, num_graph=1, batch_size=1):
-
-    #     data_list = []
-
-    #     for i in range(num_graph):
-    #         # data = create_input_data(i*graph_size + offset, i*graph_size + graph_size + offset, structures[i], node_embedding_type)
-    #         data = create_input_data(offset, graph_size + offset, structures[i], node_embedding_type)
-    #         data_list.append(data)
-
-    #     dataset = CustomDataset(data_list)
-    #     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
-
-    #     print("*** Batch properties:")
-    #     for batch in loader:
-    #         print("Node Features (x):", batch.x.size())
-    #         print("Edge Index:", batch.edge_index.size())
-    #         print("Edge Features (edge_attr):", batch.edge_feature.size())
-
-    #     return loader

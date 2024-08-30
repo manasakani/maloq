@@ -1,10 +1,10 @@
 #!/bin/bash --login 
 #SBATCH --account=s1119
-#SBATCH --nodes=5
+#SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1  
 #SBATCH --constraint=gpu
-#SBATCH --time=00:10:00
-#SBATCH --job-name=5proc
+#SBATCH --time=01:00:00
+#SBATCH --job-name=graphNN
 
 module load daint-gpu
 module load PyTorch
@@ -14,9 +14,6 @@ MASTER_NODE=$(scontrol show hostname $SLURM_NODELIST | head -n 1)
 export MASTER_ADDR=$MASTER_NODE
 export MASTER_PORT=29500
 echo "Master node address: $MASTER_ADDR"
-
-# export MASTER_PORT=12355
-# export MASTER_ADDR=$(hostname -s)
 
 # debug mode
 # TORCH_DISTRIBUTED_DEBUG=DETAIL

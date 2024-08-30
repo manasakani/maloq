@@ -5,7 +5,7 @@ import math
 import torch_geometric
 import copy
 
-from lib.activation import (
+from lib_equiformer.activation import (
     ScaledSiLU, 
     ScaledSwiGLU, 
     SwiGLU, 
@@ -16,23 +16,23 @@ from lib.activation import (
     S2Activation
 )
 
-from lib.layer_norm import (
+from lib_equiformer.layer_norm import (
     EquivariantLayerNormArray,
     EquivariantLayerNormArraySphericalHarmonics, 
     EquivariantRMSNormArraySphericalHarmonics,
     get_normalization_layer
 )
 
-from lib.SO2_operations import (
+from lib_equiformer.SO2_operations import (
     SO2_Convolution, 
     SO2_Linear
 )
-from lib.SO3 import (
+from lib_equiformer.SO3 import (
     SO3_Embedding, 
     SO3_Linear, 
     SO3_LinearV2
 )
-from lib.radial_function import RadialFunction
+from lib_equiformer.radial_function import RadialFunction
 
 
 class SO2EquivariantGraphAttention(torch.nn.Module):

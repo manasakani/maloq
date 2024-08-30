@@ -15,10 +15,10 @@ import torch.nn.functional as F
 from torch_geometric.utils import degree
 import networkx as nx
 
-from lib.layer_norm import get_normalization_layer
+from lib_equiformer.layer_norm import get_normalization_layer
 from lib.transformer_block import FeedForwardNetwork
 from lib.transformer_block import TransBlockV2,NodeBlockV2,EdgeBlockV2
-from lib.SO3 import CoefficientMappingModule, SO3_Rotation, SO3_Embedding
+from lib_equiformer.SO3 import CoefficientMappingModule, SO3_Rotation, SO3_Embedding
 
 class GaussianSmearing(torch.nn.Module):
     def __init__(
