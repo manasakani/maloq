@@ -6,6 +6,7 @@
 from lib.utils import orbital_type_dict
 import lib.utils as utils
 from scipy.sparse import csr_matrix
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import pickle
@@ -16,6 +17,7 @@ from ase.io import read
 from ase.build import molecule
 from ase import Atoms
 from ase.neighborlist import NeighborList
+from ase.geometry import find_mic
 from dscribe.descriptors import SOAP
 
 # A structure defines the atomic and electronic structure of collection of atoms
@@ -272,12 +274,6 @@ class Structure:
 
         # Plot the matrix using matplotlib
         plt.figure()
-
-        # set color bar limits
-        # vmin = -0.5
-        # vmax = 0.5 #np.max(full_matrix)
-        # plt.imshow(full_matrix, cmap='viridis', vmin=vmin, vmax=vmax) 
-    
         plt.imshow(full_matrix, cmap='viridis')
         plt.colorbar()
         plt.title('CSR Matrix Visualization')
@@ -351,6 +347,52 @@ class Structure:
             csr_matrix[(indices[i][1],indices[i][0])] = data[i]
 
         return csr_matrix
+    
+    def get_max_interaction_radius(self, eps):
+        """
+        Return the maximum distance between two atoms, such that the Hamiltonian matrix has at 
+        least one element with a magnitude greater than eps. Also saves the interaction distances 
+        to a file and plots a histogram of them.
+        Require rcut to be overestimated.
+        """
+
+        cell = self.atomic_structure.get_cell()
+        interaction_distance_list = []
+
+        # iterate over all the edges in the edge matrix
+        # for i, edge in enumerate(self.edge_matrix.T):
+        for i, edge in enumerate(self.edge_matrix.T):
+
+            print(i+1, "/", len(self.edge_matrix.T))
+
+            # edge is a 1D array with two elements: [atom_i_index, atom_j_index]
+            atom_i_index = edge[0]
+            atom_j_index = edge[1]
+            orbital_block = self.get_orbital_blocks([[atom_i_index], [atom_j_index]])
+
+            # check if any element in the orbital block has a magnitude greater than eps
+            for key in orbital_block:
+                if np.max(np.abs(orbital_block[key])) > eps:
+                    atom_i_pos = self.atomic_structure.get_positions()[atom_i_index]
+                    atom_j_pos = self.atomic_structure.get_positions()[atom_j_index]
+                    distance = find_mic(atom_i_pos - atom_j_pos, cell)
+                    interaction_distance_list.append(distance[1])
+
+        # save the interaction distances to a file
+        with open('interaction_distances.txt', 'w') as f:
+            for item in interaction_distance_list:
+                f.write("%s\n" % item)
+
+        print("Max interaction distance: ", max(interaction_distance_list))
+
+        # plot a histogram of the interaction distances
+        fig, ax = plt.subplots()
+        ax.hist(interaction_distance_list, bins=50)
+        ax.set_xlabel('Distance between atoms (A)')
+        ax.set_ylabel('Frequency')
+        plt.savefig('interaction_distances.png', dpi=300)
+        
+        return max(interaction_distance_list)
     
 
     def map_atom_to_orbital(self, atom_index):

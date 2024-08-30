@@ -10,7 +10,6 @@ import math
 import networkx as nx
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
-# from torch_scatter import scatter
 from torch_geometric.utils import degree
 
 from e3nn.o3 import Irrep, Irreps, wigner_3j, matrix_to_angles, Linear, FullyConnectedTensorProduct, TensorProduct, SphericalHarmonics
@@ -20,6 +19,10 @@ import matplotlib.pyplot as plt
 from lib.layer_norm import get_normalization_layer
 from lib.transformer_block import FeedForwardNetwork
 from lib.transformer_block import TransBlockV2,NodeBlockV2,EdgeBlockV2
+
+import torch.distributed as dist
+if dist.is_available() and dist.is_initialized():
+     from torch_scatter import scatter
 
 # from edge_rot_mat import init_edge_rot_mat
 from lib.SO3 import CoefficientMappingModule, SO3_Rotation, SO3_Embedding

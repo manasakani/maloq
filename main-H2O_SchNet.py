@@ -51,16 +51,16 @@ def main():
 
     # Dataset parameters:
     num_train = 500                                                             # Number of training samples
-    num_validate = 50                                                           # Number of validation samples             
+    num_validate = 50                                                          # Number of validation samples             
     num_test = 4000     
 
-    restart_file = None                                             
+    restart_file = 'model_H2O.pth'                                             
     save_file = 'model_H2O.pth'
     train_or_test = 'train'                                                     
-    num_epochs = 5000                                                           
-    batch_size = 20                                                               
+    num_epochs = 10000                                                           
+    batch_size = 500                                                               
     loss_tol = 1e-10
-    lr = 1e-3
+    lr = 1e-8
     rcut = 1000.0
 
     # Structure and Network parameters:
@@ -76,7 +76,7 @@ def main():
     # Hyperparameters of the SO2 model for H2O
     sphere_channels = 64 # fix to 64
     num_heads = 2
-    attn_hidden_channels = 64 #256 # fix to 128 or larger
+    attn_hidden_channels = 256 # fix to 128 or larger
     attn_alpha_channels = 32
     attn_value_channels = 32 
     ffn_hidden_channels = 64 
@@ -180,10 +180,14 @@ def main():
         checkpoint = torch.load(save_file)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        model.double() # Load the model in double precision
+        # model.double() # Load the model in double precision
 
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
     print("Model initialized")
+
+    # ************************************************************
+    # Run the training or testing process
+    # ************************************************************
 
     if train_or_test == 'train':
 

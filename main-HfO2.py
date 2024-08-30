@@ -14,7 +14,6 @@ import os
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-
 def main():
 
     if not torch.cuda.is_available():
@@ -37,6 +36,10 @@ def main():
         os.environ['WORLD_SIZE'] = str(world_size)
         os.environ['LOCAL_RANK'] = str(local_rank)
         backend = 'nccl'  # Use NCCL for multi-GPU on Piz Daint
+
+        # Initialize the process group
+        dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+
     else:  
         rank = 0
         world_size = 1
@@ -44,9 +47,6 @@ def main():
         os.environ['MASTER_ADDR'] = '127.0.0.1'
         os.environ['MASTER_PORT'] = '29500'
         backend = 'gloo'  # Use Gloo for attelas (single GPU)
-
-    # Initialize the process group
-    dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
 
     if dist.is_initialized():
         print(f"RANK: {rank}")
@@ -56,7 +56,10 @@ def main():
         if dist.get_rank() == 0:
             print(f"Number of GPUs used: {num_gpus}")
 
-    # Dataset  
+    # ************************************************************
+    # Input parameters and for the HfO2 dataset
+    # ************************************************************
+
     data_folder = './datasets/a-HfO2/'
     xyz_file = data_folder + 'structure.xyz'
     hamiltonian_file = data_folder + 'H.csr'
@@ -65,7 +68,7 @@ def main():
     # Material parameters:
     pbc = True
     orbital_basis = 'SZV'
-    rcut = 4.0
+    rcut = 4.0          
     lmax_list = [4]
     mmax_list = [4]
 
@@ -75,17 +78,17 @@ def main():
     test_slice = [3000]
 
     # Parameters:
-    restart_file = None
+    restart_file = 'model_HfO2.pth'  
     save_file = 'model_HfO2.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 2                                               # Number of message passing layers 
     num_epochs = 50                                                
-    learning_rate = 1e-4
+    learning_rate = 1e-3
     loss_tol = 0                                                    
     dtype = torch.float32
 
     # *** Initialize the hyperparameters of the SO2 model:
-    sphere_channels = 64
+    sphere_channels = 16
     num_heads = 2
     attn_hidden_channels = 64
     attn_alpha_channels = 32
@@ -95,6 +98,10 @@ def main():
     # Define irreducible representations for the SO2 model
     irreps_in = Irreps([(sphere_channels, (0, 1)), (sphere_channels, (1, 1)), (sphere_channels, (2, 1)), (sphere_channels, (3, 1)), (sphere_channels, (4, 1))])
     edge_channels_list = [sphere_channels, sphere_channels, sphere_channels]  
+
+    # ************************************************************
+    # Create the dataset
+    # ************************************************************
 
     # *** Initialize the domain and electronic structure matrices:
     a_HfO2 = structure.Structure(xyz_file, 
@@ -108,6 +115,10 @@ def main():
                                     bothways=True, 
                                     rcut = rcut)
     print("Structure created")
+
+    # ************************************************************
+    # Initialize the SO2 model
+    # ************************************************************
 
     # *** Perform orbital analysis:
     atom_orbitals = {'8':[0,1], '72':[0,0,1,2]}                                           # Orbital types of each atom in the structure
@@ -158,8 +169,12 @@ def main():
     if restart_file is not None:
         print("Restarting training from a saved model and optimizer state...")
         checkpoint = torch.load(save_file)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if dist.is_available() and dist.is_initialized():
+            model.module.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        else:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
     print("Model initialized")
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))

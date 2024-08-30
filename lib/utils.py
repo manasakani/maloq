@@ -265,31 +265,6 @@ def rotate_data_back(pred, y, edge_indices, rotate_dic, structures):
     
     return rotated_pred, reduced_y
 
-def atom_dist(atom1_pos, atom2_pos, lattice):
-    '''
-    Calculates the distance between two atoms. If pbc = 1 below, the distance
-    accounts for periodic boundary conditions in the y and z directions.
-
-    Args:
-        1. [x y z] position of atom1
-        2. [x y z] position of atom2
-        3. [x y z] dimensions of the orthogonal unit cell
-        4. pbc: 0 or 1 (periodic boundary conditions)
-    '''
-    
-    if lattice is None:
-        return np.sqrt((atom2_pos[0]-atom1_pos[0])**2 + (atom2_pos[1]-atom1_pos[1])**2 + (atom2_pos[2]-atom1_pos[2])**2)  
-    else:
-
-        # Find shortest distance between atom1 and the periodic images of atom2
-        distance_frac = np.divide(atom1_pos, lattice) - np.divide(atom2_pos, lattice)
-        distance_frac = distance_frac - [int(distance_frac[0]*1 + 0.5), int(distance_frac[1]*1 + 0.5), int(distance_frac[2]*1 + 0.5)]
-        dist_xyz = distance_frac * lattice
-        
-        # Return the norm of the xyz distance:
-        return np.sqrt(dist_xyz[0]**2 + dist_xyz[1]**2 + dist_xyz[2]**2)
-
-
 
 def unflatten(H_pred, numbers, edge_index, equivariant_blocks, atom_orbitals, out_slices):  
 

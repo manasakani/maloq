@@ -11,6 +11,7 @@ from torch_geometric.data import Batch, Data
 from torch.utils.data import Dataset, DataLoader
 
 from ase.geometry import find_mic
+import torch.distributed as dist
 
 # Custom dataset class for the GNN
 class CustomDataset(Dataset):
@@ -352,8 +353,13 @@ def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, ou
         data_list.append(train_data)
 
     dataset = CustomDataset(data_list)
-    sampler = torch.utils.data.distributed.DistributedSampler(dataset)
-    loader = DataLoader(dataset, sampler=sampler, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
+
+    if dist.is_initialized():
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+        loader = DataLoader(dataset, sampler=sampler, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
+    else:
+        loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
+
     # loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
 
     print("*** Batch properties:")

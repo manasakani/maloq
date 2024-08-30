@@ -29,7 +29,7 @@ def train_and_validate_model_SO2(model, optimizer, training_loader, validation_l
     for epoch in range(num_epochs):
         
         # every 100 epochs, reduce the learning rate by half
-        if epoch % 50 == 0:
+        if epoch % 100 == 0:
             for param_group in optimizer.param_groups:
                 if param_group['lr'] > 1e-8:
                     param_group['lr'] = param_group['lr']/1.5
@@ -124,11 +124,11 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
     device = next(model.parameters()).device  # Get the device of the model
     
     # Initialize DistributedDataParallel
-    if dist.is_available() and dist.is_initialized():
-        # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
-        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
-    else:
-        model = nn.DataParallel(model)
+    # if dist.is_available() and dist.is_initialized():
+    #     # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
+    #     model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+    # else:
+    #     model = nn.DataParallel(model)
 
     criterion = nn.MSELoss()
 
@@ -178,25 +178,32 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
         epoch_end_time = time.time()
         epoch_duration = epoch_end_time - epoch_start_time
             
-        if dist.get_rank() == 0:  
-            print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
-            print(f"--> Zero Grad Time: {zero_grad_duration:.4f} seconds")
-            print(f"--> Memory Transfer Time: {memory_transfer_duration:.4f} seconds")
-            print(f"--> Forward Pass Time: {forward_pass_duration:.4f} seconds")
-            print(f"--> Loss Computation Time: {loss_computation_duration:.4f} seconds")
-            print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
-            print(f"--> Optimizer Update Time: {optimizer_update_duration:.4f} seconds")
-            print(f"--> Total Batch process time: {batch_duration:.4f} seconds")
+        if dist.is_available() and dist.is_initialized():
+            if dist.get_rank() == 0:  
+                print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
+                print(f"--> Zero Grad Time: {zero_grad_duration:.4f} seconds")
+                print(f"--> Memory Transfer Time: {memory_transfer_duration:.4f} seconds")
+                print(f"--> Forward Pass Time: {forward_pass_duration:.4f} seconds")
+                print(f"--> Loss Computation Time: {loss_computation_duration:.4f} seconds")
+                print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
+                print(f"--> Optimizer Update Time: {optimizer_update_duration:.4f} seconds")
+                print(f"--> Total Batch process time: {batch_duration:.4f} seconds")
             
         print("Epoch: " + str(epoch)+ " loss: " + str(loss))
         track_loss_node.append(loss_node.cpu().detach().numpy()) 
         track_loss_edge.append(loss_edge.cpu().detach().numpy())
 
         if epoch % 100 == 0:
-            if dist.get_rank() == 0:  
+            if dist.is_available() and dist.is_initialized():
+                if dist.get_rank() == 0:  # Save only on rank 0
+                    torch.save({'model_state_dict': model.module.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        }, save_file)
+            else:
                 torch.save({'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     }, save_file)
+                
 
         if loss < loss_tol:
             break
@@ -213,7 +220,12 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
     plt.savefig('loss.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-    if dist.get_rank() == 0:  # Save only on rank 0 
+    if dist.is_available() and dist.is_initialized():
+        if dist.get_rank() == 0:  # Save only on rank 0
+            torch.save({'model_state_dict': model.module.state_dict(),
+                        'optimizer_state_dict': optimizer.module.state_dict(),
+                        }, save_file)
+    else:
         torch.save({'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     }, save_file)
