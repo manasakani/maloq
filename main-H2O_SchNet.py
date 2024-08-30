@@ -3,8 +3,8 @@ import lib.models as models
 import lib.training as training
 import lib.structure as structure
 import lib.utils as utils
-import lib.SO2 as SO2
-import lib.SO3 as SO3
+import lib_equiformer.SO2 as SO2
+import lib_equiformer.SO3 as SO3
 import lib.so2_model as so2_model
 from e3nn.o3 import Irreps
 import matplotlib.pyplot as plt

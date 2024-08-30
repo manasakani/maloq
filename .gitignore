@@ -16,6 +16,7 @@ lib/__pycache__/
 # saved models:
 *.pth
 *.pt
+*.txt
 
 # large data files
 *.pkl

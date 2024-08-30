@@ -133,7 +133,6 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
 
     track_loss_node = []
     track_loss_edge = []
-    print("start training, memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
 
 
     for epoch in range(num_epochs):
@@ -155,7 +154,6 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             batch = batch.to(device)
             memory_transfer_time = time.time()
 
-            print("before forward pass, memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
             node_output, edge_output = model(batch)
             forward_pass_time = time.time()
 
@@ -196,6 +194,7 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
                 print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
                 print(f"--> Optimizer Update Time: {optimizer_update_duration:.4f} seconds")
                 print(f"--> Total Batch process time: {batch_duration:.4f} seconds")
+                print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
             
         print("Epoch: " + str(epoch)+ " loss: " + str(loss))
         track_loss_node.append(loss_node.cpu().detach().numpy()) 
@@ -218,9 +217,10 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             
     print("Final loss: ", loss)
 
-    # dump the node and edge loss to a file:
-    track_loss_save = [track_loss_edge, track_loss_node]
-    torch.save(track_loss_save, 'track_loss'+save_file+'.txt')
+    # save in plain txt file
+    with open('track_loss.txt', 'w') as f:
+        for edge, node in zip(track_loss_edge, track_loss_node):
+            f.write(f"{edge:.6f}\t{node:.6f}\n")  
 
     plt.figure(figsize=(4, 3))
     plt.plot(track_loss_node, label='node')
@@ -382,35 +382,23 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
         MAEloss_total = MAE_edge*1e3 + MAE_node*1e3
         print("Mean Absolute Error in mHartree: ", MAEloss_total)
 
-        # edge_label_np = edge_label_tensor.cpu().detach().numpy()
-        # edge_pred_np = edge_pred_tensor.cpu().detach().numpy()
-        # node_label_np = node_label_tensor.cpu().detach().numpy()
-        # node_pred_np = node_pred_tensor.cpu().detach().numpy()
-
         edge_label_np = edge_label_tensor.cpu().detach().numpy()
         edge_pred_np = edge_pred_tensor.cpu().detach().numpy()
         node_label_np = node_label_tensor.cpu().detach().numpy()
         node_pred_np = node_pred_tensor.cpu().detach().numpy()
 
         # Downsample data for plotting to manage memory usage
-        sample_size = min(len(edge_label_np), 10000)  # Ensure sample size does not exceed the length of data
-        edge_indices = np.random.choice(len(edge_label_np), sample_size, replace=False)
-        edge_label_np = edge_label_np[edge_indices]
-        edge_pred_np = edge_pred_np[edge_indices]
-        node_indices = np.random.choice(len(node_label_np), sample_size, replace=False)
-        node_label_np = node_label_np[node_indices]
-        node_pred_np = node_pred_np[node_indices]
+        # sample_size = min(len(edge_label_np), 10000)  # Ensure sample size does not exceed the length of data
+        # edge_indices = np.random.choice(len(edge_label_np), sample_size, replace=False)
+        # edge_label_np = edge_label_np[edge_indices]
+        # edge_pred_np = edge_pred_np[edge_indices]
+        # node_indices = np.random.choice(len(node_label_np), sample_size, replace=False)
+        # node_label_np = node_label_np[node_indices]
+        # node_pred_np = node_pred_np[node_indices]
 
         plt.scatter(edge_label_np, edge_pred_np, s=3, alpha=0.1, edgecolor='none', color='crimson', label='Edge')
         plt.scatter(node_label_np, node_pred_np, s=3, alpha=0.1, edgecolor='none', color='blue', label='Node')
         plt.plot(node_label_np, node_label_np, c='k',linestyle='dashed', linewidth=0.1, alpha=0.3)
-
-        # extra garbage collection
-        # del edge_label_tensor
-        # del edge_pred_tensor
-        # del node_label_tensor
-        # del node_pred_tensor
-        # torch.cuda.empty_cache()
     
     plt.xlabel("Real $H_{ij}$")
     plt.ylabel("Predicted  $H_{ij}$")

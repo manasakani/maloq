@@ -234,6 +234,83 @@ def flatten_data(H_blocks, edge_matrix, numbers, equivariant_blocks, out_slices)
 
     return labels
 
+def createdata_graphpartition(structure, subgraph_nodes, equivariant_blocks, out_slices, construct_kernel, dtype=torch.float64):
+
+    # call create_subgraph_dict
+    pos = structure.atomic_structure.get_positions()
+    cell = structure.atomic_structure.get_cell()
+    edge_matrix = structure.edge_matrix
+    numbers = structure.atomic_numbers
+
+    # the subgraph nodes should be a list, not a numpy array
+    slice_graph = create_slice_graph(subgraph_nodes.tolist(), edge_matrix)
+
+    full_mapped_edge_index = slice_graph['full_mapped_edge_index']
+    full_edge_positions = slice_graph['full_edge_positions']
+    full_atom_index = slice_graph['full_atom_index']
+
+    edge_matrix = torch.tensor(edge_matrix)
+
+    # find the off-diagonal Hamiltonian blocks of all edges that are part of the graph
+    edge_index = edge_matrix.T[full_edge_positions].numpy() 
+    edge_index = edge_index.T
+    offsite_ham = structure.get_orbital_blocks(edge_index)
+    H_blocks_edge = []
+    for i in range(len(edge_index[0])):
+        H_blocks_edge.append(offsite_ham[(edge_index[0][i].item(), edge_index[1][i].item())])
+
+    H_blocks_edge = np.array(H_blocks_edge, dtype=object) 
+    edge_labels = flatten_data(H_blocks_edge, edge_index, numbers, equivariant_blocks, out_slices)
+
+    # find the onsite Hamiltonian blocks for all atoms that are part of the graph
+    onsite_edge_index = np.array([np.array(full_atom_index),np.array(full_atom_index)])
+    onsite_ham = structure.get_orbital_blocks(onsite_edge_index)
+    H_blocks_node = []
+    for i in range(len(onsite_edge_index[0])):
+         H_blocks_node.append(onsite_ham[(onsite_edge_index[0][i].item(),onsite_edge_index[1][i].item())])
+    H_blocks_node = np.array(H_blocks_node, dtype=object) 
+    node_labels = flatten_data(H_blocks_node, onsite_edge_index, numbers, equivariant_blocks, out_slices)
+
+    # edge features are the interatomic distances - include periodic boundary conditions
+    edge_fea = torch.empty((len(edge_index[0]),4))
+    for i in range(len(edge_index[0])):
+        distance_vector, distance = find_mic(pos[edge_index[1][i]] - pos[edge_index[0][i]], cell)
+        edge_fea[i,:] = torch.cat((torch.tensor([distance]), torch.tensor(distance_vector)))
+
+    edge_fea = torch.tensor(edge_fea, dtype = dtype)
+
+    # create the node features, which are the atomic numbers of the atoms in the slice
+    atomic_numbers = numbers[full_atom_index] 
+    x = torch.tensor(atomic_numbers)
+
+    edge_labels_np = np.array(edge_labels)  # Convert list of numpy arrays to a single numpy ndarray
+    edge_labels = torch.tensor(edge_labels_np,dtype = dtype)
+
+    # convert Hamiltonian labels from uncoupled space to coupled space (to avoid conversion during training)
+    y = construct_kernel.get_net_out(edge_labels) 
+    node_labels_np = np.array(node_labels)  # Convert list of numpy arrays to a single numpy ndarray
+    node_labels = torch.tensor(node_labels_np, dtype = dtype)
+    node_y = construct_kernel.get_net_out(node_labels)
+
+    atom_indices = torch.tensor(full_atom_index)
+    atom_coordinates = torch.tensor(pos[atom_indices])
+
+    # create the data object
+    data = Data(x=x, 
+                edge_index=full_mapped_edge_index, 
+                edge_attr=edge_fea, 
+                y=y, 
+                node_y=node_y, 
+                labelled_edge_size=slice_graph['real_edge_size'],
+                labelled_node_size=slice_graph['real_node_size'], 
+                node_degree=slice_graph['node_degree'], 
+                reduced_node_degree=slice_graph['reduced_node_degree'], 
+                atom_indices=atom_indices, 
+                atom_coordinates=atom_coordinates)    
+
+    return data
+
+
 # create a data object for a subgraph of the input Structure specified by slice_center
 def createdata_subgraph(structure, slice_center, cutoff, equivariant_blocks, out_slices, construct_kernel, dtype=torch.float64):
     
@@ -287,7 +364,6 @@ def createdata_subgraph(structure, slice_center, cutoff, equivariant_blocks, out
     atomic_numbers = numbers[full_atom_index] 
     x = torch.tensor(atomic_numbers)
 
-    # data.py:290: UserWarning: Creating a tensor from a list of numpy.ndarrays is extremely slow. Please consider converting the list to a single numpy.ndarray with numpy.array() before converting to a tensor. (Triggered internally at  ../torch/csrc/utils/tensor_new.cpp:201.)
     edge_labels_np = np.array(edge_labels)  # Convert list of numpy arrays to a single numpy ndarray
     edge_labels = torch.tensor(edge_labels_np,dtype = dtype)
 
@@ -363,7 +439,47 @@ def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, ou
     else:
         loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
 
-    # loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
+    print("*** Batch properties:")
+    for batch in loader:
+        print("--> Batch: ")
+        print("Node Features (x):", batch.x.size())
+        print("Edge Index:", batch.edge_index.size())
+        print("Edge Features (edge_attr):", batch.edge_attr.size())    
+
+    return loader
+
+def batch_data_graphpartition(graph, num_subgraph, num_batch, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
+
+    # Partition the large input Structure into smaller subgraphs for training using spectral clustering
+    partitions = graph.partition_graph(num_subgraph)
+
+    data_list = []
+
+    for cluster, subgraph_nodes in partitions.items():
+        while len(data_list) < num_batch:
+            print(f"Number of nodes in cluster {cluster}: {len(subgraph_nodes)}")
+            train_data = createdata_graphpartition(graph, 
+                                                   subgraph_nodes, 
+                                                   equivariant_blocks, 
+                                                   out_slices, 
+                                                   construct_kernel, 
+                                                   dtype=dtype)
+            data_list.append(train_data)
+
+    dataset = CustomDataset(data_list)
+    
+    if dist.is_initialized():
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+        loader = DataLoader(dataset, 
+                            sampler=sampler, 
+                            batch_size=1, 
+                            shuffle=False, 
+                            collate_fn=custom_collate_fn)
+    else:
+        loader = DataLoader(dataset, 
+                            batch_size=1, 
+                            shuffle=False, 
+                            collate_fn=custom_collate_fn)
 
     print("*** Batch properties:")
     for batch in loader:
