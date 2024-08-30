@@ -25,43 +25,36 @@ def main():
     np.random.seed(42)
     random.seed(42)
 
-    # Distributed training
+    # Distributed training setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device: ", device)
 
-    if 'SLURM_PROCID' in os.environ:
+    if 'SLURM_PROCID' in os.environ:  
         rank = int(os.environ['SLURM_PROCID'])
-    else:
-        rank = 0  
-
-    if 'SLURM_NTASKS' in os.environ:
         world_size = int(os.environ['SLURM_NTASKS'])
-    else:
-        world_size = 1 
-
-    if 'SLURM_LOCALID' in os.environ:
         local_rank = int(os.environ['SLURM_LOCALID'])
-    else:
-        local_rank = 0  
+        os.environ['RANK'] = str(rank)
+        os.environ['WORLD_SIZE'] = str(world_size)
+        os.environ['LOCAL_RANK'] = str(local_rank)
+        backend = 'nccl'  # Use NCCL for multi-GPU on Piz Daint
+    else:  
+        rank = 0
+        world_size = 1
+        local_rank = 0
+        os.environ['MASTER_ADDR'] = '127.0.0.1'
+        os.environ['MASTER_PORT'] = '29500'
+        backend = 'gloo'  # Use Gloo for attelas (single GPU)
 
-    os.environ['RANK'] = str(rank)
-    os.environ['WORLD_SIZE'] = str(world_size)
-    os.environ['LOCAL_RANK'] = str(local_rank)
+    # Initialize the process group
+    dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
 
-    dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
-
-    # if dist.is_available() and dist.is_initialized():
-    #     rank = os.getenv('RANK')
-    #     world_size = os.getenv('WORLD_SIZE')
-        # local_rank = os.getenv('LOCAL_RANK')
-        # print(f"RANK: {rank}")
-        # print(f"WORLD_SIZE: {world_size}")
-        # print(f"LOCAL_RANK: {local_rank}")
-
-
-    num_gpus = dist.get_world_size()
-    if dist.get_rank() == 0:  
-        print(f"Number of GPUs used: {num_gpus}")
+    if dist.is_initialized():
+        print(f"RANK: {rank}")
+        print(f"WORLD_SIZE: {world_size}")
+        print(f"LOCAL_RANK: {local_rank}")
+        num_gpus = dist.get_world_size()
+        if dist.get_rank() == 0:
+            print(f"Number of GPUs used: {num_gpus}")
 
     # Dataset  
     data_folder = './datasets/a-HfO2/'
@@ -77,17 +70,16 @@ def main():
     mmax_list = [4]
 
     # Graph partitioning parameters:
-    # slice_list = [1000,1200,1400,]
-    # 4 slices:
-    slice_list = [1000,1200,1400,1600,1800]
-    cutoff = 1.5 # cutoff boundary of the slice used for training 
+    slice_list = [1000,1200, 1400]                                           # slice boundaries for partitioning the structure into subgraphs                
+    cutoff = 0.5 #1.5 # cutoff boundary of the slice used for training 
+    test_slice = [3000]
 
     # Parameters:
     restart_file = None
     save_file = 'model_HfO2.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 2                                               # Number of message passing layers 
-    num_epochs = 10                                                
+    num_epochs = 50                                                
     learning_rate = 1e-4
     loss_tol = 0                                                    
     dtype = torch.float32
@@ -172,14 +164,23 @@ def main():
     print("Model initialized")
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
 
-    if train_or_test == 'test':
+    if train_or_test == 'train':
         
         # *** Train the model parameters:
         print("training...")
         training.train_model_subgraph(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
         print("Model trained")
 
-        MAE_node, MAE_edge =  training.evaluate_model(model, test_batch, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+        training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
+
+    elif train_or_test == 'test':
+
+        # make data for testing
+        test_data_loader = data.batch_data_subgraph(a_HfO2, test_slice, cutoff, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
+
+        # *** Test the model:
+        print("testing...")
+        training.evaluate_model(model, test_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
 
 if __name__ == "__main__":

@@ -234,7 +234,7 @@ def flatten_data(H_blocks, edge_matrix, numbers, equivariant_blocks, out_slices)
     return labels
 
 # create a data object for a subgraph of the input Structure specified by slice_center
-def createdata_subgraph(structure, slice_center, cutoff, equivariant_blocks, out_slices, construct_kernel, dtype = torch.float32):
+def createdata_subgraph(structure, slice_center, cutoff, equivariant_blocks, out_slices, construct_kernel, dtype=torch.float64):
     
     pos = structure.atomic_structure.get_positions()
     cell = structure.atomic_structure.get_cell()
@@ -312,7 +312,7 @@ def createdata_subgraph(structure, slice_center, cutoff, equivariant_blocks, out
     return data
 
 # Creates a dataloader for a dataset with a list of molecules
-def batch_data_SO2(structures, device, num_graph=1, batch_size=1, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float32):
+def batch_data_SO2(structures, device, num_graph=1, batch_size=1, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
 
     data_list = []
 
@@ -335,7 +335,7 @@ def batch_data_SO2(structures, device, num_graph=1, batch_size=1, equivariant_bl
 
 # Creates a dataloader with a batch of subgraphs for a dataset of a single large graph
 # Partition the large input Structure into smaller subgraphs for training
-def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float32):
+def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
     """
     structures: list of Structure objects
     slice_list: list of indices which define the center of each subgraph

@@ -70,11 +70,7 @@ class Structure:
 
     def init_atomic_structure_schnet(self, database_props, pbc, self_interaction, bothways):
 
-        # print("Keys:", database_props.keys())
-
         # Extract the xyz coordinates and atomic numbers from the database properties
-        # positions = database_props['_positions']
-        # atomic_numbers = database_props['_atomic_numbers']
         positions = np.array(database_props['_positions'], dtype=np.float64)
         atomic_numbers = np.array(database_props['_atomic_numbers'], dtype=int)
         
@@ -141,9 +137,6 @@ class Structure:
 
         # convert complex spherical harmonics to real spherical harmonics by permuting the order of p-orbitals
         hamiltonian = self.complex_to_real_SH(hamiltonian)
-
-        # increase precision of hamiltonian TEST
-        # hamiltonian = hamiltonian.to(torch.float64)
 
         hamiltonian_csr = csr_matrix(hamiltonian)  
         overlap_csr = csr_matrix(overlap)  
