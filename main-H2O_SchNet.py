@@ -57,10 +57,10 @@ def main():
     restart_file = 'model_H2O.pth'                                             
     save_file = 'model_H2O.pth'
     train_or_test = 'train'                                                     
-    num_epochs = 10000                                                           
+    num_epochs = 50000                                                           
     batch_size = 500                                                               
     loss_tol = 1e-10
-    lr = 1e-8
+    lr = 1e-7
     rcut = 1000.0
 
     # Structure and Network parameters:

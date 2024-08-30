@@ -20,6 +20,10 @@ from ase.neighborlist import NeighborList
 from ase.geometry import find_mic
 from dscribe.descriptors import SOAP
 
+# Graph partitioning packages
+import networkx as nx
+from sklearn.cluster import SpectralClustering
+
 # A structure defines the atomic and electronic structure of collection of atoms
 class Structure:
     def __init__(self, xyz_file, hamiltonian_file, overlap_file, pbc, orbital_basis, dataset='custom', database_props=None, self_interaction=True, bothways=False, make_soap=False, save_matrices=False, rcut=4.0):
@@ -126,6 +130,27 @@ class Structure:
         edge_matrix_np = np.array([matrix.row, matrix.col], dtype=np.int64)
         self.edge_matrix = edge_matrix_np
 
+    def partition_graph(self, n_clusters):
+
+        """
+        Partition the graph into `n_clusters` using spectral clustering.
+        """
+        # Create a NetworkX graph from the edge matrix
+        G = nx.Graph()
+        G.add_edges_from(self.edge_matrix.T)
+
+        # Convert the graph to an adjacency matrix
+        adj_matrix = nx.to_numpy_array(G)
+
+        # Perform spectral clustering
+        clustering = SpectralClustering(n_clusters=n_clusters, affinity='precomputed', assign_labels='kmeans')
+        labels = clustering.fit_predict(adj_matrix)
+
+        # Group nodes by their cluster
+        partitions = {i: np.where(labels == i)[0] for i in range(n_clusters)}
+
+        return partitions
+    
 
     def init_electronic_structure_schnet(self, database_props):
 
@@ -444,82 +469,3 @@ class Structure:
             print("!! The hamiltonian and overlap files were probably not loaded into the Structure. !!")
 
         return orbital_blocks
-    
-
-    # def create_rotation_dic(self, edge_indices, coordinates, structure):
-
-    #     edge_indices = []
-    #     for i in range(len(self.edge_matrix[0])):
-    #         if start_index<=self.edge_matrix[0][i]<end_index and start_index<=self.edge_matrix[1][i]< end_index:
-    #             edge_indices.append([self.edge_matrix[0][i], self.edge_matrix[1][i]])
-
-
-    #     coordinates = self.atomic_structure.get_coordinates()
-
-    #     coordinates = np.array(coordinates)
-    #     vectors = [(coordinates[edge_indices[1][i]]-coordinates[edge_indices[0][i]]) for i in range(len(edge_indices[0]))]
-    #     rotate_dic = {}
-
-    #     array_rcut = np.ones(len(self.atomic_structure))*self.rcut
-    #     neighbour_list = NeighborList(array_rcut,skin=0, self_interaction=False, bothways=True)
-    #     neighbour_list.update(structure)
-
-    #     # indicies = neighbour_list.get_neighbors(0)
-    #     # print(indices)
-
-    #     for i in range(len(edge_indices[0])):
-
-    #             key_str = (edge_indices[0][i].item(),edge_indices[1][i].item())
-
-    #             if edge_indices[1][i] == edge_indices[0][i]:
-    #                 nearest_neighbours, offsets = neighbour_list.get_neighbors(edge_indices[0][i])
-    #                 nearest_vectors = [(coordinates[nearest_neighbours[k]]-coordinates[edge_indices[0][i]]) for k in range(len(nearest_neighbours))]
-    #                 norms = [np.linalg.norm(v) for v in nearest_vectors]
-    #                 vectors[i] = nearest_vectors[np.argmin(norms)]
-
-                
-    #             R = utils.create_rotation_matrix(np.array([1,0,0]),np.array(vectors[i]))
-    #             rotate_dic[key_str] = R
-
-    #     return rotate_dic
-    
-    # def rotate_ham(self):
-
-    #     """
-    #     Rotate the Hamiltonian matrix to align with the x-axis
-    #     """
-
-    #     # get angle of rotation
-
-    #     # loop over bonds
-    #     for i in range(len(self.edge_matrix[0])):
-
-    #         # get atom indices
-    #         atom_i_index = self.edge_matrix[0][i]
-    #         atom_j_index = self.edge_matrix[1][i]
-
-    #         # get atom positions
-    #         atom_i_pos = self.atomic_structure.get_positions()[atom_i_index]
-    #         atom_j_pos = self.atomic_structure.get_positions()[atom_j_index]
-
-    #         # get bond vector
-    #         bond_vector = atom_j_pos - atom_i_pos
-
-    #         create_rotation_matrix(bond_vector, [1,0,0])
-
-    #         # get rotation matrix
-    #         rotation_matrix = self.compute_rotation(bond_vector, [1,0,0])
-
-    #         # # rotate the hamiltonian matrix
-    #         # self.hamiltonian = self.rotate_matrix(self.hamiltonian, rotation_matrix)
-
-    #     sdfg
-
-    #     # Rotate the atomic structure
-    #     self.atomic_structure.rotate()
-
-    #     # Rotate the Hamiltonian matrix
-    #     self.hamiltonian = self.rotate_matrix(self.hamiltonian)
-
-
-    

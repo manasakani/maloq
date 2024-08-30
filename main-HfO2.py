@@ -76,6 +76,7 @@ def main():
     slice_list = [1000,1200, 1400]                                           # slice boundaries for partitioning the structure into subgraphs                
     cutoff = 1.5 # cutoff boundary of the slice used for training 
     test_slice = [3000]
+    num_subgraph = 3
 
     # Parameters:
     restart_file = 'model_HfO2.pth' 
@@ -115,6 +116,13 @@ def main():
                                     bothways=True, 
                                     rcut = rcut)
     print("Structure created")
+    partitions = a_HfO2.partition_graph(num_subgraph)
+
+    for cluster, nodes in partitions.items():
+        print(f"Cluster {cluster}: {nodes}")
+        print(f"Number of nodes: {len(nodes)}")
+    
+    # sdfsdf
 
     # ************************************************************
     # Initialize the SO2 model
