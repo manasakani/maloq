@@ -123,12 +123,11 @@ def train_and_validate_model_SO2(model, optimizer, training_loader, validation_l
 def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float32):
     device = next(model.parameters()).device  # Get the device of the model
     
-    # Initialize DistributedDataParallel
-    # if dist.is_available() and dist.is_initialized():
-    #     # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
-    #     model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
-    # else:
-    #     model = nn.DataParallel(model)
+    if dist.is_available() and dist.is_initialized():
+        # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+    else:
+        model = nn.DataParallel(model)
 
     criterion = nn.MSELoss()
 
@@ -221,9 +220,10 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
     plt.close()
 
     if dist.is_available() and dist.is_initialized():
+        print("Saving model on rank 0")
         if dist.get_rank() == 0:  # Save only on rank 0
             torch.save({'model_state_dict': model.module.state_dict(),
-                        'optimizer_state_dict': optimizer.module.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
                         }, save_file)
     else:
         torch.save({'model_state_dict': model.state_dict(),

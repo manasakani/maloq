@@ -48,7 +48,7 @@ def main():
         os.environ['MASTER_PORT'] = '29500'
         backend = 'gloo'  # Use Gloo for attelas (single GPU)
 
-    if dist.is_initialized():
+    if dist.is_initialized() and dist.get_rank() == 0:  
         print(f"RANK: {rank}")
         print(f"WORLD_SIZE: {world_size}")
         print(f"LOCAL_RANK: {local_rank}")
@@ -74,15 +74,15 @@ def main():
 
     # Graph partitioning parameters:
     slice_list = [1000,1200, 1400]                                           # slice boundaries for partitioning the structure into subgraphs                
-    cutoff = 0.5 #1.5 # cutoff boundary of the slice used for training 
+    cutoff = 1.5 # cutoff boundary of the slice used for training 
     test_slice = [3000]
 
     # Parameters:
-    restart_file = 'model_HfO2.pth'  
+    restart_file = 'model_HfO2.pth' 
     save_file = 'model_HfO2.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 2                                               # Number of message passing layers 
-    num_epochs = 50                                                
+    num_epochs = 5                                                
     learning_rate = 1e-3
     loss_tol = 0                                                    
     dtype = torch.float32
@@ -147,7 +147,6 @@ def main():
     print("Data loader created")
 
     # *** Initialize the model:
-    # if restart_file is None:
     mappingReduced = SO3.CoefficientMappingModule(lmax_list, mmax_list)
     irreps_out = net_out_irreps
     model = so2_model.SO2Net(num_MP_layers, 
@@ -169,12 +168,8 @@ def main():
     if restart_file is not None:
         print("Restarting training from a saved model and optimizer state...")
         checkpoint = torch.load(save_file)
-        if dist.is_available() and dist.is_initialized():
-            model.module.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        else:
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
     print("Model initialized")
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
@@ -196,7 +191,6 @@ def main():
         # *** Test the model:
         print("testing...")
         training.evaluate_model(model, test_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
-
 
 if __name__ == "__main__":
     main()
