@@ -133,9 +133,17 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
 
     track_loss_node = []
     track_loss_edge = []
+    print("start training, memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+
 
     for epoch in range(num_epochs):
         epoch_start_time = time.time()
+
+        # every 100 epochs, reduce the learning rate by half
+        if epoch % 100 == 0:
+            for param_group in optimizer.param_groups:
+                if param_group['lr'] > 1e-8:
+                    param_group['lr'] = param_group['lr']/1.5
     
         for batch in loader:
 
@@ -147,6 +155,7 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             batch = batch.to(device)
             memory_transfer_time = time.time()
 
+            print("before forward pass, memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
             node_output, edge_output = model(batch)
             forward_pass_time = time.time()
 
@@ -209,6 +218,10 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             
     print("Final loss: ", loss)
 
+    # dump the node and edge loss to a file:
+    track_loss_save = [track_loss_edge, track_loss_node]
+    torch.save(track_loss_save, 'track_loss'+save_file+'.txt')
+
     plt.figure(figsize=(4, 3))
     plt.plot(track_loss_node, label='node')
     plt.plot(track_loss_edge, label='edge')
@@ -220,7 +233,6 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
     plt.close()
 
     if dist.is_available() and dist.is_initialized():
-        print("Saving model on rank 0")
         if dist.get_rank() == 0:  # Save only on rank 0
             torch.save({'model_state_dict': model.module.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
@@ -381,7 +393,7 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
         node_pred_np = node_pred_tensor.cpu().detach().numpy()
 
         # Downsample data for plotting to manage memory usage
-        sample_size = min(len(edge_label_np), 1000)  # Ensure sample size does not exceed the length of data
+        sample_size = min(len(edge_label_np), 10000)  # Ensure sample size does not exceed the length of data
         edge_indices = np.random.choice(len(edge_label_np), sample_size, replace=False)
         edge_label_np = edge_label_np[edge_indices]
         edge_pred_np = edge_pred_np[edge_indices]

@@ -16,7 +16,7 @@ from e3nn.o3 import Irrep, Irreps, wigner_3j, matrix_to_angles, Linear, FullyCon
 from e3nn.nn import Extract
 import networkx as nx
 import matplotlib.pyplot as plt
-from lib.layer_norm import get_normalization_layer
+from lib_equiformer.layer_norm import get_normalization_layer
 from lib.transformer_block import FeedForwardNetwork
 from lib.transformer_block import TransBlockV2,NodeBlockV2,EdgeBlockV2
 
@@ -25,7 +25,7 @@ if dist.is_available() and dist.is_initialized():
      from torch_scatter import scatter
 
 # from edge_rot_mat import init_edge_rot_mat
-from lib.SO3 import CoefficientMappingModule, SO3_Rotation, SO3_Embedding
+from lib_equiformer.SO3 import CoefficientMappingModule, SO3_Rotation, SO3_Embedding
 class GaussianSmearing(torch.nn.Module):
     def __init__(
         self, start=-5.0, stop=5.0, num_gaussians=50, basis_width_scalar=1.0

@@ -1,9 +1,9 @@
 import lib.data as data
 import lib.training as training
 import lib.structure as structure
-import lib.SO2 as SO2
+import lib_equiformer.SO2 as SO2
 import lib.so2_model as so2_model
-import lib.SO3 as SO3
+import lib_equiformer.SO3 as SO3
 from e3nn.o3 import Irreps
 import matplotlib.pyplot as plt
 import numpy as np
@@ -73,17 +73,17 @@ def main():
     mmax_list = [4]
 
     # Graph partitioning parameters:
-    slice_list = [1000,1200, 1400]                                           # slice boundaries for partitioning the structure into subgraphs                
-    cutoff = 1.5 # cutoff boundary of the slice used for training 
+    slice_list = [1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400]                                            # slice boundaries for partitioning the structure into subgraphs                
+    cutoff = 3.0 # cutoff boundary of the slice used for training 
     test_slice = [3000]
     num_subgraph = 3
 
     # Parameters:
-    restart_file = 'model_HfO2.pth' 
+    restart_file = None 
     save_file = 'model_HfO2.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 2                                               # Number of message passing layers 
-    num_epochs = 5                                                
+    num_epochs = 500                                                
     learning_rate = 1e-3
     loss_tol = 0                                                    
     dtype = torch.float32
@@ -149,10 +149,12 @@ def main():
                                           if_sort=False, 
                                           device_torch='cpu') #the data is created on cpu, so the construct_kernel must be on cpu 
     print("Orbital analysis completed")
+    print("memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
 
     # *** Create the input dataloader:
     data_loader = data.batch_data_subgraph(a_HfO2, slice_list, cutoff, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
     print("Data loader created")
+    print("memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
 
     # *** Initialize the model:
     mappingReduced = SO3.CoefficientMappingModule(lmax_list, mmax_list)
@@ -181,6 +183,7 @@ def main():
 
     print("Model initialized")
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
+    print("memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
 
     if train_or_test == 'train':
         
