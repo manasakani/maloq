@@ -134,7 +134,6 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
     track_loss_node = []
     track_loss_edge = []
 
-
     for epoch in range(num_epochs):
         epoch_start_time = time.time()
 
@@ -388,6 +387,13 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
         node_pred_np = node_pred_tensor.cpu().detach().numpy()
 
         # Downsample data for plotting to manage memory usage
+        # sample_size = min(len(edge_label_np), 10000)  # Ensure sample size does not exceed the length of data
+        # edge_indices = np.random.choice(len(edge_label_np), sample_size, replace=False)
+        # edge_label_np = edge_label_np[edge_indices]
+        # edge_pred_np = edge_pred_np[edge_indices]
+        # node_indices = np.random.choice(len(node_label_np), sample_size, replace=False)
+        # node_label_np = node_label_np[node_indices]
+        # node_pred_np = node_pred_np[node_indices]
         # sample_size = min(len(edge_label_np), 10000)  # Ensure sample size does not exceed the length of data
         # edge_indices = np.random.choice(len(edge_label_np), sample_size, replace=False)
         # edge_label_np = edge_label_np[edge_indices]
