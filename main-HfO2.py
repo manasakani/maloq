@@ -14,6 +14,16 @@ import os
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
+def remove_module_prefix(state_dict):
+    """Remove 'module.' prefix from keys in state_dict."""
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        if k.startswith('module.'):
+            new_state_dict[k[len('module.'):]] = v
+        else:
+            new_state_dict[k] = v
+    return new_state_dict
+
 def main():
 
     if not torch.cuda.is_available():
@@ -75,12 +85,12 @@ def main():
     cutoff = 1.5                                                                    # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
     test_slice = [3000]
     num_subgraph = 20                                                               # min 10 for P100 GPU memory with attn_hidden_channels=64
-    num_batch = num_subgraph                                                        # number of subgraphs which will be used in the dataset, 
+    num_batch = 1                                                        # number of subgraphs which will be used in the dataset, 
                                                                                     # after diving the graph into 'num_subgraph' subgraphs
     # Parameters:
-    restart_file = None 
+    restart_file = 'model_HfO2_10_subgraph.pth' 
     save_file = 'model_HfO2_'+str(world_size)+'_subgraph.pth'  
-    train_or_test = 'train'                                          
+    train_or_test = 'test'                                          
     num_MP_layers = 2                                                               # Number of message passing layers 
     num_epochs = 1000                                                
     learning_rate = 1e-3
@@ -176,19 +186,20 @@ def main():
     if restart_file is not None:
         print("Restarting training from a saved model and optimizer state...")
         checkpoint = torch.load(save_file)
+
         if dist.is_available() and dist.is_initialized():
             model.module.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = learning_rate
         else:
-             model.load_state_dict(checkpoint['model_state_dict'])
-             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            state_dict = remove_module_prefix(checkpoint['model_state_dict'])
+            model.load_state_dict(state_dict)
+        
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = learning_rate
 
     print("Model initialized")
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
-    
+
     print("memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
     if dist.is_initialized():
         dist.barrier()

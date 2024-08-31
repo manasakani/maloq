@@ -14,6 +14,7 @@ import lib.data as data
 import lib.utils as utils
 import time
 
+
 # Training scheme to train the network on small molecules stored in batches of graphs
 def train_and_validate_model_SO2(model, optimizer, training_loader, validation_loader, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float64):
     device = next(model.parameters()).device  
