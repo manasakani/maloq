@@ -74,7 +74,7 @@ def main():
     slice_list = [1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400]                   # slice boundaries for partitioning the structure into subgraphs                
     cutoff = 1.5                                                                    # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
     test_slice = [3000]
-    num_subgraph = 10                                                               # min 10 for P100 GPU mmeory
+    num_subgraph = 20                                                               # min 10 for P100 GPU memory with attn_hidden_channels=64
     num_batch = num_subgraph                                                        # number of subgraphs which will be used in the dataset, 
                                                                                     # after diving the graph into 'num_subgraph' subgraphs
     # Parameters:
@@ -172,18 +172,23 @@ def main():
                             irreps_out)
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    
+
     if restart_file is not None:
         print("Restarting training from a saved model and optimizer state...")
         checkpoint = torch.load(save_file)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if dist.is_available() and dist.is_initialized():
+            model.module.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = learning_rate
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = learning_rate
+        else:
+             model.load_state_dict(checkpoint['model_state_dict'])
+             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
     print("Model initialized")
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
+    
     print("memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
     if dist.is_initialized():
         dist.barrier()
