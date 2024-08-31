@@ -79,7 +79,7 @@ def main():
                                                                                     # after diving the graph into 'num_subgraph' subgraphs
     # Parameters:
     restart_file = None 
-    save_file = 'model_HfO2_'+str(world_size)+'_subgraph'.pth'  
+    save_file = 'model_HfO2_'+str(world_size)+'_subgraph.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 2                                                               # Number of message passing layers 
     num_epochs = 1000                                                
