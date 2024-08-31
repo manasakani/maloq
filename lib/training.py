@@ -237,7 +237,7 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
 
     if dist.is_available() and dist.is_initialized():
         if dist.get_rank() == 0:  # Save only on rank 0
-            torch.save({'model_state_dict': model.module.state_dict(),
+            torch.save({'model_state_dict': model.module.state_dict(), # Remove module 
                         'optimizer_state_dict': optimizer.state_dict(),
                         }, save_file)
     else:

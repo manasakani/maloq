@@ -85,14 +85,14 @@ def main():
     cutoff = 1.5                                                                    # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
     test_slice = [3000]
     num_subgraph = 20                                                               # min 10 for P100 GPU memory with attn_hidden_channels=64
-    num_batch = 1                                                        # number of subgraphs which will be used in the dataset, 
+    num_batch = num_subgraph                                                                   # number of subgraphs which will be used in the dataset, 
                                                                                     # after diving the graph into 'num_subgraph' subgraphs
     # Parameters:
-    restart_file = 'model_HfO2_10_subgraph.pth' 
+    restart_file = 'model_HfO2_1_subgraph.pth'
     save_file = 'model_HfO2_'+str(world_size)+'_subgraph.pth'  
-    train_or_test = 'test'                                          
+    train_or_test = 'train'                                          
     num_MP_layers = 2                                                               # Number of message passing layers 
-    num_epochs = 1000                                                
+    num_epochs = 5000                                                
     learning_rate = 1e-3
     loss_tol = 0                                                    
     dtype = torch.float32
@@ -182,20 +182,23 @@ def main():
                             irreps_out)
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    
 
     if restart_file is not None:
         print("Restarting training from a saved model and optimizer state...")
-        checkpoint = torch.load(save_file)
+        checkpoint = torch.load(restart_file)
+        state_dict = checkpoint['model_state_dict']
 
         if dist.is_available() and dist.is_initialized():
-            model.module.load_state_dict(checkpoint['model_state_dict'])
+            # If the model was saved with DDP, remove the 'module' prefix that it might have (just in case)
+            if 'module.' in next(iter(checkpoint['model_state_dict'].keys())):
+                prefix = 'module.'
+                state_dict = {k[len(prefix):] if k.startswith(prefix) else k: v for k, v in state_dict.items()}
+            # with the current training setup, the module prefix is already removed
+            model.load_state_dict(state_dict)
         else:
             state_dict = remove_module_prefix(checkpoint['model_state_dict'])
             model.load_state_dict(state_dict)
-        
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = learning_rate
 
     print("Model initialized")
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
