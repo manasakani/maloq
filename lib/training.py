@@ -138,7 +138,7 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
         epoch_start_time = time.time()
 
         # every 100 epochs, reduce the learning rate by half
-        if epoch % 100 == 0:
+        if epoch % 500 == 0:
             for param_group in optimizer.param_groups:
                 if param_group['lr'] > 1e-8:
                     param_group['lr'] = param_group['lr']/1.5
@@ -214,12 +214,15 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
         if loss < loss_tol:
             break
             
-    print("Final loss: ", loss)
+    print("Final loss: ", loss) 
 
-    # save in plain txt file
-    with open('track_loss.txt', 'w') as f:
-        for edge, node in zip(track_loss_edge, track_loss_node):
-            f.write(f"{edge:.6f}\t{node:.6f}\n")  
+    # save loss in plain txt file
+    if dist.is_available() and dist.is_initialized():
+        if dist.get_rank() == 0:  
+            world_size = dist.get_world_size()
+            with open('track_loss_'+str(world_size)+'_batches.txt', 'w') as f:
+                for edge, node in zip(track_loss_edge, track_loss_node):
+                    f.write(f"{edge:.8f}\t{node:.8f}\n")  
 
     plt.figure(figsize=(4, 3))
     plt.plot(track_loss_node, label='node')

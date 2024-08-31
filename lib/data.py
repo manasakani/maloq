@@ -136,6 +136,8 @@ def create_slice_graph(atom_index, edge_matrix, add_virtual = True):
     """
     Generates required data to locate atoms and edges belonging to the slice sub-structure/graph
 
+    Note: Virtual atoms are always at the end of the atom index list.
+
     Inputs: atom_index: list of atom indices that are part of the slice
            edge_matrix: edge indices of the full structure 
            add_virtual: if True, virtual atoms are added to the slice atom index list and their edges are included in the slice edge index list    
@@ -451,19 +453,21 @@ def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, ou
 def batch_data_graphpartition(graph, num_subgraph, num_batch, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
 
     # Partition the large input Structure into smaller subgraphs for training using spectral clustering
+    # print("*** Partitioning the graph into " + str(num_subgraph) + " subgraphs, batch size: " + str(num_batch))
     partitions = graph.partition_graph(num_subgraph)
+    world_size = dist.get_world_size()
 
     data_list = []
 
-    for cluster, subgraph_nodes in partitions.items():
-        while len(data_list) < num_batch:
+    for i, (cluster, subgraph_nodes) in enumerate(partitions.items()):
+        while i < world_size:
             print(f"Number of nodes in cluster {cluster}: {len(subgraph_nodes)}")
             train_data = createdata_graphpartition(graph, 
-                                                   subgraph_nodes, 
-                                                   equivariant_blocks, 
-                                                   out_slices, 
-                                                   construct_kernel, 
-                                                   dtype=dtype)
+                                                        subgraph_nodes, 
+                                                        equivariant_blocks, 
+                                                        out_slices, 
+                                                        construct_kernel, 
+                                                        dtype=dtype)
             data_list.append(train_data)
 
     dataset = CustomDataset(data_list)

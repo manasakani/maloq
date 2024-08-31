@@ -35,7 +35,7 @@ def main():
         os.environ['RANK'] = str(rank)
         os.environ['WORLD_SIZE'] = str(world_size)
         os.environ['LOCAL_RANK'] = str(local_rank)
-        backend = 'nccl'  # Use NCCL for multi-GPU on Piz Daint
+        backend = 'gloo'  # Use NCCL for multi-GPU on Piz Daint (edit: uses RDMA, switching to gloo)
 
         # Initialize the process group
         dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
@@ -52,9 +52,6 @@ def main():
         print(f"RANK: {rank}")
         print(f"WORLD_SIZE: {world_size}")
         print(f"LOCAL_RANK: {local_rank}")
-        num_gpus = dist.get_world_size()
-        if dist.get_rank() == 0:
-            print(f"Number of GPUs used: {num_gpus}")
 
     # ************************************************************
     # Input parameters and for the HfO2 dataset
@@ -69,22 +66,23 @@ def main():
     pbc = True
     orbital_basis = 'SZV'
     rcut = 4.0          
-    lmax_list = [4]
-    mmax_list = [4]
+    lmax_list = [4]     
+    mmax_list = [lmax_list[0]]
 
     # Graph partitioning parameters (the first three are for the slice option, the last two are for the graph partitioning option):
-    slice_list = [1000, 1200, 1400]#, 1600, 1800, 2000, 2200, 2400]                 # slice boundaries for partitioning the structure into subgraphs                
+    partitioning = 'graph'                                                          # 'slice' or 'graph' partitioning
+    slice_list = [1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400]                   # slice boundaries for partitioning the structure into subgraphs                
     cutoff = 1.5                                                                    # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
     test_slice = [3000]
-    num_subgraph = 21                                                               # min 21 for P100 GPU mmeory
-    num_batch = 1                                                                   # number of subgraphs which will be used in the dataset, 
+    num_subgraph = 10                                                               # min 10 for P100 GPU mmeory
+    num_batch = num_subgraph                                                        # number of subgraphs which will be used in the dataset, 
                                                                                     # after diving the graph into 'num_subgraph' subgraphs
     # Parameters:
     restart_file = None 
-    save_file = 'model_HfO2.pth'  
+    save_file = 'model_HfO2_'+str(world_size)+'_subgraph'.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 2                                                               # Number of message passing layers 
-    num_epochs = 500                                                
+    num_epochs = 1000                                                
     learning_rate = 1e-3
     loss_tol = 0                                                    
     dtype = torch.float32
@@ -92,7 +90,7 @@ def main():
     # *** Initialize the hyperparameters of the SO2 model:
     sphere_channels = 16
     num_heads = 2
-    attn_hidden_channels = 64
+    attn_hidden_channels = 128  # INCREASED
     attn_alpha_channels = 32
     attn_value_channels = 32
     ffn_hidden_channels = 64
@@ -116,6 +114,8 @@ def main():
                                     self_interaction=False,
                                     bothways=True, 
                                     rcut = rcut)
+    if dist.is_initialized():
+        dist.barrier()
     print("Structure created")
     
     # ************************************************************
@@ -143,14 +143,16 @@ def main():
                                           if_sort=False, 
                                           device_torch='cpu') #the data is created on cpu, so the construct_kernel must be on cpu 
     print("Orbital analysis completed")
-    print("memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
 
     # *** Create the input dataloader:
-    # data_loader = data.batch_data_subgraph(a_HfO2, slice_list, cutoff, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
-    data_loader = data.batch_data_graphpartition(a_HfO2, num_subgraph, num_batch, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
+    if partitioning == 'slice':
+        data_loader = data.batch_data_subgraph(a_HfO2, slice_list, cutoff, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
+    else:
+        data_loader = data.batch_data_graphpartition(a_HfO2, num_subgraph, num_batch, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
     
-    print("Data loader created")
-    print("memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+    print("Data loader created - using " + str(num_subgraph) + " subgraphs")
+    if dist.is_initialized():
+        dist.barrier()
 
     # *** Initialize the model:
     mappingReduced = SO3.CoefficientMappingModule(lmax_list, mmax_list)
@@ -177,9 +179,14 @@ def main():
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+
     print("Model initialized")
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
     print("memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+    if dist.is_initialized():
+        dist.barrier()
 
     if train_or_test == 'train':
         
@@ -192,7 +199,6 @@ def main():
 
     # use with a restarted model, to test the model
     elif train_or_test == 'test':
-        # *** Test the model:
         print("testing...")
         training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
