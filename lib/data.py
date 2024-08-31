@@ -460,15 +460,16 @@ def batch_data_graphpartition(graph, num_subgraph, num_batch, equivariant_blocks
     data_list = []
 
     for i, (cluster, subgraph_nodes) in enumerate(partitions.items()):
-        while i < world_size:
-            print(f"Number of nodes in cluster {cluster}: {len(subgraph_nodes)}")
-            train_data = createdata_graphpartition(graph, 
-                                                        subgraph_nodes, 
-                                                        equivariant_blocks, 
-                                                        out_slices, 
-                                                        construct_kernel, 
-                                                        dtype=dtype)
-            data_list.append(train_data)
+        print(f"Number of nodes in cluster {cluster}: {len(subgraph_nodes)}")
+        train_data = createdata_graphpartition(graph, 
+                                                subgraph_nodes, 
+                                                equivariant_blocks, 
+                                                out_slices, 
+                                                construct_kernel, 
+                                                dtype=dtype)
+        data_list.append(train_data)
+        if len(data_list) == num_batch:
+            break
 
     dataset = CustomDataset(data_list)
     

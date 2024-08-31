@@ -180,7 +180,7 @@ def main():
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
         for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+            param_group['lr'] = learning_rate
 
     print("Model initialized")
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))

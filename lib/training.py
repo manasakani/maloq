@@ -379,9 +379,10 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
         edge_pred_tensor = torch.cat(H_block_edge_pred)
 
         # Compute the mean absolute error between the predictions and labels
-        MAE_node = torch.mean(torch.abs(node_label_tensor - node_pred_tensor))
-        MAE_edge = torch.mean(torch.abs(edge_label_tensor - edge_pred_tensor))
-        MAEloss_total = MAE_edge*1e3 + MAE_node*1e3
+
+        pred_tensor = torch.cat([node_pred_tensor, edge_pred_tensor])
+        label_tensor = torch.cat([node_label_tensor, edge_label_tensor])
+        MAEloss_total = torch.mean(torch.abs(pred_tensor - label_tensor))*1e3
         print("Mean Absolute Error in mHartree: ", MAEloss_total)
 
         edge_label_np = edge_label_tensor.cpu().detach().numpy()
@@ -445,9 +446,9 @@ def test_model_SO2(construct_kernel, model, test_batch, mask_type='none', dtype=
     plt.legend()
  
     # compute mean average error bewteen pred_values_edge and label_values_edge
-    mae_loss_edge = np.mean(np.abs(pred_values_edge - label_values_edge))
-    mae_loss_node = np.mean(np.abs(pred_values_node - label_values_node))
-    MAEloss_total = mae_loss_edge*1e3 + mae_loss_node*1e3
+    pred_values = np.concatenate([pred_values_edge, pred_values_node])
+    label_values = np.concatenate([label_values_edge, label_values_node])
+    MAEloss_total = np.mean(np.abs(pred_values - label_values))*1e3
 
     print("Mean Absolute Error in mHartree: ", MAEloss_total)
 
