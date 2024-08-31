@@ -51,8 +51,8 @@ def main():
 
     # Dataset parameters:
     num_train = 500                                                             # Number of training samples
-    num_validate = 50                                                          # Number of validation samples             
-    num_test = 4000     
+    num_validate = 50                                                           # Number of validation samples             
+    num_test = 400     
 
     restart_file = 'model_H2O.pth'                                             
     save_file = 'model_H2O.pth'
@@ -180,6 +180,10 @@ def main():
         checkpoint = torch.load(save_file)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+
         # model.double() # Load the model in double precision
 
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
