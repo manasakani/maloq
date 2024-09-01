@@ -246,6 +246,101 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
                     }, save_file)
 
 
+# Training scheme which takes a dataset of subgraphs, and only computes the loss on undirected edges
+def train_model_DGL(model, optimizer, loader, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float32):
+    device = next(model.parameters()).device  # Get the device of the model
+    
+    if dist.is_available() and dist.is_initialized():
+        # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+    else:
+        model = nn.DataParallel(model)
+
+    criterion = nn.MSELoss()
+
+    track_loss_node = []
+    track_loss_edge = []
+
+    for epoch in range(num_epochs):
+        epoch_start_time = time.time()
+
+        # every 100 epochs, reduce the learning rate by half
+        if epoch % 500 == 0:
+            for param_group in optimizer.param_groups:
+                if param_group['lr'] > 1e-8:
+                    param_group['lr'] = param_group['lr']/1.5
+    
+        for batch_id, subgraph in enumerate(loader):
+            # print(subgraph.ndata.keys())  # Prints available node data keys
+            # print(subgraph.edata.keys())  # Prints available edge data keys
+            # print(subgraph)  # Inspect the subgraph 
+
+            optimizer.zero_grad()
+
+            subgraph = subgraph.to(device)
+
+            node_output, edge_output = model(subgraph)
+
+            # Assuming 'feat' is the node feature and 'label' is the edge label stored in the subgraph
+            loss_node = criterion(node_output, subgraph.ndata['node_label'].to(device))
+            loss_edge = criterion(edge_output, subgraph.edata['label'].to(device))
+            loss = loss_node + loss_edge
+
+            loss.backward()
+
+            # Update parameters
+            optimizer.step()
+
+        print(f"Epoch: {epoch} | Loss: {loss.item()}")
+        track_loss_node.append(loss_node.cpu().detach().numpy()) 
+        track_loss_edge.append(loss_edge.cpu().detach().numpy())
+
+        if epoch % 100 == 0:
+            if dist.is_available() and dist.is_initialized():
+                if dist.get_rank() == 0:  # Save only on rank 0
+                    torch.save({'model_state_dict': model.module.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        }, save_file)
+            else:
+                torch.save({'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    }, save_file)
+                
+
+        if loss < loss_tol:
+            break
+            
+    print("Final loss: ", loss) 
+
+    # save loss in plain txt file
+    if dist.is_available() and dist.is_initialized():
+        if dist.get_rank() == 0:  
+            world_size = dist.get_world_size()
+            with open('track_loss_'+str(world_size)+'_batches.txt', 'w') as f:
+                for edge, node in zip(track_loss_edge, track_loss_node):
+                    f.write(f"{edge:.8f}\t{node:.8f}\n")  
+
+    plt.figure(figsize=(4, 3))
+    plt.plot(track_loss_node, label='node')
+    plt.plot(track_loss_edge, label='edge')
+    plt.xlabel('Epoch (x100)')
+    plt.ylabel('Loss')
+    plt.yscale('log')
+    plt.legend()
+    plt.savefig('loss.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+    if dist.is_available() and dist.is_initialized():
+        if dist.get_rank() == 0:  # Save only on rank 0
+            torch.save({'model_state_dict': model.module.state_dict(), # Remove module 
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        }, save_file)
+    else:
+        torch.save({'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    }, save_file)
+
+
 def train_and_validate_model_HfO2(model, loader, test_batch, node_embedding_type, num_epochs=5000, learning_rate = 1e-4, loss_tol=0.0001, save_file='model_in_training.pth', construct_kernel=None, equivariant_blocks=None, atom_orbitals=None, out_slices=None, dtype=torch.float32):
     
     device = next(model.parameters()).device  # Get the device of the model
@@ -332,85 +427,180 @@ def train_and_validate_model_HfO2(model, loader, test_batch, node_embedding_type
 
 
 def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device):
-    """
-    Evaluate the model on the test set and return the mean absolute error for the node and edge predictions after reconstructing the Hamiltonian matrices from the predictions.
+    model.eval()  # Set the model to evaluation mode
+    all_node_labels = []
+    all_node_preds = []
+    all_edge_labels = []
+    all_edge_preds = []
 
-    """
+    with torch.no_grad():  # Disable gradient computation
+        for test_batch in data_loader:
+            test_batch = test_batch.to(device)
 
-    # print("memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
-    
+            # Forward pass
+            test_node, test_edge = model(test_batch)
+            test_node = test_node.cpu()
+            test_edge = test_edge.cpu()
+
+            # Convert size values to Python numbers
+            labelled_node_size = test_batch.labelled_node_size.item()
+            labelled_edge_size = test_batch.labelled_edge_size.item()
+
+            # Process node predictions
+            flattened_node_labels = construct_kernel.get_H(test_batch.node_y[:labelled_node_size].cpu())
+            flattened_node_pred = construct_kernel.get_H(test_node[:labelled_node_size].cpu())
+
+            node_label = utils.unflatten(flattened_node_labels, test_batch.x[:labelled_node_size],
+                                         torch.cat((torch.arange(labelled_node_size).unsqueeze(0),
+                                                    torch.arange(labelled_node_size).unsqueeze(0)), 0),
+                                         equivariant_blocks, atom_orbitals, out_slices)
+            
+            node_pred = utils.unflatten(flattened_node_pred, test_batch.x[:labelled_node_size],
+                                        torch.cat((torch.arange(labelled_node_size).unsqueeze(0),
+                                                   torch.arange(labelled_node_size).unsqueeze(0)), 0),
+                                        equivariant_blocks, atom_orbitals, out_slices)
+            
+            H_block_node_labels = [matrix.flatten() for matrix in node_label.values()]
+            node_label_tensor = torch.cat(H_block_node_labels)
+            H_block_node_pred = [matrix.flatten() for matrix in node_pred.values()]
+            node_pred_tensor = torch.cat(H_block_node_pred)
+
+            # Process edge predictions
+            flattened_edge_labels = construct_kernel.get_H(test_batch.y[:labelled_edge_size].cpu())
+            flattened_edge_pred = construct_kernel.get_H(test_edge[:labelled_edge_size].cpu())
+
+            edge_label = utils.unflatten(flattened_edge_labels, test_batch.x[:labelled_node_size],
+                                         test_batch.edge_index[:, :labelled_edge_size],
+                                         equivariant_blocks, atom_orbitals, out_slices)
+            
+            edge_pred = utils.unflatten(flattened_edge_pred, test_batch.x[:labelled_node_size],
+                                        test_batch.edge_index[:, :labelled_edge_size],
+                                        equivariant_blocks, atom_orbitals, out_slices)
+            
+            H_block_edge_labels = [matrix.flatten() for matrix in edge_label.values()]
+            edge_label_tensor = torch.cat(H_block_edge_labels)
+            H_block_edge_pred = [matrix.flatten() for matrix in edge_pred.values()]
+            edge_pred_tensor = torch.cat(H_block_edge_pred)
+
+            # Compute the MAE
+            pred_tensor = torch.cat([node_pred_tensor, edge_pred_tensor])
+            label_tensor = torch.cat([node_label_tensor, edge_label_tensor])
+            MAEloss_total = torch.mean(torch.abs(pred_tensor - label_tensor)) * 1e3
+
+            print("Mean Absolute Error in mHartree: ", MAEloss_total)
+
+            # Collect results for plotting
+            all_node_labels.append(node_label_tensor)
+            all_node_preds.append(node_pred_tensor)
+            all_edge_labels.append(edge_label_tensor)
+            all_edge_preds.append(edge_pred_tensor)
+
+            # Clear cache after processing each batch
+            del test_node, test_edge
+            torch.cuda.empty_cache()
+
+    # Concatenate all results
+    all_node_labels = torch.cat(all_node_labels)
+    all_node_preds = torch.cat(all_node_preds)
+    all_edge_labels = torch.cat(all_edge_labels)
+    all_edge_preds = torch.cat(all_edge_preds)
+
+    # Plotting
     plt.figure(figsize=(4, 3))
-    for test_batch in data_loader:
+    plt.scatter(all_edge_labels.cpu().numpy(), all_edge_preds.cpu().numpy(), s=3, alpha=0.1, edgecolor='none', color='crimson', label='Edge')
+    plt.scatter(all_node_labels.cpu().numpy(), all_node_preds.cpu().numpy(), s=3, alpha=0.1, edgecolor='none', color='blue', label='Node')
+    plt.plot(all_node_labels.cpu().numpy(), all_node_labels.cpu().numpy(), c='k', linestyle='dashed', linewidth=0.1, alpha=0.3)
+    plt.xlabel("Real $H_{ij}$")
+    plt.ylabel("Predicted  $H_{ij}$")
+    plt.legend()
+    plt.savefig('prediction.png', dpi=300, bbox_inches='tight')
+    plt.close()
 
-        test_batch = test_batch.to(device)
 
-        # Run the forward pass of the model through the test set
-        test_node, test_edge = model(test_batch)
-        test_node = test_node.cpu()
-        test_edge = test_edge.cpu()
-        
-        # Get node labels and predictions
-        flattened_node_labels = construct_kernel.get_H(test_batch.node_y[0:test_batch.labelled_node_size].cpu()) #convert into flattened Hamiltonian form
-        flattened_node_pred = construct_kernel.get_H(test_node[0:test_batch.labelled_node_size].cpu())
+def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device):
+    model.eval()  # Set the model to evaluation mode
+    all_node_labels = []
+    all_node_preds = []
+    all_edge_labels = []
+    all_edge_preds = []
 
-        labelled_node_size = test_batch.labelled_node_size.item()  # Ensure this is an integer
-        onsite_edge_index = torch.cat((torch.arange(labelled_node_size).unsqueeze(0), torch.arange(labelled_node_size).unsqueeze(0)), 0)
-        numbers = test_batch.x[0:test_batch.labelled_node_size]
+    with torch.no_grad():  # Disable gradient computation
+        for test_batch in data_loader:
+            test_batch = test_batch.to(device)
 
-        node_label = utils.unflatten(flattened_node_labels,numbers, onsite_edge_index,equivariant_blocks,atom_orbitals,out_slices)
-        node_pred = utils.unflatten(flattened_node_pred,numbers, onsite_edge_index,equivariant_blocks,atom_orbitals,out_slices)
+            # Forward pass
+            test_node, test_edge = model(test_batch)
+            test_node = test_node.cpu()
+            test_edge = test_edge.cpu()
 
-        H_block_node_labels = [matrix.flatten() for matrix in node_label.values()]
-        node_label_tensor = torch.cat(H_block_node_labels)
+            # Convert size values to Python numbers
+            labelled_node_size = test_batch.labelled_node_size.item()
+            labelled_edge_size = test_batch.labelled_edge_size.item()
 
-        H_block_node_pred = [matrix.flatten() for matrix in node_pred.values()]
-        node_pred_tensor = torch.cat(H_block_node_pred)
+            # Process node predictions
+            flattened_node_labels = construct_kernel.get_H(test_batch.node_y[:labelled_node_size].cpu())
+            flattened_node_pred = construct_kernel.get_H(test_node[:labelled_node_size].cpu())
 
-        # Get edge labels and predictions
-        flattened_edge_labels = construct_kernel.get_H(test_batch.y[0:test_batch.labelled_edge_size].cpu())
-        flattened_edge_pred = construct_kernel.get_H(test_edge[0:test_batch.labelled_edge_size].cpu())
+            node_label = utils.unflatten(flattened_node_labels, test_batch.x[:labelled_node_size],
+                                         torch.cat((torch.arange(labelled_node_size).unsqueeze(0),
+                                                    torch.arange(labelled_node_size).unsqueeze(0)), 0),
+                                         equivariant_blocks, atom_orbitals, out_slices)
+            
+            node_pred = utils.unflatten(flattened_node_pred, test_batch.x[:labelled_node_size],
+                                        torch.cat((torch.arange(labelled_node_size).unsqueeze(0),
+                                                   torch.arange(labelled_node_size).unsqueeze(0)), 0),
+                                        equivariant_blocks, atom_orbitals, out_slices)
+            
+            H_block_node_labels = [matrix.flatten() for matrix in node_label.values()]
+            node_label_tensor = torch.cat(H_block_node_labels)
+            H_block_node_pred = [matrix.flatten() for matrix in node_pred.values()]
+            node_pred_tensor = torch.cat(H_block_node_pred)
 
-        edge_label = utils.unflatten(flattened_edge_labels,numbers, test_batch.edge_index[:,0:test_batch.labelled_edge_size],equivariant_blocks,atom_orbitals,out_slices)
-        edge_pred = utils.unflatten(flattened_edge_pred,numbers, test_batch.edge_index[:,0:test_batch.labelled_edge_size],equivariant_blocks,atom_orbitals,out_slices)
+            # Process edge predictions
+            flattened_edge_labels = construct_kernel.get_H(test_batch.y[:labelled_edge_size].cpu())
+            flattened_edge_pred = construct_kernel.get_H(test_edge[:labelled_edge_size].cpu())
 
-        H_block_edge_labels = [matrix.flatten() for matrix in edge_label.values()]
-        edge_label_tensor = torch.cat(H_block_edge_labels)
+            edge_label = utils.unflatten(flattened_edge_labels, test_batch.x[:labelled_node_size],
+                                         test_batch.edge_index[:, :labelled_edge_size],
+                                         equivariant_blocks, atom_orbitals, out_slices)
+            
+            edge_pred = utils.unflatten(flattened_edge_pred, test_batch.x[:labelled_node_size],
+                                        test_batch.edge_index[:, :labelled_edge_size],
+                                        equivariant_blocks, atom_orbitals, out_slices)
+            
+            H_block_edge_labels = [matrix.flatten() for matrix in edge_label.values()]
+            edge_label_tensor = torch.cat(H_block_edge_labels)
+            H_block_edge_pred = [matrix.flatten() for matrix in edge_pred.values()]
+            edge_pred_tensor = torch.cat(H_block_edge_pred)
 
-        H_block_edge_pred = [matrix.flatten() for matrix in edge_pred.values()]
-        edge_pred_tensor = torch.cat(H_block_edge_pred)
+            # Compute the MAE
+            pred_tensor = torch.cat([node_pred_tensor, edge_pred_tensor])
+            label_tensor = torch.cat([node_label_tensor, edge_label_tensor])
+            MAEloss_total = torch.mean(torch.abs(pred_tensor - label_tensor)) * 1e3
 
-        # Compute the mean absolute error between the predictions and labels
+            print("Mean Absolute Error in mHartree: ", MAEloss_total)
 
-        pred_tensor = torch.cat([node_pred_tensor, edge_pred_tensor])
-        label_tensor = torch.cat([node_label_tensor, edge_label_tensor])
-        MAEloss_total = torch.mean(torch.abs(pred_tensor - label_tensor))*1e3
-        print("Mean Absolute Error in mHartree: ", MAEloss_total)
+            # Collect results for plotting
+            all_node_labels.append(node_label_tensor)
+            all_node_preds.append(node_pred_tensor)
+            all_edge_labels.append(edge_label_tensor)
+            all_edge_preds.append(edge_pred_tensor)
 
-        edge_label_np = edge_label_tensor.cpu().detach().numpy()
-        edge_pred_np = edge_pred_tensor.cpu().detach().numpy()
-        node_label_np = node_label_tensor.cpu().detach().numpy()
-        node_pred_np = node_pred_tensor.cpu().detach().numpy()
+            # Clear cache after processing each batch
+            del test_node, test_edge
+            torch.cuda.empty_cache()
 
-        # Downsample data for plotting to manage memory usage
-        # sample_size = min(len(edge_label_np), 10000)  # Ensure sample size does not exceed the length of data
-        # edge_indices = np.random.choice(len(edge_label_np), sample_size, replace=False)
-        # edge_label_np = edge_label_np[edge_indices]
-        # edge_pred_np = edge_pred_np[edge_indices]
-        # node_indices = np.random.choice(len(node_label_np), sample_size, replace=False)
-        # node_label_np = node_label_np[node_indices]
-        # node_pred_np = node_pred_np[node_indices]
-        # sample_size = min(len(edge_label_np), 10000)  # Ensure sample size does not exceed the length of data
-        # edge_indices = np.random.choice(len(edge_label_np), sample_size, replace=False)
-        # edge_label_np = edge_label_np[edge_indices]
-        # edge_pred_np = edge_pred_np[edge_indices]
-        # node_indices = np.random.choice(len(node_label_np), sample_size, replace=False)
-        # node_label_np = node_label_np[node_indices]
-        # node_pred_np = node_pred_np[node_indices]
+    # Concatenate all results
+    all_node_labels = torch.cat(all_node_labels)
+    all_node_preds = torch.cat(all_node_preds)
+    all_edge_labels = torch.cat(all_edge_labels)
+    all_edge_preds = torch.cat(all_edge_preds)
 
-        plt.scatter(edge_label_np, edge_pred_np, s=3, alpha=0.1, edgecolor='none', color='crimson', label='Edge')
-        plt.scatter(node_label_np, node_pred_np, s=3, alpha=0.1, edgecolor='none', color='blue', label='Node')
-        plt.plot(node_label_np, node_label_np, c='k',linestyle='dashed', linewidth=0.1, alpha=0.3)
-    
+    # Plotting
+    plt.figure(figsize=(4, 3))
+    plt.scatter(all_edge_labels.cpu().numpy(), all_edge_preds.cpu().numpy(), s=3, alpha=0.1, edgecolor='none', color='crimson', label='Edge')
+    plt.scatter(all_node_labels.cpu().numpy(), all_node_preds.cpu().numpy(), s=3, alpha=0.1, edgecolor='none', color='blue', label='Node')
+    plt.plot(all_node_labels.cpu().numpy(), all_node_labels.cpu().numpy(), c='k', linestyle='dashed', linewidth=0.1, alpha=0.3)
     plt.xlabel("Real $H_{ij}$")
     plt.ylabel("Predicted  $H_{ij}$")
     plt.legend()

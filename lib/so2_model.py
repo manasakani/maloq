@@ -206,76 +206,176 @@ class SO2Net(torch.nn.Module):
             self.blocks.append(block2)
 
 
+    def forward(self, batch):
+
+        # Check if the batch is a single graph or a list of graphs (batch)
+        if isinstance(batch, (list, tuple)):
+
+            # If batch is a list or tuple, process each graph individually 
+            # This option is needed for DGL dataloader
+            print("Processing a batch of graphs")
+            node_outputs = []
+            edge_outputs = []
+            for subgraph in batch:
+                node_output, edge_output = self.process_graph(subgraph)
+                node_outputs.append(node_output)
+                edge_outputs.append(edge_output)
+            return node_outputs, edge_outputs
+        else:
+            # Process a single graph
+            return self.process_graph(batch)
 
 
+    def process_graph(self, graph):
+        # Extract features from the graph
+        device = graph.device
+        dtype = torch.float32
 
-    def forward(
-        self,
-        batch
-    ):  
-        device = batch.y.device
-        # dtype = torch.float32
-        dtype = batch.y.dtype
-        atomic_numbers = batch.x
-        edge_distance = batch.edge_attr[:,0]
-        edge_index = batch.edge_index
+        atomic_numbers = graph.ndata['feat']
+        edge_distance = graph.edata['edge_attr'][:, 0]
+        u, v = graph.edges() 
+        edge_index = torch.stack([u, v], dim=0) 
 
-
-        #initialise the node embedding with atomic_numbers
-        x = SO3_Embedding(len(batch.x),self.lmax_list,self.sphere_channels,device,dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, third dimension is the number of channels
-
-        offset_res = 0
+        # Initialize node and edge embeddings
+        x = SO3_Embedding(len(graph.ndata['feat']), self.lmax_list, self.sphere_channels, device, dtype)
         # Initialize the l = 0, m = 0 coefficients for each resolution
+        offset_res = 0
         for i in range(self.num_resolutions):
             if self.num_resolutions == 1:
                 x.embedding[:, offset_res, :] = self.sphere_embedding(atomic_numbers)        
 
-        x.set_lmax_mmax(self.lmax_list,self.mmax_list)
+        x.set_lmax_mmax(self.lmax_list, self.mmax_list)
         edge_distance_embedding = self.distance_expansion(edge_distance)
 
-        edge_fea = SO3_Embedding(len(edge_index[0]),self.lmax_list,self.sphere_channels,device,dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, 
+        edge_fea = SO3_Embedding(len(edge_index[0]), self.lmax_list, self.sphere_channels, device, dtype)
+
         offset_res = 0
-        offset = 0
-        # Initialize the l = 0, m = 0 coefficients for each edge
         for i in range(self.num_resolutions):
             if self.num_resolutions == 1:
                 edge_fea.embedding[:, offset_res, :] = self.distance_expansion(edge_distance)
 
+        edge_distance_vec = graph.edata['edge_attr'][:, [2, 3, 1]]
 
-        edge_distance_vec = batch.edge_attr[:, [2, 3, 1]]
-        edge_rot_mat = init_edge_rot_mat(edge_distance_vec) #create rotation matrices 
+        edge_rot_mat = init_edge_rot_mat(edge_distance_vec)
         self.SO3_rotation[0].set_wigner(edge_rot_mat)
-        
-        node_embedding = x #initialise node embedding with atomic_numbers
-        edge_embedding = edge_fea #initialise edge embedding with edge distance
 
+
+        node_embedding = x
+        edge_embedding = edge_fea
 
         for i in range(self.num_layers):
 
-            node_embedding = self.blocks[2*i](
-                            node_embedding,                  # SO3_Embedding
-                            atomic_numbers,
-                            edge_distance_embedding,
-                            edge_index,
-                            edge_embedding,
-                            batch=None    # for GraphDropPath
-                        )  
-            
-            edge_embedding = self.blocks[2*i+1](
-                            node_embedding,                  # SO3_Embedding
-                            atomic_numbers,
-                            edge_distance_embedding,
-                            edge_index,
-                            edge_embedding,
-                            batch=None    # for GraphDropPath
-                        )
-            
+            node_embedding = self.blocks[2 * i](
+                node_embedding,
+                atomic_numbers,
+                edge_distance_embedding,
+                edge_index,
+                edge_embedding,
+                batch=None
+            )
 
-        node_output = convert_to_irreps(node_embedding,self.output_channels,self.lmax_list,self.node_lin)
-        edge_output = convert_to_irreps(edge_embedding,self.output_channels,self.lmax_list,self.edge_lin)
+            edge_embedding = self.blocks[2 * i + 1](
+                node_embedding,
+                atomic_numbers,
+                edge_distance_embedding,
+                edge_index,
+                edge_embedding,
+                batch=None
+            )
 
+        node_output = convert_to_irreps(node_embedding, self.output_channels, self.lmax_list, self.node_lin)
+        edge_output = convert_to_irreps(edge_embedding, self.output_channels, self.lmax_list, self.edge_lin)
 
         return node_output, edge_output
+
+
+    # def forward(
+    #     self,
+    #     batch
+    # ):  
+    #     device = batch.y.device
+    #     # dtype = torch.float32
+    #     dtype = batch.y.dtype
+    #     atomic_numbers = batch.x
+    #     edge_distance = batch.edge_attr[:,0]
+    #     edge_index = batch.edge_index
+
+    #     print("atomic_numbers:", atomic_numbers)
+    #     print("edge_distance:", edge_distance)
+    #     print("edge_index shape:", edge_index.shape)
+    #     print("edge_index:", edge_index)
+
+
+    #     #initialise the node embedding with atomic_numbers
+    #     x = SO3_Embedding(len(batch.x),self.lmax_list,self.sphere_channels,device,dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, third dimension is the number of channels
+
+    #     offset_res = 0
+    #     # Initialize the l = 0, m = 0 coefficients for each resolution
+    #     for i in range(self.num_resolutions):
+    #         if self.num_resolutions == 1:
+    #             x.embedding[:, offset_res, :] = self.sphere_embedding(atomic_numbers)        
+
+    #     print("x.embedding shape:", x.embedding.shape)
+    #     x.set_lmax_mmax(self.lmax_list,self.mmax_list)
+    #     edge_distance_embedding = self.distance_expansion(edge_distance)
+
+    #     print("edge_distance_embedding shape:", edge_distance_embedding.shape)
+
+    #     edge_fea = SO3_Embedding(len(edge_index[0]),self.lmax_list,self.sphere_channels,device,dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, 
+    #     print("edge_fea.embedding shape:", edge_fea.embedding.shape)
+        
+    #     offset_res = 0
+    #     offset = 0
+    #     # Initialize the l = 0, m = 0 coefficients for each edge
+    #     for i in range(self.num_resolutions):
+    #         if self.num_resolutions == 1:
+    #             edge_fea.embedding[:, offset_res, :] = self.distance_expansion(edge_distance)
+
+    #     edge_distance_vec = batch.edge_attr[:, [2, 3, 1]]
+    #     print("edge_distance_vec :", edge_distance_vec)
+
+    #     edge_rot_mat = init_edge_rot_mat(edge_distance_vec) #create rotation matrices 
+    #     self.SO3_rotation[0].set_wigner(edge_rot_mat)
+
+    #     print("edge_rot_mat shape:", edge_rot_mat.shape)
+        
+    #     node_embedding = x #initialise node embedding with atomic_numbers
+    #     edge_embedding = edge_fea #initialise edge embedding with edge distance
+
+
+    #     for i in range(self.num_layers):
+    #         print(f"node_embedding dtype: {node_embedding.embedding.dtype}")
+    #         print(f"atomic_numbers dtype: {atomic_numbers.dtype}")
+    #         print(f"edge_distance_embedding dtype: {edge_distance_embedding.dtype}")
+    #         print(f"edge_index dtype: {edge_index.dtype}")
+    #         print(f"edge_embedding dtype: {edge_embedding.dtype}")
+            
+
+    #         node_embedding = self.blocks[2*i](
+    #                         node_embedding,                  # SO3_Embedding
+    #                         atomic_numbers,
+    #                         edge_distance_embedding,
+    #                         edge_index,
+    #                         edge_embedding,
+    #                         batch=None    # for GraphDropPath
+    #                     )  
+            
+    #         edge_embedding = self.blocks[2*i+1](
+    #                         node_embedding,                  # SO3_Embedding
+    #                         atomic_numbers,
+    #                         edge_distance_embedding,
+    #                         edge_index,
+    #                         edge_embedding,
+    #                         batch=None    # for GraphDropPath
+    #                     )
+            
+
+    #     node_output = convert_to_irreps(node_embedding,self.output_channels,self.lmax_list,self.node_lin)
+    #     print("node_output shape:", node_output.shape)
+    #     edge_output = convert_to_irreps(edge_embedding,self.output_channels,self.lmax_list,self.edge_lin)
+    #     print("edge_output shape:", edge_output.shape)
+
+    #     return node_output, edge_output
 
 
 

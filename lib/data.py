@@ -49,6 +49,7 @@ def create_input_data_SO2(structure, equivariant_blocks, out_slices, construct_k
     edge_index = structure.edge_matrix
     numbers = torch.tensor([utils.periodic_table[i] for i in structure.atomic_species])
     coordinates = structure.atomic_structure.get_positions()
+    cell = structure.atomic_structure.get_cell()
 
     # Make targets:
 
@@ -67,8 +68,6 @@ def create_input_data_SO2(structure, equivariant_blocks, out_slices, construct_k
     # off-diagonal orbital blocks
     edge_labels = []
     for i in range(len(edge_index[0])):
-        # label = torch.zeros(out_slices[-1], dtype=float) #reshape Hamiltonian into flattened tensor 
-        # print(out_slices[-1])
         label = np.zeros(out_slices[-1])
         for index_target, equivariant_block in enumerate(equivariant_blocks):
                 for N_M_str, block_slice in equivariant_block.items():
@@ -107,7 +106,8 @@ def create_input_data_SO2(structure, equivariant_blocks, out_slices, construct_k
 
     edge_fea = torch.empty((len(edge_index[0]),4))
     for i in range(len(edge_index[0])):
-        edge_fea[i,:] = torch.cat([torch.norm(coordinates[edge_index[1][i]]-coordinates[edge_index[0][i]], dim=-1, keepdim=True), coordinates[edge_index[1][i]]-coordinates[edge_index[0][i]]])
+        distance_vector, distance = find_mic(coordinates[edge_index[1][i]] - coordinates[edge_index[0][i]], cell)
+        edge_fea[i,:] = torch.cat((torch.tensor([distance]), torch.tensor(distance_vector)))
 
     edge_fea = torch.tensor(edge_fea, dtype=dtype)
     x = torch.tensor(numbers)
