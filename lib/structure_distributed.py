@@ -5,7 +5,7 @@ from lib import utils
 from torch.utils.data import Dataset
 from ase.geometry import find_mic
 
-# DGLGraphDataset class, inherit from torch.utils.data.Dataset
+# DGLGraphDataset class, inherit from torch.utils.data.Dataset, makes graph required for DGL
 class DGLGraphDataset(Dataset):
     def __init__(self, structures, equivariant_blocks, out_slices, construct_kernel, device, dtype=torch.float32):
         """
@@ -65,10 +65,12 @@ class DGLGraphDataset(Dataset):
         """
         print("Creating labels...", flush=True)
 
-        numbers = torch.tensor(
-            [utils.periodic_table[i] for i in structure.atomic_species],
-            dtype=torch.int64,
-        )
+        # numbers = torch.tensor(
+        #     [utils.periodic_table[i] for i in structure.atomic_species],
+        #     dtype=torch.int64,
+        # )
+        numbers = structure.atomic_numbers
+        numbers = torch.tensor(numbers, dtype=torch.int64)
         coordinates = torch.tensor(
             structure.atomic_structure.get_positions(), 
             dtype=self.dtype,
@@ -142,6 +144,8 @@ class DGLGraphDataset(Dataset):
         y = construct_kernel.get_net_out(edge_labels)
         node_y = construct_kernel.get_net_out(node_labels)
         print("Labels created.", flush=True)
+        y = edge_labels
+        node_y = node_labels
 
         return edge_fea, y, node_y
            

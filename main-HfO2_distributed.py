@@ -15,14 +15,6 @@ import os
 import dgl
 import torch.multiprocessing as mp
 
-print("Torch version: ", torch.__version__)
-print("DGL version: ", dgl.__version__)
-print("DGL backend (cuda?): ", dgl.backend.device_type('cuda'))
-print("Torch scatter version: ", torch_scatter.__version__)
-print("CUDA Available: ", torch.cuda.is_available())
-print("CUDA Device Count: ", torch.cuda.device_count())
-print("CUDA Device Name: ", torch.cuda.get_device_name(0))
-
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
@@ -48,7 +40,6 @@ def main():
 
     # Distributed training setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Device: ", device)
 
     if 'SLURM_PROCID' in os.environ:  
         rank = int(os.environ['SLURM_PROCID'])
@@ -69,6 +60,13 @@ def main():
         backend = 'gloo'  # Use Gloo for attelas (single GPU)
 
     if dist.is_initialized() and dist.get_rank() == 0:  
+        print("Torch version: ", torch.__version__)
+        print("DGL version: ", dgl.__version__)
+        print("DGL backend (cuda?): ", dgl.backend.device_type('cuda'))
+        print("Torch scatter version: ", torch_scatter.__version__)
+        print("CUDA Available: ", torch.cuda.is_available())
+        print("CUDA Device Count: ", torch.cuda.device_count())
+        print("CUDA Device Name: ", torch.cuda.get_device_name(0))
         print(f"RANK: {rank}, WORLD_SIZE: {world_size}, LOCAL_RANK: {local_rank}")
 
     # ************************************************************
@@ -79,22 +77,22 @@ def main():
     xyz_file = data_folder + 'structure.xyz'
     hamiltonian_file = data_folder + 'H.csr'
     overlap_file = data_folder + 'S.csr'
-    DGL_pickle_file_path = 'dgl_graph_dataset.pkl'                                 # Path to the DGLGraphDataset pickle file, used for save/load if exists
+    DGL_pickle_file_path = 'dgl_graph_dataset_5rcut.pkl'                                 # Path to the DGLGraphDataset pickle file, used for save/load if exists
 
     # Material parameters:
     pbc = True
     orbital_basis = 'SZV'
-    rcut = 4.0          
+    rcut = 5.0       
     lmax_list = [4]     
     mmax_list = [lmax_list[0]]
 
     # Parameters:
-    restart_file = 'model_HfO2_1_DGL.pth'
+    restart_file = 'model_HfO2_4_DGL.pth'
     save_file = 'model_HfO2_'+str(world_size)+'_DGL.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 2                                                               # Number of message passing layers 
-    num_epochs = 100                                                
-    learning_rate = 5e-4
+    num_epochs = 500                                                
+    learning_rate = 1e-4
     loss_tol = 0                                                    
     dtype = torch.float32
 
@@ -147,7 +145,8 @@ def main():
                                           device_torch='cpu')                             # the data is created on cpu, so the construct_kernel must be on cpu 
 
     # *** Create/Load the DGLGraphDataset:
-    if os.path.exists(DGL_pickle_file_path):
+    # if os.path.exists(DGL_pickle_file_path):
+    if DGL_pickle_file_path is not None:
         print("Loading dataset from pickle file...", flush=True)
         with open(DGL_pickle_file_path, 'rb') as f:
             a_HfO2_DGL = pickle.load(f)
@@ -165,34 +164,63 @@ def main():
     print("DGLGraphDataset created", flush=True)
     graph = a_HfO2_DGL[0]
 
-    num_partitions = 30
-    batch_size = 1
+    num_nodes = a_HfO2.atomic_numbers.shape[0]
+    train_nids = torch.arange(num_nodes)
 
-    sampler = dgl.dataloading.ClusterGCNSampler(
-        graph,
-        num_partitions
-    )
-    print("Sampler created", flush=True)
+    # --> Using MultiLayerFullNeighborSampler
+    sampler = dgl.dataloading.MultiLayerFullNeighborSampler(num_MP_layers)
 
-    # DataLoader for generic dataloading with a graph, a set of indices (can use any indices, like
-    # partition IDs here), and a graph sampler.
-    indices = torch.arange(num_partitions)
+    batch_size = int(3000/world_size/2)               # each gpu takes 1 batch
+
+    # load the dataloader from a pickle file:
+    # with open('dataloader.pkl', 'rb') as f:
+    #     data_loader = pickle.load(f)
+    # print("Data loader loaded from pickle", flush=True)
+
+    # Create the DataLoader with the sampler
     data_loader = dgl.dataloading.DataLoader(
         graph,
-        indices,
+        train_nids,
         sampler,
-        device="cuda",
-        batch_size=batch_size,
-        shuffle=True,
+        batch_size=batch_size,  # i think this is the number of nodes in each batch
+        shuffle=False,
         drop_last=False,
-        num_workers=0,
-        use_uva=False,      # This uses unified virtual address space for shared memory access, check if its okay to use
+        num_workers=1,  # Adjust based on your environment # trying 1 now
     )
-    print("DataLoader created", flush=True)
+    print("Data loader created", flush=True)
+    
+    # dump the dataloader to a pickle file
+    # with open('dataloader.pkl', 'wb') as f:
+    #     pickle.dump(data_loader, f)
+    # print("Data loader for rcut of 5 dumped to pickle file", flush=True)
+
+    # --> Using ClusterGCNSampler (neighbour sampling) instead of MultiLayerFullNeighborSampler
+    # num_partitions = 30
+    # batch_size = 5
+    # sampler = dgl.dataloading.ClusterGCNSampler( 
+    #     graph,
+    #     num_partitions
+    # )
+
+    # # DataLoader for generic dataloading with a graph, a set of indices (can use any indices, like
+    # # partition IDs here), and a graph sampler.
+    # indices = torch.arange(num_partitions)
+    # data_loader = dgl.dataloading.DataLoader(
+    #     graph,
+    #     indices,
+    #     sampler,
+    #     device="cuda",
+    #     batch_size=batch_size,
+    #     shuffle=True,
+    #     drop_last=False,
+    #     num_workers=world_size,         # test num_workers set to the number of GPUs
+    #     use_uva=False,                  # This uses unified virtual address space for shared memory access, check if its okay to use
+    # )
+    # print("DataLoader created", flush=True)
 
     if dist.is_initialized():
         dist.barrier()
-    print("Structure created")
+    # print("Structure created")
     
     # ************************************************************
     # Initialize the SO2 model
@@ -238,10 +266,13 @@ def main():
     if train_or_test == 'train':
         
         print("training...")
-        training.train_model_DGL(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
+        training.train_model_DGL_full(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
         print("Model trained")
 
-    training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
+    else:
+        print("evaluating in test mode...")
+
+    training.evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
 if __name__ == "__main__":
     main()
