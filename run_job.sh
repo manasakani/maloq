@@ -1,10 +1,10 @@
 #!/bin/bash --login 
 #SBATCH --account=s1119
-#SBATCH --nodes=8
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1  
 #SBATCH --constraint=gpu
-#SBATCH --time=01:00:00
-#SBATCH --job-name=graphNN
+#SBATCH --time=00:10:00
+#SBATCH --job-name=test
 
 module load daint-gpu
 module load PyTorch
@@ -13,13 +13,12 @@ export OMP_NUM_THREADS=12
 MASTER_NODE=$(scontrol show hostname $SLURM_NODELIST | head -n 1)
 export MASTER_ADDR=$MASTER_NODE
 export MASTER_PORT=29500
-echo "Master node address: $MASTER_ADDR"
+# echo "Master node address: $MASTER_ADDR"
 
 # debug mode
 # TORCH_DISTRIBUTED_DEBUG=DETAIL
 export PYTHONUNBUFFERED=1
 
-# source ./pyenv_gnn/bin/activate
 source ./myvenv/bin/activate
 srun python main-HfO2.py
 

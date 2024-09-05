@@ -1,10 +1,10 @@
 #!/bin/bash --login 
 #SBATCH --account=s1119
-#SBATCH --nodes=16
+#SBATCH --nodes=30
 #SBATCH --ntasks-per-node=1  
 #SBATCH --constraint=gpu
 #SBATCH --time=01:00:00
-#SBATCH --job-name=dgl_16rcut1
+#SBATCH --job-name=dgl_30rcut4
 
 # Note for Future Manasa: Using [Torch version: 1.10.1+cu111], [DGL version:  0.9.1post1] [Torch scatter version:  2.0.9]
 # More recent versions of [torch, torch_scatter] require DGL compatible with torch2.2.1, 
@@ -22,7 +22,7 @@ export MASTER_PORT=29500
 # debug mode option
 # TORCH_DISTRIBUTED_DEBUG=DETAIL
 export PYTHONUNBUFFERED=1
-# export CUDA_LAUNCH_BLOCKING=1
+export CUDA_LAUNCH_BLOCKING=1
 
 # pip install torch-scatter==2.0.9 -f https://data.pyg.org/whl/torch-1.10.0+cu113.html
 # pip install dgl-cu111 -f https://data.dgl.ai/wheels/repo.html

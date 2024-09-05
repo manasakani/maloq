@@ -301,7 +301,6 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             # Compute the loss - Sum
             # loss_node = criterion(node_outputs, node_labels)
             # loss_edge = criterion(edge_outputs, edge_labels)
-            # loss = loss_node + loss_edge
 
             # Compute the loss - Concatenate
             combined_outputs = torch.cat([node_outputs, edge_outputs], dim=0)

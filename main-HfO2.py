@@ -81,16 +81,18 @@ def main():
 
     # Graph partitioning parameters (the first three are for the slice option, the last two are for the graph partitioning option):
     partitioning = 'graph'                                                          # 'slice' or 'graph' partitioning
-    slice_list = [1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400]                   # slice boundaries for partitioning the structure into subgraphs                
-    cutoff = 1.5                                                                    # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
+    # slice parameters:
+    slice_list = [1000]#, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 2999]                   # slice boundaries for partitioning the structure into subgraphs                
+    cutoff = 30                                                                    # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
     test_slice = [3000]
+    # graph partitioning parameters:
     num_subgraph = 20                                                               # min 10 for P100 GPU memory with attn_hidden_channels=64
-    num_batch = num_subgraph                                                                   # number of subgraphs which will be used in the dataset, 
+    num_batch = 1                                                                   # number of subgraphs which will be used in the dataset, 
                                                                                     # after diving the graph into 'num_subgraph' subgraphs
     # Parameters:
-    restart_file = 'model_HfO2_1_subgraph.pth'
+    restart_file = 'model_HfO2_4_DGL.pth'
     save_file = 'model_HfO2_'+str(world_size)+'_subgraph.pth'  
-    train_or_test = 'train'                                          
+    train_or_test = 'test'                                          
     num_MP_layers = 2                                                               # Number of message passing layers 
     num_epochs = 5000                                                
     learning_rate = 1e-3
@@ -100,7 +102,7 @@ def main():
     # *** Initialize the hyperparameters of the SO2 model:
     sphere_channels = 16
     num_heads = 2
-    attn_hidden_channels = 128  # INCREASED
+    attn_hidden_channels = 64  # INCREASED
     attn_alpha_channels = 32
     attn_value_channels = 32
     ffn_hidden_channels = 64
@@ -157,10 +159,10 @@ def main():
     # *** Create the input dataloader:
     if partitioning == 'slice':
         data_loader = data.batch_data_subgraph(a_HfO2, slice_list, cutoff, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
+        print("Data loader created - using " + str(len(slice_list)) + " slices")
     else:
         data_loader = data.batch_data_graphpartition(a_HfO2, num_subgraph, num_batch, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
-    
-    print("Data loader created - using " + str(num_subgraph) + " subgraphs")
+        print("Data loader created - using " + str(num_subgraph) + " subgraphs")
     if dist.is_initialized():
         dist.barrier()
 

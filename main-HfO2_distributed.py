@@ -77,12 +77,12 @@ def main():
     xyz_file = data_folder + 'structure.xyz'
     hamiltonian_file = data_folder + 'H.csr'
     overlap_file = data_folder + 'S.csr'
-    DGL_pickle_file_path = 'dgl_graph_dataset_5rcut.pkl'                                 # Path to the DGLGraphDataset pickle file, used for save/load if exists
+    DGL_pickle_file_path = 'dgl_graph_dataset_4rcut.pkl'                                 # Path to the DGLGraphDataset pickle file, used for save/load if exists
 
     # Material parameters:
     pbc = True
     orbital_basis = 'SZV'
-    rcut = 5.0       
+    rcut = 4.0       
     lmax_list = [4]     
     mmax_list = [lmax_list[0]]
 
@@ -145,7 +145,6 @@ def main():
                                           device_torch='cpu')                             # the data is created on cpu, so the construct_kernel must be on cpu 
 
     # *** Create/Load the DGLGraphDataset:
-    # if os.path.exists(DGL_pickle_file_path):
     if DGL_pickle_file_path is not None:
         print("Loading dataset from pickle file...", flush=True)
         with open(DGL_pickle_file_path, 'rb') as f:
@@ -169,8 +168,7 @@ def main():
 
     # --> Using MultiLayerFullNeighborSampler
     sampler = dgl.dataloading.MultiLayerFullNeighborSampler(num_MP_layers)
-
-    batch_size = int(3000/world_size/2)               # each gpu takes 1 batch
+    batch_size = 1 #int(3000/world_size)               # each gpu takes 1 batch
 
     # load the dataloader from a pickle file:
     # with open('dataloader.pkl', 'rb') as f:
@@ -185,7 +183,7 @@ def main():
         batch_size=batch_size,  # i think this is the number of nodes in each batch
         shuffle=False,
         drop_last=False,
-        num_workers=1,  # Adjust based on your environment # trying 1 now
+        num_workers=0,  # try setting this to 0 to disable multi-worker loading
     )
     print("Data loader created", flush=True)
     
