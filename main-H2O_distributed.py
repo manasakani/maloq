@@ -103,7 +103,7 @@ def main(folder):
     mmax_list = [lmax_list[0]]
 
     # Parameters:
-    restart = None
+    restart_file = None
     save_file = 'model_H2O_'+str(world_size)+'_DGL.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 1                                                               # Number of message passing layers 
@@ -134,21 +134,21 @@ def main(folder):
 
     # *** Initialize the domain and electronic structure matrices:
     H2O = structure.Structure(xyz_file, 
-                                    hamiltonian_file, 
-                                    overlap_file, 
-                                    pbc, 
-                                    orbital_basis, 
-                                    make_soap=False, 
-                                    save_matrices=False,
-                                    self_interaction=False,
-                                    bothways=True, 
-                                    rcut = rcut)
+                            hamiltonian_file, 
+                            overlap_file, 
+                            pbc, 
+                            orbital_basis, 
+                            make_soap=False, 
+                            save_matrices=False,
+                            self_interaction=False,
+                            bothways=True, 
+                            rcut=rcut)
 
     # *** Perform orbital analysis:
-    atom_orbitals = {'1': [0, 0, 1],'8':[0, 0, 0, 1, 1, 2]}                               # Orbital types of each atom in the structure
+    atom_orbitals = {'1': [0, 0, 1],'8':[0, 0, 1, 1, 2]}                               # Orbital types of each atom in the structure
     numbers = H2O.atomic_numbers                                                          # Atomic numbers of each atom in the structure
     no_parity = True                                                                      # No parity symmetry          
-    orbital_types = [[0,0,1],[0, 0, 0, 1, 1, 2]]                                          # orbital types of each atom in the structure 
+    orbital_types = [[0,0,1],[0, 0, 1, 1, 2]]                                          # orbital types of each atom in the structure 
 
     targets, net_out_irreps, net_out_irreps_simplified = SO2.orbital_analysis(atom_orbitals, targets=None, no_parity=no_parity)
     index_to_Z, inverse_indices = torch.unique(numbers, sorted=True, return_inverse=True)
