@@ -40,7 +40,7 @@ def main(folder):
     random.seed(42)
 
     # Distributed training setup
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu", flush=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if 'SLURM_PROCID' in os.environ:  
         rank = int(os.environ['SLURM_PROCID'])
