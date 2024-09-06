@@ -287,6 +287,9 @@ class Structure:
         return matrix
 
     def csr_to_dict(self, csr_matrix):
+        """
+        Convert a CSR matrix to a dictionary format - ONLY FOR SCHNET
+        """
 
         # Extract CSR components
         indptr = csr_matrix.indptr
@@ -305,6 +308,7 @@ class Structure:
                 value = data[idx]
                 # Note: the SCHNET hamiltonians are zero-indexed so we add 1
                 dict_matrix[(row+1, col+1)] = value  
+                # dict_matrix[(row, col)] = value  
 
         return dict_matrix
 

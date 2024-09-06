@@ -1,22 +1,36 @@
 import argparse
+print("Importing numpy...", flush=True)
 import numpy as np
-import torch, torch_scatter
+print("Importing torch...", flush=True)
+import torch #, torch_scatter
+print("Importing e3nn.o3 Irreps...", flush=True)
 from e3nn.o3 import Irreps
+print("Importing pickle...", flush=True)
 import pickle
+print("Importing random...", flush=True)
 import random
+print("Importing os...", flush=True)
 import os
+print("Importing dgl...", flush=True)
 import dgl
+
 # from dgl.dataloading import enable_cpu_affinity 
 # ^^^ only works with newer versions of DGL
 
-import lib.data as data
+print("Importing lib.training...", flush=True)
 import lib.training as training
+print("Importing lib.structure...", flush=True)
 import lib.structure as structure
+print("Importing lib_equiformer.SO2...", flush=True)
 import lib_equiformer.SO2 as SO2
+print("Importing lib_equiformer.so2_model...", flush=True)
 import lib.so2_model as so2_model
+print("Importing DGLGraphDataset...", flush=True)
 from lib.structure_distributed import DGLGraphDataset
+print("Importing lib_equiformer.SO3...", flush=True)
 import lib_equiformer.SO3 as SO3
 
+print("Importing torch.distributed...", flush=True)
 import torch.distributed as dist
 
 def remove_module_prefix(state_dict):
@@ -49,7 +63,7 @@ def main(folder):
         os.environ['RANK'] = str(rank)
         os.environ['WORLD_SIZE'] = str(world_size)
         os.environ['LOCAL_RANK'] = str(local_rank)
-        backend = 'nccl'  # Use NCCL for multi-GPU on Piz Daint (edit: uses RDMA, switching to gloo)
+        backend = 'nccl'  # Use NCCL to enable rdma
         print("Initializing process group...")
         dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
         print("Process group initialized")
@@ -66,7 +80,6 @@ def main(folder):
         print("Torch version: ", torch.__version__, flush=True)
         print("DGL version: ", dgl.__version__, flush=True)
         print("DGL backend (cuda?): ", dgl.backend.device_type('cuda'), flush=True)
-        print("Torch scatter version: ", torch_scatter.__version__, flush=True)
         print("CUDA Available: ", torch.cuda.is_available())
         print("CUDA Device Count: ", torch.cuda.device_count())
         print("CUDA Device Name: ", torch.cuda.get_device_name(0))
@@ -83,8 +96,8 @@ def main(folder):
     DGL_pickle_file_path = None                                 # Path to the DGLGraphDataset pickle file, used for save/load if exists
 
     # Material parameters:
-    pbc = True
-    orbital_basis = 'SZV'
+    pbc = False
+    orbital_basis = 'DZVP'
     rcut = 4.0       
     lmax_list = [4]     
     mmax_list = [lmax_list[0]]
@@ -126,7 +139,7 @@ def main(folder):
                                     pbc, 
                                     orbital_basis, 
                                     make_soap=False, 
-                                    save_matrices=True,
+                                    save_matrices=False,
                                     self_interaction=False,
                                     bothways=True, 
                                     rcut = rcut)
@@ -151,6 +164,11 @@ def main(folder):
                                           if_sort=False, 
                                           device_torch='cpu')                             # the data is created on cpu, so the construct_kernel must be on cpu 
 
+    print("out_slices: ", out_slices, flush=True)
+    print("equivariant_blocks: ", equivariant_blocks, flush=True)
+    print("net_out_irreps: ", net_out_irreps, flush=True)
+
+    
     # *** Create/Load the DGLGraphDataset:
     if DGL_pickle_file_path is not None:
         print("Unpickling dataset...", flush=True)
@@ -240,7 +258,6 @@ def main(folder):
         print("Model trained")
 
     else:
-
         print("evaluating in test mode...")
     
     training.evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)

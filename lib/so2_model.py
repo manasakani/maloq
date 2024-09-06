@@ -211,7 +211,7 @@ class SO2Net(torch.nn.Module):
 
         # if the dataset was created using DGL dataloader, the input is a list of DGL graphs
         if isinstance(batch[0], dgl.DGLGraph):
-            print("using DGL dataloader")
+            # print("using DGL dataloader")
             # If batch is a list or tuple, process each graph individually 
             # needed for some samplers used by DGL
             if isinstance(batch, (list, tuple)):
@@ -245,10 +245,16 @@ class SO2Net(torch.nn.Module):
         # print("graph.ndata['node_label']: ", graph.ndata['node_label'])
 
         atomic_numbers = graph.ndata['feat']['_N']  # remove the _N key for the other neighborhood sampler
+
+        print("atomic_numbers: ", atomic_numbers)
+        print("edge_attr: ", graph.edata['edge_attr'])
+
         edge_distance = graph.edata['edge_attr'][:, 0]
         edge_distance_vec = graph.edata['edge_attr'][:, [2, 3, 1]]
         u, v = graph.edges() 
         edge_index = torch.stack([u, v], dim=0) 
+        print("edge_index: ", edge_index)
+        print("end of batch processing")
 
         # Initialize node and edge embeddings
         x = SO3_Embedding(len(atomic_numbers), self.lmax_list, self.sphere_channels, device, dtype)

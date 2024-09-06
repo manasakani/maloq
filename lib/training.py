@@ -276,6 +276,12 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             # print("batch: ", batch_id)
             optimizer.zero_grad()
 
+            print("Batch ID: ", batch_id)
+            print("Input Nodes: ", input_nodes)
+            print("Output Nodes: ", output_nodes)
+            print("Number of Subgraphs: ", len(subgraphs))
+            print("**************************************")
+
             # Upload subgraphs to GPU
             subgraphs = [sg.to(device) for sg in subgraphs]
 
@@ -310,7 +316,6 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             optimizer.step()
 
             # testing garbage collection:
-            # print("deleting subgraphs")
             del subgraphs, node_outputs, edge_outputs, node_labels, edge_labels, combined_outputs, combined_labels
             torch.cuda.empty_cache()  # free GPU memory
 
@@ -689,15 +694,21 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
 
                 flattened_node_labels = construct_kernel.get_H(node_labels)
                 flattened_node_pred = construct_kernel.get_H(node_output)
-
-                unflattened_node_labels = utils.unflatten(flattened_node_labels, subgraph.ndata['feat']['_N'],
-                                                        torch.cat((torch.arange(num_nodes).unsqueeze(0),
-                                                        torch.arange(num_nodes).unsqueeze(0)), 0),
-                                                        equivariant_blocks, atom_orbitals, out_slices)
                 
-                unflattened_node_pred = utils.unflatten(flattened_node_pred, subgraph.ndata['feat']['_N'],
-                                                        torch.cat((torch.arange(num_nodes).unsqueeze(0),
-                                                        torch.arange(num_nodes).unsqueeze(0)), 0),
+                atomic_numbers = subgraph.ndata['feat']['_N']
+                node_self_indices = torch.cat((torch.arange(num_nodes).unsqueeze(0),
+                                                torch.arange(num_nodes).unsqueeze(0)),0)
+                atomic_numbers = atomic_numbers.cpu().numpy()
+                node_self_indices = node_self_indices.cpu().numpy()
+                
+                print("Atomic Numbers: ", atomic_numbers)
+                print("Node Self Indices: ", node_self_indices)
+                print("Type of Node Self Indices: ", type(node_self_indices))
+
+                unflattened_node_labels = utils.unflatten(flattened_node_labels, atomic_numbers, node_self_indices,
+                                                          equivariant_blocks, atom_orbitals, out_slices)
+                
+                unflattened_node_pred = utils.unflatten(flattened_node_pred, atomic_numbers, node_self_indices,
                                                         equivariant_blocks, atom_orbitals, out_slices)
 
                 H_block_node_labels = [matrix.flatten() for matrix in unflattened_node_labels.values()]
@@ -710,14 +721,12 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
                 flattened_edge_pred = construct_kernel.get_H(edge_output)
                 edge_index = torch.stack(subgraph.edges(), dim=0)
 
-                unflattened_edge_labels = utils.unflatten(flattened_edge_labels, subgraph.ndata['feat']['_N'],
-                                                        edge_index,
+                unflattened_edge_labels = utils.unflatten(flattened_edge_labels, atomic_numbers, edge_index,
                                                         equivariant_blocks, atom_orbitals, out_slices)
                 
-                unflattened_edge_pred = utils.unflatten(flattened_edge_pred, subgraph.ndata['feat']['_N'],
-                                                        edge_index,
+                unflattened_edge_pred = utils.unflatten(flattened_edge_pred, atomic_numbers, edge_index,
                                                         equivariant_blocks, atom_orbitals, out_slices)
-
+                
                 H_block_edge_labels = [matrix.flatten() for matrix in unflattened_edge_labels.values()]
                 edge_label_tensor = torch.cat(H_block_edge_labels)
                 H_block_edge_pred = [matrix.flatten() for matrix in unflattened_edge_pred.values()]
@@ -727,6 +736,9 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
                 pred_tensor = torch.cat([node_pred_tensor, edge_pred_tensor])
                 label_tensor = torch.cat([node_label_tensor, edge_label_tensor])
                 MAEloss_total = torch.mean(torch.abs(pred_tensor - label_tensor)) * 1e3
+                # pred_tensor = node_pred_tensor
+                # label_tensor = node_label_tensor
+                # MAEloss_total = torch.mean(torch.abs(pred_tensor - label_tensor)) * 1e3
 
                 print("Mean Absolute Error in mHartree: ", MAEloss_total)
 
@@ -740,9 +752,9 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
                 del subgraphs, node_output, edge_output
                 torch.cuda.empty_cache()
 
-                # print("Testing only one batch - break")
-            #     break
-            # break
+                print("Testing only one batch - break")
+                break
+            break
 
     # Concatenate all results
     all_node_labels = torch.cat(all_node_labels)
