@@ -62,25 +62,16 @@ class DGLGraphDataset(Dataset):
         for i in range(number_of_edges):
             label = np.zeros(out_slices[-1])
             for index_target, equivariant_block in enumerate(equivariant_blocks):
-                print("index_target", index_target, flush=True)
-                print("equivariant_block", equivariant_block, flush=True)
 
                 for N_M_str, block_slice in equivariant_block.items():
                     slice_row = slice(block_slice[0], block_slice[1])
                     slice_col = slice(block_slice[2], block_slice[3])
-                    print("slice_row", slice_row, flush=True)
-                    print("slice_col", slice_col, flush=True)
-                    # len_row = block_slice[1] - block_slice[0]
-                    # len_col = block_slice[3] - block_slice[2]
+
                     slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
-                    print("slice_out", slice_out, flush=True)
                     condition_number_i, condition_number_j = N_M_str.split()
-                    print("condition_number_i", condition_number_i, flush=True)
-                    print("condition_number_j", condition_number_j, flush=True)
                         
                     if (numbers[edge_matrix[0][i]].item() == int(condition_number_i) and numbers[edge_matrix[1][i]].item() == int(condition_number_j)):
-                        label[slice_out] += np.squeeze(H_blocks[i][slice_row, slice_col].reshape(1,-1)) #slice_out should match with slice_row x slice_row when flattened
-                            # label[slice_out] += H_blocks[i][slice_row, slice_col].reshape(-1)
+                        label[slice_out] += np.squeeze(H_blocks[i][slice_row, slice_col].reshape(1,-1)) # slice_out should match with slice_row x slice_col when flattened
 
             labels.append(label)    
 
@@ -115,14 +106,11 @@ class DGLGraphDataset(Dataset):
         number_of_nodes = len(numbers)
         onsite_edge_index = np.array([np.arange(len(numbers)), np.arange(len(numbers))])
 
-        #print the first row of the structure.hamiltonian
-        print("structure.hamiltonian[0]", structure.hamiltonian[0], flush=True)
-
-        print("number_of_edges", number_of_edges, flush=True)
-        print("number_of_nodes", number_of_nodes, flush=True)
-        print("onsite_edge_index", onsite_edge_index, flush=True)
-        print("edge_index", edge_index, flush=True)
-        print("numbers", numbers, flush=True)
+        # print("number_of_edges", number_of_edges, flush=True)
+        # print("number_of_nodes", number_of_nodes, flush=True)
+        # print("onsite_edge_index", onsite_edge_index, flush=True)
+        # print("edge_index", edge_index, flush=True)
+        # print("numbers", numbers, flush=True)
 
         # Get Hamiltonian blocks for edges
         edge_hams = structure.get_orbital_blocks(edge_index)   
@@ -147,14 +135,14 @@ class DGLGraphDataset(Dataset):
         H_blocks_edge = np.array(H_blocks_edge, dtype=object) 
         edge_labels = self.flatten_data(H_blocks_edge, edge_index, numbers, equivariant_blocks, out_slices)
         edge_labels_np = np.array(edge_labels)  
-        edge_labels = torch.tensor(edge_labels_np, dtype=dtype)
+        edge_labels = torch.tensor(edge_labels_np, dtype=self.dtype)
         print("Created edge labels...", flush=True)
 
         # Create node labels
         H_blocks_node = np.array(H_blocks_node, dtype=object)
         node_labels = self.flatten_data(H_blocks_node, onsite_edge_index, numbers, equivariant_blocks, out_slices)
         node_labels_np = np.array(node_labels) 
-        node_labels = torch.tensor(node_labels_np, dtype=dtype)
+        node_labels = torch.tensor(node_labels_np, dtype=self.dtype)
         print("Created node labels...", flush=True)
 
         # Convert Hamiltonian labels from uncoupled space to coupled space (to avoid conversion during training)
