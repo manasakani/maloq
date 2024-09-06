@@ -258,29 +258,30 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
     criterion = nn.MSELoss()
 
     track_loss = []
-    # track_loss_edge = []
+    track_loss_node = []
+    track_loss_edge = []
 
     for epoch in range(num_epochs):
         epoch_start_time = time.time()
         print("Epoch: ", epoch)
 
         # every 100 epochs, reduce the learning rate by half
-        if epoch % 500 == 0:
+        if epoch % 100 == 0:
             for param_group in optimizer.param_groups:
                 if param_group['lr'] > 1e-8:
                     param_group['lr'] = param_group['lr']/1.5
     
         MAE_loss = 0.0
         for batch_id, (input_nodes, output_nodes, subgraphs) in enumerate(loader):
-            print("batch: ", batch_id)
-            # for input_node, output_node, subgraph in zip(input_nodes, output_nodes, subgraphs):
+            # print("batch: ", batch_id)
             optimizer.zero_grad()
 
-            # Move each subgraph in the list to the correct device
+            # Upload subgraphs to GPU
             subgraphs = [sg.to(device) for sg in subgraphs]
 
-            # Now pass the subgraphs list to the model
+            # Forward pass
             node_outputs, edge_outputs = model(subgraphs)
+            print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
 
             # Concatenate node and edge outputs if they are lists
             if isinstance(node_outputs, list):
@@ -290,19 +291,11 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
 
             # Concatenate the node and edge labels from all subgraphs
             node_labels = torch.cat([sg.ndata['node_label']['_N'].to(device) for sg in subgraphs], dim=0)
-            edge_labels = torch.cat([sg.edata['label'].to(device) for sg in subgraphs], dim=0)
+            edge_labels = torch.cat([sg.edata['label'].to(device) for sg in subgraphs], dim=0)            
 
-            # print("Number of subgraphs: ", len(subgraphs))
-            # print("Node output shape: ", node_outputs.shape)
-            # print("Edge output shape: ", edge_outputs.shape)
-            # print("Node label shape: ", node_labels.shape)
-            # print("Edge label shape: ", edge_labels.shape)
-
-            # Compute the loss - Sum
-            # loss_node = criterion(node_outputs, node_labels)
-            # loss_edge = criterion(edge_outputs, edge_labels)
-
-            # Compute the loss - Concatenate
+            # Compute the loss
+            loss_node = criterion(node_outputs, node_labels)
+            loss_edge = criterion(edge_outputs, edge_labels)
             combined_outputs = torch.cat([node_outputs, edge_outputs], dim=0)
             combined_labels = torch.cat([node_labels, edge_labels], dim=0)
             loss = criterion(combined_outputs, combined_labels)
@@ -316,6 +309,11 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             # Update parameters
             optimizer.step()
 
+            # testing garbage collection:
+            # print("deleting subgraphs")
+            del subgraphs, node_outputs, edge_outputs, node_labels, edge_labels, combined_outputs, combined_labels
+            torch.cuda.empty_cache()  # free GPU memory
+
         if dist.is_available() and dist.is_initialized():
             if dist.get_rank() == 0: 
                 print(f"Epoch: {epoch} | MSE Loss: {loss.item()}")
@@ -324,8 +322,8 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
                 epoch_duration = epoch_end_time - epoch_start_time
                 print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
 
-        # track_loss_node.append(loss_node.cpu().detach().numpy()) 
-        # track_loss_edge.append(loss_edge.cpu().detach().numpy())
+        track_loss_node.append(loss_node.cpu().detach().numpy()) 
+        track_loss_edge.append(loss_edge.cpu().detach().numpy())
         track_loss.append(loss.cpu().detach().numpy())
 
         if epoch % 100 == 0:
@@ -353,8 +351,8 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
     #                 f.write(f"{edge:.8f}\t{node:.8f}\n")  
 
     plt.figure(figsize=(4, 3))
-    # plt.plot(track_loss_node, label='node')
-    plt.plot(track_loss, label='loss')
+    plt.plot(track_loss_node, label='node loss')
+    plt.plot(track_loss_edge, label='edge loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.yscale('log')
@@ -374,7 +372,7 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
 
 
 # # Training scheme which takes a dataset of subgraphs, and only computes the loss on undirected edges
-# def train_model_DGL(model, optimizer, loader, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float32):
+# def train_model_DGL_sampled(model, optimizer, loader, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float32):
 #     device = next(model.parameters()).device  # Get the device of the model
     
 #     if dist.is_available() and dist.is_initialized():
@@ -572,6 +570,12 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
     all_edge_labels = []
     all_edge_preds = []
 
+    if dist.is_available() and dist.is_initialized():
+        # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+    else:
+        model = nn.DataParallel(model)
+
     with torch.no_grad():  # Disable gradient computation
         for test_batch in data_loader:
             test_batch = test_batch.to(device)
@@ -733,14 +737,24 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
                 all_edge_preds.append(edge_pred_tensor)
 
                 # Clear cache after processing each batch
-                del node_output, edge_output
+                del subgraphs, node_output, edge_output
                 torch.cuda.empty_cache()
+
+                # print("Testing only one batch - break")
+            #     break
+            # break
 
     # Concatenate all results
     all_node_labels = torch.cat(all_node_labels)
     all_node_preds = torch.cat(all_node_preds)
     all_edge_labels = torch.cat(all_edge_labels)
     all_edge_preds = torch.cat(all_edge_preds)
+
+    # downsample: take every 100th element
+    # all_node_labels = all_node_labels[::100]
+    # all_node_preds = all_node_preds[::100]
+    # all_edge_labels = all_edge_labels[::100]
+    # all_edge_preds = all_edge_preds[::100]
 
     # Plotting
     plt.figure(figsize=(4, 3))

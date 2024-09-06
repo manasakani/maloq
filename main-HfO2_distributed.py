@@ -1,3 +1,13 @@
+import numpy as np
+import torch, torch_scatter
+from e3nn.o3 import Irreps
+import pickle
+import random
+import os
+import dgl
+# from dgl.dataloading import enable_cpu_affinity 
+# ^^^ only works with newer versions of DGL
+
 import lib.data as data
 import lib.training as training
 import lib.structure as structure
@@ -5,18 +15,8 @@ import lib_equiformer.SO2 as SO2
 import lib.so2_model as so2_model
 from lib.structure_distributed import DGLGraphDataset
 import lib_equiformer.SO3 as SO3
-from e3nn.o3 import Irreps
-import matplotlib.pyplot as plt
-import numpy as np
-import torch, torch_scatter
-import pickle
-import random
-import os
-import dgl
-import torch.multiprocessing as mp
 
 import torch.distributed as dist
-import torch.multiprocessing as mp
 
 def remove_module_prefix(state_dict):
     """Remove 'module.' prefix from keys in state_dict for distributed restart."""
@@ -48,8 +48,10 @@ def main(folder):
         os.environ['RANK'] = str(rank)
         os.environ['WORLD_SIZE'] = str(world_size)
         os.environ['LOCAL_RANK'] = str(local_rank)
-        backend = 'gloo'  # Use NCCL for multi-GPU on Piz Daint (edit: uses RDMA, switching to gloo)
+        backend = 'nccl'  # Use NCCL for multi-GPU on Piz Daint (edit: uses RDMA, switching to gloo)
+        print("Initializing process group...")
         dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+        print("Process group initialized")
 
     else:  
         rank = 0
@@ -88,20 +90,23 @@ def main(folder):
     mmax_list = [lmax_list[0]]
 
     # Parameters:
-    # restart_file = 'model_HfO2_4_DGL.pth'
-    restart_file = None
+    # restart_file = 'model_HfO2_'+str(world_size)+'_DGL.pth'    
+    restart = None
     save_file = 'model_HfO2_'+str(world_size)+'_DGL.pth'  
-    train_or_test = 'train'                                          
-    num_MP_layers = 2                                                               # Number of message passing layers 
-    num_epochs = 500                                                
+    train_or_test = 'test'                                          
+    num_MP_layers = 1                                                               # Number of message passing layers 
+    num_epochs = 300                                                
     learning_rate = 1e-4
     loss_tol = 0                                                    
     dtype = torch.float32
 
+    # Dataloader parameters:
+    batch_size = 5                                                                 # set for 16GB P100 GPU with rcut=5.0 dataset
+
     # *** Initialize the hyperparameters of the SO2 model:
     sphere_channels = 16
     num_heads = 2
-    attn_hidden_channels = 64  # increase to 128
+    attn_hidden_channels = 128  # increase to 128
     attn_alpha_channels = 32
     attn_value_channels = 32
     ffn_hidden_channels = 64
@@ -148,11 +153,11 @@ def main(folder):
 
     # *** Create/Load the DGLGraphDataset:
     if DGL_pickle_file_path is not None:
-        print("Loading dataset from pickle file...", flush=True)
+        print("Unpickling dataset...", flush=True)
         with open(DGL_pickle_file_path, 'rb') as f:
             a_HfO2_DGL = pickle.load(f)
     else:
-        print("Creating DGLGraphDataset...", flush=True)
+        print("Creating DGLGraphDataset (this takes a while)...", flush=True)
         a_HfO2_DGL = DGLGraphDataset([a_HfO2], 
                                     equivariant_blocks, 
                                     out_slices, 
@@ -170,14 +175,9 @@ def main(folder):
 
     # --> Using MultiLayerFullNeighborSampler
     sampler = dgl.dataloading.MultiLayerFullNeighborSampler(num_MP_layers)
-    batch_size = 1 #int(3000/world_size)               # each gpu takes 1 batch
-
-    # load the dataloader from a pickle file:
-    # with open('dataloader.pkl', 'rb') as f:
-    #     data_loader = pickle.load(f)
-    # print("Data loader loaded from pickle", flush=True)
 
     # Create the DataLoader with the sampler
+    # enable_cpu_affinity() # only works with newer versions of DGL
     data_loader = dgl.dataloading.DataLoader(
         graph,
         train_nids,
@@ -189,11 +189,6 @@ def main(folder):
     )
     print("Data loader created", flush=True)
     
-    # dump the dataloader to a pickle file
-    # with open('dataloader.pkl', 'wb') as f:
-    #     pickle.dump(data_loader, f)
-    # print("Data loader for rcut of 5 dumped to pickle file", flush=True)
-
     # --> Using ClusterGCNSampler (neighbour sampling) instead of MultiLayerFullNeighborSampler
     # num_partitions = 30
     # batch_size = 5
@@ -220,7 +215,6 @@ def main(folder):
 
     if dist.is_initialized():
         dist.barrier()
-    # print("Structure created")
     
     # ************************************************************
     # Initialize the SO2 model
@@ -270,8 +264,9 @@ def main(folder):
         print("Model trained")
 
     else:
-        print("evaluating in test mode...")
 
+        print("evaluating in test mode...")
+    
     training.evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
 if __name__ == "__main__":
