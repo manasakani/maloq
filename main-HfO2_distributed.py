@@ -79,7 +79,7 @@ def main():
     xyz_file = data_folder + 'structure.xyz'
     hamiltonian_file = data_folder + 'H.csr'
     overlap_file = data_folder + 'S.csr'
-    DGL_pickle_file_path = 'dgl_graph_dataset_4rcut.pkl'                            # Path to the DGLGraphDataset pickle
+    DGL_pickle_file_path = None                            # Path to the DGLGraphDataset pickle
 
     # Material parameters:
     pbc = True
@@ -91,7 +91,7 @@ def main():
     # Parameters:
     restart_file = 'model_HfO2_'+str(world_size)+'_DGL.pth'    
     save_file = 'model_HfO2_'+str(world_size)+'_DGL.pth'  
-    train_or_test = 'test'                                          
+    train_or_test = 'train'                                          
     num_MP_layers = 1                                                               # Number of message passing layers 
     num_epochs = 300                                                
     learning_rate = 1e-4
@@ -99,7 +99,8 @@ def main():
     dtype = torch.float32
 
     # Dataloader parameters:
-    batch_size = 5                                                                 # set for 16GB P100 GPU with rcut=5.0 dataset
+    batch_size = 5                                                                 # For full-connection training, batch size = number of nodes in the subgraph
+                                                                                   # set for 16GB P100 GPU with rcut=5.0 dataset
 
     # *** Initialize the hyperparameters of the SO2 model:
     sphere_channels = 16
