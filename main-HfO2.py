@@ -1,3 +1,4 @@
+import argparse
 import lib.data as data
 import lib.training as training
 import lib.structure as structure
@@ -24,7 +25,7 @@ def remove_module_prefix(state_dict):
             new_state_dict[k] = v
     return new_state_dict
 
-def main():
+def main(folder):
 
     if not torch.cuda.is_available():
         raise RuntimeError("No GPUs are available!")
@@ -36,7 +37,7 @@ def main():
 
     # Distributed training setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Device: ", device)
+    print("Device: ", device, flush=True)
 
     if 'SLURM_PROCID' in os.environ:  
         rank = int(os.environ['SLURM_PROCID'])
@@ -59,18 +60,18 @@ def main():
         backend = 'gloo'  # Use Gloo for attelas (single GPU)
 
     if dist.is_initialized() and dist.get_rank() == 0:  
-        print(f"RANK: {rank}")
-        print(f"WORLD_SIZE: {world_size}")
-        print(f"LOCAL_RANK: {local_rank}")
+        print(f"RANK: {rank}", flush=True)
+        print(f"WORLD_SIZE: {world_size}", flush=True)
+        print(f"LOCAL_RANK: {local_rank}", flush=True)
 
     # ************************************************************
     # Input parameters and for the HfO2 dataset
     # ************************************************************
 
-    data_folder = './datasets/a-HfO2/'
-    xyz_file = data_folder + 'structure.xyz'
-    hamiltonian_file = data_folder + 'H.csr'
-    overlap_file = data_folder + 'S.csr'
+    data_folder = os.path.join(folder, 'datasets/a-HfO2')
+    xyz_file = os.path.join(data_folder, 'structure.xyz')
+    hamiltonian_file = os.path.join(data_folder, 'H.csr')
+    overlap_file = os.path.join(data_folder, 'S.csr')
 
     # Material parameters:
     pbc = True
@@ -90,7 +91,8 @@ def main():
     num_batch = 1                                                                   # number of subgraphs which will be used in the dataset, 
                                                                                     # after diving the graph into 'num_subgraph' subgraphs
     # Parameters:
-    restart_file = 'model_HfO2_4_DGL.pth'
+    # restart_file = 'model_HfO2_4_DGL.pth'
+    restart_file = None
     save_file = 'model_HfO2_'+str(world_size)+'_subgraph.pth'  
     train_or_test = 'test'                                          
     num_MP_layers = 2                                                               # Number of message passing layers 
@@ -128,7 +130,7 @@ def main():
                                     rcut = rcut)
     if dist.is_initialized():
         dist.barrier()
-    print("Structure created")
+    print("Structure created", flush=True)
     
     # ************************************************************
     # Initialize the SO2 model
@@ -154,15 +156,15 @@ def main():
                                           no_parity=no_parity, 
                                           if_sort=False, 
                                           device_torch='cpu') #the data is created on cpu, so the construct_kernel must be on cpu 
-    print("Orbital analysis completed")
+    print("Orbital analysis completed", flush=True)
 
     # *** Create the input dataloader:
     if partitioning == 'slice':
         data_loader = data.batch_data_subgraph(a_HfO2, slice_list, cutoff, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
-        print("Data loader created - using " + str(len(slice_list)) + " slices")
+        print("Data loader created - using " + str(len(slice_list)) + " slices", flush=True)
     else:
         data_loader = data.batch_data_graphpartition(a_HfO2, num_subgraph, num_batch, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
-        print("Data loader created - using " + str(num_subgraph) + " subgraphs")
+        print("Data loader created - using " + str(num_subgraph) + " subgraphs", flush=True)
     if dist.is_initialized():
         dist.barrier()
 
@@ -187,7 +189,7 @@ def main():
     
 
     if restart_file is not None:
-        print("Restarting training from a saved model and optimizer state...")
+        print("Restarting training from a saved model and optimizer state...", flush=True)
         checkpoint = torch.load(restart_file)
         state_dict = checkpoint['model_state_dict']
 
@@ -202,26 +204,32 @@ def main():
             state_dict = remove_module_prefix(checkpoint['model_state_dict'])
             model.load_state_dict(state_dict)
 
-    print("Model initialized")
-    print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
+    print("Model initialized", flush=True)
+    print("Number of parameters: ", sum(p.numel() for p in model.parameters()), flush=True)
 
-    print("memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+    print("memory: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB", flush=True)
     if dist.is_initialized():
         dist.barrier()
 
     if train_or_test == 'train':
         
         # *** Train the model parameters:
-        print("training...")
+        print("training...", flush=True)
         training.train_model_subgraph(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
-        print("Model trained")
+        print("Model trained", flush=True)
 
         training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
     # use with a restarted model, to test the model
     elif train_or_test == 'test':
-        print("testing...")
+        print("testing...", flush=True)
         training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Amorphous GNNs --- HfO2")
+    parser.add_argument("-f", "--folder", default="", required=False)
+    args = parser.parse_args()
+
+    print(f"Starting main ... dataset folder is '{args.folder}'", flush=True)
+
+    main(args.folder)

@@ -28,7 +28,7 @@ def remove_module_prefix(state_dict):
             new_state_dict[k] = v
     return new_state_dict
 
-def main():
+def main(folder):
 
     if not torch.cuda.is_available():
         raise RuntimeError("No GPUs are available!")
@@ -39,7 +39,7 @@ def main():
     random.seed(42)
 
     # Distributed training setup
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu", flush=True)
 
     if 'SLURM_PROCID' in os.environ:  
         rank = int(os.environ['SLURM_PROCID'])
@@ -60,24 +60,25 @@ def main():
         backend = 'gloo'  # Use Gloo for attelas (single GPU)
 
     if dist.is_initialized() and dist.get_rank() == 0:  
-        print("Torch version: ", torch.__version__)
-        print("DGL version: ", dgl.__version__)
-        print("DGL backend (cuda?): ", dgl.backend.device_type('cuda'))
-        print("Torch scatter version: ", torch_scatter.__version__)
+        print("Torch version: ", torch.__version__, flush=True)
+        print("DGL version: ", dgl.__version__, flush=True)
+        print("DGL backend (cuda?): ", dgl.backend.device_type('cuda'), flush=True)
+        print("Torch scatter version: ", torch_scatter.__version__, flush=True)
         print("CUDA Available: ", torch.cuda.is_available())
         print("CUDA Device Count: ", torch.cuda.device_count())
         print("CUDA Device Name: ", torch.cuda.get_device_name(0))
-        print(f"RANK: {rank}, WORLD_SIZE: {world_size}, LOCAL_RANK: {local_rank}")
+        print(f"RANK: {rank}, WORLD_SIZE: {world_size}, LOCAL_RANK: {local_rank}", flush=True)
 
     # ************************************************************
     # Input parameters and for the HfO2 dataset
     # ************************************************************
 
-    data_folder = './datasets/a-HfO2/'
-    xyz_file = data_folder + 'structure.xyz'
-    hamiltonian_file = data_folder + 'H.csr'
-    overlap_file = data_folder + 'S.csr'
-    DGL_pickle_file_path = 'dgl_graph_dataset_4rcut.pkl'                                 # Path to the DGLGraphDataset pickle file, used for save/load if exists
+    data_folder = os.path.join(folder, 'datasets/a-HfO2')
+    xyz_file = os.path.join(data_folder, 'structure.xyz')
+    hamiltonian_file = os.path.join(data_folder, 'H.csr')
+    overlap_file = os.path.join(data_folder, 'S.csr')
+    # DGL_pickle_file_path = 'dgl_graph_dataset_4rcut.pkl'                                 # Path to the DGLGraphDataset pickle file, used for save/load if exists
+    DGL_pickle_file_path = None
 
     # Material parameters:
     pbc = True
@@ -87,7 +88,8 @@ def main():
     mmax_list = [lmax_list[0]]
 
     # Parameters:
-    restart_file = 'model_HfO2_4_DGL.pth'
+    # restart_file = 'model_HfO2_4_DGL.pth'
+    restart_file = None
     save_file = 'model_HfO2_'+str(world_size)+'_DGL.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 2                                                               # Number of message passing layers 
@@ -273,4 +275,10 @@ def main():
     training.evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Amorphous GNNs --- HfO2")
+    parser.add_argument("-f", "--folder", default="", required=False)
+    args = parser.parse_args()
+
+    print(f"Starting main ... dataset folder is '{args.folder}'", flush=True)
+
+    main(args.folder)
