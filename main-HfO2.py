@@ -97,7 +97,7 @@ def main(folder):
     restart_file = None
     save_file = 'model_HfO2_'+str(world_size)+'_subgraph.pth'  
     train_or_test = 'train'                                          
-    num_MP_layers = 2                                                               # Number of message passing layers 
+    num_MP_layers = 1                                                               # Number of message passing layers 
     num_epochs = 1000                                                               # Number of epochs                                                
     learning_rate = 1e-3                                                            # Initial Learning rate                 
     loss_tol = 0                                                                    # Loss tolerance for early stopping
