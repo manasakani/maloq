@@ -1,12 +1,11 @@
+
 import lib.data as data
-import lib.models as models
 import lib.training as training
 import lib.structure as structure
 import lib.utils as utils
 import lib_equiformer.SO2 as SO2
 import lib_equiformer.SO3 as SO3
 from e3nn.o3 import Irreps
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import os
@@ -87,11 +86,14 @@ def main():
     # *** Preform orbital analysis:
     atom_orbitals = {'1': [0, 0, 1],'8':[0,0,1,1,2]}                                                    # Orbital types of each atom in the structure
     numbers = torch.tensor([utils.periodic_table[i] for i in training_molecules[0].atomic_species])     # Atomic numbers of each atom in the structure
+    print("numbers: ", numbers)
     no_parity = True                                                                                    # No parity symmetry          
     orbital_types = [[0,0,1],[0, 0, 1, 1, 2]]                                                           # basis rank of each atom in the structure 
 
     targets, net_out_irreps, net_out_irreps_simplified = SO2.orbital_analysis(atom_orbitals, targets=None, no_parity=no_parity)
     index_to_Z, Z_to_index  = utils.element_statistics(numbers)
+    print("index_to_Z: ", index_to_Z)
+
     equivariant_blocks, out_js_list, out_slices = SO2.process_targets(orbital_types, index_to_Z, targets)
     print("out_slices: ", out_slices)
 

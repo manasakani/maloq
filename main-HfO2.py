@@ -87,7 +87,6 @@ def main(folder):
     # slice parameters:
     slice_list = [1000]                                                             # slice boundaries for partitioning the structure into subgraphs                
     cutoff = 30                                                                     # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
-    test_slice = [3000]
     
     # graph partitioning parameters:
     num_subgraph = 1                                                                # min 10 for P100 GPU memory with attn_hidden_channels=64
@@ -230,6 +229,7 @@ def main(folder):
     elif train_or_test == 'test':
         print("testing on unseen data...", flush=True)
         training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Amorphous GNNs --- HfO2")

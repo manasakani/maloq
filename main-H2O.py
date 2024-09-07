@@ -6,14 +6,14 @@ import lib_equiformer.SO2 as SO2
 import lib.so2_model as so2_model
 import lib_equiformer.SO3 as SO3
 from e3nn.o3 import Irreps
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import random
 import os
+import random
+from lib import so2_model
 
 import torch.distributed as dist
-import torch.multiprocessing as mp
+# import torch.multiprocessing as mp
 
 def remove_module_prefix(state_dict):
     """Remove 'module.' prefix from keys in state_dict."""
@@ -77,17 +77,16 @@ def main(folder):
     # Material parameters:
     pbc = False
     orbital_basis = 'DZVP'
-    rcut = 100.0          
+    rcut = 4.0          
     lmax_list = [4]     
-    mmax_list = [lmax_list[0]]
+    mmax_list = [4] # changed to 4 directly
 
     # Graph partitioning methods (the first three are for the slice option, the last two are for the graph partitioning option):
     partitioning = 'graph'                                                          # 'slice' or 'graph' partitioning
     
     # slice parameters:
-    slice_list = [1000]                                                             # slice boundaries for partitioning the structure into subgraphs                
-    cutoff = 30                                                                     # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
-    test_slice = [3000]
+    slice_list = [0]                                                             # slice boundaries for partitioning the structure into subgraphs                
+    cutoff = 300000                                                                     # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
     
     # graph partitioning parameters:
     num_subgraph = 1                                                                # min 10 for P100 GPU memory with attn_hidden_channels=64
@@ -98,9 +97,9 @@ def main(folder):
     save_file = 'model_HfO2_'+str(world_size)+'_subgraph.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 2                                                               # Number of message passing layers 
-    num_epochs = 100                                                
+    num_epochs = 500                                                
     learning_rate = 1e-3                                                            # Initial Learning rate                 
-    loss_tol = 0                                                                    # Loss tolerance for early stopping
+    loss_tol = 1e-7                                                                    # Loss tolerance for early stopping
     dtype = torch.float32
 
     # *** Initialize the hyperparameters of the SO2 model:
@@ -139,13 +138,17 @@ def main(folder):
     edge_channels_list = [sphere_channels, sphere_channels, sphere_channels]  
 
     # *** Perform orbital analysis:
-    atom_orbitals = {'1': [0, 0, 1],'8':[0, 0, 1, 1, 2]}                                  # Orbital types of each atom in the structure
-    numbers = H2O.atomic_numbers                                                       # Atomic numbers of each atom in the structure
-    no_parity = True                                                                      # No parity symmetry          
-    orbital_types = [[0,0,1],[0, 0, 1, 1, 2]]                                             # basis rank of each atom in the structure 
+    atom_orbitals = {'1': [0, 0, 1], '8':[0, 0, 1, 1, 2]}                                  # Orbital types of each atom in the structure
+    numbers = H2O.atomic_numbers                                                           # Atomic numbers of each atom in the structure
+    print("numbers: ", numbers)
+    
+    no_parity = True                                                                       # No parity symmetry          
+    orbital_types = [[0,0,1], [0, 0, 1, 1, 2]]                                             # basis rank of each atom in the structure 
 
     targets, net_out_irreps, net_out_irreps_simplified = SO2.orbital_analysis(atom_orbitals, targets=None, no_parity=no_parity)
     index_to_Z, inverse_indices = torch.unique(numbers, sorted=True, return_inverse=True)
+    print("index_to_Z: ", index_to_Z)
+    
     equivariant_blocks, out_js_list, out_slices = SO2.process_targets(orbital_types, index_to_Z, targets)
     # equivariant_blocks: start and end indices of the equivariant blocks in i and j direction for each target in targets
     # out_js_list: ll the l1 l2 interactions needed 
@@ -167,9 +170,11 @@ def main(folder):
     if partitioning == 'slice':
         data_loader = data.batch_data_subgraph(H2O, slice_list, cutoff, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
         print("Data loader created - using " + str(len(slice_list)) + " slices", flush=True)
+
     else:
         data_loader = data.batch_data_graphpartition(H2O, num_subgraph, num_batch, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
         print("Data loader created - using " + str(num_subgraph) + " subgraphs", flush=True)
+        
     if dist.is_initialized():
         dist.barrier()
 
@@ -191,7 +196,6 @@ def main(folder):
                             irreps_out)
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    
 
     if restart_file is not None:
         print("Restarting training from a saved model and optimizer state...", flush=True)
@@ -224,7 +228,10 @@ def main(folder):
         
         # *** Train the model parameters:
         print("training...", flush=True)
+        print("using train_model_subgraph without labelling", flush=True)
         training.train_model_subgraph(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
+        # training.train_and_validate_model_SO2(model, optimizer, data_loader, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
+
         print("Model trained, plotting fit to training data", flush=True)
         training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 

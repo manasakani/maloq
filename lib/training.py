@@ -152,6 +152,7 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
     track_loss_node = []
     track_loss_edge = []
 
+    model.train()  # Set the model to training mode
     for epoch in range(num_epochs):
         epoch_start_time = time.time()
 
@@ -175,23 +176,18 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             # Forward pass
             node_output, edge_output = model(batch)
             forward_pass_time = time.time()
-
-            print("Node Output: ", node_output)
-            print("Edge Output: ", edge_output)
-            print("Node output shape: ", node_output.shape)
-            print("Edge output shape: ", edge_output.shape)
-            print("Node Label: ", batch.node_y)
-            print("Edge Label: ", batch.y)
-            print("Node label shape: ", batch.node_y.shape)
-            print("Edge label shape: ", batch.y.shape)
+            # print("Node label shape: ", batch.node_y.shape)
+            # print("Edge label shape: ", batch.y.shape)
+            # print("Node output shape: ", node_output.shape)
+            # print("Edge output shape: ", edge_output.shape)
 
             # Compute the loss
-            output = torch.cat([node_output[0:batch.labelled_node_size], edge_output[0:batch.labelled_node_size]], dim=0)
-            labels = torch.cat([batch.node_y[0:batch.labelled_node_size], batch.y[0:batch.labelled_node_size]], dim=0)
-            loss_node = criterion(node_output[0:batch.labelled_node_size], batch.node_y[0:batch.labelled_node_size])
-            loss_edge = criterion(edge_output[0:batch.labelled_edge_size], batch.y[0:batch.labelled_edge_size])   
-            loss = criterion(output, labels)         
-            # loss = (loss_node*batch.labelled_node_size+loss_edge*batch.labelled_edge_size)/(batch.labelled_node_size+batch.labelled_edge_size) # weighted loss    
+            loss_node = criterion(node_output[0:batch.labelled_node_size], batch.node_y[0:batch.labelled_node_size])            # node_y is the node label
+            loss_edge = criterion(edge_output[0:batch.labelled_edge_size], batch.y[0:batch.labelled_edge_size])                 # y is the edge label
+            output = torch.cat([node_output[0:batch.labelled_node_size], edge_output[0:batch.labelled_edge_size]], dim=0)
+            labels = torch.cat([batch.node_y[0:batch.labelled_node_size], batch.y[0:batch.labelled_edge_size]], dim=0)
+            loss = criterion(output, labels)      
+
             loss_computation_time = time.time()
 
             # Backward pass
@@ -200,16 +196,11 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
                         
             # Update parameters 
             optimizer.step()
-            optimizer_update_time = time.time()
 
             batch_end_time = time.time()
 
-            zero_grad_duration = zero_grad_time - batch_start_time
-            memory_transfer_duration = memory_transfer_time - zero_grad_time
             forward_pass_duration = forward_pass_time - memory_transfer_time
-            loss_computation_duration = loss_computation_time - forward_pass_time
             backward_pass_duration = backward_pass_time - loss_computation_time
-            optimizer_update_duration = optimizer_update_time - backward_pass_time
             batch_duration = batch_end_time - batch_start_time
 
         epoch_end_time = time.time()
@@ -609,15 +600,16 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
     all_edge_preds = torch.cat(all_edge_preds)
 
     # downsample: take every 100th element
-    # all_node_labels = all_node_labels[::10]
-    # all_node_preds = all_node_preds[::10]
-    # all_edge_labels = all_edge_labels[::10]
-    # all_edge_preds = all_edge_preds[::10]
+    downsample = 100    
+    all_node_labels = all_node_labels[::downsample]
+    all_node_preds = all_node_preds[::downsample]
+    all_edge_labels = all_edge_labels[::downsample]
+    all_edge_preds = all_edge_preds[::downsample]
 
     # Plotting
     plt.figure(figsize=(4, 3))
-    plt.scatter(all_edge_labels.cpu().numpy(), all_edge_preds.cpu().numpy(), s=3, alpha=0.1, edgecolor='none', color='crimson', label='Edge')
-    plt.scatter(all_node_labels.cpu().numpy(), all_node_preds.cpu().numpy(), s=3, alpha=0.1, edgecolor='none', color='blue', label='Node')
+    plt.scatter(all_edge_labels.cpu().numpy(), all_edge_preds.cpu().numpy(), s=3, alpha=0.1, edgecolor='none', color='crimson', label='Edge (downsampled)')
+    plt.scatter(all_node_labels.cpu().numpy(), all_node_preds.cpu().numpy(), s=3, alpha=0.1, edgecolor='none', color='blue', label='Node (downsampled)')
     plt.plot(all_node_labels.cpu().numpy(), all_node_labels.cpu().numpy(), c='k', linestyle='dashed', linewidth=0.1, alpha=0.3)
     plt.xlabel("Real $H_{ij}$")
     plt.ylabel("Predicted  $H_{ij}$")
