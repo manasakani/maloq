@@ -583,10 +583,10 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
     all_edge_preds = torch.cat(all_edge_preds)
 
     # downsample: take every 100th element
-    # all_node_labels = all_node_labels[::100]
-    # all_node_preds = all_node_preds[::100]
-    # all_edge_labels = all_edge_labels[::100]
-    # all_edge_preds = all_edge_preds[::100]
+    all_node_labels = all_node_labels[::100]
+    all_node_preds = all_node_preds[::100]
+    all_edge_labels = all_edge_labels[::100]
+    all_edge_preds = all_edge_preds[::100]
 
     # Plotting
     plt.figure(figsize=(4, 3))

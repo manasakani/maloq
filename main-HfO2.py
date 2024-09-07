@@ -97,8 +97,8 @@ def main(folder):
     restart_file = None
     save_file = 'model_HfO2_'+str(world_size)+'_subgraph.pth'  
     train_or_test = 'train'                                          
-    num_MP_layers = 1                                                               # Number of message passing layers 
-    num_epochs = 100                                                
+    num_MP_layers = 2                                                               # Number of message passing layers 
+    num_epochs = 1000                                                               # Number of epochs                                                
     learning_rate = 1e-3                                                            # Initial Learning rate                 
     loss_tol = 0                                                                    # Loss tolerance for early stopping
     dtype = torch.float32
@@ -106,7 +106,7 @@ def main(folder):
     # *** Initialize the hyperparameters of the SO2 model:
     sphere_channels = 16
     num_heads = 2
-    attn_hidden_channels = 64  
+    attn_hidden_channels = 128  
     attn_alpha_channels = 32
     attn_value_channels = 32
     ffn_hidden_channels = 64
