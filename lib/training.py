@@ -120,6 +120,7 @@ def train_and_validate_model_SO2(model, optimizer, training_loader, validation_l
                 'optimizer_state_dict': optimizer.state_dict(),
                 }, save_file)
 
+
 # Training scheme which takes a dataset of subgraphs, and only computes the loss on undirected edges
 def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float32):
     device = next(model.parameters()).device  # Get the device of the model
@@ -138,8 +139,8 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
     for epoch in range(num_epochs):
         epoch_start_time = time.time()
 
-        # every 100 epochs, reduce the learning rate by half
-        if epoch % 500 == 0:
+        # Learning rate scheduler
+        if epoch % 1000 == 0:
             for param_group in optimizer.param_groups:
                 if param_group['lr'] > 1e-8:
                     param_group['lr'] = param_group['lr']/1.5
@@ -148,20 +149,27 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
 
             batch_start_time = time.time()
 
+            # Zero the gradients
             optimizer.zero_grad() 
             zero_grad_time = time.time()
 
             batch = batch.to(device)
             memory_transfer_time = time.time()
 
+            # Forward pass
             node_output, edge_output = model(batch)
             forward_pass_time = time.time()
 
+            # Compute the loss
+            output = torch.cat([node_output[0:batch.labelled_node_size], edge_output[0:batch.labelled_node_size]], dim=0)
+            labels = torch.cat([batch.node_y[0:batch.labelled_node_size], batch.y[0:batch.labelled_node_size]], dim=0)
             loss_node = criterion(node_output[0:batch.labelled_node_size], batch.node_y[0:batch.labelled_node_size])
-            loss_edge = criterion(edge_output[0:batch.labelled_edge_size], batch.y[0:batch.labelled_edge_size])
-            loss = (loss_node*batch.labelled_node_size+loss_edge*batch.labelled_edge_size)/(batch.labelled_node_size+batch.labelled_edge_size)    
+            loss_edge = criterion(edge_output[0:batch.labelled_edge_size], batch.y[0:batch.labelled_edge_size])   
+            loss = criterion(output, labels)         
+            # loss = (loss_node*batch.labelled_node_size+loss_edge*batch.labelled_edge_size)/(batch.labelled_node_size+batch.labelled_edge_size) # weighted loss    
             loss_computation_time = time.time()
 
+            # Backward pass
             loss.backward()    
             backward_pass_time = time.time()                              
                         
@@ -179,20 +187,14 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             optimizer_update_duration = optimizer_update_time - backward_pass_time
             batch_duration = batch_end_time - batch_start_time
 
-            # print("Number of Nodes: ", batch.node_y.shape[0])
-            # print("Number of Edges: ", batch.y.shape[0])
         epoch_end_time = time.time()
         epoch_duration = epoch_end_time - epoch_start_time
             
         if dist.is_available() and dist.is_initialized():
             if dist.get_rank() == 0:  
                 print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
-                print(f"--> Zero Grad Time: {zero_grad_duration:.4f} seconds")
-                print(f"--> Memory Transfer Time: {memory_transfer_duration:.4f} seconds")
                 print(f"--> Forward Pass Time: {forward_pass_duration:.4f} seconds")
-                print(f"--> Loss Computation Time: {loss_computation_duration:.4f} seconds")
                 print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
-                print(f"--> Optimizer Update Time: {optimizer_update_duration:.4f} seconds")
                 print(f"--> Total Batch process time: {batch_duration:.4f} seconds")
                 print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
             
@@ -228,7 +230,7 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
     plt.figure(figsize=(4, 3))
     plt.plot(track_loss_node, label='node')
     plt.plot(track_loss_edge, label='edge')
-    plt.xlabel('Epoch (x100)')
+    plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.yscale('log')
     plt.legend()
@@ -245,8 +247,9 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
                     'optimizer_state_dict': optimizer.state_dict(),
                     }, save_file)
 
-# Training scheme which takes a dataset of subgraphs, and only computes the loss on undirected edges
-def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float32):
+
+# DGL version - Training scheme which takes a batch of subgraphs and computes the loss on all edges
+def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float32):
     device = next(model.parameters()).device  # Get the device of the model
     
     if dist.is_available() and dist.is_initialized():
@@ -273,7 +276,6 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
     
         MAE_loss = 0.0
         for batch_id, (input_nodes, output_nodes, subgraphs) in enumerate(loader):
-            # print("batch: ", batch_id)
             optimizer.zero_grad()
 
             print("Batch ID: ", batch_id)
@@ -286,10 +288,12 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             subgraphs = [sg.to(device) for sg in subgraphs]
 
             # Forward pass
-            node_outputs, edge_outputs = model(subgraphs)
+            node_outputs, edge_outputs = model(subgraphs, total_num_nodes)
             print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
 
-            # Concatenate node and edge outputs if they are lists
+            # !!! Check if the order of the node outputs is the same as the order of the node labels !!!
+
+            # Concatenate node and edge outputs if they are lists - do we need this?
             if isinstance(node_outputs, list):
                 node_outputs = torch.cat(node_outputs, dim=0)
             if isinstance(edge_outputs, list):
@@ -297,7 +301,15 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
 
             # Concatenate the node and edge labels from all subgraphs
             node_labels = torch.cat([sg.ndata['node_label']['_N'].to(device) for sg in subgraphs], dim=0)
-            edge_labels = torch.cat([sg.edata['label'].to(device) for sg in subgraphs], dim=0)            
+            edge_labels = torch.cat([sg.edata['label'].to(device) for sg in subgraphs], dim=0) 
+
+            # node_labels = [sg.ndata['node_label']['_N'].to(device) for sg in subgraphs]
+            # edge_labels = [sg.edata['label'].to(device) for sg in subgraphs]
+        
+            # print("Node Outputs: ", node_outputs)   
+            # print("Node Labels: ", node_labels)
+            # print("Edge Outputs: ", edge_outputs)
+            # print("Edge Labels: ", edge_labels)
 
             # Compute the loss
             loss_node = criterion(node_outputs, node_labels)
@@ -322,7 +334,7 @@ def train_model_DGL_full(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
         if dist.is_available() and dist.is_initialized():
             if dist.get_rank() == 0: 
                 print(f"Epoch: {epoch} | MSE Loss: {loss.item()}")
-                print(f"---> Mean Absolute Error (mH): {MAE_loss.item()*1e3/len(loader)}")
+                # print(f"---> Mean Absolute Error (mH): {MAE_loss.item()*1e3/len(loader)}")
                 epoch_end_time = time.time()
                 epoch_duration = epoch_end_time - epoch_start_time
                 print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
@@ -505,7 +517,7 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
                 
                 atomic_numbers = subgraph.ndata['feat']['_N']
                 node_self_indices = torch.cat((torch.arange(num_nodes).unsqueeze(0),
-                                                torch.arange(num_nodes).unsqueeze(0)),0)
+                                               torch.arange(num_nodes).unsqueeze(0)),0)
                 atomic_numbers = atomic_numbers.cpu().numpy()
                 node_self_indices = node_self_indices.cpu().numpy()
                 

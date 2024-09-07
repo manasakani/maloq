@@ -207,11 +207,11 @@ class SO2Net(torch.nn.Module):
             self.blocks.append(block2)
 
 
-    def forward(self, batch):
+    def forward(self, batch, total_num_nodes=None):
 
         # if the dataset was created using DGL dataloader, the input is a list of DGL graphs
         if isinstance(batch[0], dgl.DGLGraph):
-            # print("using DGL dataloader")
+            print("using DGL dataloader")
             # If batch is a list or tuple, process each graph individually 
             # needed for some samplers used by DGL
             if isinstance(batch, (list, tuple)):
@@ -220,44 +220,64 @@ class SO2Net(torch.nn.Module):
                 edge_outputs = []
 
                 for subgraph in batch:
-                    node_output, edge_output = self.process_graph(subgraph)
+                    node_output, edge_output = self.process_graph(subgraph, total_num_nodes)
                     node_outputs.append(node_output)
                     edge_outputs.append(edge_output)
 
                 return node_outputs, edge_outputs
             else:
                 # Process a single graph
-                return self.process_graph(batch)
+                return self.process_graph(batch, total_num_nodes)
                 
         # if the dataset was created using PyTorch Geometric dataloader, the input is a PyTorch Geometric data object
         else:
             print("using PyTorch Geometric dataloader")
             return self.forward_noDGL(batch)
 
-    def process_graph(self, graph):
+    def process_graph(self, graph, total_num_nodes):
+        """
+        total_num_nodes = total number of nodes in the entire graph, from which this batch was extracted
+
+        """
         # Extract features from the graph
         device = graph.device
         dtype = torch.float32
 
-        # print("graph.ndata['feat']: ", graph.ndata['feat'])
-        # print("graph.edata['edge_attr']: ", graph.edata['edge_attr'])
-        # print("graph.edata['label']: ", graph.edata['label'])
-        # print("graph.ndata['node_label']: ", graph.ndata['node_label'])
+        # print("Node types in graph:", graph.ntypes)
+        # print("Edge types in graph:", graph.etypes)
 
-        atomic_numbers = graph.ndata['feat']['_N']  # remove the _N key for the other neighborhood sampler
+        # print("graph.nodes['_N']: ", graph.nodes['_N'])                             # labels of the input_nodes, with the ouput nodes ordered first
+        # print("graph.ndata['feat']: ", graph.ndata['feat'])                         # features of the input_nodes, with the ouput nodes ordered first
+        # print("graph.edata['edge_attr']: ", graph.edata['edge_attr'])               # features of the edges
+        # print("graph.edata['label']: ", graph.edata['label'])                       # labels of the edges involved in this subgraph
+        # print("graph.ndata['node_label']: ", graph.ndata['node_label'])             # labels of the nodes involved in this subgraph(?)
 
-        print("atomic_numbers: ", atomic_numbers)
-        print("edge_attr: ", graph.edata['edge_attr'])
+        # global_node_ids = graph.ndata[dgl.NID]
+        # print("Global node IDs:", global_node_ids)
+
+        # local_node_ids = graph.ndata['_ID']
+        # print("Local node IDs:", local_node_ids)
+
+        atomic_numbers = graph.ndata['feat']['_N'] 
+
+        # print("atomic_numbers: ", atomic_numbers)
+        # print("edge_attr: ", graph.edata['edge_attr'])
 
         edge_distance = graph.edata['edge_attr'][:, 0]
-        edge_distance_vec = graph.edata['edge_attr'][:, [2, 3, 1]]
+        edge_distance_vec = graph.edata['edge_attr'][:, [2, 3, 1]]                    # edge distance vector for each edge in the subgraph
+
+        # print("edge distance: ", edge_distance)
+        # print("edge distance vec: ", edge_distance_vec)
+
         u, v = graph.edges() 
-        edge_index = torch.stack([u, v], dim=0) 
+        edge_index = torch.stack([u, v], dim=0)  #check if this is correct - flip the order of the nodes in the edge_index
         print("edge_index: ", edge_index)
-        print("end of batch processing")
+
+        num_subgraph_nodes = len(atomic_numbers)
+        num_subgraph_edges = len(edge_distance)
 
         # Initialize node and edge embeddings
-        x = SO3_Embedding(len(atomic_numbers), self.lmax_list, self.sphere_channels, device, dtype)
+        x = SO3_Embedding(num_subgraph_nodes, self.lmax_list, self.sphere_channels, device, dtype)
         # Initialize the l = 0, m = 0 coefficients for each resolution
         offset_res = 0
         for i in range(self.num_resolutions):
@@ -267,7 +287,7 @@ class SO2Net(torch.nn.Module):
         x.set_lmax_mmax(self.lmax_list, self.mmax_list)
         edge_distance_embedding = self.distance_expansion(edge_distance)
 
-        edge_fea = SO3_Embedding(len(edge_index[0]), self.lmax_list, self.sphere_channels, device, dtype)
+        edge_fea = SO3_Embedding(num_subgraph_edges, self.lmax_list, self.sphere_channels, device, dtype)
 
         offset_res = 0
         for i in range(self.num_resolutions):
@@ -318,7 +338,7 @@ class SO2Net(torch.nn.Module):
         edge_index = batch.edge_index
 
         #initialise the node embedding with atomic_numbers
-        x = SO3_Embedding(len(batch.x),self.lmax_list,self.sphere_channels,device,dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, third dimension is the number of channels
+        x = SO3_Embedding(len(batch.x), self.lmax_list, self.sphere_channels, device, dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, third dimension is the number of channels
 
         offset_res = 0
         # Initialize the l = 0, m = 0 coefficients for each resolution
@@ -329,7 +349,7 @@ class SO2Net(torch.nn.Module):
         x.set_lmax_mmax(self.lmax_list,self.mmax_list)
         edge_distance_embedding = self.distance_expansion(edge_distance)
 
-        edge_fea = SO3_Embedding(len(edge_index[0]),self.lmax_list,self.sphere_channels,device,dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, 
+        edge_fea = SO3_Embedding(len(edge_index[0]), self.lmax_list, self.sphere_channels, device, dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, 
         
         offset_res = 0
         offset = 0

@@ -36,6 +36,8 @@ class DGLGraphDataset(Dataset):
 
             # DGL graph object
             g = dgl.graph((edge_src, edge_dst))
+            print(g.edges(), flush=True)
+            print("^ Global Edge list", flush=True)
 
             # Generate edge and node labels
             edge_fea, edge_labels, node_labels = self._create_labels(structure, 
@@ -50,6 +52,10 @@ class DGLGraphDataset(Dataset):
             g.ndata['node_label'] = node_labels
 
             self.graphs.append((g, edge_labels, node_labels))
+
+            for g, _, _ in self.graphs:
+                print("Node types in graph:", g.ntypes)
+                print("Edge types in graph:", g.etypes)
 
     def flatten_data(self, H_blocks, edge_matrix, numbers, equivariant_blocks, out_slices):
         """

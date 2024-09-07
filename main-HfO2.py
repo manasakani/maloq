@@ -35,7 +35,10 @@ def main(folder):
     np.random.seed(42)
     random.seed(42)
 
-    # Distributed training setup
+    # ************************************************************
+    # Distributed training setup (if running on multiple GPUs)
+    # ************************************************************
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device: ", device, flush=True)
 
@@ -47,8 +50,6 @@ def main(folder):
         os.environ['WORLD_SIZE'] = str(world_size)
         os.environ['LOCAL_RANK'] = str(local_rank)
         backend = 'gloo'  # Use NCCL for multi-GPU on Piz Daint (edit: uses RDMA, switching to gloo)
-
-        # Initialize the process group
         dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
 
     else:  
@@ -80,38 +81,35 @@ def main(folder):
     lmax_list = [4]     
     mmax_list = [lmax_list[0]]
 
-    # Graph partitioning parameters (the first three are for the slice option, the last two are for the graph partitioning option):
+    # Graph partitioning methods (the first three are for the slice option, the last two are for the graph partitioning option):
     partitioning = 'graph'                                                          # 'slice' or 'graph' partitioning
+    
     # slice parameters:
-    slice_list = [1000]#, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800, 2999]                   # slice boundaries for partitioning the structure into subgraphs                
-    cutoff = 30                                                                    # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
+    slice_list = [1000]                                                             # slice boundaries for partitioning the structure into subgraphs                
+    cutoff = 30                                                                     # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
     test_slice = [3000]
+    
     # graph partitioning parameters:
-    num_subgraph = 20                                                               # min 10 for P100 GPU memory with attn_hidden_channels=64
-    num_batch = 1                                                                   # number of subgraphs which will be used in the dataset, 
-                                                                                    # after diving the graph into 'num_subgraph' subgraphs
+    num_subgraph = 1                                                                # min 10 for P100 GPU memory with attn_hidden_channels=64
+    num_batch = 1                                                                   # number of subgraphs which will actually be added to the dataset for training,
+                                                                                    # after dividing the graph into 'num_subgraph' subgraphs
     # Parameters:
-    # restart_file = 'model_HfO2_4_DGL.pth'
     restart_file = None
     save_file = 'model_HfO2_'+str(world_size)+'_subgraph.pth'  
-    train_or_test = 'test'                                          
-    num_MP_layers = 2                                                               # Number of message passing layers 
-    num_epochs = 5000                                                
-    learning_rate = 1e-3
-    loss_tol = 0                                                    
+    train_or_test = 'train'                                          
+    num_MP_layers = 1                                                               # Number of message passing layers 
+    num_epochs = 100                                                
+    learning_rate = 1e-3                                                            # Initial Learning rate                 
+    loss_tol = 0                                                                    # Loss tolerance for early stopping
     dtype = torch.float32
 
     # *** Initialize the hyperparameters of the SO2 model:
     sphere_channels = 16
     num_heads = 2
-    attn_hidden_channels = 64  # INCREASED
+    attn_hidden_channels = 64  
     attn_alpha_channels = 32
     attn_value_channels = 32
     ffn_hidden_channels = 64
-
-    # Define irreducible representations for the SO2 model
-    irreps_in = Irreps([(sphere_channels, (0, 1)), (sphere_channels, (1, 1)), (sphere_channels, (2, 1)), (sphere_channels, (3, 1)), (sphere_channels, (4, 1))])
-    edge_channels_list = [sphere_channels, sphere_channels, sphere_channels]  
 
     # ************************************************************
     # Create the dataset
@@ -124,7 +122,7 @@ def main(folder):
                                     pbc, 
                                     orbital_basis, 
                                     make_soap=False, 
-                                    save_matrices=True,
+                                    save_matrices=False,
                                     self_interaction=False,
                                     bothways=True, 
                                     rcut = rcut)
@@ -135,6 +133,10 @@ def main(folder):
     # ************************************************************
     # Initialize the SO2 model
     # ************************************************************
+
+    # *** Define irreducible representations
+    irreps_in = Irreps([(sphere_channels, (0, 1)), (sphere_channels, (1, 1)), (sphere_channels, (2, 1)), (sphere_channels, (3, 1)), (sphere_channels, (4, 1))])
+    edge_channels_list = [sphere_channels, sphere_channels, sphere_channels]  
 
     # *** Perform orbital analysis:
     atom_orbitals = {'8':[0,1], '72':[0,0,1,2]}                                           # Orbital types of each atom in the structure
@@ -149,6 +151,7 @@ def main(folder):
     # out_js_list: ll the l1 l2 interactions needed 
     # out_slices: marks the start and end of indices belonging to a certain target. Slice 1 (0 to 1) corresponds to the first target in equivariant blocks 
 
+    # *** Construct the kernel used to transform the orbital blocks
     construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
                                           out_js_list, 
                                           default_dtype_torch= torch.float32, 
@@ -211,18 +214,21 @@ def main(folder):
     if dist.is_initialized():
         dist.barrier()
 
+    # ************************************************************
+    # Training and testing the model
+    # ************************************************************
+
     if train_or_test == 'train':
         
         # *** Train the model parameters:
         print("training...", flush=True)
         training.train_model_subgraph(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
-        print("Model trained", flush=True)
-
+        print("Model trained, plotting fit to training data", flush=True)
         training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
     # use with a restarted model, to test the model
     elif train_or_test == 'test':
-        print("testing...", flush=True)
+        print("testing on unseen data...", flush=True)
         training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
 if __name__ == "__main__":

@@ -19,6 +19,12 @@ MASTER_NODE=$(scontrol show hostname $SLURM_NODELIST | head -n 1)
 export MASTER_ADDR=$MASTER_NODE
 export MASTER_PORT=29500
 
+echo "Creating ip_config.txt..."
+> ip_config.txt  # Clearing the file if it exists
+for node in $(scontrol show hostname $SLURM_NODELIST); do
+    echo "$node:$MASTER_PORT" >> ip_config.txt
+done
+
 # debug mode option
 # TORCH_DISTRIBUTED_DEBUG=DETAIL
 export PYTHONUNBUFFERED=1
@@ -31,7 +37,7 @@ source ./myvenv/bin/activate
 
 # stdbuf -o0 -e0 
 # srun python main-HfO2_distributed.py  -f './'
-srun python main-H2O_distributed.py  -f './'
+srun python main-H2O_distributed.py  --ip_config ip_config.txt -f './'
 
 # srun python main-HfO2.py
 

@@ -3,8 +3,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1  
 #SBATCH --constraint=gpu
-#SBATCH --time=00:10:00
-#SBATCH --job-name=test
+#SBATCH --time=03:00:00
+#SBATCH --job-name=noDGLtest
 
 module load daint-gpu
 module load PyTorch

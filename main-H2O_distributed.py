@@ -33,6 +33,9 @@ import lib_equiformer.SO3 as SO3
 print("Importing torch.distributed...", flush=True)
 import torch.distributed as dist
 
+# reference for distribution with DGL: 
+# https://docs.dgl.ai/en/1.1.x/tutorials/dist/1_node_classification.html#sphx-glr-tutorials-dist-1-node-classification-py
+
 def remove_module_prefix(state_dict):
     """Remove 'module.' prefix from keys in state_dict for distributed restart."""
     new_state_dict = {}
@@ -43,7 +46,7 @@ def remove_module_prefix(state_dict):
             new_state_dict[k] = v
     return new_state_dict
 
-def main(folder):
+def main(folder, ip_config):
 
     if not torch.cuda.is_available():
         raise RuntimeError("No GPUs are available!")
@@ -63,8 +66,9 @@ def main(folder):
         os.environ['RANK'] = str(rank)
         os.environ['WORLD_SIZE'] = str(world_size)
         os.environ['LOCAL_RANK'] = str(local_rank)
-        backend = 'nccl'  # Use NCCL to enable rdma
+        backend = 'gloo'  # Use NCCL to enable rdma
         print("Initializing process group...")
+        dgl.distributed.initialize(ip_config=ip_config)
         dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
         print("Process group initialized")
 
@@ -98,7 +102,7 @@ def main(folder):
     # Material parameters:
     pbc = False
     orbital_basis = 'DZVP'
-    rcut = 4.0       
+    rcut = 10.0       
     lmax_list = [4]     
     mmax_list = [lmax_list[0]]
 
@@ -107,14 +111,15 @@ def main(folder):
     save_file = 'model_H2O_'+str(world_size)+'_DGL.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 1                                                               # Number of message passing layers 
-    num_epochs = 300                                                
-    learning_rate = 1e-4
+    num_epochs = 500                                                
+    learning_rate = 1e-3
     loss_tol = 0                                                    
     dtype = torch.float32
 
     # Dataloader parameters:
-    batch_size = 1                                                                 # For full-connection training, batch size = number of nodes in the subgraph
+    batch_size = 3                                                                 # For full-connection training, batch size = number of nodes in the subgraph
                                                                                    # set for 16GB P100 GPU with rcut=5.0 dataset
+    print("batch_size: ", batch_size, flush=True)
 
     # *** Initialize the hyperparameters of the SO2 model:
     sphere_channels = 16
@@ -163,11 +168,6 @@ def main(folder):
                                           no_parity=no_parity, 
                                           if_sort=False, 
                                           device_torch='cpu')                             # the data is created on cpu, so the construct_kernel must be on cpu 
-
-    print("out_slices: ", out_slices, flush=True)
-    print("equivariant_blocks: ", equivariant_blocks, flush=True)
-    print("net_out_irreps: ", net_out_irreps, flush=True)
-
     
     # *** Create/Load the DGLGraphDataset:
     if DGL_pickle_file_path is not None:
@@ -196,7 +196,7 @@ def main(folder):
 
     # Create the DataLoader with the sampler
     # enable_cpu_affinity() # only works with newer versions of DGL
-    data_loader = dgl.dataloading.DataLoader(
+    data_loader = dgl.dataloading.DistNodeDataLoader(
         graph,
         train_nids,
         sampler,
@@ -206,6 +206,9 @@ def main(folder):
         num_workers=0,  # try setting this to 0 to disable multi-worker loading
     )
     print("Data loader created", flush=True)
+    for input_nodes, output_nodes, blocks in data_loader:
+        print("Subgraph Node Types in dataloder:", blocks[0].ntypes)
+        print("Subgraph Edge Types in dataloder:", blocks[0].etypes)
     
     if dist.is_initialized():
         dist.barrier()
@@ -254,7 +257,7 @@ def main(folder):
     if train_or_test == 'train':
         
         print("training...")
-        training.train_model_DGL_full(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
+        training.train_model_DGL_full(model, optimizer, data_loader, num_nodes, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
         print("Model trained")
 
     else:
@@ -265,8 +268,9 @@ def main(folder):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Amorphous GNNs --- HfO2")
     parser.add_argument("-f", "--folder", default="", required=False)
+    parser.add_argument("--ip_config", type=str, required=True, help="Path to IP configuration file for distributed training.")
     args = parser.parse_args()
 
     print(f"Starting main ... dataset folder is '{args.folder}'", flush=True)
 
-    main(args.folder)
+    main(args.folder, args.ip_config)

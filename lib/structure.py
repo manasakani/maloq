@@ -156,7 +156,7 @@ class Structure:
         
     #     return partitions
 
-    def partition_graph(self, n_clusters):
+    def partition_graph(self, n_clusters, write_xyz=False):
 
         """
         KMEANS: Partition the graph into `n_clusters` using K-means clustering.
@@ -175,9 +175,10 @@ class Structure:
         # Group nodes by their cluster
         partitions = {i: np.where(labels == i)[0] for i in range(n_clusters)}
 
-        # for i, (cluster, subgraph_nodes) in enumerate(partitions.items()):
-        #     filename = 'cluster_' + str(cluster) + '.xyz'
-        #     utils.write_xyz_file(filename, self.atomic_structure.get_chemical_symbols(), self.atomic_structure.get_positions(), subgraph_nodes)
+        if write_xyz:
+            for i, (cluster, subgraph_nodes) in enumerate(partitions.items()):
+                filename = 'cluster_' + str(cluster) + '.xyz'
+                utils.write_xyz_file(filename, self.atomic_structure.get_chemical_symbols(), self.atomic_structure.get_positions(), subgraph_nodes)
 
         return partitions
     
@@ -205,7 +206,7 @@ class Structure:
         self.overlap = self.csr_to_dict(overlap_csr)
 
         # self.imagesc_dict(self.hamiltonian, log=True)
-        # sdfg
+
 
     def init_electronic_structure(self, hamiltonian_file, overlap_file, save_matrices):
         """
