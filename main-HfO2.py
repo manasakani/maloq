@@ -106,7 +106,7 @@ def main(folder):
     # *** Initialize the hyperparameters of the SO2 model:
     sphere_channels = 16
     num_heads = 2
-    attn_hidden_channels = 128  
+    attn_hidden_channels = 64  
     attn_alpha_channels = 32
     attn_value_channels = 32
     ffn_hidden_channels = 64
