@@ -80,7 +80,8 @@ def main(folder):
     xyz_file = os.path.join(data_folder, 'structure.xyz')
     hamiltonian_file = os.path.join(data_folder, 'H.csr')
     overlap_file = os.path.join(data_folder, 'S.csr')
-    DGL_pickle_file_path = 'dgl_graph_dataset_4rcut.pkl'                                 # Path to the DGLGraphDataset pickle file, used for save/load if exists
+    # DGL_pickle_file_path = 'dgl_graph_dataset_4rcut.pkl'
+    DGL_pickle_file_path = 'dgl_graph_dataset.pkl'                                 # Path to the DGLGraphDataset pickle file, used for save/load if exists
     # DGL_pickle_file_path = None
 
     # Material parameters:
@@ -92,7 +93,7 @@ def main(folder):
 
     # Parameters:
     # restart_file = 'model_HfO2_'+str(world_size)+'_DGL.pth'    
-    restart = None
+    restart_file = None
     save_file = 'model_HfO2_'+str(world_size)+'_DGL.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 1                                                               # Number of message passing layers 
