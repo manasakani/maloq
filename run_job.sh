@@ -3,8 +3,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1  
 #SBATCH --constraint=gpu
-#SBATCH --time=03:00:00
-#SBATCH --job-name=noDGLtest
+#SBATCH --time=01:00:00
+#SBATCH --job-name=H2O
 
 module load daint-gpu
 module load PyTorch
@@ -20,7 +20,9 @@ export MASTER_PORT=29500
 export PYTHONUNBUFFERED=1
 
 source ./myvenv/bin/activate
-srun python main-HfO2.py
+srun python main-H2O.py -f './'
+# srun python main-H2O_list.py -f './'
+
 
 # torch version: 1.10.1+cu111
 # torch scatter version: [pip install torch-scatter==2.0.9 -f https://data.pyg.org/whl/torch-1.10.0+cu113.html]

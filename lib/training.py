@@ -27,6 +27,7 @@ def train_and_validate_model_SO2(model, optimizer, training_loader, validation_l
     track_training_loss = [] #node + edge
     track_validation_loss = [] #node + edge
 
+    model.train()  # Set the model to training mode
     for epoch in range(num_epochs):
         
         # every 100 epochs, reduce the learning rate by half
@@ -50,9 +51,22 @@ def train_and_validate_model_SO2(model, optimizer, training_loader, validation_l
             node_output = node_output.to(device)
             edge_output = edge_output.to(device)
 
+            print("Node Output: ", node_output)
+            print("Edge Output: ", edge_output)
+            print("Node output shape: ", node_output.shape)
+            print("Edge output shape: ", edge_output.shape)
+            print("Node Label: ", batch.node_y)
+            print("Edge Label: ", batch.y)
+            print("Node label shape: ", batch.node_y.shape)
+            print("Edge label shape: ", batch.y.shape)
+
             loss_node = criterion(node_output, batch.node_y)                # node_y is the node label
             loss_edge = criterion(edge_output, batch.y)                     # y is the edge label
-            loss = loss_node + loss_edge
+            
+            combined_outputs = torch.cat([node_output, edge_output], dim=0)
+            combined_labels = torch.cat([batch.node_y, batch.y], dim=0)
+            loss = criterion(combined_outputs, combined_labels)
+
             loss_computation_time = time.time()
             
             loss.backward()                                  
@@ -107,6 +121,8 @@ def train_and_validate_model_SO2(model, optimizer, training_loader, validation_l
     print("Final loss: ", loss)
     
     plt.figure(figsize=(4, 3))
+    plt.plot(track_loss_node, label='node')
+    plt.plot(track_loss_edge, label='edge')
     plt.plot(track_training_loss, label='training error')
     plt.plot(track_validation_loss, label='validation error')
     plt.xlabel('Epoch')
@@ -159,6 +175,15 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
             # Forward pass
             node_output, edge_output = model(batch)
             forward_pass_time = time.time()
+
+            print("Node Output: ", node_output)
+            print("Edge Output: ", edge_output)
+            print("Node output shape: ", node_output.shape)
+            print("Edge output shape: ", edge_output.shape)
+            print("Node Label: ", batch.node_y)
+            print("Edge Label: ", batch.y)
+            print("Node label shape: ", batch.node_y.shape)
+            print("Edge label shape: ", batch.y.shape)
 
             # Compute the loss
             output = torch.cat([node_output[0:batch.labelled_node_size], edge_output[0:batch.labelled_node_size]], dim=0)
@@ -275,61 +300,62 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
                     param_group['lr'] = param_group['lr']/1.5
     
         MAE_loss = 0.0
-        for batch_id, (input_nodes, output_nodes, subgraphs) in enumerate(loader):
-            optimizer.zero_grad()
+        # model.join() is probably a context manager that synchronizes the processes
+        with model.join():
+            for batch_id, (input_nodes, output_nodes, subgraphs) in enumerate(loader):
+                optimizer.zero_grad()
 
-            print("Batch ID: ", batch_id)
-            print("Input Nodes: ", input_nodes)
-            print("Output Nodes: ", output_nodes)
-            print("Number of Subgraphs: ", len(subgraphs))
-            print("**************************************")
+                print("Batch ID: ", batch_id)
+                print("Input Nodes: ", input_nodes)
+                print("Output Nodes: ", output_nodes)
+                print("Number of Subgraphs: ", len(subgraphs))
+                print("**************************************")
 
-            # Upload subgraphs to GPU
-            subgraphs = [sg.to(device) for sg in subgraphs]
+                # Upload subgraphs to GPU
+                subgraphs = [sg.to(device) for sg in subgraphs]
 
-            # Forward pass
-            node_outputs, edge_outputs = model(subgraphs, total_num_nodes)
-            print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+                # Forward pass
+                node_outputs, edge_outputs = model(subgraphs, total_num_nodes)
+                print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
 
-            # !!! Check if the order of the node outputs is the same as the order of the node labels !!!
+                # !!! Check if the order of the node outputs is the same as the order of the node labels !!!
 
-            # Concatenate node and edge outputs if they are lists - do we need this?
-            if isinstance(node_outputs, list):
-                node_outputs = torch.cat(node_outputs, dim=0)
-            if isinstance(edge_outputs, list):
-                edge_outputs = torch.cat(edge_outputs, dim=0)
+                # Concatenate node and edge outputs if they are lists - do we need this?
+                if isinstance(node_outputs, list):
+                    node_outputs = torch.cat(node_outputs, dim=0)
+                if isinstance(edge_outputs, list):
+                    edge_outputs = torch.cat(edge_outputs, dim=0)
+                
+                # check that the order of the node outputs is the same as the order of the node labels!!!
 
-            # Concatenate the node and edge labels from all subgraphs
-            node_labels = torch.cat([sg.ndata['node_label']['_N'].to(device) for sg in subgraphs], dim=0)
-            edge_labels = torch.cat([sg.edata['label'].to(device) for sg in subgraphs], dim=0) 
+                # Concatenate the node and edge labels from all subgraphs
+                node_labels = torch.cat([sg.ndata['node_label']['_N'].to(device) for sg in subgraphs], dim=0)
+                edge_labels = torch.cat([sg.edata['label'].to(device) for sg in subgraphs], dim=0) 
+            
+                # print("Node Outputs: ", node_outputs)   
+                # print("Node Labels: ", node_labels)
+                # print("Edge Outputs: ", edge_outputs)
+                # print("Edge Labels: ", edge_labels)
 
-            # node_labels = [sg.ndata['node_label']['_N'].to(device) for sg in subgraphs]
-            # edge_labels = [sg.edata['label'].to(device) for sg in subgraphs]
-        
-            # print("Node Outputs: ", node_outputs)   
-            # print("Node Labels: ", node_labels)
-            # print("Edge Outputs: ", edge_outputs)
-            # print("Edge Labels: ", edge_labels)
+                # Compute the loss
+                loss_node = criterion(node_outputs, node_labels)
+                loss_edge = criterion(edge_outputs, edge_labels)
+                combined_outputs = torch.cat([node_outputs, edge_outputs], dim=0)
+                combined_labels = torch.cat([node_labels, edge_labels], dim=0)
+                loss = criterion(combined_outputs, combined_labels)
 
-            # Compute the loss
-            loss_node = criterion(node_outputs, node_labels)
-            loss_edge = criterion(edge_outputs, edge_labels)
-            combined_outputs = torch.cat([node_outputs, edge_outputs], dim=0)
-            combined_labels = torch.cat([node_labels, edge_labels], dim=0)
-            loss = criterion(combined_outputs, combined_labels)
+                loss.backward()
 
-            loss.backward()
+                # also calculate the L1 loss and print it
+                criterion_L1 = nn.L1Loss()
+                MAE_loss += criterion_L1(combined_outputs, combined_labels)
 
-            # also calculate the L1 loss and print it
-            criterion_L1 = nn.L1Loss()
-            MAE_loss += criterion_L1(combined_outputs, combined_labels)
+                # Update parameters
+                optimizer.step()
 
-            # Update parameters
-            optimizer.step()
-
-            # testing garbage collection:
-            del subgraphs, node_outputs, edge_outputs, node_labels, edge_labels, combined_outputs, combined_labels
-            torch.cuda.empty_cache()  # free GPU memory
+                # testing garbage collection:
+                del subgraphs, node_outputs, edge_outputs, node_labels, edge_labels, combined_outputs, combined_labels
+                torch.cuda.empty_cache()  # free GPU memory
 
         if dist.is_available() and dist.is_initialized():
             if dist.get_rank() == 0: 
@@ -572,9 +598,9 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
                 del subgraphs, node_output, edge_output
                 torch.cuda.empty_cache()
 
-                print("Testing only one batch - break")
-                break
-            break
+            #     print("Testing only one batch - break")
+            #     break
+            # break
 
     # Concatenate all results
     all_node_labels = torch.cat(all_node_labels)
@@ -583,10 +609,10 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
     all_edge_preds = torch.cat(all_edge_preds)
 
     # downsample: take every 100th element
-    all_node_labels = all_node_labels[::100]
-    all_node_preds = all_node_preds[::100]
-    all_edge_labels = all_edge_labels[::100]
-    all_edge_preds = all_edge_preds[::100]
+    # all_node_labels = all_node_labels[::10]
+    # all_node_preds = all_node_preds[::10]
+    # all_edge_labels = all_edge_labels[::10]
+    # all_edge_preds = all_edge_preds[::10]
 
     # Plotting
     plt.figure(figsize=(4, 3))

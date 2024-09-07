@@ -102,7 +102,7 @@ def main(folder, ip_config):
     # Material parameters:
     pbc = False
     orbital_basis = 'DZVP'
-    rcut = 10.0       
+    rcut = 100.0       
     lmax_list = [4]     
     mmax_list = [lmax_list[0]]
 
@@ -111,13 +111,13 @@ def main(folder, ip_config):
     save_file = 'model_H2O_'+str(world_size)+'_DGL.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 1                                                               # Number of message passing layers 
-    num_epochs = 500                                                
+    num_epochs = 1000                                                
     learning_rate = 1e-3
     loss_tol = 0                                                    
     dtype = torch.float32
 
     # Dataloader parameters:
-    batch_size = 3                                                                 # For full-connection training, batch size = number of nodes in the subgraph
+    batch_size = 1                                                                 # For full-connection training, batch size = number of nodes in the subgraph
                                                                                    # set for 16GB P100 GPU with rcut=5.0 dataset
     print("batch_size: ", batch_size, flush=True)
 
@@ -161,6 +161,7 @@ def main(folder, ip_config):
     print("Orbital analysis completed", flush=True)                                       # equivariant_blocks: start and end indices of the equivariant blocks in i and j direction for each target in targets
                                                                                           # out_js_list: ll the l1 l2 interactions needed 
                                                                                           # out_slices: marks the start and end of indices belonging to a certain target. Slice 1 (0 to 1) corresponds to the first target in equivariant blocks 
+
     construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
                                           out_js_list, 
                                           default_dtype_torch= torch.float32, 
@@ -176,7 +177,7 @@ def main(folder, ip_config):
             H2O_DGL = pickle.load(f)
     else:
         print("Creating DGLGraphDataset (this takes a while)...", flush=True)
-        H2O_DGL = DGLGraphDataset([H2O], 
+        H2O_DGL = DGLGraphDataset(H2O, 
                                     equivariant_blocks, 
                                     out_slices, 
                                     construct_kernel, 

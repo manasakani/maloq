@@ -455,7 +455,6 @@ def batch_data_graphpartition(graph, num_subgraph, num_batch, equivariant_blocks
     # Partition the large input Structure into smaller subgraphs for training using spectral clustering
     # print("*** Partitioning the graph into " + str(num_subgraph) + " subgraphs, batch size: " + str(num_batch))
     partitions = graph.partition_graph(num_subgraph)
-    world_size = dist.get_world_size()
 
     data_list = []
 

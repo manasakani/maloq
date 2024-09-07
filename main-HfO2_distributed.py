@@ -29,7 +29,7 @@ def remove_module_prefix(state_dict):
             new_state_dict[k] = v
     return new_state_dict
 
-def main(folder):
+def main(folder, ip_config):
 
     if not torch.cuda.is_available():
         raise RuntimeError("No GPUs are available!")
@@ -49,8 +49,9 @@ def main(folder):
         os.environ['RANK'] = str(rank)
         os.environ['WORLD_SIZE'] = str(world_size)
         os.environ['LOCAL_RANK'] = str(local_rank)
-        backend = 'nccl'  # Use NCCL for multi-GPU on Piz Daint (edit: uses RDMA, switching to gloo)
+        backend = 'gloo'  # Use NCCL for multi-GPU on Piz Daint (edit: uses RDMA, switching to gloo)
         print("Initializing process group...")
+        dgl.distributed.initialize(ip_config=ip_config)
         dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
         print("Process group initialized")
 
@@ -80,9 +81,7 @@ def main(folder):
     xyz_file = os.path.join(data_folder, 'structure.xyz')
     hamiltonian_file = os.path.join(data_folder, 'H.csr')
     overlap_file = os.path.join(data_folder, 'S.csr')
-    # DGL_pickle_file_path = 'dgl_graph_dataset_4rcut.pkl'
-    DGL_pickle_file_path = 'dgl_graph_dataset.pkl'                                 # Path to the DGLGraphDataset pickle file, used for save/load if exists
-    # DGL_pickle_file_path = None
+    DGL_pickle_file_path = 'dgl_graph_dataset_HfO2.pkl'                             # Path to the DGLGraphDataset pickle file, used for save/load if exists
 
     # Material parameters:
     pbc = True
@@ -92,13 +91,12 @@ def main(folder):
     mmax_list = [lmax_list[0]]
 
     # Parameters:
-    # restart_file = 'model_HfO2_'+str(world_size)+'_DGL.pth'    
     restart_file = None
     save_file = 'model_HfO2_'+str(world_size)+'_DGL.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 1                                                               # Number of message passing layers 
-    num_epochs = 300                                                
-    learning_rate = 1e-4
+    num_epochs = 20                                                
+    learning_rate = 1e-5
     loss_tol = 0                                                    
     dtype = torch.float32
 
@@ -109,7 +107,7 @@ def main(folder):
     # *** Initialize the hyperparameters of the SO2 model:
     sphere_channels = 16
     num_heads = 2
-    attn_hidden_channels = 128  # increase to 128
+    attn_hidden_channels = 64  # increase to 128
     attn_alpha_channels = 32
     attn_value_channels = 32
     ffn_hidden_channels = 64
@@ -134,7 +132,7 @@ def main(folder):
                                     bothways=True, 
                                     rcut = rcut)
 
-     # *** Perform orbital analysis:
+    # *** Perform orbital analysis:
     atom_orbitals = {'8':[0,1], '72':[0,0,1,2]}                                           # Orbital types of each atom in the structure
     numbers = a_HfO2.atomic_numbers                                                       # Atomic numbers of each atom in the structure
     no_parity = True                                                                      # No parity symmetry          
@@ -161,13 +159,13 @@ def main(folder):
             a_HfO2_DGL = pickle.load(f)
     else:
         print("Creating DGLGraphDataset (this takes a while)...", flush=True)
-        a_HfO2_DGL = DGLGraphDataset([a_HfO2], 
+        a_HfO2_DGL = DGLGraphDataset(a_HfO2, 
                                     equivariant_blocks, 
                                     out_slices, 
                                     construct_kernel, 
                                     device=device, 
                                     dtype=dtype)
-        with open('dgl_graph_dataset.pkl', 'wb') as f:
+        with open('dgl_graph_dataset_HfO2.pkl', 'wb') as f:
             pickle.dump(a_HfO2_DGL, f)
     
     print("DGLGraphDataset created", flush=True)
@@ -263,20 +261,21 @@ def main(folder):
     if train_or_test == 'train':
         
         print("training...")
-        training.train_model_DGL_full(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
+        training.train_model_DGL_full(model, optimizer, data_loader, num_nodes, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
         print("Model trained")
 
     else:
-
         print("evaluating in test mode...")
     
     training.evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Amorphous GNNs --- HfO2")
     parser.add_argument("-f", "--folder", default="", required=False)
+    parser.add_argument("--ip_config", type=str, required=True, help="Path to IP configuration file for distributed training.")
     args = parser.parse_args()
 
     print(f"Starting main ... dataset folder is '{args.folder}'", flush=True)
 
-    main(args.folder)
+    main(args.folder, args.ip_config)

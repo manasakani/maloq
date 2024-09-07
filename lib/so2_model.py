@@ -251,27 +251,18 @@ class SO2Net(torch.nn.Module):
         # print("graph.edata['edge_attr']: ", graph.edata['edge_attr'])               # features of the edges
         # print("graph.edata['label']: ", graph.edata['label'])                       # labels of the edges involved in this subgraph
         # print("graph.ndata['node_label']: ", graph.ndata['node_label'])             # labels of the nodes involved in this subgraph(?)
-
         # global_node_ids = graph.ndata[dgl.NID]
         # print("Global node IDs:", global_node_ids)
-
         # local_node_ids = graph.ndata['_ID']
         # print("Local node IDs:", local_node_ids)
 
         atomic_numbers = graph.ndata['feat']['_N'] 
-
-        # print("atomic_numbers: ", atomic_numbers)
-        # print("edge_attr: ", graph.edata['edge_attr'])
-
         edge_distance = graph.edata['edge_attr'][:, 0]
         edge_distance_vec = graph.edata['edge_attr'][:, [2, 3, 1]]                    # edge distance vector for each edge in the subgraph
 
-        # print("edge distance: ", edge_distance)
-        # print("edge distance vec: ", edge_distance_vec)
-
         u, v = graph.edges() 
-        edge_index = torch.stack([u, v], dim=0)  #check if this is correct - flip the order of the nodes in the edge_index
-        print("edge_index: ", edge_index)
+        edge_index = torch.stack([u, v], dim=0)  
+        # print("edge_index: ", edge_index)
 
         num_subgraph_nodes = len(atomic_numbers)
         num_subgraph_edges = len(edge_distance)
@@ -288,7 +279,7 @@ class SO2Net(torch.nn.Module):
         edge_distance_embedding = self.distance_expansion(edge_distance)
 
         edge_fea = SO3_Embedding(num_subgraph_edges, self.lmax_list, self.sphere_channels, device, dtype)
-
+        # Initialize the l = 0, m = 0 coefficients for each resolution
         offset_res = 0
         for i in range(self.num_resolutions):
             if self.num_resolutions == 1:
@@ -335,7 +326,17 @@ class SO2Net(torch.nn.Module):
         dtype = batch.y.dtype
         atomic_numbers = batch.x
         edge_distance = batch.edge_attr[:,0]
+        edge_distance_vec = batch.edge_attr[:, [2, 3, 1]]
         edge_index = batch.edge_index
+
+        print("atomic_numbers: ", atomic_numbers)
+        print("edge_distance: ", edge_distance)
+        print("edge_index: ", edge_index)
+        print("edge_distance_vec: ", edge_distance_vec)
+        print("shape of atomic_numbers: ", atomic_numbers.shape)    
+        print("shape of edge_distance: ", edge_distance.shape)
+        print("shape of edge_index: ", edge_index.shape)
+        print("shape of edge_distance_vec: ", edge_distance_vec.shape)
 
         #initialise the node embedding with atomic_numbers
         x = SO3_Embedding(len(batch.x), self.lmax_list, self.sphere_channels, device, dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, third dimension is the number of channels
@@ -349,7 +350,7 @@ class SO2Net(torch.nn.Module):
         x.set_lmax_mmax(self.lmax_list,self.mmax_list)
         edge_distance_embedding = self.distance_expansion(edge_distance)
 
-        edge_fea = SO3_Embedding(len(edge_index[0]), self.lmax_list, self.sphere_channels, device, dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, 
+        edge_fea = SO3_Embedding(len(edge_index[0]), self.lmax_list, self.sphere_channels, device, dtype) #first dimension is the number of edges, second dimension is the number of coefficients, 
         
         offset_res = 0
         offset = 0
@@ -357,8 +358,6 @@ class SO2Net(torch.nn.Module):
         for i in range(self.num_resolutions):
             if self.num_resolutions == 1:
                 edge_fea.embedding[:, offset_res, :] = self.distance_expansion(edge_distance)
-
-        edge_distance_vec = batch.edge_attr[:, [2, 3, 1]]
 
         edge_rot_mat = init_edge_rot_mat(edge_distance_vec) #create rotation matrices 
         self.SO3_rotation[0].set_wigner(edge_rot_mat)

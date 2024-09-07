@@ -2,60 +2,66 @@ import dgl
 import torch
 import numpy as np
 from lib import utils
-from torch.utils.data import Dataset
+from dgl.data import DGLDataset
 from ase.geometry import find_mic
 
-# DGLGraphDataset class, inherit from torch.utils.data.Dataset, makes graph required for DGL
-class DGLGraphDataset(Dataset):
-    def __init__(self, structures, equivariant_blocks, out_slices, construct_kernel, device, dtype=torch.float32):
+# DGLGraphDataset class, inherit from DGLDataset, makes graph required for DGL
+class DGLGraphDataset(DGLDataset):
+    def __init__(self, structure, equivariant_blocks, out_slices, construct_kernel, device, dtype=torch.float32):
         """
         Args:
-            structures (list of Structure): List of structures to convert to DGL graphs.
+            structure (Structure): Structure to convert to DGL graph.
             equivariant_blocks: Equivariant blocks used for creating labels.
             out_slices: Output slices for the labels.
             construct_kernel: Kernel for converting labels (used to rotate the input H)
         """
+
         self.dtype = dtype
-        self.graphs = []
-        self.labels = []
-        self._create_dgl_graphs(structures, equivariant_blocks, out_slices, construct_kernel)
+        self.structure = structure
+        self.equivariant_blocks = equivariant_blocks
+        self.out_slices = out_slices
+        self.construct_kernel = construct_kernel
 
-    def _create_dgl_graphs(self, structures, equivariant_blocks, out_slices, construct_kernel):
+        # 'name' parameter is probably just metadata
+        super().__init__(name="amorphous_gnns")
 
-        for structure in structures:
 
-            # Node features: atomic numbers 
-            node_features = torch.tensor( [utils.periodic_table[i] for i in structure.atomic_species], 
-                                            dtype=torch.int64, 
-                                        )
+    # def _create_dgl_graphs(self, structures, equivariant_blocks, out_slices, construct_kernel):
+    def process(self):
+        
+        structure = self.structure
+        equivariant_blocks = self.equivariant_blocks
+        out_slices = self.out_slices
+        construct_kernel = self.construct_kernel
 
-            # Edge list (needs to be in COO format)
-            edge_src, edge_dst = structure.edge_matrix
-            edge_index = np.array([edge_src, edge_dst])
-            # edge_index = torch.tensor(np.array([edge_src, edge_dst]), dtype=torch.int64)
+        # Node features: atomic numbers 
+        node_features = torch.tensor( [utils.periodic_table[i] for i in structure.atomic_species], 
+                                        dtype=torch.int64  )
 
-            # DGL graph object
-            g = dgl.graph((edge_src, edge_dst))
-            print(g.edges(), flush=True)
-            print("^ Global Edge list", flush=True)
+        # Edge list (needs to be in COO format)
+        edge_src, edge_dst = structure.edge_matrix
+        edge_index = np.array([edge_src, edge_dst])
 
-            # Generate edge and node labels
-            edge_fea, edge_labels, node_labels = self._create_labels(structure, 
-                                                                     edge_index, 
-                                                                     equivariant_blocks, 
-                                                                     out_slices, 
-                                                                     construct_kernel)
+        # DGL graph object
+        self.graph = dgl.graph((edge_src, edge_dst))
+        print(self.graph.edges(), flush=True)
+        print("^ Global Edge list", flush=True)
+        
+        # Generate edge and node labels
+        edge_fea, edge_labels, node_labels = self._create_labels(structure, 
+                                                                edge_index, 
+                                                                equivariant_blocks, 
+                                                                out_slices, 
+                                                                construct_kernel)
 
-            g.ndata['feat'] = node_features
-            g.edata['edge_attr'] = edge_fea
-            g.edata['label'] = edge_labels
-            g.ndata['node_label'] = node_labels
+        # Add node and edge features and labels to the graph
+        self.graph.ndata['feat'] = node_features
+        self.graph.ndata['node_label'] = node_labels
+        self.graph.edata['edge_attr'] = edge_fea
+        self.graph.edata['label'] = edge_labels
 
-            self.graphs.append((g, edge_labels, node_labels))
-
-            for g, _, _ in self.graphs:
-                print("Node types in graph:", g.ntypes)
-                print("Edge types in graph:", g.etypes)
+        print("Node types in graph:", self.graph.ntypes)
+        print("Edge types in graph:", self.graph.etypes)
 
     def flatten_data(self, H_blocks, edge_matrix, numbers, equivariant_blocks, out_slices):
         """
@@ -65,10 +71,15 @@ class DGLGraphDataset(Dataset):
         number_of_edges = len(edge_matrix[0])
 
         labels = []
+
+        # for each edge in the graph...
         for i in range(number_of_edges):
             label = np.zeros(out_slices[-1])
+
+            # for each target subblock in the edge...
             for index_target, equivariant_block in enumerate(equivariant_blocks):
 
+                # for each block in the Hamiltonian...
                 for N_M_str, block_slice in equivariant_block.items():
                     slice_row = slice(block_slice[0], block_slice[1])
                     slice_col = slice(block_slice[2], block_slice[3])
@@ -76,8 +87,10 @@ class DGLGraphDataset(Dataset):
                     slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
                     condition_number_i, condition_number_j = N_M_str.split()
                         
+                    # insert the flattened block into the indices specified by slice_out in the label tensor
                     if (numbers[edge_matrix[0][i]].item() == int(condition_number_i) and numbers[edge_matrix[1][i]].item() == int(condition_number_j)):
-                        label[slice_out] += np.squeeze(H_blocks[i][slice_row, slice_col].reshape(1,-1)) # slice_out should match with slice_row x slice_col when flattened
+                        # slice_out should match with the flattened slice_row x slice_col
+                        label[slice_out] += np.squeeze(H_blocks[i][slice_row, slice_col].reshape(1,-1)) 
 
             labels.append(label)    
 
@@ -112,8 +125,8 @@ class DGLGraphDataset(Dataset):
         number_of_nodes = len(numbers)
         onsite_edge_index = np.array([np.arange(len(numbers)), np.arange(len(numbers))])
 
-        # print("number_of_edges", number_of_edges, flush=True)
-        # print("number_of_nodes", number_of_nodes, flush=True)
+        print("number_of_edges", number_of_edges, flush=True)
+        print("number_of_nodes", number_of_nodes, flush=True)
         # print("onsite_edge_index", onsite_edge_index, flush=True)
         # print("edge_index", edge_index, flush=True)
         # print("numbers", numbers, flush=True)
@@ -130,7 +143,7 @@ class DGLGraphDataset(Dataset):
                         for i in range(number_of_nodes)]
         print("Got Hamiltonian blocks for nodes...", flush=True)
 
-        # Create edge features (distance)
+        # Create edge features (edge edge is defined by a 1x4 vector of [scalar distance, vector distance])
         edge_fea = torch.empty((number_of_edges, 4), dtype=self.dtype)  
         for i in range(number_of_edges):
             distance_vector, distance = find_mic(coordinates[edge_index[1][i]] - coordinates[edge_index[0][i]], cell)
@@ -162,19 +175,22 @@ class DGLGraphDataset(Dataset):
         node_y = node_labels
 
         return edge_fea, y, node_y
-           
+    
+    def __getitem__(self, i):
+        return self.graph
+
     def __len__(self):
-        return len(self.graphs)
+        return 1
 
-    def __getitem__(self, idx):
-        """
-        Returns a single graph and its labels.
+    # def __getitem__(self, idx):
+    #     """
+    #     Returns a single graph and its labels.
 
-        Args:
-            idx (int): Index of the structure to return.
+    #     Args:
+    #         idx (int): Index of the structure to return.
 
-        Returns:
-            (DGLGraph, edge_labels, node_labels)
-        """
-        graph, _, _ = self.graphs[idx]
-        return graph
+    #     Returns:
+    #         (DGLGraph, edge_labels, node_labels)
+    #     """
+    #     graph, _, _ = self.graphs[idx]
+    #     return graph
