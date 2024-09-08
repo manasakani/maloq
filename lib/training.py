@@ -268,7 +268,11 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
 def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float32):
     # device = next(model.parameters()).device  # Get the device of the model
     
-    device = dist.get_rank() 
+    ### WARNING: EXPECTS TO SEE ONLY 1 GPU PER NODE, FIGURE OUT HOW TO SET DEVICE CORRECTLY LATER
+    device = torch.device("cuda:0")
+
+    # make sure all workers have loaded the data before starting training
+    dist.barrier()
 
     # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
     model = nn.parallel.DistributedDataParallel(model, device_ids=[device], find_unused_parameters=True)#, output_device=device,
@@ -314,11 +318,12 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
                 if isinstance(edge_outputs, list):
                     edge_outputs = torch.cat(edge_outputs, dim=0)
                 
-                # check that the order of the node outputs is the same as the order of the node labels!!!
-
                 # Concatenate the node and edge labels from all subgraphs
                 node_labels = torch.cat([sg.ndata['_N/node_label']['_N'].to(device) for sg in subgraphs], dim=0)
                 edge_labels = torch.cat([sg.edata['_E/label'].to(device) for sg in subgraphs], dim=0) 
+
+                print("rank ", dist.get_rank(), "node_outputs: ", node_outputs)
+                print("rank ", dist.get_rank(), "edge_outputs: ", edge_outputs)
             
                 # print("Node Outputs: ", node_outputs)   
                 # print("Node Labels: ", node_labels)
@@ -341,7 +346,7 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
                 # Update parameters
                 optimizer.step()
 
-                # testing garbage collection:
+                # testing garbage collection (add this back in before running on large structures)
                 # del subgraphs, node_outputs, edge_outputs, node_labels, edge_labels, combined_outputs, combined_labels
                 # torch.cuda.empty_cache()  # free GPU memory
 

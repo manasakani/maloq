@@ -47,6 +47,210 @@ def remove_module_prefix(state_dict):
             new_state_dict[k] = v
     return new_state_dict
 
+# # Function to load node and edge features for a partition
+# def load_graph_partitions(graph_dir, part_id):
+
+#     graph_path = f"{graph_dir}/part{part_id}/graph.dgl"
+#     node_feats_path = f"{graph_dir}/part{part_id}/node_feat.dgl"
+#     edge_feats_path = f"{graph_dir}/part{part_id}/edge_feat.dgl"
+
+#     # Load partitioned graph (this loads the subgraph for this partition)
+#     graphs, _ = dgl.load_graphs(graph_path)
+#     g = graphs[0]  
+
+#     num_nodes_in_partition = g.num_nodes()
+#     num_edges_in_partition = g.number_of_edges()
+#     # print(f"Number of nodes in partition {part_id}: {num_nodes_in_partition}")
+#     # print(f"Number of edges in partition {part_id}: {num_edges_in_partition}")
+
+#     # Get the local node mask (real nodes inside the partition)
+#     local_nodes_mask = g.ndata['inner_node'].bool()
+#     num_local_nodes = local_nodes_mask.sum().item()
+
+#     local_edges_mask = g.edata['inner_edge'].bool()
+#     num_local_edges = local_edges_mask.sum().item()
+
+#     # print("local_nodes_mask: ", local_nodes_mask)
+#     # print("local_edges_mask: ", local_edges_mask)
+#     # print("num_nodes_per_rank: ", num_local_nodes)
+#     # print("num_edges_per_rank: ", num_local_edges)
+
+#     # Add the node features/labels to the graph's nodes
+#     node_feats = dgl.data.load_tensors(node_feats_path)
+
+#     for key, feat in node_feats.items():
+#         # print(f"Processing node feature '{key}' with shape {feat.shape}")
+#         if len(feat.shape) == 1:
+#             # node feature are scalars
+#             g.ndata[key] = torch.zeros(num_nodes_in_partition, dtype=feat.dtype)
+#             g.ndata[key][local_nodes_mask] = feat[:num_local_nodes]
+#         else:
+#             # node labels are multi-dimensional
+#             g.ndata[key] = torch.zeros((num_nodes_in_partition,) + feat.shape[1:], dtype=feat.dtype)
+#             g.ndata[key][local_nodes_mask] = feat[:num_local_nodes]
+
+#     # Add the edge features/labels to the graph's edges
+#     edge_feats = dgl.data.load_tensors(edge_feats_path)
+#     for key, feat in edge_feats.items():
+#         # print(f"Processing edge feature '{key}' with shape {feat.shape}")
+#         if len(feat.shape) == 1:
+#             g.edata[key] = torch.zeros(num_edges_in_partition, dtype=feat.dtype)
+#             g.edata[key][local_edges_mask] = feat[:num_local_edges]
+#         else:
+#             # Edge features and labels are multi-dimensional
+#             g.edata[key] = torch.zeros((num_edges_in_partition,) + feat.shape[1:], dtype=feat.dtype)
+#             g.edata[key][local_edges_mask] = feat[:num_local_edges]
+
+#     return g
+    
+# Function to load node and edge features for a partition
+def load_graph_partitions(graph_dir, part_id, num_partitions):
+
+    graph_path = f"{graph_dir}/part{part_id}/graph.dgl"
+    node_feats_path = f"{graph_dir}/part{part_id}/node_feat.dgl"
+    edge_feats_path = f"{graph_dir}/part{part_id}/edge_feat.dgl"
+
+    # Load the subgraph for this rank's partition
+    graphs, _ = dgl.load_graphs(graph_path)
+    g = graphs[0]  
+
+    num_nodes_in_partition = g.num_nodes()                      # total number of nodes in the partition (local and halo nodes)
+    num_edges_in_partition = g.number_of_edges()                # total number of edges in the partition (local and halo edges)
+    local_nodes_mask = g.ndata['inner_node'].bool()             # T/F mask of local nodes = inner nodes, or the nodes that belong to this partition
+    local_edges_mask = g.edata['inner_edge'].bool()             # T/F mask of local edges = inner edges, or the edges that belong to this partition
+    num_local_nodes = local_nodes_mask.sum().item()             # number of local nodes in the partition
+    num_local_edges = local_edges_mask.sum().item()             # number of local edges in the partition
+
+    # print("local_nodes_mask: ", local_nodes_mask)
+    # print("local_edges_mask: ", local_edges_mask)
+    # print("num_nodes_per_rank: ", num_local_nodes)
+    # print("num_edges_per_rank: ", num_local_edges)
+
+    # --> 1/4: Add core node features and labels 
+    node_feats = dgl.data.load_tensors(node_feats_path)
+    for key, feat in node_feats.items():
+        print(f"Processing node feature '{key}' with shape {feat.shape}")
+        if len(feat.shape) == 1:
+            # node feature are scalars
+            g.ndata[key] = torch.zeros(num_nodes_in_partition, dtype=feat.dtype)
+            g.ndata[key][local_nodes_mask] = feat[:num_local_nodes]
+        else:
+            # node labels are multi-dimensional
+            g.ndata[key] = torch.zeros((num_nodes_in_partition,) + feat.shape[1:], dtype=feat.dtype)
+            g.ndata[key][local_nodes_mask] = feat[:num_local_nodes]
+        
+    
+    # --> 2/4: Add halo node features and labels
+    halo_nodes_mask = ~local_nodes_mask 
+    halo_node_ids = g.ndata.get(dgl.NID, g.ndata.get('_ID'))[halo_nodes_mask]  
+    print(f"Rank {part_id} - Halo node IDs: ", halo_node_ids)
+
+    for other_part_id in range(num_partitions):
+
+        # skip the current partition
+        if other_part_id == part_id:
+            continue  
+
+        # Load other partition's graph and node features
+        other_node_feats_path = f"{graph_dir}/part{other_part_id}/node_feat.dgl"
+        other_graph_path = f"{graph_dir}/part{other_part_id}/graph.dgl"
+        other_graphs, _ = dgl.load_graphs(other_graph_path)
+        other_g = other_graphs[0]
+        other_node_feats = dgl.data.load_tensors(other_node_feats_path)                         # Load node features from the other partition
+        num_other_local_nodes = other_g.ndata['inner_node'].sum().item()                        # Number of local nodes in the other partition          
+
+        # Get other partition's global node IDs (use the same key check as before)
+        other_global_node_ids = other_g.ndata.get(dgl.NID, other_g.ndata.get('_ID'))
+        other_global_node_ids = other_global_node_ids[:num_other_local_nodes]                   # Only consider local nodes in the other partition, since they are the ones which have features
+
+        # print(f"Rank {part_id} - other_global_node_ids from part {other_part_id}: ", other_global_node_ids)
+
+        # Identify which halo nodes belong to this other partition by comparing global IDs
+        halo_in_other_part_mask = halo_node_ids[:, None] == other_global_node_ids               # Broadcasted comparison
+        halo_in_other_part = halo_in_other_part_mask.any(dim=1)
+        # print(f"Rank {part_id} - halo_in_other_part mask for part {other_part_id}: ", halo_in_other_part)
+
+        if halo_in_other_part.any():
+            matching_halo_indices_in_other_part = halo_in_other_part_mask.nonzero(as_tuple=False)[:, 1]
+            # print(f"Rank {part_id} - matching_halo_indices_in_other_part: ", matching_halo_indices_in_other_part)
+
+            # For each feature key, update halo node features using the features from the other partition
+            for key, feat in other_node_feats.items():
+                halo_feat_mask = halo_nodes_mask.nonzero(as_tuple=True)[0][halo_in_other_part]
+                # print(f"Rank {part_id} - halo_feat_mask for part {other_part_id}: ", halo_feat_mask)
+                # print(f"Rank {part_id} - Processing node feature '{key}' with shape {feat.shape} and entries: ", feat)
+
+                # scalar node features
+                if len(feat.shape) == 1 and feat.shape[0] == 1:
+                    g.ndata[key][halo_feat_mask] = feat[0]
+                else:
+                    # g.ndata[key][halo_feat_mask] = feat[matching_halo_indices_in_other_part]
+                    g.ndata[key][halo_nodes_mask][halo_in_other_part] = feat[matching_halo_indices_in_other_part]
+
+
+    # --> 3/4: Add core edge features and labels
+    edge_feats = dgl.data.load_tensors(edge_feats_path)
+    for key, feat in edge_feats.items():
+        print(f"Processing edge feature '{key}' with shape {feat.shape}")
+        if len(feat.shape) == 1:
+            g.edata[key] = torch.zeros(num_edges_in_partition, dtype=feat.dtype)
+            g.edata[key][local_edges_mask] = feat[:num_local_edges]
+        else:
+            # Edge features and labels are multi-dimensional
+            g.edata[key] = torch.zeros((num_edges_in_partition,) + feat.shape[1:], dtype=feat.dtype)
+            g.edata[key][local_edges_mask] = feat[:num_local_edges].clone().detach()
+
+
+    # --> 4/4: Add halo edge features and labels
+    halo_edges_mask = ~local_edges_mask
+    local_edge_ids = g.edata.get(dgl.EID, g.edata.get('_ID'))[local_edges_mask]
+    halo_edge_ids = g.edata.get(dgl.EID, g.edata.get('_ID'))[halo_edges_mask]
+    # print(f"Rank {part_id} - Halo edge IDs: ", halo_edge_ids)
+
+    for other_part_id in range(num_partitions):
+            
+            # skip the current partition
+            if other_part_id == part_id:
+                continue
+    
+            # Load other partition's graph and edge features
+            other_edge_feats_path = f"{graph_dir}/part{other_part_id}/edge_feat.dgl"
+            other_graph_path = f"{graph_dir}/part{other_part_id}/graph.dgl"
+            other_graphs, _ = dgl.load_graphs(other_graph_path)
+            other_g = other_graphs[0]
+            other_edge_feats = dgl.data.load_tensors(other_edge_feats_path)                         # Load edge features from the other partition
+            num_other_local_edges = other_g.edata['inner_edge'].sum().item()                        # Number of local edges in the other partition          
+    
+            # Get other partition's global edge IDs (use the same key check as before)
+            other_global_edge_ids = other_g.edata.get(dgl.EID, other_g.edata.get('_ID'))
+            other_global_edge_ids = other_global_edge_ids[:num_other_local_edges]                   # Only consider local edges in the other partition, since they are the ones which have features
+    
+            # print(f"Rank {part_id} - other_global_edge_ids from part {other_part_id}: ", other_global_edge_ids)
+    
+            # Identify which halo edges belong to this other partition by comparing global IDs
+            halo_in_other_part_mask = halo_edge_ids[:, None] == other_global_edge_ids
+            halo_in_other_part = halo_in_other_part_mask.any(dim=1)
+
+            if halo_in_other_part.any():
+                matching_halo_indices_in_other_part = halo_in_other_part_mask.nonzero(as_tuple=False)[:, 1]
+                # print(f"Rank {part_id} - edge matching_halo_indices_in_other_part: ", matching_halo_indices_in_other_part)
+    
+                # For each feature key, update halo edge features using the features from the other partition
+                for key, feat in other_edge_feats.items():
+                    halo_feat_mask = halo_edges_mask.nonzero(as_tuple=True)[0][halo_in_other_part]
+                    # print(f"Rank {part_id} - edge halo_feat_mask for part {other_part_id}: ", halo_feat_mask)
+    
+                    g.edata[key][halo_feat_mask] = feat[matching_halo_indices_in_other_part]
+                    g.edata[key][halo_edges_mask][halo_in_other_part] = feat[matching_halo_indices_in_other_part].clone().detach()
+                    # print(f"Rank {part_id} - after add edge g.edata[key][halo_edges_mask][halo_in_other_part]: ", g.edata[key][halo_edges_mask][halo_in_other_part])
+
+
+    # each rank prints its final node features (local and halo):
+    print(f"Rank {part_id} - Final node features: ", g.ndata)
+    print(f"Rank {part_id} - Final edge features: ", g.edata)
+
+    return g
+
 def main(folder, ip_config):
 
     if not torch.cuda.is_available():
@@ -68,10 +272,14 @@ def main(folder, ip_config):
         os.environ['WORLD_SIZE'] = str(world_size)
         os.environ['LOCAL_RANK'] = str(local_rank)
         backend = 'gloo'  # Use NCCL to enable rdma
+
         print("Initializing process group...")
         dgl.distributed.initialize(ip_config=ip_config)
         dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+        torch.cuda.set_device(rank % torch.cuda.device_count())
         print("Process group initialized")
+        print("main: torch.cuda.device_count(): ", torch.cuda.device_count())
+        print("main: torch.cuda.current_device(): ", torch.cuda.current_device())
 
     else:  
         rank = 0
@@ -86,6 +294,7 @@ def main(folder, ip_config):
         print("DGL version: ", dgl.__version__, flush=True)
         print("DGL backend (cuda?): ", dgl.backend.device_type('cuda'), flush=True)
         print("CUDA Available: ", torch.cuda.is_available())
+        print("CUDA_VISIBLE_DEVICES: ", os.environ.get('CUDA_VISIBLE_DEVICES'))
         print("CUDA Device Count: ", torch.cuda.device_count())
         print("CUDA Device Name: ", torch.cuda.get_device_name(0))
         print(f"RANK: {rank}, WORLD_SIZE: {world_size}, LOCAL_RANK: {local_rank}", flush=True)
@@ -104,7 +313,7 @@ def main(folder, ip_config):
     pbc = False
     orbital_basis = 'DZVP'
     rcut = 100.0       
-    lmax_list = [4]     
+    lmax_list = [4]                 
     mmax_list = [lmax_list[0]]
 
     # Parameters:
@@ -117,9 +326,6 @@ def main(folder, ip_config):
     loss_tol = 0                                                    
     dtype = torch.float32
 
-    # Dataloader parameters:
-    # batch_size = 3                                                                 # For full-connection training, batch size = number of nodes in the subgraph
-                                                                                   # set for 16GB P100 GPU with rcut=5.0 dataset
     # *** Initialize the hyperparameters of the SO2 model:
     sphere_channels = 16
     num_heads = 2
@@ -169,11 +375,6 @@ def main(folder, ip_config):
                                           no_parity=no_parity, 
                                           if_sort=False, 
                                           device_torch='cpu')                             # the data is created on cpu, so the construct_kernel must be on cpu 
-    
-
-    print("equivalent_blocks: ", equivariant_blocks)
-    print("out_js_list: ", out_js_list)
-    print("out_slices: ", out_slices)
 
     # *** Create/Load the DGLGraphDataset:
     if DGL_pickle_file_path is not None:
@@ -196,14 +397,18 @@ def main(folder, ip_config):
     num_nodes = H2O.atomic_numbers.shape[0]
 
     # print node labels:
-    print("Node labels (graph): ", graph.ndata['node_label'])
-    print("Edge labels (graph): ", graph.edata['label'])
+    # print("Node labels (graph): ", graph.ndata['node_label'])
+    # print("Edge labels (graph): ", graph.edata['label'])
 
     # ************************************************************
     # Partition the graph and create the DataLoader for DGL
     # ************************************************************
+    rank = dist.get_rank()  
+    
+    # make sure all workers have loaded the data before starting training
+    dist.barrier()
 
-    graph_name = 'H2O'                                  # Name for the graph (used for saving/loading)
+    graph_name = 'H2O'                                  # Name for the graph (just used for saving/loading)
     part_dir = './graph_partitions'                     # Directory to store the partitions
 
     # 1. Partition the graph, and save the partitioned graph to disk
@@ -215,25 +420,28 @@ def main(folder, ip_config):
                                     part_method='metis')
     print("Graph partitioned and saved to: ", part_dir)
 
+    # make sure all workers have loaded the data before starting training
+    dist.barrier()
+    print("Barrier 2 for rank ", rank, " passed")
+
     # 2. Load the partitioned graph for the current worker
-    rank = dist.get_rank()  
-    graph_partition, node_feat, edge_feat, gpb, graph_name, node_types, edge_types  = dgl.distributed.load_partition(part_dir + '/' + graph_name + '.json', rank)
+    # graph_partition, node_feat, edge_feat, gpb, graph_name, node_types, edge_types  = dgl.distributed.load_partition(part_dir + '/' + graph_name + '.json', rank)
+    graph_partition = load_graph_partitions(part_dir, rank, world_size)
     print(f"Loaded partition for rank {rank} with {graph_partition.num_nodes()} nodes")
-    print(f"Node types: {node_types}")
-    print(f"Edge types: {edge_types}")
-    print(f"Node features: {node_feat}")
-    print(f"Edge features: {edge_feat}")
+    print("graph_partition.ndata.keys(): ", graph_partition.ndata.keys())
+    print("graph_partition.edata.keys(): ", graph_partition.edata.keys())
 
-    # Add node and edge features and labels to the graph_partition of the current worker
-    for key, feat in node_feat.items():
-        graph_partition.ndata[key] = feat
-
-    for key, feat in edge_feat.items():
-        graph_partition.edata[key] = feat
+    # # Add node features and labels back into the graph_partition of the current worker
+    # for key, feat in node_feat.items():
+    #     graph_partition.ndata[key] = feat
+    # # Add edge features and labels back into the graph_partition of the current worker
+    # for key, feat in edge_feat.items():
+    #     graph_partition.edata[key] = feat
 
     # Verify features have been added
-    # print("graph_partition.ndata.keys(): ", graph_partition.ndata.keys())
-    # print("graph_partition.edata.keys(): ", graph_partition.edata.keys())
+    print("graph_partition.ndata.keys(): ", graph_partition.ndata.keys())
+    print("graph_partition.edata.keys(): ", graph_partition.edata.keys())
+
     # for key in graph_partition.ndata.keys():
     #     print("graph_partition.ndata[{}]: ".format(key), graph_partition.ndata[key])
     # for key in graph_partition.edata.keys():
@@ -241,6 +449,10 @@ def main(folder, ip_config):
 
     # 3. Sample the graph (using MultiLayerFullNeighborSampler for full-batch training with no sampling)
     sampler = dgl.dataloading.MultiLayerFullNeighborSampler(num_MP_layers)
+
+    # make sure all workers have loaded the data before starting training
+    dist.barrier()
+    print("Barrier 3 for rank ", rank, " passed")
 
     # 4. Create the DataLoader with the sampler (enable_cpu_affinity() only works with newer versions of DGL)
     train_nids = graph_partition.nodes()
@@ -254,6 +466,11 @@ def main(folder, ip_config):
         drop_last=False
     )
     print(f"Distributed data loader created with {len(train_nids)} nodes.", flush=True)
+
+    # make sure all workers have loaded the data before starting training
+    dist.barrier()
+    print("Barrier 4 for rank ", rank, " passed")
+
 
     for input_nodes, output_nodes, blocks in data_loader:
         print("Subgraph Node Types in dataloder:", blocks[0].ntypes)

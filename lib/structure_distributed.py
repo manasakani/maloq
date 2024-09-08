@@ -34,9 +34,6 @@ class DGLGraphDataset(DGLDataset):
         construct_kernel = self.construct_kernel
 
         # Node features: atomic numbers 
-        # node_features = torch.tensor( [utils.periodic_table[i] for i in structure.atomic_species], 
-        #                                 dtype=torch.int64  )
-
         node_features = torch.tensor( [utils.periodic_table[i] for i in structure.atomic_species] )
 
         # Edge list (needs to be in COO format)
@@ -112,54 +109,119 @@ class DGLGraphDataset(DGLDataset):
         """
         print("Creating labels...", flush=True)
 
-        # Note: for SO2 network, edge_index has two-way edges, and does not include self-connections 
+        # # Note: for SO2 network, edge_index has two-way edges, and does not include self-connections 
+        # edge_index = structure.edge_matrix
+        # numbers = torch.tensor([utils.periodic_table[i] for i in structure.atomic_species])
+        # coordinates = structure.atomic_structure.get_positions()
+        # cell = structure.atomic_structure.get_cell()
+
+        # # Make targets:
+        # number_of_edges = len(edge_index[0])
+        # number_of_nodes = len(numbers)
+
+        # # off-diagonal orbital blocks for each edge (bothways)
+        # edge_hams = structure.get_orbital_blocks(edge_index)
+        # edge_index = torch.tensor(edge_index)
+        # H_blocks_edge = [edge_hams[(edge_index[0][i].item(), edge_index[1][i].item())] for i in range(number_of_edges)]
+        # H_blocks_edge = np.array(H_blocks_edge, dtype=object)
+        # print("Got Hamiltonian blocks for edges...", flush=True)
+
+        # # diagonal orbital blocks (onsite Hamiltonian)
+        # onsite_edge_index = np.array([np.arange(number_of_nodes), np.arange(number_of_nodes)])
+        # onsite_hams = structure.get_orbital_blocks(onsite_edge_index)
+        # H_blocks_node = [onsite_hams[(onsite_edge_index[0][i].item(), onsite_edge_index[1][i].item())] for i in range(number_of_nodes)]  
+        # H_blocks_node = np.array(H_blocks_node, dtype=object)
+        # print("Got Hamiltonian blocks for nodes...", flush=True)
+
+        # # off-diagonal orbital blocks
+        # edge_labels = self.flatten_data(H_blocks_edge, edge_index, numbers, equivariant_blocks, out_slices)
+
+        # # diagonal orbital blocks
+        # node_labels = self.flatten_data(H_blocks_node, onsite_edge_index, numbers, equivariant_blocks, out_slices)
+        
+        # # Create edge features (edge edge is defined by a 1x4 vector of [scalar distance, vector distance])
+        # numbers = numbers.numpy()
+        # coordinates = torch.tensor(coordinates)
+        # edge_fea = torch.empty((number_of_edges,4))
+        # for i in range(number_of_edges):
+        #     distance_vector, distance = find_mic(coordinates[edge_index[1][i]] - coordinates[edge_index[0][i]], cell)
+        #     edge_fea[i,:] = torch.cat((torch.tensor([distance]), torch.tensor(distance_vector)))
+
+        # edge_fea = torch.tensor(edge_fea, dtype=self.dtype)
+        # edge_labels = torch.tensor(np.array(edge_labels),dtype=self.dtype)
+        # node_labels = torch.tensor(node_labels, dtype=self.dtype)
+
+        # #convert Hamiltonian labels from uncoupled space to coupled space (to avoid conversion during training)
+        # print("Converting labels...", flush=True)
+        # y = construct_kernel.get_net_out(edge_labels) 
+        # node_y = construct_kernel.get_net_out(node_labels)
+
+        print("Creting labels...", flush=True)
+
         edge_index = structure.edge_matrix
         numbers = torch.tensor([utils.periodic_table[i] for i in structure.atomic_species])
         coordinates = structure.atomic_structure.get_positions()
         cell = structure.atomic_structure.get_cell()
 
-        # Make targets:
-        number_of_edges = len(edge_index[0])
-        number_of_nodes = len(numbers)
-
         # off-diagonal orbital blocks for each edge (bothways)
         edge_hams = structure.get_orbital_blocks(edge_index)
         edge_index = torch.tensor(edge_index)
-        H_blocks_edge = [edge_hams[(edge_index[0][i].item(), edge_index[1][i].item())] for i in range(number_of_edges)]
+        H_blocks_edge = [edge_hams[(edge_index[0][i].item(), edge_index[1][i].item())] for i in range(len(edge_index[0]))]
         H_blocks_edge = np.array(H_blocks_edge, dtype=object)
-        print("Got Hamiltonian blocks for edges...", flush=True)
 
         # diagonal orbital blocks (onsite Hamiltonian)
-        onsite_edge_index = np.array([np.arange(number_of_nodes), np.arange(number_of_nodes)])
+        onsite_edge_index = np.array([np.arange(len(numbers)),np.arange(len(numbers))])
         onsite_hams = structure.get_orbital_blocks(onsite_edge_index)
-        H_blocks_node = [onsite_hams[(onsite_edge_index[0][i].item(), onsite_edge_index[1][i].item())] for i in range(number_of_nodes)]  
-        H_blocks_node = np.array(H_blocks_node, dtype=object)
-        print("Got Hamiltonian blocks for nodes...", flush=True)
+        onsite = [onsite_hams[(onsite_edge_index[0][i].item(), onsite_edge_index[1][i].item())] for i in range(len(numbers))]  
+        onsite = np.array(onsite, dtype=object)
 
         # off-diagonal orbital blocks
-        edge_labels = self.flatten_data(H_blocks_edge, edge_index, numbers, equivariant_blocks, out_slices)
+        edge_labels = []
+        for i in range(len(edge_index[0])):
+            label = np.zeros(out_slices[-1])
+            for index_target, equivariant_block in enumerate(equivariant_blocks):
+                    for N_M_str, block_slice in equivariant_block.items():
+                        slice_row = slice(block_slice[0], block_slice[1])
+                        slice_col = slice(block_slice[2], block_slice[3])
+                        slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
+                        condition_number_i, condition_number_j = N_M_str.split()
+
+                        if (numbers[edge_index[0][i]].item() == int(condition_number_i) and numbers[edge_index[1][i]].item() == int(condition_number_j)):
+                            label[slice_out] += np.squeeze(H_blocks_edge[i][slice_row, slice_col].reshape(1,-1))
+
+            edge_labels.append(label)
 
         # diagonal orbital blocks
-        node_labels = self.flatten_data(H_blocks_node, onsite_edge_index, numbers, equivariant_blocks, out_slices)
-        
-        # Create edge features (edge edge is defined by a 1x4 vector of [scalar distance, vector distance])
+        node_labels = []
+        for i in range(len(onsite_edge_index[0])):
+            label = np.zeros(out_slices[-1])
+            for index_target, equivariant_block in enumerate(equivariant_blocks):
+                    for N_M_str, block_slice in equivariant_block.items():
+                        slice_row = slice(block_slice[0], block_slice[1])
+                        slice_col = slice(block_slice[2], block_slice[3])
+                        slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
+                        condition_number_i, condition_number_j = N_M_str.split()
+                        if (numbers[onsite_edge_index[0][i]].item() == int(condition_number_i) and numbers[onsite_edge_index[1][i]].item() == int(condition_number_j)):
+                            label[slice_out] += np.squeeze(onsite[i][slice_row, slice_col].reshape(1,-1))
+
+            node_labels.append(label)
         numbers = numbers.numpy()
+
         coordinates = torch.tensor(coordinates)
-        edge_fea = torch.empty((number_of_edges,4))
-        for i in range(number_of_edges):
+
+        edge_fea = torch.empty((len(edge_index[0]),4))
+        for i in range(len(edge_index[0])):
             distance_vector, distance = find_mic(coordinates[edge_index[1][i]] - coordinates[edge_index[0][i]], cell)
             edge_fea[i,:] = torch.cat((torch.tensor([distance]), torch.tensor(distance_vector)))
 
         edge_fea = torch.tensor(edge_fea, dtype=self.dtype)
+        x = torch.tensor(numbers)
+
         edge_labels = torch.tensor(np.array(edge_labels),dtype=self.dtype)
-        node_labels = torch.tensor(node_labels, dtype=self.dtype)
+        y = construct_kernel.get_net_out(edge_labels) #convert Hamiltonian labels from uncoupled space to coupled space (to avoid conversion during training)
 
-        #convert Hamiltonian labels from uncoupled space to coupled space (to avoid conversion during training)
-        print("Converting labels...", flush=True)
-        y = construct_kernel.get_net_out(edge_labels) 
+        node_labels = torch.tensor(node_labels,dtype=self.dtype)
         node_y = construct_kernel.get_net_out(node_labels)
-
-        print("Labels created.", flush=True)
 
         return edge_fea, y, node_y
     
