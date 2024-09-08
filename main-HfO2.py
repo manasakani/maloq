@@ -13,7 +13,7 @@ import random
 import os
 
 import torch.distributed as dist
-import torch.multiprocessing as mp
+# import torch.multiprocessing as mp
 
 def remove_module_prefix(state_dict):
     """Remove 'module.' prefix from keys in state_dict."""
@@ -82,11 +82,11 @@ def main(folder):
     mmax_list = [lmax_list[0]]
 
     # Graph partitioning methods (the first three are for the slice option, the last two are for the graph partitioning option):
-    partitioning = 'graph'                                                          # 'slice' or 'graph' partitioning
+    partitioning = 'slice'                                                          # 'slice' or 'graph' partitioning
     
     # slice parameters:
     slice_list = [1000]                                                             # slice boundaries for partitioning the structure into subgraphs                
-    cutoff = 30                                                                     # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
+    cutoff = 10000000                                                                     # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
     
     # graph partitioning parameters:
     num_subgraph = 1                                                                # min 10 for P100 GPU memory with attn_hidden_channels=64
@@ -153,7 +153,7 @@ def main(folder):
     # *** Construct the kernel used to transform the orbital blocks
     construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
                                           out_js_list, 
-                                          default_dtype_torch= torch.float32, 
+                                          default_dtype_torch=torch.float32, 
                                           spinful=False,
                                           no_parity=no_parity, 
                                           if_sort=False, 
@@ -189,7 +189,6 @@ def main(folder):
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
-
     if restart_file is not None:
         print("Restarting training from a saved model and optimizer state...", flush=True)
         checkpoint = torch.load(restart_file)
