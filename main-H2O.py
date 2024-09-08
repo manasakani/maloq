@@ -139,27 +139,21 @@ def main(folder):
 
     # *** Perform orbital analysis:
     atom_orbitals = {'1': [0, 0, 1], '8':[0, 0, 1, 1, 2]}                                  # Orbital types of each atom in the structure
-    numbers = H2O.atomic_numbers                                                           # Atomic numbers of each atom in the structure
-    print("numbers: ", numbers)
-    
+    numbers = H2O.atomic_numbers                                                           # Atomic numbers of each atom in the structure    
     no_parity = True                                                                       # No parity symmetry          
     orbital_types = [[0,0,1], [0, 0, 1, 1, 2]]                                             # basis rank of each atom in the structure 
 
     targets, net_out_irreps, net_out_irreps_simplified = SO2.orbital_analysis(atom_orbitals, targets=None, no_parity=no_parity)
-    index_to_Z, inverse_indices = torch.unique(numbers, sorted=True, return_inverse=True)
-    print("index_to_Z: ", index_to_Z)
-    
+    index_to_Z, inverse_indices = torch.unique(numbers, sorted=True, return_inverse=True)    
     equivariant_blocks, out_js_list, out_slices = SO2.process_targets(orbital_types, index_to_Z, targets)
     # equivariant_blocks: start and end indices of the equivariant blocks in i and j direction for each target in targets
     # out_js_list: ll the l1 l2 interactions needed 
     # out_slices: marks the start and end of indices belonging to a certain target. Slice 1 (0 to 1) corresponds to the first target in equivariant blocks 
 
-    print("out_slices: ", out_slices)
-
     # *** Construct the kernel used to transform the orbital blocks
     construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
                                           out_js_list, 
-                                          default_dtype_torch= torch.float32, 
+                                          default_dtype_torch=torch.float32, 
                                           spinful=False,
                                           no_parity=no_parity, 
                                           if_sort=False, 

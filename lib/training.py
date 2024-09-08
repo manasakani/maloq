@@ -266,14 +266,12 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
 
 # DGL version - Training scheme which takes a batch of subgraphs and computes the loss on all edges
 def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', dtype=torch.float32):
-    device = next(model.parameters()).device  # Get the device of the model
+    # device = next(model.parameters()).device  # Get the device of the model
     
-    if dist.is_available() and dist.is_initialized():
-        # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
-        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
-    else:
-        model = nn.DataParallel(model)
+    device = dist.get_rank() 
 
+    # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[device], find_unused_parameters=True)#, output_device=device,
     criterion = nn.MSELoss()
 
     track_loss = []
@@ -303,13 +301,12 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
                 print("**************************************")
 
                 # Upload subgraphs to GPU
+                print("subgraphs: ", subgraphs)
                 subgraphs = [sg.to(device) for sg in subgraphs]
 
                 # Forward pass
                 node_outputs, edge_outputs = model(subgraphs, total_num_nodes)
                 print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
-
-                # !!! Check if the order of the node outputs is the same as the order of the node labels !!!
 
                 # Concatenate node and edge outputs if they are lists - do we need this?
                 if isinstance(node_outputs, list):
@@ -320,8 +317,8 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
                 # check that the order of the node outputs is the same as the order of the node labels!!!
 
                 # Concatenate the node and edge labels from all subgraphs
-                node_labels = torch.cat([sg.ndata['node_label']['_N'].to(device) for sg in subgraphs], dim=0)
-                edge_labels = torch.cat([sg.edata['label'].to(device) for sg in subgraphs], dim=0) 
+                node_labels = torch.cat([sg.ndata['_N/node_label']['_N'].to(device) for sg in subgraphs], dim=0)
+                edge_labels = torch.cat([sg.edata['_E/label'].to(device) for sg in subgraphs], dim=0) 
             
                 # print("Node Outputs: ", node_outputs)   
                 # print("Node Labels: ", node_labels)
@@ -345,8 +342,8 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
                 optimizer.step()
 
                 # testing garbage collection:
-                del subgraphs, node_outputs, edge_outputs, node_labels, edge_labels, combined_outputs, combined_labels
-                torch.cuda.empty_cache()  # free GPU memory
+                # del subgraphs, node_outputs, edge_outputs, node_labels, edge_labels, combined_outputs, combined_labels
+                # torch.cuda.empty_cache()  # free GPU memory
 
         if dist.is_available() and dist.is_initialized():
             if dist.get_rank() == 0: 
@@ -524,15 +521,15 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
                 edge_output = edge_output.cpu()
 
                 # Concatenate the node and edge labels from all subgraphs
-                node_labels = subgraph.ndata['node_label']['_N'].cpu()
-                edge_labels = subgraph.edata['label'].cpu() 
-                num_nodes = subgraph.ndata['feat']['_N'].shape[0]
+                node_labels = subgraph.ndata['_N/node_label']['_N'].cpu()
+                edge_labels = subgraph.edata['_E/label'].cpu() 
+                num_nodes = subgraph.ndata['_N/feat']['_N'].shape[0]
                 print("Number of Nodes: ", num_nodes)
 
                 flattened_node_labels = construct_kernel.get_H(node_labels)
                 flattened_node_pred = construct_kernel.get_H(node_output)
                 
-                atomic_numbers = subgraph.ndata['feat']['_N']
+                atomic_numbers = subgraph.ndata['_N/feat']['_N']
                 node_self_indices = torch.cat((torch.arange(num_nodes).unsqueeze(0),
                                                torch.arange(num_nodes).unsqueeze(0)),0)
                 atomic_numbers = atomic_numbers.cpu().numpy()
@@ -600,11 +597,11 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
     all_edge_preds = torch.cat(all_edge_preds)
 
     # downsample: take every 100th element
-    downsample = 100    
-    all_node_labels = all_node_labels[::downsample]
-    all_node_preds = all_node_preds[::downsample]
-    all_edge_labels = all_edge_labels[::downsample]
-    all_edge_preds = all_edge_preds[::downsample]
+    # downsample = 100    
+    # all_node_labels = all_node_labels[::downsample]
+    # all_node_preds = all_node_preds[::downsample]
+    # all_edge_labels = all_edge_labels[::downsample]
+    # all_edge_preds = all_edge_preds[::downsample]
 
     # Plotting
     plt.figure(figsize=(4, 3))

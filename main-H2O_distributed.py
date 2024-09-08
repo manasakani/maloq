@@ -13,6 +13,7 @@ print("Importing os...", flush=True)
 import os
 print("Importing dgl...", flush=True)
 import dgl
+# import dgl.distributed as dist_dgl
 
 # from dgl.dataloading import enable_cpu_affinity 
 # ^^^ only works with newer versions of DGL
@@ -111,20 +112,18 @@ def main(folder, ip_config):
     save_file = 'model_H2O_'+str(world_size)+'_DGL.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 1                                                               # Number of message passing layers 
-    num_epochs = 1000                                                
+    num_epochs = 100                                                
     learning_rate = 1e-3
     loss_tol = 0                                                    
     dtype = torch.float32
 
     # Dataloader parameters:
-    batch_size = 1                                                                 # For full-connection training, batch size = number of nodes in the subgraph
+    # batch_size = 3                                                                 # For full-connection training, batch size = number of nodes in the subgraph
                                                                                    # set for 16GB P100 GPU with rcut=5.0 dataset
-    print("batch_size: ", batch_size, flush=True)
-
     # *** Initialize the hyperparameters of the SO2 model:
     sphere_channels = 16
     num_heads = 2
-    attn_hidden_channels = 128  # increase to 128
+    attn_hidden_channels = 64  # increase to 128
     attn_alpha_channels = 32
     attn_value_channels = 32
     ffn_hidden_channels = 64
@@ -150,14 +149,15 @@ def main(folder, ip_config):
                             rcut=rcut)
 
     # *** Perform orbital analysis:
-    atom_orbitals = {'1': [0, 0, 1],'8':[0, 0, 1, 1, 2]}                               # Orbital types of each atom in the structure
+    atom_orbitals = {'1': [0, 0, 1],'8':[0, 0, 1, 1, 2]}                                  # Orbital types of each atom in the structure
     numbers = H2O.atomic_numbers                                                          # Atomic numbers of each atom in the structure
     no_parity = True                                                                      # No parity symmetry          
-    orbital_types = [[0,0,1],[0, 0, 1, 1, 2]]                                          # orbital types of each atom in the structure 
+    orbital_types = [[0,0,1],[0, 0, 1, 1, 2]]                                             # orbital types of each atom in the structure 
 
     targets, net_out_irreps, net_out_irreps_simplified = SO2.orbital_analysis(atom_orbitals, targets=None, no_parity=no_parity)
     index_to_Z, inverse_indices = torch.unique(numbers, sorted=True, return_inverse=True)
     equivariant_blocks, out_js_list, out_slices = SO2.process_targets(orbital_types, index_to_Z, targets)
+    
     print("Orbital analysis completed", flush=True)                                       # equivariant_blocks: start and end indices of the equivariant blocks in i and j direction for each target in targets
                                                                                           # out_js_list: ll the l1 l2 interactions needed 
                                                                                           # out_slices: marks the start and end of indices belonging to a certain target. Slice 1 (0 to 1) corresponds to the first target in equivariant blocks 
@@ -170,6 +170,11 @@ def main(folder, ip_config):
                                           if_sort=False, 
                                           device_torch='cpu')                             # the data is created on cpu, so the construct_kernel must be on cpu 
     
+
+    print("equivalent_blocks: ", equivariant_blocks)
+    print("out_js_list: ", out_js_list)
+    print("out_slices: ", out_slices)
+
     # *** Create/Load the DGLGraphDataset:
     if DGL_pickle_file_path is not None:
         print("Unpickling dataset...", flush=True)
@@ -188,31 +193,74 @@ def main(folder, ip_config):
     
     print("DGLGraphDataset created", flush=True)
     graph = H2O_DGL[0]
-
     num_nodes = H2O.atomic_numbers.shape[0]
-    train_nids = torch.arange(num_nodes)
 
-    # --> Using MultiLayerFullNeighborSampler
+    # print node labels:
+    print("Node labels (graph): ", graph.ndata['node_label'])
+    print("Edge labels (graph): ", graph.edata['label'])
+
+    # ************************************************************
+    # Partition the graph and create the DataLoader for DGL
+    # ************************************************************
+
+    graph_name = 'H2O'                                  # Name for the graph (used for saving/loading)
+    part_dir = './graph_partitions'                     # Directory to store the partitions
+
+    # 1. Partition the graph, and save the partitioned graph to disk
+    dgl.distributed.partition_graph(graph, 
+                                    graph_name, 
+                                    num_parts=world_size, 
+                                    out_path=part_dir, 
+                                    num_hops=num_MP_layers, 
+                                    part_method='metis')
+    print("Graph partitioned and saved to: ", part_dir)
+
+    # 2. Load the partitioned graph for the current worker
+    rank = dist.get_rank()  
+    graph_partition, node_feat, edge_feat, gpb, graph_name, node_types, edge_types  = dgl.distributed.load_partition(part_dir + '/' + graph_name + '.json', rank)
+    print(f"Loaded partition for rank {rank} with {graph_partition.num_nodes()} nodes")
+    print(f"Node types: {node_types}")
+    print(f"Edge types: {edge_types}")
+    print(f"Node features: {node_feat}")
+    print(f"Edge features: {edge_feat}")
+
+    # Add node and edge features and labels to the graph_partition of the current worker
+    for key, feat in node_feat.items():
+        graph_partition.ndata[key] = feat
+
+    for key, feat in edge_feat.items():
+        graph_partition.edata[key] = feat
+
+    # Verify features have been added
+    # print("graph_partition.ndata.keys(): ", graph_partition.ndata.keys())
+    # print("graph_partition.edata.keys(): ", graph_partition.edata.keys())
+    # for key in graph_partition.ndata.keys():
+    #     print("graph_partition.ndata[{}]: ".format(key), graph_partition.ndata[key])
+    # for key in graph_partition.edata.keys():
+    #     print("graph_partition.edata[{}]: ".format(key), graph_partition.edata[key])
+
+    # 3. Sample the graph (using MultiLayerFullNeighborSampler for full-batch training with no sampling)
     sampler = dgl.dataloading.MultiLayerFullNeighborSampler(num_MP_layers)
 
-    # Create the DataLoader with the sampler
-    # enable_cpu_affinity() # only works with newer versions of DGL
+    # 4. Create the DataLoader with the sampler (enable_cpu_affinity() only works with newer versions of DGL)
+    train_nids = graph_partition.nodes()
+    num_nodes_in_partition = len(train_nids)
     data_loader = dgl.dataloading.DistNodeDataLoader(
-        graph,
-        train_nids,
-        sampler,
-        batch_size=batch_size,  # i think this is the number of nodes in each batch
+        graph_partition,                                # Partitioned graph loaded for the current worker
+        train_nids,                                     # Training node IDs
+        sampler,                                        # MultiLayerFullNeighborSampler
+        batch_size=num_nodes_in_partition,              # this is the number of nodes in each batch, since we are doing full-batch training
         shuffle=False,
-        drop_last=False,
-        num_workers=0,  # try setting this to 0 to disable multi-worker loading
+        drop_last=False
     )
-    print("Data loader created", flush=True)
+    print(f"Distributed data loader created with {len(train_nids)} nodes.", flush=True)
+
     for input_nodes, output_nodes, blocks in data_loader:
         print("Subgraph Node Types in dataloder:", blocks[0].ntypes)
         print("Subgraph Edge Types in dataloder:", blocks[0].etypes)
     
-    if dist.is_initialized():
-        dist.barrier()
+    # make sure all workers have loaded the data before starting training
+    dist.barrier()
     
     # ************************************************************
     # Initialize the SO2 model
@@ -254,6 +302,10 @@ def main(folder, ip_config):
 
     print("Model initialized")
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
+
+    # ************************************************************
+    # Train the model and evaluate based on training/testing mode
+    # ************************************************************
 
     if train_or_test == 'train':
         
