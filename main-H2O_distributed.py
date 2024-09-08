@@ -105,21 +105,35 @@ def remove_module_prefix(state_dict):
     
 # Function to load node and edge features for a partition
 def load_graph_partitions(graph_dir, part_id, num_partitions):
+    """
+    Does two things:
+        (1) Load the partitioned graph for the current worker 
+        (2) Adds our custom node and edge features back into the graph
+                Node features: atomic numbers, Node labels: diagonal Hamiltonian blocks
+                Edge features: [bond distances, bond vector], Edge labels: off-diagonal Hamiltonian blocks
+
+        Each partition has some local nodes and edges, and some halo nodes and edges.
+        First we add the core node and edge features and labels to the graph (corresponding to the local nodes and edges), which
+        are stored in the node_feat.dgl and edge_feat.dgl files of the local partitition.
+        Then we add the halo node and edge features and labels to the graph (corresponding to the halo nodes and edges), which 
+        are stored in the node_feat.dgl and edge_feat.dgl files of the other partitions, so we iterate through the other partitions' folders, 
+        figure out if they have any halo nodes of the current parition, and then populate the current's partition's halo nodes/edges
+        with the features from the other partition.
+    """
 
     graph_path = f"{graph_dir}/part{part_id}/graph.dgl"
     node_feats_path = f"{graph_dir}/part{part_id}/node_feat.dgl"
     edge_feats_path = f"{graph_dir}/part{part_id}/edge_feat.dgl"
 
-    # Load the subgraph for this rank's partition
-    graphs, _ = dgl.load_graphs(graph_path)
+    graphs, _ = dgl.load_graphs(graph_path)                                         # Load the partitioned graph (this loads the subgraph for this partition)  
     g = graphs[0]  
 
-    num_nodes_in_partition = g.num_nodes()                      # total number of nodes in the partition (local and halo nodes)
-    num_edges_in_partition = g.number_of_edges()                # total number of edges in the partition (local and halo edges)
-    local_nodes_mask = g.ndata['inner_node'].bool()             # T/F mask of local nodes = inner nodes, or the nodes that belong to this partition
-    local_edges_mask = g.edata['inner_edge'].bool()             # T/F mask of local edges = inner edges, or the edges that belong to this partition
-    num_local_nodes = local_nodes_mask.sum().item()             # number of local nodes in the partition
-    num_local_edges = local_edges_mask.sum().item()             # number of local edges in the partition
+    num_nodes_in_partition = g.num_nodes()                                          # total number of nodes in the partition (local and halo nodes)
+    num_edges_in_partition = g.number_of_edges()                                    # total number of edges in the partition (local and halo edges)
+    local_nodes_mask = g.ndata['inner_node'].bool()                                 # T/F mask of local nodes = inner nodes, or the nodes that belong to this partition
+    local_edges_mask = g.edata['inner_edge'].bool()                                 # T/F mask of local edges = inner edges, or the edges that belong to this partition
+    num_local_nodes = local_nodes_mask.sum().item()                                 # number of local nodes in the partition
+    num_local_edges = local_edges_mask.sum().item()                                 # number of local edges in the partition
 
     # print("local_nodes_mask: ", local_nodes_mask)
     # print("local_edges_mask: ", local_edges_mask)
@@ -130,21 +144,20 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
     node_feats = dgl.data.load_tensors(node_feats_path)
     for key, feat in node_feats.items():
         print(f"Processing node feature '{key}' with shape {feat.shape}")
-        if len(feat.shape) == 1:
-            # node feature are scalars
-            g.ndata[key] = torch.zeros(num_nodes_in_partition, dtype=feat.dtype)
-            g.ndata[key][local_nodes_mask] = feat[:num_local_nodes]
-        else:
-            # node labels are multi-dimensional
+        if len(feat.shape) == 1:                                                    # case: node feature are scalars
+            g.ndata[key] = torch.zeros(num_nodes_in_partition, dtype=feat.dtype)    # Initialize node feature tensor with zeros
+            g.ndata[key][local_nodes_mask] = feat[:num_local_nodes]                 # Add local node features to the tensor
+        else:                                                                       # case: node labels are multi-dimensional
             g.ndata[key] = torch.zeros((num_nodes_in_partition,) + feat.shape[1:], dtype=feat.dtype)
             g.ndata[key][local_nodes_mask] = feat[:num_local_nodes]
         
     
     # --> 2/4: Add halo node features and labels
-    halo_nodes_mask = ~local_nodes_mask 
+    halo_nodes_mask = ~local_nodes_mask                                             # T/F mask of halo nodes = outer nodes, or the nodes that do not belong to this partition
     halo_node_ids = g.ndata.get(dgl.NID, g.ndata.get('_ID'))[halo_nodes_mask]  
-    print(f"Rank {part_id} - Halo node IDs: ", halo_node_ids)
+    # print(f"Rank {part_id} - Halo node IDs: ", halo_node_ids)
 
+    # Iterate through other partitions to add halo node features
     for other_part_id in range(num_partitions):
 
         # skip the current partition
@@ -180,12 +193,22 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
                 # print(f"Rank {part_id} - halo_feat_mask for part {other_part_id}: ", halo_feat_mask)
                 # print(f"Rank {part_id} - Processing node feature '{key}' with shape {feat.shape} and entries: ", feat)
 
-                # scalar node features
-                if len(feat.shape) == 1 and feat.shape[0] == 1:
-                    g.ndata[key][halo_feat_mask] = feat[0]
-                else:
-                    # g.ndata[key][halo_feat_mask] = feat[matching_halo_indices_in_other_part]
-                    g.ndata[key][halo_nodes_mask][halo_in_other_part] = feat[matching_halo_indices_in_other_part]
+                # # scalar node features
+                # if len(feat.shape) == 1 and feat.shape[0] == 1:
+                #     g.ndata[key][halo_feat_mask] = feat[0]
+                # else:
+                #     # g.ndata[key][halo_feat_mask] = feat[matching_halo_indices_in_other_part]
+                #     g.ndata[key][halo_nodes_mask][halo_in_other_part] = feat[matching_halo_indices_in_other_part].clone().detach()
+                #     print(f"Rank {part_id} - adding node feature '{key}' with shape {feat.shape} and entries: ", feat[matching_halo_indices_in_other_part])
+                #     print(f"Rank {part_id} - after add node g.ndata[key][halo_nodes_mask][halo_in_other_part]: ", g.ndata[key][halo_nodes_mask][halo_in_other_part])
+                updated_node_feats = g.ndata[key].clone().detach()
+                updated_node_feats[halo_nodes_mask] = torch.index_select(feat, 0, matching_halo_indices_in_other_part).clone().detach()
+                g.ndata[key] = updated_node_feats
+
+                # print(f"Rank {part_id} - before add node g.ndata[key][halo_nodes_mask][halo_in_other_part]: ", g.ndata[key][halo_nodes_mask][halo_in_other_part])
+                # print(f"Rank {part_id} - feat[matching_halo_indices_in_other_part]: ", feat[matching_halo_indices_in_other_part])
+                # print(f"Rank {part_id} - after add node g.ndata[key][halo_nodes_mask][halo_in_other_part]: ", g.ndata[key][halo_nodes_mask][halo_in_other_part])
+
 
 
     # --> 3/4: Add core edge features and labels
@@ -198,7 +221,7 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
         else:
             # Edge features and labels are multi-dimensional
             g.edata[key] = torch.zeros((num_edges_in_partition,) + feat.shape[1:], dtype=feat.dtype)
-            g.edata[key][local_edges_mask] = feat[:num_local_edges].clone().detach()
+            g.edata[key][local_edges_mask] = feat[:num_local_edges]
 
 
     # --> 4/4: Add halo edge features and labels
@@ -244,8 +267,6 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
                     g.edata[key][halo_edges_mask][halo_in_other_part] = feat[matching_halo_indices_in_other_part].clone().detach()
                     # print(f"Rank {part_id} - after add edge g.edata[key][halo_edges_mask][halo_in_other_part]: ", g.edata[key][halo_edges_mask][halo_in_other_part])
 
-
-    # each rank prints its final node features (local and halo):
     print(f"Rank {part_id} - Final node features: ", g.ndata)
     print(f"Rank {part_id} - Final edge features: ", g.edata)
 
