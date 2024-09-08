@@ -302,7 +302,6 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
                 print("**************************************")
 
                 # Upload subgraphs to GPU
-                print("subgraphs: ", subgraphs)
                 subgraphs = [sg.to(device) for sg in subgraphs]
 
                 # Forward pass
@@ -319,8 +318,8 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
                 node_labels = torch.cat([sg.ndata['_N/node_label']['_N'].to(device) for sg in subgraphs], dim=0)
                 edge_labels = torch.cat([sg.edata['_E/label'].to(device) for sg in subgraphs], dim=0) 
 
-                # print("rank ", dist.get_rank(), "node_outputs: ", node_outputs)
-                # print("rank ", dist.get_rank(), "edge_outputs: ", edge_outputs)
+                print("rank ", dist.get_rank(), "node_labels: ", node_labels)
+                print("rank ", dist.get_rank(), "edge_labels: ", edge_labels)
 
                 # Compute the loss
                 loss_node = criterion(node_outputs, node_labels)

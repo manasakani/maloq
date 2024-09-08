@@ -47,61 +47,6 @@ def remove_module_prefix(state_dict):
             new_state_dict[k] = v
     return new_state_dict
 
-# # Function to load node and edge features for a partition
-# def load_graph_partitions(graph_dir, part_id):
-
-#     graph_path = f"{graph_dir}/part{part_id}/graph.dgl"
-#     node_feats_path = f"{graph_dir}/part{part_id}/node_feat.dgl"
-#     edge_feats_path = f"{graph_dir}/part{part_id}/edge_feat.dgl"
-
-#     # Load partitioned graph (this loads the subgraph for this partition)
-#     graphs, _ = dgl.load_graphs(graph_path)
-#     g = graphs[0]  
-
-#     num_nodes_in_partition = g.num_nodes()
-#     num_edges_in_partition = g.number_of_edges()
-#     # print(f"Number of nodes in partition {part_id}: {num_nodes_in_partition}")
-#     # print(f"Number of edges in partition {part_id}: {num_edges_in_partition}")
-
-#     # Get the local node mask (real nodes inside the partition)
-#     local_nodes_mask = g.ndata['inner_node'].bool()
-#     num_local_nodes = local_nodes_mask.sum().item()
-
-#     local_edges_mask = g.edata['inner_edge'].bool()
-#     num_local_edges = local_edges_mask.sum().item()
-
-#     # print("local_nodes_mask: ", local_nodes_mask)
-#     # print("local_edges_mask: ", local_edges_mask)
-#     # print("num_nodes_per_rank: ", num_local_nodes)
-#     # print("num_edges_per_rank: ", num_local_edges)
-
-#     # Add the node features/labels to the graph's nodes
-#     node_feats = dgl.data.load_tensors(node_feats_path)
-
-#     for key, feat in node_feats.items():
-#         # print(f"Processing node feature '{key}' with shape {feat.shape}")
-#         if len(feat.shape) == 1:
-#             # node feature are scalars
-#             g.ndata[key] = torch.zeros(num_nodes_in_partition, dtype=feat.dtype)
-#             g.ndata[key][local_nodes_mask] = feat[:num_local_nodes]
-#         else:
-#             # node labels are multi-dimensional
-#             g.ndata[key] = torch.zeros((num_nodes_in_partition,) + feat.shape[1:], dtype=feat.dtype)
-#             g.ndata[key][local_nodes_mask] = feat[:num_local_nodes]
-
-#     # Add the edge features/labels to the graph's edges
-#     edge_feats = dgl.data.load_tensors(edge_feats_path)
-#     for key, feat in edge_feats.items():
-#         # print(f"Processing edge feature '{key}' with shape {feat.shape}")
-#         if len(feat.shape) == 1:
-#             g.edata[key] = torch.zeros(num_edges_in_partition, dtype=feat.dtype)
-#             g.edata[key][local_edges_mask] = feat[:num_local_edges]
-#         else:
-#             # Edge features and labels are multi-dimensional
-#             g.edata[key] = torch.zeros((num_edges_in_partition,) + feat.shape[1:], dtype=feat.dtype)
-#             g.edata[key][local_edges_mask] = feat[:num_local_edges]
-
-#     return g
     
 # Function to load node and edge features for a partition
 def load_graph_partitions(graph_dir, part_id, num_partitions):
@@ -119,6 +64,9 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
         are stored in the node_feat.dgl and edge_feat.dgl files of the other partitions, so we iterate through the other partitions' folders, 
         figure out if they have any halo nodes of the current parition, and then populate the current's partition's halo nodes/edges
         with the features from the other partition.
+
+        !!! Current error !!!: The node outputs are not being updated with the halo node features from the other partitions, 
+                       there is a duplicate node feature issue.
     """
 
     graph_path = f"{graph_dir}/part{part_id}/graph.dgl"
@@ -135,10 +83,6 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
     num_local_nodes = local_nodes_mask.sum().item()                                 # number of local nodes in the partition
     num_local_edges = local_edges_mask.sum().item()                                 # number of local edges in the partition
 
-    # print("local_nodes_mask: ", local_nodes_mask)
-    # print("local_edges_mask: ", local_edges_mask)
-    # print("num_nodes_per_rank: ", num_local_nodes)
-    # print("num_edges_per_rank: ", num_local_edges)
 
     # --> 1/4: Add core node features and labels 
     node_feats = dgl.data.load_tensors(node_feats_path)
@@ -193,22 +137,9 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
                 # print(f"Rank {part_id} - halo_feat_mask for part {other_part_id}: ", halo_feat_mask)
                 # print(f"Rank {part_id} - Processing node feature '{key}' with shape {feat.shape} and entries: ", feat)
 
-                # # scalar node features
-                # if len(feat.shape) == 1 and feat.shape[0] == 1:
-                #     g.ndata[key][halo_feat_mask] = feat[0]
-                # else:
-                #     # g.ndata[key][halo_feat_mask] = feat[matching_halo_indices_in_other_part]
-                #     g.ndata[key][halo_nodes_mask][halo_in_other_part] = feat[matching_halo_indices_in_other_part].clone().detach()
-                #     print(f"Rank {part_id} - adding node feature '{key}' with shape {feat.shape} and entries: ", feat[matching_halo_indices_in_other_part])
-                #     print(f"Rank {part_id} - after add node g.ndata[key][halo_nodes_mask][halo_in_other_part]: ", g.ndata[key][halo_nodes_mask][halo_in_other_part])
                 updated_node_feats = g.ndata[key].clone().detach()
                 updated_node_feats[halo_nodes_mask] = torch.index_select(feat, 0, matching_halo_indices_in_other_part).clone().detach()
                 g.ndata[key] = updated_node_feats
-
-                # print(f"Rank {part_id} - before add node g.ndata[key][halo_nodes_mask][halo_in_other_part]: ", g.ndata[key][halo_nodes_mask][halo_in_other_part])
-                # print(f"Rank {part_id} - feat[matching_halo_indices_in_other_part]: ", feat[matching_halo_indices_in_other_part])
-                # print(f"Rank {part_id} - after add node g.ndata[key][halo_nodes_mask][halo_in_other_part]: ", g.ndata[key][halo_nodes_mask][halo_in_other_part])
-
 
 
     # --> 3/4: Add core edge features and labels
@@ -328,7 +259,7 @@ def main(folder, ip_config):
     xyz_file = os.path.join(data_folder, 'snapshot.xyz')
     hamiltonian_file = os.path.join(data_folder, 'H.csr')
     overlap_file = os.path.join(data_folder, 'S.csr')
-    DGL_pickle_file_path = None                                 # Path to the DGLGraphDataset pickle file, used for save/load if exists
+    DGL_pickle_file_path = None                                                      # Path to the DGLGraphDataset pickle file, used for save/load if exists
 
     # Material parameters:
     pbc = False
