@@ -283,10 +283,10 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
         print("Epoch: ", epoch)
 
         # every 100 epochs, reduce the learning rate by half
-        if epoch % 100 == 0:
+        if epoch % 200 == 0:
             for param_group in optimizer.param_groups:
                 if param_group['lr'] > 1e-8:
-                    param_group['lr'] = param_group['lr']/1.5
+                    param_group['lr'] = param_group['lr']/2
     
         MAE_loss = 0.0
         # model.join() is probably a context manager that synchronizes the processes
