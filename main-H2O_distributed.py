@@ -342,7 +342,7 @@ def main(folder, ip_config):
     save_file = 'model_H2O_'+str(world_size)+'_DGL.pth'  
     train_or_test = 'train'                                          
     num_MP_layers = 1                                                               # Number of message passing layers 
-    num_epochs = 100                                                
+    num_epochs = 500                                                
     learning_rate = 1e-3
     loss_tol = 0                                                    
     dtype = torch.float32
@@ -441,39 +441,22 @@ def main(folder, ip_config):
                                     part_method='metis')
     print("Graph partitioned and saved to: ", part_dir)
 
-    # make sure all workers have loaded the data before starting training
+    # make sure all the files are written before trying to load them
     dist.barrier()
-    print("Barrier 2 for rank ", rank, " passed")
 
     # 2. Load the partitioned graph for the current worker
-    # graph_partition, node_feat, edge_feat, gpb, graph_name, node_types, edge_types  = dgl.distributed.load_partition(part_dir + '/' + graph_name + '.json', rank)
     graph_partition = load_graph_partitions(part_dir, rank, world_size)
     print(f"Loaded partition for rank {rank} with {graph_partition.num_nodes()} nodes")
-    print("graph_partition.ndata.keys(): ", graph_partition.ndata.keys())
-    print("graph_partition.edata.keys(): ", graph_partition.edata.keys())
-
-    # # Add node features and labels back into the graph_partition of the current worker
-    # for key, feat in node_feat.items():
-    #     graph_partition.ndata[key] = feat
-    # # Add edge features and labels back into the graph_partition of the current worker
-    # for key, feat in edge_feat.items():
-    #     graph_partition.edata[key] = feat
 
     # Verify features have been added
-    print("graph_partition.ndata.keys(): ", graph_partition.ndata.keys())
-    print("graph_partition.edata.keys(): ", graph_partition.edata.keys())
-
-    # for key in graph_partition.ndata.keys():
-    #     print("graph_partition.ndata[{}]: ".format(key), graph_partition.ndata[key])
-    # for key in graph_partition.edata.keys():
-    #     print("graph_partition.edata[{}]: ".format(key), graph_partition.edata[key])
+    # print("graph_partition.ndata.keys(): ", graph_partition.ndata.keys())
+    # print("graph_partition.edata.keys(): ", graph_partition.edata.keys())
 
     # 3. Sample the graph (using MultiLayerFullNeighborSampler for full-batch training with no sampling)
     sampler = dgl.dataloading.MultiLayerFullNeighborSampler(num_MP_layers)
 
-    # make sure all workers have loaded the data before starting training
+    # make sure loading is done before creating the DataLoader
     dist.barrier()
-    print("Barrier 3 for rank ", rank, " passed")
 
     # 4. Create the DataLoader with the sampler (enable_cpu_affinity() only works with newer versions of DGL)
     train_nids = graph_partition.nodes()
@@ -490,15 +473,10 @@ def main(folder, ip_config):
 
     # make sure all workers have loaded the data before starting training
     dist.barrier()
-    print("Barrier 4 for rank ", rank, " passed")
 
-
-    for input_nodes, output_nodes, blocks in data_loader:
-        print("Subgraph Node Types in dataloder:", blocks[0].ntypes)
-        print("Subgraph Edge Types in dataloder:", blocks[0].etypes)
-    
-    # make sure all workers have loaded the data before starting training
-    dist.barrier()
+    # for input_nodes, output_nodes, blocks in data_loader:
+    #     print("Subgraph Node Types in dataloder:", blocks[0].ntypes)
+    #     print("Subgraph Edge Types in dataloder:", blocks[0].etypes)
     
     # ************************************************************
     # Initialize the SO2 model

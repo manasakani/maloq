@@ -271,9 +271,6 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
     ### WARNING: EXPECTS TO SEE ONLY 1 GPU PER NODE, FIGURE OUT HOW TO SET DEVICE CORRECTLY LATER
     device = torch.device("cuda:0")
 
-    # make sure all workers have loaded the data before starting training
-    dist.barrier()
-
     # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
     model = nn.parallel.DistributedDataParallel(model, device_ids=[device], find_unused_parameters=True)#, output_device=device,
     criterion = nn.MSELoss()
@@ -322,13 +319,8 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
                 node_labels = torch.cat([sg.ndata['_N/node_label']['_N'].to(device) for sg in subgraphs], dim=0)
                 edge_labels = torch.cat([sg.edata['_E/label'].to(device) for sg in subgraphs], dim=0) 
 
-                print("rank ", dist.get_rank(), "node_outputs: ", node_outputs)
-                print("rank ", dist.get_rank(), "edge_outputs: ", edge_outputs)
-            
-                # print("Node Outputs: ", node_outputs)   
-                # print("Node Labels: ", node_labels)
-                # print("Edge Outputs: ", edge_outputs)
-                # print("Edge Labels: ", edge_labels)
+                # print("rank ", dist.get_rank(), "node_outputs: ", node_outputs)
+                # print("rank ", dist.get_rank(), "edge_outputs: ", edge_outputs)
 
                 # Compute the loss
                 loss_node = criterion(node_outputs, node_labels)

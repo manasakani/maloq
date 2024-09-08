@@ -12,6 +12,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from torch_geometric.utils import degree
+import torch.distributed as dist
 
 from e3nn.o3 import Irrep, Irreps, wigner_3j, matrix_to_angles, Linear, FullyConnectedTensorProduct, TensorProduct, SphericalHarmonics
 from e3nn.nn import Extract
@@ -244,41 +245,31 @@ class SO2Net(torch.nn.Module):
         device = graph.device
         dtype = torch.float32
 
-        # print("Node types in graph:", graph.ntypes)
-        # print("Edge types in graph:", graph.etypes)
-        # print("graph.nodes['_N']: ", graph.nodes['_N'])                             # labels of the input_nodes, with the ouput nodes ordered first
-        # print("graph.ndata['feat']: ", graph.ndata['feat'])                         # features of the input_nodes, with the ouput nodes ordered first
-        # print("graph.edata['edge_attr']: ", graph.edata['edge_attr'])               # features of the edges
-        # print("graph.edata['label']: ", graph.edata['label'])                       # labels of the edges involved in this subgraph
-        # print("graph.ndata['node_label']: ", graph.ndata['node_label'])             # labels of the nodes involved in this subgraph(?)
-        # list keys for graph.ndata and graph.edata
-        # print("graph.ndata.keys(): ", graph.ndata.keys())
-        # print("graph.edata.keys(): ", graph.edata.keys())
-        # print out all the entries in the node and edge features
-        # for key in graph.ndata.keys():
-        #     print("graph.ndata[{}]: ".format(key), graph.ndata[key])
-        # for key in graph.edata.keys():
-        #     print("graph.edata[{}]: ".format(key), graph.edata[key])
-
-        atomic_numbers = graph.ndata['_N/feat']['_N']  
-        edge_distance = graph.edata['_E/edge_attr'][:, 0]
-        edge_distance_vec = graph.edata['_E/edge_attr'][:, [2, 3, 1]]                    # edge distance vector for each edge in the subgraph
+        atomic_numbers = graph.ndata['_N/feat']['_N']                                   # _N/feat = node features
+        edge_distance = graph.edata['_E/edge_attr'][:, 0]                               # _E/edge_attr = edge features
+        edge_distance_vec = graph.edata['_E/edge_attr'][:, [2, 3, 1]]                    
 
         u, v = graph.edges() 
         edge_index = torch.stack([u, v], dim=0)  
 
-        # global_node_ids = graph.ndata[dgl.NID]
-        # local_node_ids = graph.ndata['_ID']
-        # print("Global node IDs:", global_node_ids)
-        # print("Local node IDs:", local_node_ids)
-        # print("atomic_numbers: ", atomic_numbers)
-        # print("edge_distance: ", edge_distance)
-        # print("edge_index: ", edge_index)
-        # print("edge_distance_vec: ", edge_distance_vec)
-        # print("shape of atomic_numbers: ", atomic_numbers.shape)    
-        # print("shape of edge_distance: ", edge_distance.shape)
-        # print("shape of edge_index: ", edge_index.shape)
-        # print("shape of edge_distance_vec: ", edge_distance_vec.shape)
+        # rank = dist.get_rank()  
+        # world_size = dist.get_world_size()
+        # for i in range(world_size):
+        #     if rank == i:
+        #         global_node_ids = graph.ndata[dgl.NID]
+        #         local_node_ids = graph.ndata['_ID']
+        #         print("Global node IDs:", global_node_ids)
+        #         print("Local node IDs:", local_node_ids)
+        #         print("atomic_numbers: ", atomic_numbers)
+        #         print("edge_distance: ", edge_distance)
+        #         print("edge_index: ", edge_index)
+        #         print("edge_distance_vec: ", edge_distance_vec)
+        #         print("shape of atomic_numbers: ", atomic_numbers.shape)    
+        #         print("shape of edge_distance: ", edge_distance.shape)
+        #         print("shape of edge_index: ", edge_index.shape)
+        #         print("shape of edge_distance_vec: ", edge_distance_vec.shape)
+        #         print("***************************************")
+        #     dist.barrier() 
 
         num_subgraph_nodes = len(atomic_numbers)
         num_subgraph_edges = len(edge_distance)
@@ -407,6 +398,7 @@ def init_edge_rot_mat(edge_distance_vec):
     edge_vec_0_distance = torch.sqrt(torch.sum(edge_vec_0**2, dim=1))
 
     # Make sure the atoms are far enough apart
+    # print("warning: assert turned off in init_edge_rot_mat")
     #assert torch.min(edge_vec_0_distance) < 0.0001
     if torch.min(edge_vec_0_distance) < 0.0001:
         print(
@@ -446,6 +438,7 @@ def init_edge_rot_mat(edge_distance_vec):
     )
 
     vec_dot = torch.abs(torch.sum(edge_vec_2 * norm_x, dim=1))
+
     # Check the vectors aren't aligned
     assert torch.max(vec_dot) < 0.99
 
