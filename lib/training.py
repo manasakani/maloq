@@ -273,6 +273,7 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
 
     # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
     model = nn.parallel.DistributedDataParallel(model, device_ids=[device], find_unused_parameters=True)#, output_device=device,
+
     criterion = nn.MSELoss()
 
     track_loss = []
@@ -284,13 +285,15 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
         print("Epoch: ", epoch)
 
         # every 100 epochs, reduce the learning rate by half
-        if epoch % 200 == 0:
+        if epoch % 200 == 0 and dist.get_rank() == 0:
             for param_group in optimizer.param_groups:
                 if param_group['lr'] > 1e-8:
                     param_group['lr'] = param_group['lr']/2
     
+        epoch_loss = 0.0
         MAE_loss = 0.0
-        # model.join() is probably a context manager that synchronizes the processes
+
+        # model.join() is probably a context manager 
         with model.join():
             for batch_id, (input_nodes, output_nodes, subgraphs) in enumerate(loader):
                 optimizer.zero_grad()
@@ -337,17 +340,33 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
                 # Update parameters
                 optimizer.step()
 
+                epoch_loss += loss.item()
+
                 # testing garbage collection (add this back in before running on large structures)
                 # del subgraphs, node_outputs, edge_outputs, node_labels, edge_labels, combined_outputs, combined_labels
                 # torch.cuda.empty_cache()  # free GPU memory
-
+            
+        # Synchronize loss across all processes
         if dist.is_available() and dist.is_initialized():
-            if dist.get_rank() == 0: 
-                print(f"Epoch: {epoch} | MSE Loss: {loss.item()}")
-                # print(f"---> Mean Absolute Error (mH): {MAE_loss.item()*1e3/len(loader)}")
-                epoch_end_time = time.time()
-                epoch_duration = epoch_end_time - epoch_start_time
-                print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
+            dist.all_reduce(torch.tensor(epoch_loss, device=device), op=dist.ReduceOp.SUM)
+            dist.all_reduce(torch.tensor(MAE_loss, device=device), op=dist.ReduceOp.SUM)
+            epoch_loss /= dist.get_world_size()
+            MAE_loss /= dist.get_world_size()
+
+        # Print loss only from rank 0
+        if dist.get_rank() == 0:
+            print(f"--> Epoch: {epoch} | MSE Loss: {epoch_loss} | MAE Loss: {MAE_loss}")
+            epoch_duration = time.time() - epoch_start_time
+            print(f"--> Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
+
+
+        # if dist.is_available() and dist.is_initialized():
+        #     if dist.get_rank() == 0: 
+        #         print(f"Epoch: {epoch} | MSE Loss: {loss.item()}")
+        #         # print(f"---> Mean Absolute Error (mH): {MAE_loss.item()*1e3/len(loader)}")
+        #         epoch_end_time = time.time()
+        #         epoch_duration = epoch_end_time - epoch_start_time
+        #         print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
 
         track_loss_node.append(loss_node.cpu().detach().numpy()) 
         track_loss_edge.append(loss_edge.cpu().detach().numpy())
@@ -444,15 +463,15 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
             node_pred_tensor = torch.cat(H_block_node_pred)
 
             # Process edge predictions
-            flattened_edge_labels = construct_kernel.get_H(test_batch.y[:labelled_edge_size].cpu())
-            flattened_edge_pred = construct_kernel.get_H(test_edge[:labelled_edge_size].cpu())
+            flattened_edge_labels = construct_kernel.get_H(test_batch.y[0:labelled_edge_size].cpu())
+            flattened_edge_pred = construct_kernel.get_H(test_edge[0:labelled_edge_size].cpu())
 
-            edge_label = utils.unflatten(flattened_edge_labels, test_batch.x[:labelled_node_size],
-                                         test_batch.edge_index[:, :labelled_edge_size],
+            edge_label = utils.unflatten(flattened_edge_labels, test_batch.x[0:labelled_node_size],
+                                         test_batch.edge_index[:, 0:labelled_edge_size],
                                          equivariant_blocks, atom_orbitals, out_slices)
             
-            edge_pred = utils.unflatten(flattened_edge_pred, test_batch.x[:labelled_node_size],
-                                        test_batch.edge_index[:, :labelled_edge_size],
+            edge_pred = utils.unflatten(flattened_edge_pred, test_batch.x[0:labelled_node_size],
+                                        test_batch.edge_index[:, 0:labelled_edge_size],
                                         equivariant_blocks, atom_orbitals, out_slices)
             
             H_block_edge_labels = [matrix.flatten() for matrix in edge_label.values()]

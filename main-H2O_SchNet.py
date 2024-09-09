@@ -54,7 +54,7 @@ def main():
     num_validate = 50                                                           # Number of validation samples             
     num_test = 400     
 
-    restart_file = 'model_H2O.pth'                                             
+    restart_file = None                                           
     save_file = 'model_H2O.pth'
     train_or_test = 'train'                                                     
     num_epochs = 50000                                                           

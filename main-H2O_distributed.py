@@ -65,8 +65,6 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
         figure out if they have any halo nodes of the current parition, and then populate the current's partition's halo nodes/edges
         with the features from the other partition.
 
-        !!! Current error !!!: The node outputs are not being updated with the halo node features from the other partitions, 
-                       there is a duplicate node feature issue.
     """
 
     graph_path = f"{graph_dir}/part{part_id}/graph.dgl"
@@ -83,7 +81,6 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
     num_local_nodes = local_nodes_mask.sum().item()                                 # number of local nodes in the partition
     num_local_edges = local_edges_mask.sum().item()                                 # number of local edges in the partition
 
-
     # --> 1/4: Add core node features and labels 
     node_feats = dgl.data.load_tensors(node_feats_path)
     for key, feat in node_feats.items():
@@ -94,12 +91,13 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
         else:                                                                       # case: node labels are multi-dimensional
             g.ndata[key] = torch.zeros((num_nodes_in_partition,) + feat.shape[1:], dtype=feat.dtype)
             g.ndata[key][local_nodes_mask] = feat[:num_local_nodes]
-        
+
+    dist.barrier() 
     
     # --> 2/4: Add halo node features and labels
     halo_nodes_mask = ~local_nodes_mask                                             # T/F mask of halo nodes = outer nodes, or the nodes that do not belong to this partition
     halo_node_ids = g.ndata.get(dgl.NID, g.ndata.get('_ID'))[halo_nodes_mask]  
-    # print(f"Rank {part_id} - Halo node IDs: ", halo_node_ids)
+    print(f"Rank {part_id} - Halo node IDs: ", halo_node_ids)
 
     # Iterate through other partitions to add halo node features
     for other_part_id in range(num_partitions):
@@ -119,28 +117,33 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
         # Get other partition's global node IDs (use the same key check as before)
         other_global_node_ids = other_g.ndata.get(dgl.NID, other_g.ndata.get('_ID'))
         other_global_node_ids = other_global_node_ids[:num_other_local_nodes]                   # Only consider local nodes in the other partition, since they are the ones which have features
-
-        # print(f"Rank {part_id} - other_global_node_ids from part {other_part_id}: ", other_global_node_ids)
+        print(f"Rank {part_id} - other_global_node_ids from part {other_part_id}: ", other_global_node_ids) # checked
 
         # Identify which halo nodes belong to this other partition by comparing global IDs
-        halo_in_other_part_mask = halo_node_ids[:, None] == other_global_node_ids               # Broadcasted comparison
+        # halo_in_other_part_mask = torch.isin(halo_node_ids, other_global_node_ids)              # are 'other_global_node_ids' in 'that' partition in halo_node_ids of 'this' partition?
+        halo_in_other_part_mask = halo_node_ids[:, None] == other_global_node_ids
+        print(f"Rank {part_id} - halo_in_other_part mask for part {other_part_id}: ", halo_in_other_part_mask)
         halo_in_other_part = halo_in_other_part_mask.any(dim=1)
-        # print(f"Rank {part_id} - halo_in_other_part mask for part {other_part_id}: ", halo_in_other_part)
 
         if halo_in_other_part.any():
+
             matching_halo_indices_in_other_part = halo_in_other_part_mask.nonzero(as_tuple=False)[:, 1]
-            # print(f"Rank {part_id} - matching_halo_indices_in_other_part: ", matching_halo_indices_in_other_part)
+            # halo_feat_mask = halo_nodes_mask.nonzero(as_tuple=True)[0][halo_in_other_part_mask]
+            # print(f"Rank {part_id} - halo_feat_mask for part {other_part_id}: ", halo_feat_mask)
+
+            halo_feat_mask = halo_nodes_mask.nonzero(as_tuple=True)[0][halo_in_other_part]
 
             # For each feature key, update halo node features using the features from the other partition
             for key, feat in other_node_feats.items():
-                halo_feat_mask = halo_nodes_mask.nonzero(as_tuple=True)[0][halo_in_other_part]
-                # print(f"Rank {part_id} - halo_feat_mask for part {other_part_id}: ", halo_feat_mask)
                 # print(f"Rank {part_id} - Processing node feature '{key}' with shape {feat.shape} and entries: ", feat)
-
                 updated_node_feats = g.ndata[key].clone().detach()
-                updated_node_feats[halo_nodes_mask] = torch.index_select(feat, 0, matching_halo_indices_in_other_part).clone().detach()
+                # print(f"Rank {part_id} - updated_node_feats shape: ", updated_node_feats.shape)
+                # print(f"Rank {part_id} - halo_in_other_part_mask.nonzero(as_tuple=False).squeeze(): ", halo_in_other_part_mask.nonzero(as_tuple=False).squeeze() )
+                # updated_node_feats[halo_feat_mask] = torch.index_select(feat, 0, halo_in_other_part_mask.nonzero(as_tuple=False).squeeze()).clone().detach()
+                updated_node_feats[halo_feat_mask] = torch.index_select(feat, 0, matching_halo_indices_in_other_part).clone().detach()
                 g.ndata[key] = updated_node_feats
 
+    dist.barrier()
 
     # --> 3/4: Add core edge features and labels
     edge_feats = dgl.data.load_tensors(edge_feats_path)
@@ -154,12 +157,13 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
             g.edata[key] = torch.zeros((num_edges_in_partition,) + feat.shape[1:], dtype=feat.dtype)
             g.edata[key][local_edges_mask] = feat[:num_local_edges]
 
+    dist.barrier()
 
     # --> 4/4: Add halo edge features and labels
     halo_edges_mask = ~local_edges_mask
     local_edge_ids = g.edata.get(dgl.EID, g.edata.get('_ID'))[local_edges_mask]
     halo_edge_ids = g.edata.get(dgl.EID, g.edata.get('_ID'))[halo_edges_mask]
-    # print(f"Rank {part_id} - Halo edge IDs: ", halo_edge_ids)
+    print(f"Rank {part_id} - Halo edge IDs: ", halo_edge_ids)
 
     for other_part_id in range(num_partitions):
             
@@ -178,28 +182,37 @@ def load_graph_partitions(graph_dir, part_id, num_partitions):
             # Get other partition's global edge IDs (use the same key check as before)
             other_global_edge_ids = other_g.edata.get(dgl.EID, other_g.edata.get('_ID'))
             other_global_edge_ids = other_global_edge_ids[:num_other_local_edges]                   # Only consider local edges in the other partition, since they are the ones which have features
-    
-            # print(f"Rank {part_id} - other_global_edge_ids from part {other_part_id}: ", other_global_edge_ids)
+            print(f"Rank {part_id} - other_global_edge_ids from part {other_part_id}: ", other_global_edge_ids)
     
             # Identify which halo edges belong to this other partition by comparing global IDs
+            # halo_in_other_part_mask = torch.isin(halo_edge_ids, other_global_edge_ids)
             halo_in_other_part_mask = halo_edge_ids[:, None] == other_global_edge_ids
             halo_in_other_part = halo_in_other_part_mask.any(dim=1)
 
             if halo_in_other_part.any():
                 matching_halo_indices_in_other_part = halo_in_other_part_mask.nonzero(as_tuple=False)[:, 1]
                 # print(f"Rank {part_id} - edge matching_halo_indices_in_other_part: ", matching_halo_indices_in_other_part)
+
+                halo_feat_mask = halo_edges_mask.nonzero(as_tuple=True)[0][halo_in_other_part]
+                # print(f"Rank {part_id} - edge halo_feat_mask for part {other_part_id}: ", halo_feat_mask)
     
                 # For each feature key, update halo edge features using the features from the other partition
                 for key, feat in other_edge_feats.items():
-                    halo_feat_mask = halo_edges_mask.nonzero(as_tuple=True)[0][halo_in_other_part]
-                    # print(f"Rank {part_id} - edge halo_feat_mask for part {other_part_id}: ", halo_feat_mask)
-    
-                    g.edata[key][halo_feat_mask] = feat[matching_halo_indices_in_other_part]
-                    g.edata[key][halo_edges_mask][halo_in_other_part] = feat[matching_halo_indices_in_other_part].clone().detach()
-                    # print(f"Rank {part_id} - after add edge g.edata[key][halo_edges_mask][halo_in_other_part]: ", g.edata[key][halo_edges_mask][halo_in_other_part])
+                    updated_edge_feats = g.edata[key].clone().detach()
+                    updated_edge_feats[halo_feat_mask] = torch.index_select(feat, 0, matching_halo_indices_in_other_part).clone().detach()
+                    g.edata[key] = updated_edge_feats
 
-    print(f"Rank {part_id} - Final node features: ", g.ndata)
-    print(f"Rank {part_id} - Final edge features: ", g.edata)
+    # Check attributes
+    dist.barrier()
+    rank = dist.get_rank()  
+    world_size = dist.get_world_size()
+    if rank == 1:
+        print(f"Rank {part_id} - Final node features: ", g.ndata)
+        print(f"Rank {part_id} - Final edge features: ", g.edata)
+    
+    dist.barrier()
+    print("*** Node and edge features added to the partitioned graph ***")
+    dist.barrier()
 
     return g
 
@@ -341,7 +354,7 @@ def main(folder, ip_config):
                                     construct_kernel, 
                                     device=device, 
                                     dtype=dtype)
-        with open('dgl_graph_dataset.pkl', 'wb') as f:
+        with open('dgl_graph_dataset_H2O.pkl', 'wb') as f:
             pickle.dump(H2O_DGL, f)
     
     print("DGLGraphDataset created", flush=True)
@@ -360,8 +373,8 @@ def main(folder, ip_config):
     # make sure all workers have loaded the data before starting training
     dist.barrier()
 
-    graph_name = 'H2O'                                  # Name for the graph (just used for saving/loading)
-    part_dir = './graph_partitions'                     # Directory to store the partitions
+    graph_name = 'H2O'                                      # Name for the graph (just used for saving/loading)
+    part_dir = './H2O_graph_partitions'                     # Directory to store the partitions
 
     # 1. Partition the graph, and save the partitioned graph to disk
     dgl.distributed.partition_graph(graph, 
@@ -379,6 +392,9 @@ def main(folder, ip_config):
     graph_partition = load_graph_partitions(part_dir, rank, world_size)
     print(f"Loaded partition for rank {rank} with {graph_partition.num_nodes()} nodes")
 
+    # this one may not be necessary
+    dist.barrier()
+
     # Verify features have been added
     # print("graph_partition.ndata.keys(): ", graph_partition.ndata.keys())
     # print("graph_partition.edata.keys(): ", graph_partition.edata.keys())
@@ -390,7 +406,10 @@ def main(folder, ip_config):
     dist.barrier()
 
     # 4. Create the DataLoader with the sampler (enable_cpu_affinity() only works with newer versions of DGL)
+    
+    # The train_nids for each rank should correspond to the node IDs that the current rank is responsible for.
     train_nids = graph_partition.nodes()
+    
     num_nodes_in_partition = len(train_nids)
     data_loader = dgl.dataloading.DistNodeDataLoader(
         graph_partition,                                # Partitioned graph loaded for the current worker
@@ -405,10 +424,6 @@ def main(folder, ip_config):
     # make sure all workers have loaded the data before starting training
     dist.barrier()
 
-    # for input_nodes, output_nodes, blocks in data_loader:
-    #     print("Subgraph Node Types in dataloder:", blocks[0].ntypes)
-    #     print("Subgraph Edge Types in dataloder:", blocks[0].etypes)
-    
     # ************************************************************
     # Initialize the SO2 model
     # ************************************************************
@@ -466,7 +481,7 @@ def main(folder, ip_config):
     training.evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Amorphous GNNs --- HfO2")
+    parser = argparse.ArgumentParser(description="Amorphous GNNs --- H2O")
     parser.add_argument("-f", "--folder", default="", required=False)
     parser.add_argument("--ip_config", type=str, required=True, help="Path to IP configuration file for distributed training.")
     args = parser.parse_args()
