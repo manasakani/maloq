@@ -1,0 +1,8 @@
+*.out
+*.pkl
+*.png
+*.txt
+*.pth
+*_graph_partitions/
+lib/__pycache__/
+lib_equiformer/__pycache__/
