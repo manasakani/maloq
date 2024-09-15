@@ -338,6 +338,8 @@ def createdata_subgraph(structure, slice_center, cutoff, equivariant_blocks, out
     edge_index = edge_matrix.T[full_edge_positions].numpy() 
     edge_index = edge_index.T
     offsite_ham = structure.get_orbital_blocks(edge_index)
+
+    
     H_blocks_edge = []
     for i in range(len(edge_index[0])):
         H_blocks_edge.append(offsite_ham[(edge_index[0][i].item(), edge_index[1][i].item())])
@@ -348,6 +350,8 @@ def createdata_subgraph(structure, slice_center, cutoff, equivariant_blocks, out
     # find the onsite Hamiltonian blocks for all atoms that are part of the graph
     onsite_edge_index = np.array([np.array(full_atom_index),np.array(full_atom_index)])
     onsite_ham = structure.get_orbital_blocks(onsite_edge_index)
+
+
     H_blocks_node = []
     for i in range(len(onsite_edge_index[0])):
          H_blocks_node.append(onsite_ham[(onsite_edge_index[0][i].item(),onsite_edge_index[1][i].item())])
@@ -449,6 +453,49 @@ def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, ou
         print("Edge Features (edge_attr):", batch.edge_attr.size())    
 
     return loader
+
+
+
+
+def batch_data_load(load_data, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
+    """
+    structures: list of Structure objects
+    slice_list: list of indices which define the center of each subgraph
+    cutoff: cutoff boundary of the slice used for training 
+    equivariant_blocks: dictionary containing the start and end indices of the equivariant blocks in i and j direction for each target in targets
+    out_slices: marks the start and end of indices belonging to a certain target. Slice 1 (0 to 1) corresponds to the first target in equivariant blocks
+    construct_kernel: SO2.e3TensorDecomp object
+    """
+
+    data_list = [load_data]
+
+    dataset = CustomDataset(data_list)
+
+    if dist.is_initialized():
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+        loader = DataLoader(dataset, sampler=sampler, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
+    else:
+        loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
+
+    print("*** Batch properties:")
+    for batch in loader:
+        print("--> Batch: ")
+        print("Node Features (x):", batch.x.size())
+        print("Edge Index:", batch.edge_index.size())
+        print("Edge Features (edge_attr):", batch.edge_attr.size())    
+
+    return loader
+
+
+
+
+
+
+
+
+
+
+
 
 def batch_data_graphpartition(graph, num_subgraph, num_batch, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
 

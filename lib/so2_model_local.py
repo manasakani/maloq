@@ -12,7 +12,6 @@ import matplotlib.pyplot as plt
 import torch.nn.functional as F
 from torch_geometric.utils import degree
 import torch.distributed as dist
-import dgl
 
 from e3nn.o3 import Irrep, Irreps, wigner_3j, matrix_to_angles, Linear, FullyConnectedTensorProduct, TensorProduct, SphericalHarmonics
 from e3nn.nn import Extract
@@ -67,7 +66,8 @@ def convert_to_irreps(input,output_channels,lmax_list,lin_node):
 
         return test_output
     
-class SO2Net(torch.nn.Module):
+
+class SO2Net_local(torch.nn.Module):
 
     def __init__(
         self,
@@ -85,7 +85,7 @@ class SO2Net(torch.nn.Module):
         irreps_in,
         irreps_out
     ):
-        super(SO2Net, self).__init__()
+        super(SO2Net_local, self).__init__()
 
         self.lmax_list = lmax_list
         self.mmax_list = mmax_list
@@ -209,122 +209,8 @@ class SO2Net(torch.nn.Module):
 
             self.blocks.append(block2)
 
-
-    def forward(self, batch, total_num_nodes=None):
-
-        # if the dataset was created using DGL dataloader, the input is a list of DGL graphs
-        if isinstance(batch[0], dgl.DGLGraph):
-            print("using DGL dataloader")
-            # If batch is a list or tuple, process each graph individually 
-            # needed for some samplers used by DGL
-            if isinstance(batch, (list, tuple)):
-                print("batch is a list or tuple")
-                node_outputs = []
-                edge_outputs = []
-
-                for subgraph in batch:
-                    node_output, edge_output = self.process_graph(subgraph, total_num_nodes)
-                    node_outputs.append(node_output)
-                    edge_outputs.append(edge_output)
-
-                return node_outputs, edge_outputs
-            else:
-                # Process a single graph
-                print("batch is a single graph")
-                return self.process_graph(batch, total_num_nodes)
-                
-        # if the dataset was created using PyTorch Geometric dataloader, the input is a PyTorch Geometric data object
-        else:
-            print("using PyTorch Geometric dataloader")
-            return self.forward_noDGL(batch)
-
-    def process_graph(self, graph, total_num_nodes):
-        """
-        total_num_nodes = total number of nodes in the entire graph, from which this batch was extracted
-
-        """
-        # Extract features from the graph
-        device = graph.device
-        dtype = torch.float32
-
-        atomic_numbers = graph.ndata['_N/feat']['_N']                                   # _N/feat = node features
-        edge_distance = graph.edata['_E/edge_attr'][:, 0]                               # _E/edge_attr = edge features
-        edge_distance_vec = graph.edata['_E/edge_attr'][:, [2, 3, 1]]                    
-
-        u, v = graph.edges() 
-        edge_index = torch.stack([u, v], dim=0)  
-
-        # rank = dist.get_rank()  
-        # world_size = dist.get_world_size()
-        # for i in range(world_size):
-        #     if rank == i:
-        #         global_node_ids = graph.ndata[dgl.NID]
-        #         local_node_ids = graph.ndata['_ID']
-        #         print("Global node IDs:", global_node_ids)
-        #         print("Local node IDs:", local_node_ids)
-        #         print("atomic_numbers: ", atomic_numbers)
-        #         print("edge_distance: ", edge_distance)
-        #         print("edge_index: ", edge_index)
-        #         print("edge_distance_vec: ", edge_distance_vec)
-        #         print("shape of atomic_numbers: ", atomic_numbers.shape)    
-        #         print("shape of edge_distance: ", edge_distance.shape)
-        #         print("shape of edge_index: ", edge_index.shape)
-        #         print("shape of edge_distance_vec: ", edge_distance_vec.shape)
-        #         print("***************************************")
-        #     dist.barrier() 
-
-        num_subgraph_nodes = len(atomic_numbers)
-        num_subgraph_edges = len(edge_distance)
-
-        # Initialize node and edge embeddings - SO3_Embedding
-        node_embedding = SO3_Embedding(num_subgraph_nodes, self.lmax_list, self.sphere_channels, device, dtype)
-        edge_embedding = SO3_Embedding(num_subgraph_edges, self.lmax_list, self.sphere_channels, device, dtype)
-
-        # Initialize the l = 0, m = 0 coefficients for each resolution
-        offset_res = 0
-        for i in range(self.num_resolutions):
-            if self.num_resolutions == 1:
-                node_embedding.embedding[:, offset_res, :] = self.sphere_embedding(atomic_numbers)               # l = 0, m = 0 node feature = atomic numbers 
-                edge_embedding.embedding[:, offset_res, :] = self.distance_expansion(edge_distance)              # l = 0, m = 0 edge feature = edge distances
-
-        node_embedding.set_lmax_mmax(self.lmax_list, self.mmax_list)
-        edge_distance_embedding = self.distance_expansion(edge_distance)
-
-        # Create rotation matrices for the edges
-        edge_rot_mat = init_edge_rot_mat(edge_distance_vec)
-        self.SO3_rotation[0].set_wigner(edge_rot_mat)
-
-        # Process the graph through the layers
-        for i in range(self.num_layers):
-
-            # update the node embedding
-            node_embedding = self.blocks[2 * i](
-                node_embedding,
-                atomic_numbers,
-                edge_distance_embedding,
-                edge_index,
-                edge_embedding,
-                batch=None
-            )
-
-            # update the edge embedding
-            edge_embedding = self.blocks[2 * i + 1](
-                node_embedding,
-                atomic_numbers,
-                edge_distance_embedding,
-                edge_index,
-                edge_embedding,
-                batch=None
-            )
-
-        # Convert the output irreps to the coupled space irrep representation needed to reconstruct the Hamiltonian using the linear layer from e3nn library
-        node_output = convert_to_irreps(node_embedding, self.output_channels, self.lmax_list, self.node_lin)
-        edge_output = convert_to_irreps(edge_embedding, self.output_channels, self.lmax_list, self.edge_lin)
-
-        return node_output, edge_output
-
-
-    def forward_noDGL(
+    
+    def forward(
         self,
         batch
     ):  
@@ -393,6 +279,14 @@ class SO2Net(torch.nn.Module):
         edge_output = convert_to_irreps(edge_embedding,self.output_channels,self.lmax_list,self.edge_lin)
 
         return node_output, edge_output
+
+
+
+
+
+
+
+
 
 
 def init_edge_rot_mat(edge_distance_vec):

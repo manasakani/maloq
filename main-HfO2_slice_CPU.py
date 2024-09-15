@@ -3,7 +3,7 @@ import lib.data as data
 import lib.training as training
 import lib.structure as structure
 import lib_equiformer.SO2 as SO2
-import lib.so2_model as so2_model
+import lib.so2_model_local as so2_model
 import lib_equiformer.SO3 as SO3
 from e3nn.o3 import Irreps
 import matplotlib.pyplot as plt
@@ -27,8 +27,8 @@ def remove_module_prefix(state_dict):
 
 def main(folder):
 
-    if not torch.cuda.is_available():
-        raise RuntimeError("No GPUs are available!")
+    # if not torch.cuda.is_available():
+    #     raise RuntimeError("No GPUs are available!")
 
     # Set random seed for reproducibility
     torch.manual_seed(42)
@@ -40,39 +40,39 @@ def main(folder):
     # ************************************************************
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Device: ", device, flush=True)
+    # print("Device: ", device, flush=True)
 
-    if 'SLURM_PROCID' in os.environ:  
-        rank = int(os.environ['SLURM_PROCID'])
-        world_size = int(os.environ['SLURM_NTASKS'])
-        local_rank = int(os.environ['SLURM_LOCALID'])
-        os.environ['RANK'] = str(rank)
-        os.environ['WORLD_SIZE'] = str(world_size)
-        os.environ['LOCAL_RANK'] = str(local_rank)
-        backend = 'gloo'  # Use NCCL for multi-GPU on Piz Daint (edit: uses RDMA, switching to gloo)
-        dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+    # if 'SLURM_PROCID' in os.environ:  
+    #     rank = int(os.environ['SLURM_PROCID'])
+    #     world_size = int(os.environ['SLURM_NTASKS'])
+    #     local_rank = int(os.environ['SLURM_LOCALID'])
+    #     os.environ['RANK'] = str(rank)
+    #     os.environ['WORLD_SIZE'] = str(world_size)
+    #     os.environ['LOCAL_RANK'] = str(local_rank)
+    #     backend = 'gloo'  # Use NCCL for multi-GPU on Piz Daint (edit: uses RDMA, switching to gloo)
+    #     dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
 
-    else:  
-        rank = 0
-        world_size = 1
-        local_rank = 0
-        os.environ['MASTER_ADDR'] = '127.0.0.1'
-        os.environ['MASTER_PORT'] = '29500'
-        backend = 'gloo'  # Use Gloo for attelas (single GPU)
+    # else:  
+    #     rank = 0
+    #     world_size = 1
+    #     local_rank = 0
+    #     os.environ['MASTER_ADDR'] = '127.0.0.1'
+    #     os.environ['MASTER_PORT'] = '29500'
+    #     backend = 'gloo'  # Use Gloo for attelas (single GPU)
 
-    if dist.is_initialized() and dist.get_rank() == 0:  
-        print(f"RANK: {rank}", flush=True)
-        print(f"WORLD_SIZE: {world_size}", flush=True)
-        print(f"LOCAL_RANK: {local_rank}", flush=True)
+    # if dist.is_initialized() and dist.get_rank() == 0:  
+    #     print(f"RANK: {rank}", flush=True)
+    #     print(f"WORLD_SIZE: {world_size}", flush=True)
+    #     print(f"LOCAL_RANK: {local_rank}", flush=True)
 
     # ************************************************************
     # Input parameters and for the HfO2 dataset
     # ************************************************************
 
-    data_folder = os.path.join(folder, 'datasets/a-HfO2')
-    xyz_file = os.path.join(data_folder, 'structure.xyz')
-    hamiltonian_file = os.path.join(data_folder, 'H.csr')
-    overlap_file = os.path.join(data_folder, 'S.csr')
+    data_folder = os.path.join(folder, '/usr/scratch/mont-fort26/chexia/ML_kevin/HamiltonianFitting__HfOx_dataset_and_model/pristine_KS_S_1/')
+    xyz_file = '/usr/scratch/mont-fort26/chexia/ML_kevin/HamiltonianFitting__HfOx_dataset_and_model/HfO2.xyz'
+    hamiltonian_file = os.path.join(data_folder, 'memrstors-KS_SPIN_1-1_0.csr')
+    overlap_file = os.path.join(data_folder, 'memrstors-S_SPIN_1-1_0.csr')
 
     # Material parameters:
     pbc = True
@@ -94,16 +94,16 @@ def main(folder):
                                                                                     # after dividing the graph into 'num_subgraph' subgraphs
     # Parameters:
     restart_file = None
-    save_file = 'model_HfO2_'+str(world_size)+'_subgraph.pth'  
+    save_file = 'model_HfO2_'+str(num_subgraph)+'_subgraph_CPU'  
     train_or_test = 'train'                                          
     num_MP_layers = 1                                                               # Number of message passing layers 
-    num_epochs = 1000                                                               # Number of epochs                                                
+    num_epochs = 10000                                                               # Number of epochs                                                
     learning_rate = 1e-3                                                            # Initial Learning rate                 
     loss_tol = 0                                                                    # Loss tolerance for early stopping
     dtype = torch.float32
 
     # *** Initialize the hyperparameters of the SO2 model:
-    sphere_channels = 16
+    sphere_channels = 64
     num_heads = 2
     attn_hidden_channels = 64  
     attn_alpha_channels = 32
@@ -115,6 +115,7 @@ def main(folder):
     # ************************************************************
 
     # *** Initialize the domain and electronic structure matrices:
+    
     a_HfO2 = structure.Structure(xyz_file, 
                                     hamiltonian_file, 
                                     overlap_file, 
@@ -173,7 +174,7 @@ def main(folder):
     # *** Initialize the model:
     mappingReduced = SO3.CoefficientMappingModule(lmax_list, mmax_list)
     irreps_out = net_out_irreps
-    model = so2_model.SO2Net(num_MP_layers, 
+    model = so2_model.SO2Net_local(num_MP_layers, 
                             lmax_list, 
                             mmax_list, 
                             mappingReduced, 
@@ -192,18 +193,9 @@ def main(folder):
     if restart_file is not None:
         print("Restarting training from a saved model and optimizer state...", flush=True)
         checkpoint = torch.load(restart_file)
-        state_dict = checkpoint['model_state_dict']
-
-        if dist.is_available() and dist.is_initialized():
-            # If the model was saved with DDP, remove the 'module' prefix that it might have (just in case)
-            if 'module.' in next(iter(checkpoint['model_state_dict'].keys())):
-                prefix = 'module.'
-                state_dict = {k[len(prefix):] if k.startswith(prefix) else k: v for k, v in state_dict.items()}
-            # with the current training setup, the module prefix is already removed
-            model.load_state_dict(state_dict)
-        else:
-            state_dict = remove_module_prefix(checkpoint['model_state_dict'])
-            model.load_state_dict(state_dict)
+        # state_dict = checkpoint['model_state_dict']
+        state_dict = remove_module_prefix(checkpoint['model_state_dict'])
+        model.load_state_dict(state_dict)
 
     print("Model initialized", flush=True)
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()), flush=True)
@@ -227,7 +219,10 @@ def main(folder):
     # use with a restarted model, to test the model
     elif train_or_test == 'test':
         print("testing on unseen data...", flush=True)
-        training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
+        test_data = torch.load('test_data_structures/model_HfO2x2_structure_1_training_1500_2.pt')
+        test_data_loader = data.batch_data_load(test_data, equivariant_blocks, out_slices, construct_kernel, dtype=torch.float32)
+        # data_loader = data.batch_data_subgraph(a_HfO2, slice_list, cutoff, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
+        training.evaluate_model(model, test_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
 
 if __name__ == "__main__":

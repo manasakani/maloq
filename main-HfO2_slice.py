@@ -3,7 +3,7 @@ import lib.data as data
 import lib.training as training
 import lib.structure as structure
 import lib_equiformer.SO2 as SO2
-import lib.so2_model as so2_model
+import lib.so2_model_local as so2_model
 import lib_equiformer.SO3 as SO3
 from e3nn.o3 import Irreps
 import matplotlib.pyplot as plt
@@ -69,10 +69,10 @@ def main(folder):
     # Input parameters and for the HfO2 dataset
     # ************************************************************
 
-    data_folder = os.path.join(folder, 'datasets/a-HfO2')
-    xyz_file = os.path.join(data_folder, 'structure.xyz')
-    hamiltonian_file = os.path.join(data_folder, 'H.csr')
-    overlap_file = os.path.join(data_folder, 'S.csr')
+    data_folder = os.path.join(folder, '/usr/scratch/mont-fort26/chexia/ML_kevin/HamiltonianFitting__HfOx_dataset_and_model/pristine_KS_S_1/')
+    xyz_file = '/usr/scratch/mont-fort26/chexia/ML_kevin/HamiltonianFitting__HfOx_dataset_and_model/HfO2.xyz'
+    hamiltonian_file = os.path.join(data_folder, 'memrstors-KS_SPIN_1-1_0.csr')
+    overlap_file = os.path.join(data_folder, 'memrstors-S_SPIN_1-1_0.csr')
 
     # Material parameters:
     pbc = True
@@ -85,7 +85,7 @@ def main(folder):
     partitioning = 'slice'                                                          # 'slice' or 'graph' partitioning
     
     # slice parameters:
-    slice_list = [1500]                                                             # slice boundaries for partitioning the structure into subgraphs                
+    slice_list = [1000,1200,1400]                                                             # slice boundaries for partitioning the structure into subgraphs                
     cutoff = 1.5                                                                     # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
     
     # graph partitioning parameters:
@@ -94,16 +94,16 @@ def main(folder):
                                                                                     # after dividing the graph into 'num_subgraph' subgraphs
     # Parameters:
     restart_file = None
-    save_file = 'model_HfO2_'+str(world_size)+'_subgraph.pth'  
+    save_file = 'model_HfO2_'+str(world_size)+'_subgraph_test'
     train_or_test = 'train'                                          
     num_MP_layers = 1                                                               # Number of message passing layers 
-    num_epochs = 1000                                                               # Number of epochs                                                
-    learning_rate = 1e-3                                                            # Initial Learning rate                 
+    num_epochs = 100                                                               # Number of epochs                                                
+    learning_rate = 1e-4                                                            # Initial Learning rate                 
     loss_tol = 0                                                                    # Loss tolerance for early stopping
     dtype = torch.float32
 
     # *** Initialize the hyperparameters of the SO2 model:
-    sphere_channels = 16
+    sphere_channels = 64
     num_heads = 2
     attn_hidden_channels = 64  
     attn_alpha_channels = 32
@@ -115,6 +115,7 @@ def main(folder):
     # ************************************************************
 
     # *** Initialize the domain and electronic structure matrices:
+    
     a_HfO2 = structure.Structure(xyz_file, 
                                     hamiltonian_file, 
                                     overlap_file, 
@@ -173,7 +174,7 @@ def main(folder):
     # *** Initialize the model:
     mappingReduced = SO3.CoefficientMappingModule(lmax_list, mmax_list)
     irreps_out = net_out_irreps
-    model = so2_model.SO2Net(num_MP_layers, 
+    model = so2_model.SO2Net_local(num_MP_layers, 
                             lmax_list, 
                             mmax_list, 
                             mappingReduced, 
@@ -220,14 +221,24 @@ def main(folder):
         
         # *** Train the model parameters:
         print("training...", flush=True)
-        training.train_model_subgraph(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, dtype=dtype)
+        training.train_model_subgraph(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, schedule=False, dtype=dtype)
         print("Model trained, plotting fit to training data", flush=True)
         training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
+
+        print("testing on unseen data...", flush=True)
+        test_data = torch.load('test_data_structures/model_HfO2x2_structure_1_training_1500_2.pt')
+        test_data_loader = data.batch_data_load(test_data, equivariant_blocks, out_slices, construct_kernel, dtype=torch.float32)
+        # data_loader = data.batch_data_subgraph(a_HfO2, slice_list, cutoff, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
+        training.evaluate_model(model, test_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
+
 
     # use with a restarted model, to test the model
     elif train_or_test == 'test':
         print("testing on unseen data...", flush=True)
-        training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
+        test_data = torch.load('test_data_structures/model_HfO2x2_structure_1_training_1500_2.pt')
+        test_data_loader = data.batch_data_load(test_data, equivariant_blocks, out_slices, construct_kernel, dtype=torch.float32)
+        # data_loader = data.batch_data_subgraph(a_HfO2, slice_list, cutoff, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
+        training.evaluate_model(model, test_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
 
 if __name__ == "__main__":
