@@ -3,7 +3,7 @@ import lib.data as data
 import lib.training as training
 import lib.structure as structure
 import lib_equiformer.SO2 as SO2
-import lib.so2_model as so2_model
+import lib.so2_model_local as so2_model
 import lib_equiformer.SO3 as SO3
 from e3nn.o3 import Irreps
 import matplotlib.pyplot as plt
@@ -94,10 +94,10 @@ def main(folder):
                                                                                     # after dividing the graph into 'num_subgraph' subgraphs
     # Parameters:
     restart_file = None
-    save_file = 'model_HfO2_'+str(world_size)+'_subgraph'
+    save_file = 'model_HfO2_'+str(world_size)+'_subgraph_test'
     train_or_test = 'train'                                          
     num_MP_layers = 1                                                               # Number of message passing layers 
-    num_epochs = 10000                                                               # Number of epochs                                                
+    num_epochs = 100                                                               # Number of epochs                                                
     learning_rate = 1e-4                                                            # Initial Learning rate                 
     loss_tol = 0                                                                    # Loss tolerance for early stopping
     dtype = torch.float32

@@ -3,7 +3,7 @@ import lib.data as data
 import lib.training as training
 import lib.structure as structure
 import lib_equiformer.SO2 as SO2
-import lib.so2_model as so2_model
+import lib.so2_model_local as so2_model
 import lib_equiformer.SO3 as SO3
 from e3nn.o3 import Irreps
 import matplotlib.pyplot as plt
@@ -165,11 +165,8 @@ def main(folder):
     if restart_file is not None:
         print("Restarting training from a saved model and optimizer state...", flush=True)
         state_dict = torch.load(restart_file, map_location=torch.device('cpu'))
-        # checkpoint = torch.load(restart_file,map_location=torch.device('cpu'))
-        # state_dict = checkpoint['model_state_dict']
-        # state_dict = remove_module_prefix(checkpoint['model_state_dict'])
         model.load_state_dict(state_dict)
-        torch.save(state_dict, save_file+'_CPU.pt')
+        # torch.save(state_dict, save_file+'_CPU.pt')
 
     print("Model initialized", flush=True)
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()), flush=True)
