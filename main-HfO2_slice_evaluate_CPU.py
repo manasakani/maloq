@@ -57,18 +57,19 @@ def main(folder):
     cutoff = 1.5                                                                     # cutoff boundary of the slice used for training (interaction radius = 2*cutoff)
     
     # graph partitioning parameters:
-    num_subgraph = 1                                                                # min 10 for P100 GPU memory with attn_hidden_channels=64
+    num_subgraph = 18                                                                # min 10 for P100 GPU memory with attn_hidden_channels=64
     num_batch = 1                                                                   # number of subgraphs which will actually be added to the dataset for training,
                                                                                     # after dividing the graph into 'num_subgraph' subgraphs
     # Parameters:
-    restart_file = 'model_HfO2_1_subgraph_CPU_state_dic.pt'
+    # restart_file = 'model_HfO2_1_subgraph_CPU_state_dic.pt'
+    restart_file = 'model_HfO2_18_cartesian_test_state_dic.pt'
     save_file = 'model_HfO2_'+str(num_subgraph)+'_subgraph_CPU'  
     num_MP_layers = 1                                                               # Number of message passing layers 
     num_epochs = 10000                                                               # Number of epochs                                                
     learning_rate = 1e-3                                                            # Initial Learning rate                 
     loss_tol = 0                                                                    # Loss tolerance for early stopping
     dtype = torch.float32
-    test_data = torch.load('test_data_structures/full_data_structure_2.pt')
+    test_data = torch.load('test_data_structures/full_data_structure_1.pt')
 
 
     # *** Initialize the hyperparameters of the SO2 model:

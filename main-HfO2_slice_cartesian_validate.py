@@ -93,7 +93,7 @@ def main(folder):
                                                                                     # after dividing the graph into 'num_subgraph' subgraphs
     # Parameters:
     restart_file = None
-    save_file = 'model_HfO2_'+str(world_size)+'_cartesian_test2'
+    save_file = 'model_HfO2_'+str(world_size)+'_cartesian_test_validate'
     train_or_test = 'train'                                          
     num_MP_layers = 1                                                               # Number of message passing layers 
     num_epochs = 10000                                                               # Number of epochs                                                
@@ -171,9 +171,10 @@ def main(folder):
     elif partitioning == 'slice_length':
         # total_length = 54
         # num_slices = 18
-        total_length = 3
-        num_slices = 1
-        data_loader = data.batch_data_HfO2_cartesian(a_HfO2, total_length, num_slices, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
+        start = 10
+        total_length = 9
+        num_slices = 3
+        data_loader = data.batch_data_HfO2_cartesian(a_HfO2, start, total_length, num_slices, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
         print("Data loader created")
 
     else:
@@ -231,13 +232,18 @@ def main(folder):
     if train_or_test == 'train':
         
         # *** Train the model parameters:
+        
+        test_data = torch.load('test_data_structures/model_HfO2x2_structure_1_training_1500_2.pt')
+        validation_loader = data.batch_data_load(test_data, equivariant_blocks, out_slices, construct_kernel, dtype=torch.float32)
+        
+        print("validation loader created", flush=True)  
         print("training...", flush=True)
-        training.train_model_subgraph(model, optimizer, data_loader, num_epochs, loss_tol, save_file=save_file, schedule=False, dtype=dtype)
+
+        training.train_and_validate_model_subgraph(model, optimizer, data_loader, validation_loader, num_epochs, loss_tol, save_file=save_file, schedule=True, dtype=dtype)
         print("Model trained, plotting fit to training data", flush=True)
         training.evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
 
         print("testing on unseen data...", flush=True)
-        test_data = torch.load('test_data_structures/model_HfO2x2_structure_1_training_1500_2.pt')
         test_data_loader = data.batch_data_load(test_data, equivariant_blocks, out_slices, construct_kernel, dtype=torch.float32)
         # data_loader = data.batch_data_subgraph(a_HfO2, slice_list, cutoff, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
         training.evaluate_model(model, test_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)

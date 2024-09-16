@@ -551,11 +551,11 @@ def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, ou
 
 
 
-def batch_data_HfO2_cartesian(graph, total_length, num_slices, test_list = None, save_file = 'None', cutoff = 2, equivariant_blocks = None, out_slices = None, construct_kernel=None, dtype = torch.float32):
+def batch_data_HfO2_cartesian(graph, start, total_length, num_slices, test_list = None, save_file = 'None', cutoff = 2, equivariant_blocks = None, out_slices = None, construct_kernel=None, dtype = torch.float32):
 
     data_list = []
 
-    start = -1
+    start = start
     length = total_length/num_slices
     num_atoms = 0
     num_edges = 0
