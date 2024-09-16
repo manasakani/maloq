@@ -226,12 +226,12 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
                     torch.save({'model_state_dict': model.module.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         }, save_file+'.pt')
-                torch.save(model.state_dict(), save_file+'_state_dic.pt')
+                    torch.save(model.state_dict(), save_file+'_state_dic.pt')
             else:
                 torch.save({'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     }, save_file+'.pt')
-                
+                print("Model saved")
                 torch.save(model.state_dict(), save_file+'_state_dic.pt')
                 
 
