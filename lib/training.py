@@ -215,6 +215,7 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
                 print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
                 print(f"--> Total Batch process time: {batch_duration:.4f} seconds")
                 print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+                print("Epoch: " + str(epoch)+ " loss: " + str(loss))
         else:
             print("Epoch: " + str(epoch)+ " loss: " + str(loss))
             print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
@@ -288,6 +289,9 @@ def train_and_validate_model_subgraph(model, optimizer, loader, validation_loade
     track_loss_node = []
     track_loss_edge = []
 
+    track_validation_node = []
+    track_validation_edge = []
+
     min_lr = 1e-5
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20, verbose=True)
 
@@ -348,6 +352,9 @@ def train_and_validate_model_subgraph(model, optimizer, loader, validation_loade
                 print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
                 print(f"--> Total Batch process time: {batch_duration:.4f} seconds")
                 print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+                print("Epoch: " + str(epoch)+ " loss: " + str(loss))
+                track_loss_node.append(loss_node.cpu().detach().numpy()) 
+                track_loss_edge.append(loss_edge.cpu().detach().numpy())
         else:
             print("Epoch: " + str(epoch)+ " loss: " + str(loss))
             print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
@@ -384,8 +391,20 @@ def train_and_validate_model_subgraph(model, optimizer, loader, validation_loade
                 labels = torch.cat([batch.node_y[0:batch.labelled_node_size], batch.y[0:batch.labelled_edge_size]], dim=0)
                 validation_loss += criterion(output, labels)  
         
-        print("epoch (validation error): "+str(validation_loss))
-        print("epoch (validation node error): "+str(loss_node))
+        if dist.is_available() and dist.is_initialized():
+            if dist.get_rank() == 0:  
+                print("Validation loss: ", validation_loss)
+                print("Validation node loss: ", loss_node)
+                print("Validation edge loss: ", loss_edge)
+                track_validation_node.append(loss_node.cpu().detach().numpy())
+                track_validation_edge.append(loss_edge.cpu().detach().numpy())  
+
+        else: 
+            print("epoch (validation error): "+str(validation_loss))
+            print("epoch (validation node error): "+str(loss_node))
+            track_validation_node.append(loss_node.cpu().detach().numpy())
+            track_validation_edge.append(loss_edge.cpu().detach().numpy())  
+
 
         if schedule == True: 
             scheduler.step(validation_loss)
@@ -408,6 +427,10 @@ def train_and_validate_model_subgraph(model, optimizer, loader, validation_loade
             world_size = dist.get_world_size()
             with open('track_loss_'+str(world_size)+'_batches.txt', 'w') as f:
                 for edge, node in zip(track_loss_edge, track_loss_node):
+                    f.write(f"{edge:.8f}\t{node:.8f}\n")  
+
+            with open('track_validation_loss_'+str(world_size)+'_batches.txt', 'w') as f:
+                for edge, node in zip(track_validation_edge, track_validation_node):
                     f.write(f"{edge:.8f}\t{node:.8f}\n")  
 
     plt.figure(figsize=(4, 3))
