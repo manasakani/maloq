@@ -248,8 +248,10 @@ class SO2Net(torch.nn.Module):
         dtype = torch.float32
 
         atomic_numbers = graph.ndata['_N/feat']['_N']                                   # _N/feat = node features
-        edge_distance = graph.edata['_E/edge_attr'][:, 0]                               # _E/edge_attr = edge features
-        edge_distance_vec = graph.edata['_E/edge_attr'][:, [2, 3, 1]]                    
+        # edge_distance = graph.edata['_E/edge_attr'][:, 0]                               # _E/edge_attr = edge features
+        # edge_distance_vec = graph.edata['_E/edge_attr'][:, [2, 3, 1]] 
+        edge_distance = graph.edata['_N:_E:_N/edge_attr'][:, 0]                               # _E/edge_attr = edge features
+        edge_distance_vec = graph.edata['_N:_E:_N/edge_attr'][:, [2, 3, 1]]                    
 
         u, v = graph.edges() 
         edge_index = torch.stack([u, v], dim=0)  

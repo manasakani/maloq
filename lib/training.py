@@ -327,7 +327,8 @@ def train_model_DGL_full(model, optimizer, loader, total_num_nodes, num_epochs=5
                 
                 # Concatenate the node and edge labels from all subgraphs
                 node_labels = torch.cat([sg.ndata['_N/node_label']['_N'].to(device) for sg in subgraphs], dim=0)
-                edge_labels = torch.cat([sg.edata['_E/label'].to(device) for sg in subgraphs], dim=0) 
+                # edge_labels = torch.cat([sg.edata['_E/label'].to(device) for sg in subgraphs], dim=0) 
+                edge_labels = torch.cat([sg.edata['_N:_E:_N/label'].to(device) for sg in subgraphs], dim=0) 
 
                 print("rank ", dist.get_rank(), "node_labels: ", node_labels)
                 print("rank ", dist.get_rank(), "edge_labels: ", edge_labels)
@@ -614,7 +615,8 @@ def evaluate_model_DGL(model, data_loader, construct_kernel, equivariant_blocks,
 
                 # Concatenate the node and edge labels from all subgraphs
                 node_labels = subgraph.ndata['_N/node_label']['_N'].cpu()
-                edge_labels = subgraph.edata['_E/label'].cpu() 
+                # edge_labels = subgraph.edata['_E/label'].cpu() 
+                edge_labels = subgraph.edata['_N:_E:_N/label'].cpu() 
                 num_nodes = subgraph.ndata['_N/feat']['_N'].shape[0]
                 print("Number of Nodes: ", num_nodes)
 
