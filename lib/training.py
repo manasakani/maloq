@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import lib.data as data
 import lib.utils as utils
 import time
+import torch.optim as optim
 
 
 # Training scheme to train the network on small molecules stored in batches of graphs
@@ -214,6 +215,7 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
                 print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
                 print(f"--> Total Batch process time: {batch_duration:.4f} seconds")
                 print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+                print("Epoch: " + str(epoch)+ " loss: " + str(loss))
         else:
             print("Epoch: " + str(epoch)+ " loss: " + str(loss))
             print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
@@ -226,12 +228,12 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
                     torch.save({'model_state_dict': model.module.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         }, save_file+'.pt')
-                torch.save(model.state_dict(), save_file+'_state_dic.pt')
+                    torch.save(model.state_dict(), save_file+'_state_dic.pt')
             else:
                 torch.save({'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     }, save_file+'.pt')
-                
+                print("Model saved")
                 torch.save(model.state_dict(), save_file+'_state_dic.pt')
                 
 
@@ -270,6 +272,208 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
                     }, save_file+'.pt')
         
         torch.save(model.state_dict(), save_file+'_state_dic.pt')
+
+
+
+def train_and_validate_model_subgraph(model, optimizer, loader, validation_loader, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', schedule = False, dtype=torch.float32):
+    device = next(model.parameters()).device  # Get the device of the model
+    
+    if dist.is_available() and dist.is_initialized():
+        # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+    else:
+        model = nn.DataParallel(model)
+
+    criterion = nn.MSELoss()
+
+    track_loss_node = []
+    track_loss_edge = []
+
+    track_validation_node = []
+    track_validation_edge = []
+
+    min_lr = 1e-5
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20, verbose=True)
+
+
+    model.train()  # Set the model to training mode
+    for epoch in range(num_epochs):
+        model.train()
+        epoch_start_time = time.time()
+
+        for batch in loader:
+
+            batch_start_time = time.time()
+
+            # Zero the gradients
+            optimizer.zero_grad() 
+            zero_grad_time = time.time()
+
+            batch = batch.to(device)
+            memory_transfer_time = time.time()
+
+            # Forward pass
+            node_output, edge_output = model(batch)
+            forward_pass_time = time.time()
+            # print("Node label shape: ", batch.node_y.shape)
+            # print("Edge label shape: ", batch.y.shape)
+            # print("Node output shape: ", node_output.shape)
+            # print("Edge output shape: ", edge_output.shape)
+
+            # Compute the loss
+            loss_node = criterion(node_output[0:batch.labelled_node_size], batch.node_y[0:batch.labelled_node_size])            # node_y is the node label
+            loss_edge = criterion(edge_output[0:batch.labelled_edge_size], batch.y[0:batch.labelled_edge_size])                 # y is the edge label
+            output = torch.cat([node_output[0:batch.labelled_node_size], edge_output[0:batch.labelled_edge_size]], dim=0)
+            labels = torch.cat([batch.node_y[0:batch.labelled_node_size], batch.y[0:batch.labelled_edge_size]], dim=0)
+            loss = criterion(output, labels)      
+
+            loss_computation_time = time.time()
+
+            # Backward pass
+            loss.backward()    
+            backward_pass_time = time.time()                              
+                        
+            # Update parameters 
+            optimizer.step()
+
+            batch_end_time = time.time()
+
+            forward_pass_duration = forward_pass_time - memory_transfer_time
+            backward_pass_duration = backward_pass_time - loss_computation_time
+            batch_duration = batch_end_time - batch_start_time
+
+        epoch_end_time = time.time()
+        epoch_duration = epoch_end_time - epoch_start_time
+            
+        if dist.is_available() and dist.is_initialized():
+            if dist.get_rank() == 0:  
+                print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
+                print(f"--> Forward Pass Time: {forward_pass_duration:.4f} seconds")
+                print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
+                print(f"--> Total Batch process time: {batch_duration:.4f} seconds")
+                print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+                print("Epoch: " + str(epoch)+ " loss: " + str(loss))
+                track_loss_node.append(loss_node.cpu().detach().numpy()) 
+                track_loss_edge.append(loss_edge.cpu().detach().numpy())
+        else:
+            print("Epoch: " + str(epoch)+ " loss: " + str(loss))
+            print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
+            track_loss_node.append(loss_node.cpu().detach().numpy()) 
+            track_loss_edge.append(loss_edge.cpu().detach().numpy())
+
+        if epoch % 100 == 0:
+            if dist.is_available() and dist.is_initialized():
+                if dist.get_rank() == 0:  # Save only on rank 0
+                    torch.save({'model_state_dict': model.module.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        }, save_file+'.pt')
+                    torch.save(model.state_dict(), save_file+'_state_dic.pt')
+            else:
+                torch.save({'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    }, save_file+'.pt')
+                print("Model saved")
+                torch.save(model.state_dict(), save_file+'_state_dic.pt')
+                
+
+        #validate the model
+        validation_loss = 0.0
+        model.eval()
+
+        with torch.no_grad():
+            for batch in validation_loader:
+                batch = batch.to(device)
+                node_output, edge_output = model(batch)
+                loss_node = criterion(node_output[0:batch.labelled_node_size], batch.node_y[0:batch.labelled_node_size])
+                loss_edge = criterion(edge_output[0:batch.labelled_edge_size], batch.y[0:batch.labelled_edge_size])
+              # y is the edge label
+                output = torch.cat([node_output[0:batch.labelled_node_size], edge_output[0:batch.labelled_edge_size]], dim=0)
+                labels = torch.cat([batch.node_y[0:batch.labelled_node_size], batch.y[0:batch.labelled_edge_size]], dim=0)
+                validation_loss += criterion(output, labels)  
+        
+        if dist.is_available() and dist.is_initialized():
+            if dist.get_rank() == 0:  
+                print("Validation loss: ", validation_loss)
+                print("Validation node loss: ", loss_node)
+                print("Validation edge loss: ", loss_edge)
+                track_validation_node.append(loss_node.cpu().detach().numpy())
+                track_validation_edge.append(loss_edge.cpu().detach().numpy())  
+
+        else: 
+            print("epoch (validation error): "+str(validation_loss))
+            print("epoch (validation node error): "+str(loss_node))
+            track_validation_node.append(loss_node.cpu().detach().numpy())
+            track_validation_edge.append(loss_edge.cpu().detach().numpy())  
+
+
+        if schedule == True: 
+            scheduler.step(validation_loss)
+
+
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Current Learning Rate: {current_lr:.8f}")
+        if current_lr <= min_lr:
+            print("Learning rate has reached the minimum threshold. Stopping training.")
+            break
+
+        if loss < loss_tol:
+            break
+            
+    print("Final loss: ", loss) 
+
+    # save loss in plain txt file
+    if dist.is_available() and dist.is_initialized():
+        if dist.get_rank() == 0:  
+            world_size = dist.get_world_size()
+            with open('track_loss_'+str(world_size)+'_batches.txt', 'w') as f:
+                for edge, node in zip(track_loss_edge, track_loss_node):
+                    f.write(f"{edge:.8f}\t{node:.8f}\n")  
+
+            with open('track_validation_loss_'+str(world_size)+'_batches.txt', 'w') as f:
+                for edge, node in zip(track_validation_edge, track_validation_node):
+                    f.write(f"{edge:.8f}\t{node:.8f}\n")  
+
+    plt.figure(figsize=(4, 3))
+    plt.plot(track_loss_node, label='node')
+    plt.plot(track_loss_edge, label='edge')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.yscale('log')
+    plt.legend()
+    plt.savefig('loss.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+    if dist.is_available() and dist.is_initialized():
+        if dist.get_rank() == 0:  # Save only on rank 0
+            torch.save({'model_state_dict': model.module.state_dict(), # Remove module 
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        }, save_file+'.pt')
+            torch.save(model.state_dict(), save_file+'_state_dic.pt')
+    else:
+        torch.save({'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    }, save_file+'.pt')
+        
+        torch.save(model.state_dict(), save_file+'_state_dic.pt')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # DGL version - Training scheme which takes a batch of subgraphs and computes the loss on all edges
