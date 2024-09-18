@@ -293,7 +293,7 @@ def train_and_validate_model_subgraph(model, optimizer, loader, validation_loade
     track_validation_edge = []
 
     min_lr = 1e-5
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=500, threshold=1e-3, verbose=True)
 
 
     model.train()  # Set the model to training mode
@@ -352,6 +352,7 @@ def train_and_validate_model_subgraph(model, optimizer, loader, validation_loade
                 print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
                 print(f"--> Total Batch process time: {batch_duration:.4f} seconds")
                 print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+                print(f"--> Memory info: {torch.cuda.mem_get_info(device)}")
                 print("Epoch: " + str(epoch)+ " loss: " + str(loss))
                 track_loss_node.append(loss_node.cpu().detach().numpy()) 
                 track_loss_edge.append(loss_edge.cpu().detach().numpy())
