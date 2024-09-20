@@ -293,7 +293,7 @@ def train_and_validate_model_subgraph(model, optimizer, loader, validation_loade
     track_validation_edge = []
 
     min_lr = 1e-5
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=500, threshold=1e-3, verbose=True)
 
 
     model.train()  # Set the model to training mode
@@ -425,13 +425,23 @@ def train_and_validate_model_subgraph(model, optimizer, loader, validation_loade
     if dist.is_available() and dist.is_initialized():
         if dist.get_rank() == 0:  
             world_size = dist.get_world_size()
-            with open('track_loss_'+str(world_size)+'_batches.txt', 'w') as f:
+            with open(save_file+'track_loss_'+str(world_size)+'_batches.txt', 'w') as f:
                 for edge, node in zip(track_loss_edge, track_loss_node):
                     f.write(f"{edge:.8f}\t{node:.8f}\n")  
 
-            with open('track_validation_loss_'+str(world_size)+'_batches.txt', 'w') as f:
+            with open(save_file+'track_validation_loss_'+str(world_size)+'_batches.txt', 'w') as f:
                 for edge, node in zip(track_validation_edge, track_validation_node):
                     f.write(f"{edge:.8f}\t{node:.8f}\n")  
+
+    else:
+        with open(save_file+'track_loss_batches.txt', 'w') as f:
+            for edge, node in zip(track_loss_edge, track_loss_node):
+                f.write(f"{edge:.8f}\t{node:.8f}\n")  
+
+        with open(save_file+'track_validation_loss_batches.txt', 'w') as f:
+            for edge, node in zip(track_validation_edge, track_validation_node):
+                f.write(f"{edge:.8f}\t{node:.8f}\n")      
+        
 
     plt.figure(figsize=(4, 3))
     plt.plot(track_loss_node, label='node')
@@ -440,7 +450,7 @@ def train_and_validate_model_subgraph(model, optimizer, loader, validation_loade
     plt.ylabel('Loss')
     plt.yscale('log')
     plt.legend()
-    plt.savefig('loss.png', dpi=300, bbox_inches='tight')
+    plt.savefig(save_file+'loss.png', dpi=300, bbox_inches='tight')
     plt.close()
 
     if dist.is_available() and dist.is_initialized():
@@ -452,7 +462,7 @@ def train_and_validate_model_subgraph(model, optimizer, loader, validation_loade
     else:
         torch.save({'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
-                    }, save_file+'.pt')
+                    }, save_file+'.pt')    
         
         torch.save(model.state_dict(), save_file+'_state_dic.pt')
 
@@ -657,15 +667,15 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
             labelled_edge_size = test_batch.labelled_edge_size.item()
 
             # Process node predictions
-            flattened_node_labels = construct_kernel.get_H(test_batch.node_y[:labelled_node_size].cpu())
+            flattened_node_labels = construct_kernel.get_H(test_batch.node_y[0:labelled_node_size].cpu())
             flattened_node_pred = construct_kernel.get_H(test_node[:labelled_node_size].cpu())
 
-            node_label = utils.unflatten(flattened_node_labels, test_batch.x[:labelled_node_size],
+            node_label = utils.unflatten(flattened_node_labels, test_batch.x[0:labelled_node_size],
                                          torch.cat((torch.arange(labelled_node_size).unsqueeze(0),
                                                     torch.arange(labelled_node_size).unsqueeze(0)), 0),
                                          equivariant_blocks, atom_orbitals, out_slices)
             
-            node_pred = utils.unflatten(flattened_node_pred, test_batch.x[:labelled_node_size],
+            node_pred = utils.unflatten(flattened_node_pred, test_batch.x[0:labelled_node_size],
                                         torch.cat((torch.arange(labelled_node_size).unsqueeze(0),
                                                    torch.arange(labelled_node_size).unsqueeze(0)), 0),
                                         equivariant_blocks, atom_orbitals, out_slices)
@@ -744,10 +754,13 @@ def analyze_model(model, test_batch, construct_kernel, equivariant_blocks, atom_
     test_node = test_node.cpu()
     test_edge = test_edge.cpu()
 
-    flattened_node_labels = construct_kernel.get_H(test_batch.node_y[0:test_batch.labelled_node_size].cpu()) #convert into flattened Hamiltonian form
-    flattened_node_pred = construct_kernel.get_H(test_node[0:test_batch.labelled_node_size].cpu())
+    labelled_node_size = test_batch.labelled_node_size
+    labelled_edge_size = test_batch.labelled_edge_size
 
-    onsite_edge_index = torch.cat((torch.arange(test_batch.labelled_node_size).unsqueeze(0),torch.arange(test_batch.labelled_node_size).unsqueeze(0)),0)
+    flattened_node_labels = construct_kernel.get_H(test_batch.node_y[0:labelled_node_size].cpu()) #convert into flattened Hamiltonian form
+    flattened_node_pred = construct_kernel.get_H(test_node[0:labelled_node_size].cpu())
+
+    onsite_edge_index = torch.cat((torch.arange(labelled_node_size).unsqueeze(0),torch.arange(labelled_node_size).unsqueeze(0)),0)
     numbers = test_batch.x[0:test_batch.labelled_node_size]
 
     node_label = utils.unflatten(flattened_node_labels,numbers, onsite_edge_index,equivariant_blocks,atom_orbitals,out_slices)
@@ -765,12 +778,11 @@ def analyze_model(model, test_batch, construct_kernel, equivariant_blocks, atom_
     test_info['node_label'] = node_label_tensor
     test_info['node_pred'] = node_pred_tensor
 
+    flattened_edge_labels = construct_kernel.get_H(test_batch.y[0:labelled_edge_size].cpu())
+    flattened_edge_pred = construct_kernel.get_H(test_edge[0:labelled_edge_size].cpu())
 
-    flattened_edge_labels = construct_kernel.get_H(test_batch.y[0:test_batch.labelled_edge_size].cpu())
-    flattened_edge_pred = construct_kernel.get_H(test_edge[0:test_batch.labelled_edge_size].cpu())
-
-    edge_label = utils.unflatten(flattened_edge_labels,numbers, test_batch.edge_index[:,0:test_batch.labelled_edge_size],equivariant_blocks,atom_orbitals,out_slices)
-    edge_pred = utils.unflatten(flattened_edge_pred,numbers, test_batch.edge_index[:,0:test_batch.labelled_edge_size],equivariant_blocks,atom_orbitals,out_slices)
+    edge_label = utils.unflatten(flattened_edge_labels,numbers, test_batch.edge_index[:,0:labelled_edge_size],equivariant_blocks,atom_orbitals,out_slices)
+    edge_pred = utils.unflatten(flattened_edge_pred,numbers, test_batch.edge_index[:,0:labelled_edge_size],equivariant_blocks,atom_orbitals,out_slices)
 
     H_block_edge_labels = [matrix.flatten() for matrix in edge_label.values()]
     edge_label_tensor = torch.cat(H_block_edge_labels)
@@ -788,6 +800,9 @@ def analyze_model(model, test_batch, construct_kernel, equivariant_blocks, atom_
 
     MAE_node = torch.mean(torch.abs(node_label_tensor - node_pred_tensor))
     MAE_edge = torch.mean(torch.abs(edge_label_tensor - edge_pred_tensor))
+
+    print("Mean Absolute Node Error in mHartree: ", MAE_node)
+    print("Mean Absolute Edge Error in mHartree: ", MAE_edge)
 
     return MAE_node, MAE_edge
 
