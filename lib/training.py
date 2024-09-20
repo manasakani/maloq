@@ -275,7 +275,7 @@ def train_model_subgraph(model, optimizer, loader, num_epochs=5000, loss_tol=0.0
 
 
 
-def train_and_validate_model_subgraph(model, optimizer, loader, validation_loader, num_epochs=5000, loss_tol=0.0001, save_file='model_in_training.pth', schedule = False, dtype=torch.float32):
+def train_and_validate_model_subgraph(model, optimizer, loader, validation_loader, num_epochs=5000, loss_tol=0.0001, patience=500, threshold=1e-3, save_file='model_in_training.pth', schedule = False, dtype=torch.float32):
     device = next(model.parameters()).device  # Get the device of the model
     
     if dist.is_available() and dist.is_initialized():
@@ -293,7 +293,7 @@ def train_and_validate_model_subgraph(model, optimizer, loader, validation_loade
     track_validation_edge = []
 
     min_lr = 1e-5
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=500, threshold=1e-3, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
 
 
     model.train()  # Set the model to training mode
