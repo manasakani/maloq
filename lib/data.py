@@ -598,7 +598,9 @@ def batch_data_HfO2_cartesian(graph, start, total_length, num_slices, test_list 
         print("--> Batch: ")
         print("Node Features (x):", batch.x.size())
         print("Edge Index:", batch.edge_index.size())
-        print("Edge Features (edge_attr):", batch.edge_attr.size())     
+        print("Edge Features (edge_attr):", batch.edge_attr.size())
+        print("Average Node Degree:", np.mean(np.array(batch.node_degree)))
+        print("Average Reduced Node Degree", np.mean(np.array(batch.reduced_node_degree)))     
 
     return loader
 

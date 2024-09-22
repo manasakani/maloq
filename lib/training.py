@@ -754,8 +754,13 @@ def analyze_model(model, test_batch, construct_kernel, equivariant_blocks, atom_
     test_node = test_node.cpu()
     test_edge = test_edge.cpu()
 
-    labelled_node_size = test_batch.labelled_node_size
-    labelled_edge_size = test_batch.labelled_edge_size
+    if torch.is_tensor(test_batch.labelled_node_size):
+        labelled_node_size = test_batch.labelled_node_size.item()
+        labelled_edge_size = test_batch.labelled_edge_size.item() #when test batch is loaded from dataloader, it is a tensor instead of a number
+
+    else:
+        labelled_node_size = test_batch.labelled_node_size
+        labelled_edge_size = test_batch.labelled_edge_size
 
     flattened_node_labels = construct_kernel.get_H(test_batch.node_y[0:labelled_node_size].cpu()) #convert into flattened Hamiltonian form
     flattened_node_pred = construct_kernel.get_H(test_node[0:labelled_node_size].cpu())
@@ -964,6 +969,96 @@ def test_model_SO2(construct_kernel, model, test_batch, mask_type='none', dtype=
     print("Mean Absolute Error in mHartree: ", MAEloss_total)
 
     plt.savefig('prediction.png', dpi=300, bbox_inches='tight')
+
+
+
+
+def assemble_hamiltonian_matrix(model, test_batch, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file='model_in_training.pth'):
+    """
+    Evaluate the model on the test set and return the mean absolute error for the node and edge predictions after reconstructing the Hamiltonian matrices from the predictions.
+
+    """
+
+
+    test_batch = test_batch.to(device)
+    test_node, test_edge = model(test_batch)
+
+    test_info = {}
+
+    test_node = test_node.cpu()
+    test_edge = test_edge.cpu()
+
+    flattened_node_labels = construct_kernel.get_H(test_batch.node_y[0:test_batch.labelled_node_size].cpu()) #convert into flattened Hamiltonian form
+    flattened_node_pred = construct_kernel.get_H(test_node[0:test_batch.labelled_node_size].cpu())
+
+
+    flattened_edge_labels = construct_kernel.get_H(test_batch.y[0:test_batch.labelled_edge_size].cpu())
+    flattened_edge_pred = construct_kernel.get_H(test_edge[0:test_batch.labelled_edge_size].cpu())
+
+    # edge_label = utils.unflatten(flattened_edge_labels,numbers, test_batch.edge_index[:,0:test_batch.labelled_edge_size],equivariant_blocks,atom_orbitals,out_slices)
+    # edge_pred = utils.unflatten(flattened_edge_pred,numbers, test_batch.edge_index[:,0:test_batch.labelled_edge_size],equivariant_blocks,atom_orbitals,out_slices)
+
+
+
+
+    onsite_edge_index = torch.cat((torch.arange(test_batch.labelled_node_size).unsqueeze(0),torch.arange(test_batch.labelled_node_size).unsqueeze(0)),0)
+    numbers = test_batch.x[0:test_batch.labelled_node_size]
+
+    label_orbital_dic = utils.assemble_hamiltonian(flattened_node_labels,numbers, onsite_edge_index,equivariant_blocks,atom_orbitals,out_slices)
+    label_orbital_dic_offsite = utils.assemble_hamiltonian(flattened_edge_labels,numbers, test_batch.edge_index[:,0:test_batch.labelled_edge_size],equivariant_blocks,atom_orbitals,out_slices)
+    label_orbital_dic.update(label_orbital_dic_offsite)
+
+    torch.save(label_orbital_dic, save_file+'label_ham_dic.pt')
+
+
+    pred_orbital_dic = utils.assemble_hamiltonian(flattened_node_pred,numbers, onsite_edge_index,equivariant_blocks,atom_orbitals,out_slices)
+    pred_orbital_dic_offsite = utils.assemble_hamiltonian(flattened_edge_pred,numbers, test_batch.edge_index[:,0:test_batch.labelled_edge_size],equivariant_blocks,atom_orbitals,out_slices)
+    pred_orbital_dic.update(pred_orbital_dic_offsite)
+
+    torch.save(pred_orbital_dic, save_file+'pred_ham_dic.pt')
+
+
+
+
+def reconstruct_hamiltonian_dic(model, test_batch, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file='model_in_training.pth'):
+    """
+    Evaluate the model on the test set and return the mean absolute error for the node and edge predictions after reconstructing the Hamiltonian matrices from the predictions.
+
+    """
+    test_batch = test_batch.to(device)
+    test_node, test_edge = model(test_batch)
+
+    test_node = test_node.cpu()
+    test_edge = test_edge.cpu()
+
+    flattened_node_labels = construct_kernel.get_H(test_batch.node_y[0:test_batch.labelled_node_size].cpu()) #convert into flattened Hamiltonian form
+    flattened_node_pred = construct_kernel.get_H(test_node[0:test_batch.labelled_node_size].cpu())
+
+    flattened_edge_labels = construct_kernel.get_H(test_batch.y[0:test_batch.labelled_edge_size].cpu())
+    flattened_edge_pred = construct_kernel.get_H(test_edge[0:test_batch.labelled_edge_size].cpu())
+
+    onsite_edge_index = torch.cat((torch.arange(test_batch.labelled_node_size).unsqueeze(0),torch.arange(test_batch.labelled_node_size).unsqueeze(0)),0)
+    numbers = test_batch.x[0:test_batch.labelled_node_size]
+
+    label_dic = utils.unflatten(flattened_node_labels,numbers, onsite_edge_index,equivariant_blocks,atom_orbitals,out_slices)
+    label_offsite_dic = utils.unflatten(flattened_edge_labels,numbers, test_batch.edge_index[:,0:test_batch.labelled_edge_size],equivariant_blocks,atom_orbitals,out_slices)
+    label_dic.update(label_offsite_dic)
+
+    pred_dic = utils.unflatten(flattened_node_pred,numbers, onsite_edge_index,equivariant_blocks,atom_orbitals,out_slices)
+    pred_offsite_dic = utils.unflatten(flattened_edge_pred,numbers, test_batch.edge_index[:,0:test_batch.labelled_edge_size],equivariant_blocks,atom_orbitals,out_slices)
+    pred_dic.update(pred_offsite_dic)
+
+    return label_dic,pred_dic
+
+
+
+
+
+
+
+
+
+
 
 
 
