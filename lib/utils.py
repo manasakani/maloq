@@ -318,3 +318,166 @@ def unflatten(H_pred, numbers, edge_index, equivariant_blocks, atom_orbitals, ou
                     H_prev[key_term][slice_row, slice_col] = H_pred[index_edge][slice_out].reshape(len_row, len_col)
 
     return H_prev
+
+
+
+
+
+
+def plot_orbitals(H_pred, numbers, edge_index, equivariant_blocks, atom_orbitals, out_slices):  
+
+    H_orbitals = {}
+
+    for index_edge in range(edge_index.shape[1]):
+
+        for index_target, equivariant_block in enumerate(equivariant_blocks):
+            for N_M_str, block_slice in equivariant_block.items():
+                slice_row = slice(block_slice[0], block_slice[1])
+                slice_col = slice(block_slice[2], block_slice[3])
+                len_row = block_slice[1] - block_slice[0]
+                len_col = block_slice[3] - block_slice[2]
+                slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
+
+
+                condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
+
+                if (numbers[edge_index[0][index_edge]].item() == int(condition_atomic_number_i) and numbers[edge_index[1][index_edge]].item() == int(condition_atomic_number_j)):
+                    key_term = (int(condition_atomic_number_i),int(condition_atomic_number_j),int((len_row-1)/2),int((len_col-1)/2))
+
+                    if key_term not in H_orbitals.keys():
+                        H_orbitals[key_term] = H_pred[index_edge][slice_out]
+
+                    else:
+                        H_orbitals_temp = H_orbitals[key_term]
+                        H_orbitals[key_term] = torch.cat((H_orbitals_temp, H_pred[index_edge][slice_out]), dim=0)
+
+    return H_orbitals
+
+
+
+
+
+def assemble_hamiltonian(H_pred, numbers, edge_index, equivariant_blocks, atom_orbitals, out_slices):  
+
+    H_full = {}
+
+
+    elements = torch.unique(numbers,sorted=True)
+
+    num_orbitals = [np.sum(2*np.array(atom_orbitals[str(element.item())])+1) for element in elements] #num of orbitals for each element
+
+    cum_num_orbitals = np.concatenate(([0],np.cumsum(num_orbitals)),axis=0)
+    print(cum_num_orbitals)
+
+    for index_edge in range(edge_index.shape[1]):
+
+
+        i = edge_index[0][index_edge].item() #atom index 
+        j = edge_index[1][index_edge].item()
+
+        # key_term = (i,j)#edge key term 
+        key_term = (numbers[i].item(),numbers[j].item(),i,j) 
+
+        num_orbitals_i = np.sum(2*np.array(atom_orbitals[str(numbers[i].item())])+1)
+        num_orbitals_j = np.sum(2*np.array(atom_orbitals[str(numbers[j].item())])+1)
+
+        fill = 0 
+        non_zero_block = torch.full((num_orbitals_i, num_orbitals_j), fill, dtype=float)
+
+        full_block = torch.full((sum(num_orbitals), (sum(num_orbitals))), fill, dtype=float)
+
+        internal_index_i = torch.where(elements == numbers[i])[0][0]
+        internal_index_j = torch.where(elements == numbers[j])[0][0]
+
+        # H_prev = torch.zeros((sum(num_orbitals),sum(num_orbitals)),dtype=float) #initialize the hamiltonian matrix
+
+        # H_prev[key_term] = init
+
+        for index_target, equivariant_block in enumerate(equivariant_blocks):
+            for N_M_str, block_slice in equivariant_block.items():
+                slice_row = slice(block_slice[0], block_slice[1])
+                slice_col = slice(block_slice[2], block_slice[3])
+                len_row = block_slice[1] - block_slice[0]
+                len_col = block_slice[3] - block_slice[2]
+                slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
+
+                condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
+
+                if (numbers[edge_index[0][index_edge]].item() == int(condition_atomic_number_i) and numbers[edge_index[1][index_edge]].item() == int(condition_atomic_number_j)):
+                    # H_prev[key_term][slice_row, slice_col] = H_pred[index_edge][slice_out].reshape(len_row, len_col)
+                    non_zero_block[slice_row, slice_col] = H_pred[index_edge][slice_out].reshape(len_row, len_col)
+
+        full_block[cum_num_orbitals[internal_index_i]:cum_num_orbitals[internal_index_i+1],cum_num_orbitals[internal_index_j]:cum_num_orbitals[internal_index_j+1]] = non_zero_block
+        
+        if key_term not in H_full.keys():
+            H_full[str(key_term)] = full_block
+
+        else:
+            H_full_temp = H_full[str(key_term)]
+            H_full[str(key_term)] = torch.cat((H_full_temp, full_block), dim=0)
+    return H_full
+
+
+
+
+def map_atom_to_orbital(atom_index,atomic_numbers,atom_orbitals):
+    num_orbitals_per_atom = [np.sum(2*np.array(atom_orbitals[str(atomic_number)])+1) for atomic_number in atomic_numbers]
+    starting_index = int(np.sum(num_orbitals_per_atom[:atom_index])+1) #since hamiltonian orbital index starts from 1
+    num_orbitals = num_orbitals_per_atom[atom_index]
+    return starting_index, num_orbitals
+
+
+
+
+def reconstruct_hamiltonian(H_label, atomic_numbers, atom_orbitals, save_file=None):
+
+    filtered_H_label = {}
+
+    for key in H_label.keys():
+        if key[0]<= key[1]: #remove all duplicate offsite blocks 
+            filtered_H_label[key] = H_label[key]
+        
+    filtered_H_label = dict(sorted(filtered_H_label.items(), key=lambda item: item[0][0]))
+    
+    
+    print('filtering done')                   
+
+
+    H_label = filtered_H_label
+
+    positions = []
+    values = []
+
+    for key in H_label.keys():
+        H_block = H_label[key]
+        atom_i_index = key[0]
+        atom_j_index = key[1]
+        starting_i, num_orbitals_i = map_atom_to_orbital(atom_i_index, atomic_numbers,atom_orbitals)
+        starting_j, num_orbitals_j = map_atom_to_orbital(atom_j_index, atomic_numbers,atom_orbitals)
+
+        
+        for i in range(H_block.shape[0]):
+            for j in range(H_block.shape[1]):
+                if H_block[i,j] != 0:                
+                    if starting_i+i <= starting_j+j:
+                        positions.append((starting_i+i,starting_j+j))
+                        values.append(H_block[i,j].item())
+
+        print("Block done"+str(key))
+
+
+    paired = zip(positions, values)
+
+    sorted_pairs = sorted(paired, key=lambda pair: pair[0][0]) #sort by the first element of the tuple
+    positions_sorted, values_sorted = zip(*sorted_pairs)
+
+    with open(save_file, 'w') as file:
+        for (i, j), value in zip(positions_sorted, values_sorted):
+            # Convert 0-based indices (i, j) to 1-based indices for CP2K format
+            i_cp2k = i
+            j_cp2k = j
+            
+            # Write the row, column, and value to the file
+            file.write(f"       {i_cp2k}        {j_cp2k}  {value:.8e}\n")
+
+    print(f"Hamiltonian matrix written to {save_file}")

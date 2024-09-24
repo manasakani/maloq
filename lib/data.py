@@ -131,7 +131,7 @@ def slice_criteria(atom, cutoff, location, pos, cell):
     else:
         return False
 
-def create_slice_graph(atom_index, edge_matrix, add_virtual = True):
+def create_slice_graph(atom_index, edge_matrix, add_virtual = True, two_way = False):
 
     """
     Generates required data to locate atoms and edges belonging to the slice sub-structure/graph
@@ -196,6 +196,16 @@ def create_slice_graph(atom_index, edge_matrix, add_virtual = True):
         full_mapped_edge_index = mapped_edge_index + virtual_mapped_edge_index #mapped edge indices of the full graph including virtual nodes 
         full_edge_positions = edge_positions + virtual_edge_positions
         
+        if (two_way == True):
+            print('Using two-way edges for virtual nodes')
+            for i in range(len(atom_index)): 
+                virtual_edge_position = np.squeeze(np.where(edge_matrix[0] == atom_index[i])) #find the virtual edges connected to the real atoms (source is now the real atom, target is the virtual atom)
+                for j in range(len(virtual_edge_position)):
+                    if edge_matrix[1][virtual_edge_position[j]] in virtual_atom_index:
+                        atom_i_index = full_atom_index.index(edge_matrix[0][virtual_edge_position[j]]) 
+                        atom_j_index = full_atom_index.index(edge_matrix[1][virtual_edge_position[j]])
+                        virtual_mapped_edge_index.append([atom_i_index,atom_j_index])
+                        virtual_edge_positions.append(virtual_edge_position[j])
 
     else:
         full_atom_index = atom_index
@@ -405,7 +415,7 @@ def slice_cartesian(atom_pos,start,length):
     else:
         return False
 
-def createdata_subgraph_cartesian(structure, start, length, equivariant_blocks, out_slices, construct_kernel, dtype=torch.float64):
+def createdata_subgraph_cartesian(structure, start, length, equivariant_blocks, out_slices, construct_kernel, dtype=torch.float64, add_virtual = True, two_way = False):
     
     pos = structure.atomic_structure.get_positions()
     cell = structure.atomic_structure.get_cell()
@@ -418,7 +428,7 @@ def createdata_subgraph_cartesian(structure, start, length, equivariant_blocks, 
         if slice_cartesian(pos[i],start,length):
             atom_index.append(i)
 
-    slice_graph = create_slice_graph(atom_index, edge_matrix)
+    slice_graph = create_slice_graph(atom_index, edge_matrix, add_virtual, two_way)
 
     full_mapped_edge_index = slice_graph['full_mapped_edge_index']
     full_edge_positions = slice_graph['full_edge_positions']
@@ -551,7 +561,7 @@ def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, ou
 
 
 
-def batch_data_HfO2_cartesian(graph, start, total_length, num_slices, test_list = None, save_file = 'None', cutoff = 2, equivariant_blocks = None, out_slices = None, construct_kernel=None, dtype = torch.float32):
+def batch_data_HfO2_cartesian(graph, start, total_length, num_slices, test_list = None, save_file = 'None', cutoff = 2, equivariant_blocks = None, out_slices = None, construct_kernel=None, dtype = torch.float32, add_virtual = True, two_way = False):
 
     data_list = []
 
@@ -563,7 +573,7 @@ def batch_data_HfO2_cartesian(graph, start, total_length, num_slices, test_list 
     print(length)
 
     for i in range(num_slices):
-        train_data = createdata_subgraph_cartesian(graph, start, length ,equivariant_blocks, out_slices, construct_kernel, dtype=dtype)
+        train_data = createdata_subgraph_cartesian(graph, start, length ,equivariant_blocks, out_slices, construct_kernel, dtype, add_virtual, two_way)
         torch.save(train_data, save_file+'_structure_'+'_training_'+str(start)+'_'+str(start+length)+'.pt')
         data_list.append(train_data)
         start = start + length
@@ -588,7 +598,9 @@ def batch_data_HfO2_cartesian(graph, start, total_length, num_slices, test_list 
         print("--> Batch: ")
         print("Node Features (x):", batch.x.size())
         print("Edge Index:", batch.edge_index.size())
-        print("Edge Features (edge_attr):", batch.edge_attr.size())     
+        print("Edge Features (edge_attr):", batch.edge_attr.size())
+        print("Average Node Degree:", np.mean(np.array(batch.node_degree)))
+        print("Average Reduced Node Degree", np.mean(np.array(batch.reduced_node_degree)))     
 
     return loader
 
