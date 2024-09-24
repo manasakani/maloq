@@ -74,17 +74,17 @@ def main(folder):
     # hamiltonian_file = os.path.join(data_folder, 'memrstors-KS_SPIN_1-1_0.csr')
     # overlap_file = os.path.join(data_folder, 'memrstors-S_SPIN_1-1_0.csr')
 
-    data_folder = '/usr/scratch2/tortin13/chexia/HfO2_2/'
-    xyz_file = data_folder+'snapshot.xyz'
-    hamiltonian_file = data_folder + 'memrstors-KS_SPIN_1-1_0.csr'
-    overlap_file = data_folder + 'memrstors-S_SPIN_1-1_0.csr'
+    data_folder = os.path.join(folder, 'datasets/HfO2_2')
+    xyz_file = os.path.join(data_folder, 'structure.xyz')
+    hamiltonian_file = os.path.join(data_folder, 'H.csr')
+    overlap_file = os.path.join(data_folder, 'S.csr')
     pbc = True
     orbital_basis = 'SZV'
 
-    val_data_folder = '/usr/scratch2/tortin13/chexia/HfO2_1/'
-    val_xyz_file = val_data_folder+'snapshot.xyz'
-    val_hamiltonian_file = val_data_folder + 'memrstors-KS_SPIN_1-1_0.csr'
-    val_overlap_file = val_data_folder + 'memrstors-S_SPIN_1-1_0.csr'
+    val_data_folder = os.path.join(folder, 'datasets/HfO2_1')
+    val_xyz_file = os.path.join(val_data_folder, 'structure.xyz')
+    val_hamiltonian_file = os.path.join(val_data_folder, 'H.csr')
+    val_overlap_file = os.path.join(val_data_folder, 'S.csr')
 
     
 
@@ -109,7 +109,7 @@ def main(folder):
     restart_file = None
     save_file = 'model_HfO2_'+str(world_size)+'_cartesian_test_validate_latest'
     train_or_test = 'train'                                          
-    num_MP_layers = 1                                                              # Number of message passing layers 
+    num_MP_layers = 2                                                              # Number of message passing layers 
     num_epochs = 50000                                                               # Number of epochs                                                
     learning_rate = 1e-4                                                            # Initial Learning rate                 
     loss_tol = 0                                                                    # Loss tolerance for early stopping
@@ -119,8 +119,8 @@ def main(folder):
     sphere_channels = 16
     num_heads = 2
     attn_hidden_channels = 16 
-    attn_alpha_channels = 32
-    attn_value_channels = 32
+    attn_alpha_channels = 16
+    attn_value_channels = 16
     ffn_hidden_channels = 64
 
     # ************************************************************
@@ -201,14 +201,14 @@ def main(folder):
     elif partitioning == 'slice_length':
         # total_length = 54
         # num_slices = 18
-        start = 10
-        total_length = 3
+        start = -1
+        total_length = 60
         num_slices = 1
         data_loader = data.batch_data_HfO2_cartesian(a_HfO2, start, total_length, num_slices, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
         print("Data loader created")
 
-        start = 10
-        total_length = 3
+        start = 25
+        total_length = 4
         num_slices = 1
         validation_loader = data.batch_data_HfO2_cartesian(a_HfO2_val, start, total_length, num_slices, equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, dtype=torch.float32)
         print("Validation loader created")
@@ -244,6 +244,7 @@ def main(folder):
         print("Restarting training from a saved model and optimizer state...", flush=True)
         checkpoint = torch.load(restart_file)
         state_dict = checkpoint['model_state_dict']
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
         if dist.is_available() and dist.is_initialized():
             # If the model was saved with DDP, remove the 'module' prefix that it might have (just in case)
