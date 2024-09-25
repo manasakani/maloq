@@ -247,6 +247,7 @@ class SO2Net_local(torch.nn.Module):
                 edge_embedding.embedding[:, offset_res, :] = self.distance_expansion(edge_distance)
 
         node_embedding.set_lmax_mmax(self.lmax_list,self.mmax_list)
+        edge_embedding.set_lmax_mmax(self.lmax_list,self.mmax_list)
         edge_distance_embedding = self.distance_expansion(edge_distance)
 
         # Create rotation matrices for the edges
