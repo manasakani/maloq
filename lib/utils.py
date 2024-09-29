@@ -86,6 +86,16 @@ def write_xyz_file(file_path, atomic_species, coordinates, indices):
             if i in indices:
                 f.write(atomic_species[i] + ' ' + ' '.join([str(coord) for coord in coordinates[i]]) + '\n')
 
+def get_number_orbitals_QM7(database):
+        basis_def = database.metadata['basisdef']
+        basis_def = np.array(basis_def)
+        n_orbitals = np.zeros(basis_def.shape[0], dtype=int)
+
+        for i in range(basis_def.shape[0]):
+            n_orbitals[i] = int(np.count_nonzero(basis_def[i, :, 2]))
+
+        return n_orbitals
+
 def read_sparse_hamiltonian_csr(file_path):
     """
     Read a sparse Hamiltonian matrix in CSR format from a file and return the matrix in a dictionary format.

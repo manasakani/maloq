@@ -164,7 +164,10 @@ def main(folder):
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    model, optimizer = env.dist_restart('results_' + tag[:-5] + '/' + restart_file + '.pt', model, optimizer)
+    if restart_file is not None:
+        model, optimizer = env.dist_restart('results_' + tag[:-5] + '/' + restart_file + '.pt', model, optimizer)
+    else:
+        raise RuntimeError("No restart model file provided!")
 
     number_of_parameters = sum(p.numel() for p in model.parameters())
     print(f"Model initialized with {number_of_parameters} parameters", flush=True)

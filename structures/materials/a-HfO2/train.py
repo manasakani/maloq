@@ -23,9 +23,8 @@ import so2_model as so2_model
 import SO3 as SO3
 import compute_env as env
 import utils as utils
-print("Imported libraries", flush=True)
-
 from e3nn.o3 import Irreps
+print("Imported libraries", flush=True)
 
 def main(folder):
 
@@ -177,7 +176,8 @@ def main(folder):
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    model, optimizer = env.dist_restart('results_' + tag + '/' + restart_file + '.pt', model, optimizer)
+    if restart_file is not None:
+        model, optimizer = env.dist_restart('results_' + tag + '/' + restart_file + '.pt', model, optimizer)
 
     number_of_parameters = sum(p.numel() for p in model.parameters())
     print(f"Model initialized with {number_of_parameters} parameters", flush=True)

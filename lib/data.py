@@ -26,11 +26,11 @@ def custom_collate_fn(batch):
     return Batch.from_data_list(batch)
 
 
-def split_data_indices(num_train, num_validate, num_test, num_total):
+def split_data_indices(num_train, num_validate, num_test, num_total, offset=0):
     """
     Splits the data indices into training, validation, and test sets
     """
-    indices = np.arange(num_total)
+    indices = np.arange(offset, num_total)
     np.random.shuffle(indices)
 
     train_indices = indices[:num_train]
@@ -40,7 +40,7 @@ def split_data_indices(num_train, num_validate, num_test, num_total):
     return train_indices, validate_indices, test_indices
 
 
-def create_input_data_SO2(structure, equivariant_blocks, out_slices, construct_kernel, device, dtype):
+def create_input_data_molecules(structure, equivariant_blocks, out_slices, construct_kernel, device, dtype):
 
     # Note: for SO2 network, edge_index has two-way edges, and does not include self-connections 
     edge_index = structure.edge_matrix
@@ -498,12 +498,12 @@ def createdata_subgraph_cartesian(structure, start, length, equivariant_blocks, 
 
 
 # Creates a dataloader for a dataset with a list of molecules
-def batch_data_SO2(structures, device, num_graph=1, batch_size=1, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
+def batch_data_molecules(structures, device, num_graph=1, batch_size=1, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
 
     data_list = []
 
     for i in range(num_graph):
-        data = create_input_data_SO2(structures[i], equivariant_blocks, out_slices, construct_kernel, device, dtype=dtype)
+        data = create_input_data_molecules(structures[i], equivariant_blocks, out_slices, construct_kernel, device, dtype=dtype)
         data_list.append(data)
     
     dataset = CustomDataset(data_list)

@@ -1,6 +1,7 @@
 import os
 import torch.distributed as dist
 import torch
+import functools
 
 
 def initialize_compute_env():
@@ -42,6 +43,15 @@ def remove_module_prefix(state_dict):
     prefix = 'module.'
     return {k[len(prefix):] if k.startswith(prefix) else k: v for k, v in state_dict.items()}
 
+def only_rank_zero(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        if dist.is_available() and dist.is_initialized():
+            if dist.get_rank() == 0:
+                return func(*args, **kwargs)
+        else:
+            return func(*args, **kwargs)
+    return wrapper
 
 def dist_restart(restart_file, model, optimizer):
     if restart_file is not None:
