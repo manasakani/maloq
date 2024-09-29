@@ -9,7 +9,6 @@ sys.path.append(lib_equiformer_root)
 print(f"Added {lib_root} to the path", flush=True)
 print(f"Added {lib_equiformer_root} to the path", flush=True)
 
-
 import argparse
 import numpy as np
 import torch.distributed as dist
@@ -58,7 +57,7 @@ def main(folder):
     num_train = 500                                                             # Number of training samples
     num_validate = 500                                                          # Number of validation samples             
     num_test = 2500     
-    show_fit_for = "train"                                                      # Show fit for the training (train) or validation (val) data
+    show_fit_for = "val"                                                        # Show fit for the training (train) or validation (val) data
 
     tag = 'H2O'
     restart_file = None                                     
@@ -68,10 +67,10 @@ def main(folder):
         os.makedirs('results_' + tag)
     save_file = 'results_' + tag + '/' + save_file
 
-    num_epochs = 500000                                                           
+    num_epochs = 500                                                           
     batch_size = num_train                                                               
     loss_tol = 1e-10
-    lr = 1e-4
+    lr = 1e-3
     patience = 50
     threshold = 1e-8
     rcut = 1000.0
@@ -193,21 +192,7 @@ def main(folder):
     training_data_loader = data.batch_data_molecules(training_molecules, device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
     validation_data_loader = data.batch_data_molecules(validation_molecules, device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
     
-    print("training model...")
-    training.train_and_validate_model_subgraph(model, 
-                                               optimizer, 
-                                               training_data_loader, 
-                                               validation_data_loader, 
-                                               num_epochs, 
-                                               loss_tol, 
-                                               patience, 
-                                               threshold, 
-                                               min_lr=loss_tol, 
-                                               save_file=save_file, 
-                                               dtype=dtype)
-    print("Model trained")
-
-    # create new construct_kernel for the evaluation, this time on the cpu
+    # create new construct_kernel for the training, this time on the cpu
     construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
                                         out_js_list, 
                                         default_dtype_torch=dtype, 
@@ -215,11 +200,30 @@ def main(folder):
                                         no_parity=no_parity, 
                                         if_sort=False, 
                                         device_torch='cpu')
-       
+    
+    print("training model...")
+    training.train_and_validate_model_subgraph(model,
+                                                optimizer,
+                                                training_data_loader,
+                                                validation_data_loader,
+                                                num_epochs,
+                                                loss_tol,
+                                                patience,
+                                                threshold,
+                                                min_lr=1e-10,
+                                                save_file=save_file,
+                                                dtype=dtype,
+                                                unflatten=True,
+                                                construct_kernel=construct_kernel,
+                                                equivariant_blocks=equivariant_blocks, 
+                                                atom_orbitals=atom_orbitals, 
+                                                out_slices=out_slices)
+    print("Model trained")
+    
     if show_fit_for == 'train':
-        training.evaluate_model(model, training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
+        training.evaluate_model(model, training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
     else:
-        training.evaluate_model(model, validation_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
+        training.evaluate_model(model, validation_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
 
 
 if __name__ == "__main__":

@@ -16,19 +16,12 @@ import torch.distributed as dist
 import torch
 import random
 
-import data as data
-import training as training
-import structure as structure
-import SO2 as SO2
-import so2_model as so2_model
-import SO3 as SO3
-import compute_env as env
-import utils as utils
-from e3nn.o3 import Irreps
+import data, training, structure, SO2, so2_model, SO3, compute_env as env, utils
 print("Imported libraries", flush=True)
 
 # SchNetPack package for database handling
 from schnetpack.data import ASEAtomsData
+from e3nn.o3 import Irreps
 
 # Adding units to the dataset
 # spkconvert --distunit Angstrom --propunit energy:Hartree,forces:Hartree/Angstrom,hamiltonian:Hartree,overlap:dimensionless /Users/manasakani/Documents/ETH/Repos/ham_predict/datasets/schnorb_hamiltonian_water.db
@@ -67,12 +60,8 @@ def main(folder):
         os.makedirs('results_' + tag)
     save_file = 'results_' + tag + '/' + save_file
 
-    num_epochs = 500                                                           
-    batch_size = num_train                                                               
-    loss_tol = 1e-10
+    batch_size = 2500                                                               
     lr = 1e-4
-    patience = 50
-    threshold = 1e-8
     rcut = 1000.0
 
     # Structure and Network parameters:
@@ -116,7 +105,8 @@ def main(folder):
                                             orbital_basis, 
                                             dataset='schnet', 
                                             database_props=database.__getitem__(molecule_index), 
-                                            self_interaction=False, bothways=True, make_soap=False))
+                                            self_interaction=False, bothways=bothways, rcut=rcut))
+        
     sample_molecule = testing_molecules[0]
     print("Dataset initialized")
 
@@ -188,7 +178,7 @@ def main(folder):
                                         if_sort=False, 
                                         device_torch='cpu')
        
-    training.evaluate_model(model, testing_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device)
+    training.evaluate_model(model, testing_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
     
 
 if __name__ == "__main__":

@@ -66,13 +66,8 @@ def main(folder):
     save_file = 'results_' + tag + '/' + save_file
     
     # Network training:
-    num_MP_layers = 2                                                               # Number of message passing layers 
-    num_epochs = 100                                                                # Number of epochs                                                
+    num_MP_layers = 1                                                               # Number of message passing layers 
     learning_rate = 1e-4                                                            # Initial Learning rate                 
-    loss_tol = 0                                                                    # Loss tolerance for early stopping
-    patience = 20
-    threshold = 1e-4
-    dtype = torch.float32
 
     # Material parameters:
     pbc = True

@@ -3,7 +3,7 @@ import torch.distributed as dist
 import torch
 import functools
 
-
+# Initialize the compute environment for distributed training
 def initialize_compute_env():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -15,7 +15,7 @@ def initialize_compute_env():
         os.environ['RANK'] = str(rank)
         os.environ['WORLD_SIZE'] = str(world_size)
         os.environ['LOCAL_RANK'] = str(local_rank)
-        backend = 'gloo'  # Use NCCL for multi-GPU on Piz Daint (edit: uses RDMA, switching to gloo)
+        backend = 'gloo'  # Use NCCL for Piz Daint (edit: RDMA may be broken, switching to gloo)
         dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
         print("Initialized process group in: SLURM", flush=True)
 
@@ -43,6 +43,7 @@ def remove_module_prefix(state_dict):
     prefix = 'module.'
     return {k[len(prefix):] if k.startswith(prefix) else k: v for k, v in state_dict.items()}
 
+# decorator to run a function only on rank 0 in distributed training
 def only_rank_zero(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):

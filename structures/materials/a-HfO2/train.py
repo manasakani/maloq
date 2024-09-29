@@ -62,7 +62,7 @@ def main(folder):
     num_slice_val = 1                                                               # Number of slices for validation  
     
     # Restart calculations:
-    restart_file = 'model'
+    restart_file = None
     save_file = 'model'
 
     if not os.path.exists('results_' + tag):
@@ -70,12 +70,12 @@ def main(folder):
     save_file = 'results_' + tag + '/' + save_file
     
     # Network training:
-    num_MP_layers = 2                                                               # Number of message passing layers 
-    num_epochs = 100                                                                # Number of epochs                                                
+    num_MP_layers = 1                                                               # Number of message passing layers 
+    num_epochs = 50000                                                              # Number of epochs                                                
     learning_rate = 1e-4                                                            # Initial Learning rate                 
     loss_tol = 0                                                                    # Loss tolerance for early stopping
-    patience = 20
-    threshold = 1e-4
+    patience = 500
+    threshold = 1e-3
     dtype = torch.float32
 
     # Material parameters:
