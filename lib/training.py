@@ -60,7 +60,7 @@ def get_loss_flattened(node_output, edge_output, batch, criterion):
     loss_edge = criterion(edge_output[0:labelled_edge_size], batch.y[0:labelled_edge_size])                 # y is the edge label
     output = torch.cat([node_output[0:labelled_node_size], edge_output[0:labelled_edge_size]], dim=0)
     labels = torch.cat([batch.node_y[0:labelled_node_size], batch.y[0:labelled_edge_size]], dim=0)
-    loss = criterion(output, labels)      
+    loss = criterion(output, labels)     
 
     return loss_node, loss_edge, loss
 
@@ -77,28 +77,25 @@ def get_loss_unflattened(node_output, edge_output, batch, criterion, construct_k
         labelled_node_size = batch[0].num_nodes * batch_size
         labelled_edge_size = batch[0].num_edges * batch_size
 
-    # Process node predictions
-    flattened_node_labels = construct_kernel.get_H(batch.node_y[0:labelled_node_size].cpu())
-    flattened_node_pred = construct_kernel.get_H(node_output[:labelled_node_size].cpu())
+    arange_tensor = torch.arange(labelled_node_size).unsqueeze(0)
+    torch_cat_tensor = torch.cat((arange_tensor, arange_tensor), 0) # edge_index for self-loop (nodes)
 
-    node_label = utils.unflatten(flattened_node_labels, batch.x[0:labelled_node_size],
-                                    torch.cat((torch.arange(labelled_node_size).unsqueeze(0),
-                                                torch.arange(labelled_node_size).unsqueeze(0)), 0),
-                                    equivariant_blocks, atom_orbitals, out_slices)
+    # Process node predictions
+    flattened_node_labels = construct_kernel.get_H(batch.node_y[0:labelled_node_size])
+    flattened_node_pred = construct_kernel.get_H(node_output[:labelled_node_size])
+
+    node_label = utils.unflatten(flattened_node_labels, batch.x[0:labelled_node_size], torch_cat_tensor,
+                                equivariant_blocks, atom_orbitals, out_slices)
     
-    node_pred = utils.unflatten(flattened_node_pred, batch.x[0:labelled_node_size],
-                                torch.cat((torch.arange(labelled_node_size).unsqueeze(0),
-                                            torch.arange(labelled_node_size).unsqueeze(0)), 0),
+    node_pred = utils.unflatten(flattened_node_pred, batch.x[0:labelled_node_size], torch_cat_tensor,
                                 equivariant_blocks, atom_orbitals, out_slices)
 
-    H_block_node_labels = [matrix.flatten() for matrix in node_label.values()]
-    node_label_tensor = torch.cat(H_block_node_labels)
-    H_block_node_pred = [matrix.flatten() for matrix in node_pred.values()]
-    node_pred_tensor = torch.cat(H_block_node_pred)
+    node_label_tensor = torch.cat([matrix.flatten() for matrix in node_label.values()])
+    node_pred_tensor = torch.cat([matrix.flatten() for matrix in node_pred.values()])
 
     # Process edge predictions
-    flattened_edge_labels = construct_kernel.get_H(batch.y[0:labelled_edge_size].cpu())
-    flattened_edge_pred = construct_kernel.get_H(edge_output[0:labelled_edge_size].cpu())
+    flattened_edge_labels = construct_kernel.get_H(batch.y[0:labelled_edge_size])
+    flattened_edge_pred = construct_kernel.get_H(edge_output[0:labelled_edge_size])
 
     edge_label = utils.unflatten(flattened_edge_labels, batch.x[0:labelled_node_size],
                                     batch.edge_index[:, 0:labelled_edge_size],
@@ -107,11 +104,9 @@ def get_loss_unflattened(node_output, edge_output, batch, criterion, construct_k
     edge_pred = utils.unflatten(flattened_edge_pred, batch.x[0:labelled_node_size],
                                 batch.edge_index[:, 0:labelled_edge_size],
                                 equivariant_blocks, atom_orbitals, out_slices)
-    
-    H_block_edge_labels = [matrix.flatten() for matrix in edge_label.values()]
-    edge_label_tensor = torch.cat(H_block_edge_labels)
-    H_block_edge_pred = [matrix.flatten() for matrix in edge_pred.values()]
-    edge_pred_tensor = torch.cat(H_block_edge_pred)
+
+    edge_label_tensor = torch.cat([matrix.flatten() for matrix in edge_label.values()])
+    edge_pred_tensor = torch.cat([matrix.flatten() for matrix in edge_pred.values()])
 
     # Compute the loss
     loss_node = criterion(node_pred_tensor, node_label_tensor)
@@ -131,17 +126,14 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
                                       save_file='model.pth', schedule=False, dtype=torch.float32,
                                       unflatten=True, construct_kernel=None, equivariant_blocks=None, atom_orbitals=None, out_slices=None):
     
-    device = next(model.parameters()).device  # Get the device of the model
-    
-    if dist.is_available() and dist.is_initialized():
-        # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
-        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
-    else:
-        model = nn.DataParallel(model)
-
-    criterion = nn.MSELoss()
+    device = next(model.parameters()).device  
+    criterion = nn.MSELoss(reduction='mean')
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+    
+    if dist.is_available() and dist.is_initialized():
+        # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the one-way edges
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
 
     track_loss_node = []
     track_loss_edge = []
@@ -171,9 +163,10 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
             if unflatten:
                 loss_node, loss_edge, loss = get_loss_unflattened(node_output, edge_output, batch, criterion, construct_kernel, equivariant_blocks, atom_orbitals, out_slices)
             else:
-                loss_node, loss_edge, loss = get_loss_flattened(node_output, edge_output, batch, criterion)
+                loss_node, loss_edge, mse_loss = get_loss_flattened(node_output, edge_output, batch, criterion)
                 
             # Backward pass
+            loss = mse_loss
             loss.backward()    
             backward_pass_time = time.time()                              
                         
@@ -187,6 +180,9 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
 
         epoch_end_time = time.time()
         epoch_duration = epoch_end_time - epoch_start_time
+        track_loss_node.append(loss_node.cpu().detach().numpy()) 
+        track_loss_edge.append(loss_edge.cpu().detach().numpy())
+        track_training_loss.append(loss.cpu().detach().numpy())
             
         @env.only_rank_zero
         def print_train_info(): 
@@ -197,20 +193,16 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
             print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
             print(f"--> Memory info: {torch.cuda.mem_get_info(device)}")
             print("Epoch: " + str(epoch)+ " loss: " + str(loss))
-            track_loss_node.append(loss_node.cpu().detach().numpy()) 
-            track_loss_edge.append(loss_edge.cpu().detach().numpy())
-            track_training_loss.append(loss.cpu().detach().numpy())
         print_train_info()
 
         # Validate the model
-        validation_loss = 0.0
         model.eval()
-
+        validation_loss = 0.0
         with torch.no_grad():
             for batch in validation_loader:
+                batch = batch.to(device)
 
                 # Forward pass
-                batch = batch.to(device)
                 node_output, edge_output = model(batch) 
 
                 # Loss computation
@@ -218,15 +210,17 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
                     loss_node, loss_edge, loss = get_loss_unflattened(node_output, edge_output, batch, criterion, construct_kernel, equivariant_blocks, atom_orbitals, out_slices)
                 else:
                     loss_node, loss_edge, loss = get_loss_flattened(node_output, edge_output, batch, criterion)
+                validation_loss += loss.cpu().detach().numpy()
+
+        track_validation_node.append(loss_node.cpu().detach().numpy())
+        track_validation_edge.append(loss_edge.cpu().detach().numpy())
+        track_validation_loss.append(loss.cpu().detach().numpy())
 
         @env.only_rank_zero
         def print_val_info():
             print("Validation loss: ", validation_loss)
             print("Validation node loss: ", loss_node.cpu().detach().numpy())
             print("Validation edge loss: ", loss_edge.cpu().detach().numpy())
-            track_validation_node.append(loss_node.cpu().detach().numpy())
-            track_validation_edge.append(loss_edge.cpu().detach().numpy())
-            track_validation_loss.append(loss.cpu().detach().numpy())
         print_val_info()
 
         # save the model and the current training status every 100 epochs
@@ -234,10 +228,9 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
             save_training_state(model, optimizer, track_loss_edge, track_loss_node, track_validation_edge, track_validation_node, save_file)
         
         scheduler.step(validation_loss)
-
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Current Learning Rate: {current_lr:.8f}")
 
+        print(f"Current Learning Rate: {current_lr:.8f}")
         if current_lr <= min_lr:
             print("Learning rate has reached the minimum threshold. Stopping training.")
             break
@@ -286,24 +279,20 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
                 batch_size = len(test_batch)
                 labelled_node_size = test_batch[0].num_nodes * batch_size
                 labelled_edge_size = test_batch[0].num_edges * batch_size
-            
-            print("labelled_node_size: ", labelled_node_size)
-            print("labelled_edge_size: ", labelled_edge_size)
-            print("number of nodes in batch: ", test_batch.num_nodes)
-            print("number of edges in batch: ", test_batch.num_edges)
+
+            arange_tensor = torch.arange(labelled_node_size).unsqueeze(0)
+            torch_cat_tensor = torch.cat((arange_tensor, arange_tensor), 0)
 
             # Process node predictions
             flattened_node_labels = construct_kernel.get_H(test_batch.node_y[0:labelled_node_size].cpu())
             flattened_node_pred = construct_kernel.get_H(test_node[:labelled_node_size].cpu())
 
             node_label = utils.unflatten(flattened_node_labels, test_batch.x[0:labelled_node_size],
-                                         torch.cat((torch.arange(labelled_node_size).unsqueeze(0),
-                                                    torch.arange(labelled_node_size).unsqueeze(0)), 0),
+                                         torch_cat_tensor,
                                          equivariant_blocks, atom_orbitals, out_slices)
             
             node_pred = utils.unflatten(flattened_node_pred, test_batch.x[0:labelled_node_size],
-                                        torch.cat((torch.arange(labelled_node_size).unsqueeze(0),
-                                                   torch.arange(labelled_node_size).unsqueeze(0)), 0),
+                                        torch_cat_tensor,
                                         equivariant_blocks, atom_orbitals, out_slices)
                         
             H_block_node_labels = [matrix.flatten() for matrix in node_label.values()]
@@ -364,7 +353,6 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
     if dist.is_available() and dist.is_initialized():
         # [multiply loss by batch size to get total loss]     
         dist.all_reduce(torch.tensor(MAEloss_total, device=device), op=dist.ReduceOp.SUM)
-        MAEloss_total /= dist.get_world_size()
 
     # Plotting
     plt.figure(figsize=(4, 3))

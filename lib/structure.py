@@ -179,6 +179,7 @@ class Structure:
         self.hamiltonian = self.csr_to_dict(hamiltonian_csr)
         self.overlap = self.csr_to_dict(overlap_csr)
 
+        # print("First 5 elements of the Hamiltonian matrix: ", list(self.hamiltonian.items())[:5])
         # self.imagesc_dict(self.hamiltonian, log=True)
 
 

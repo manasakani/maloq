@@ -288,50 +288,82 @@ def rotate_data_back(pred, y, edge_indices, rotate_dic, structures):
     
     return rotated_pred, reduced_y
 
-
 def unflatten(H_pred, numbers, edge_index, equivariant_blocks, atom_orbitals, out_slices):  
 
+    # Precompute number of orbitals for each atom
+    atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
+    
     H_prev = {}
-
+    
     for index_edge in range(edge_index.shape[1]):
-
-
-        i = edge_index[0][index_edge].item() #atom index 
+        i = edge_index[0][index_edge].item()  # atom index 
         j = edge_index[1][index_edge].item()
 
-        key_term = (i,j)#edge key term 
+        key_term = (i, j)  # edge key term 
 
-        num_orbitals_i = np.sum(2*np.array(atom_orbitals[str(numbers[i].item())])+1)
-        num_orbitals_j = np.sum(2*np.array(atom_orbitals[str(numbers[j].item())])+1)
+        # Precompute number of orbitals for atoms i and j
+        num_orbitals_i = atom_orbitals_count[str(numbers[i].item())]
+        num_orbitals_j = atom_orbitals_count[str(numbers[j].item())]
 
+        # Initialize H_prev for this edge
+        H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_j), dtype=float)
 
-        
-        fill = 0 
-        init = torch.full((num_orbitals_i, num_orbitals_j), fill, dtype=float)
-        H_prev[key_term] = init
+        H_prev_edge = H_prev[key_term]  # Avoid repeated dictionary lookup as in unoptimized version
 
         for index_target, equivariant_block in enumerate(equivariant_blocks):
+            slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
+            
+            # Precompute block slices for this equivariant block
             for N_M_str, block_slice in equivariant_block.items():
                 slice_row = slice(block_slice[0], block_slice[1])
                 slice_col = slice(block_slice[2], block_slice[3])
                 len_row = block_slice[1] - block_slice[0]
                 len_col = block_slice[3] - block_slice[2]
-                slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
-
-                # print(H_prev)
-                # print(H_prev[key_term][slice_row, slice_col])
-                # print(H_pred[index_edge][slice_out].reshape(len_row, len_col))
-
+                
                 condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
 
-                if (numbers[edge_index[0][index_edge]].item() == int(condition_atomic_number_i) and numbers[edge_index[1][index_edge]].item() == int(condition_atomic_number_j)):
-                    H_prev[key_term][slice_row, slice_col] = H_pred[index_edge][slice_out].reshape(len_row, len_col)
+                if numbers[i].item() == int(condition_atomic_number_i) and numbers[j].item() == int(condition_atomic_number_j):
+                    H_prev_edge[slice_row, slice_col] = H_pred[index_edge][slice_out].reshape(len_row, len_col)
 
     return H_prev
 
+# unoptimized older version:
+# def unflatten(H_pred, numbers, edge_index, equivariant_blocks, atom_orbitals, out_slices):  
 
+#     H_prev = {}
 
+#     for index_edge in range(edge_index.shape[1]):
 
+#         i = edge_index[0][index_edge].item() #atom index 
+#         j = edge_index[1][index_edge].item()
+
+#         key_term = (i,j)#edge key term 
+
+#         num_orbitals_i = np.sum(2*np.array(atom_orbitals[str(numbers[i].item())])+1)
+#         num_orbitals_j = np.sum(2*np.array(atom_orbitals[str(numbers[j].item())])+1)
+        
+#         fill = 0 
+#         init = torch.full((num_orbitals_i, num_orbitals_j), fill, dtype=float)
+#         H_prev[key_term] = init
+
+#         for index_target, equivariant_block in enumerate(equivariant_blocks):
+#             for N_M_str, block_slice in equivariant_block.items():
+#                 slice_row = slice(block_slice[0], block_slice[1])
+#                 slice_col = slice(block_slice[2], block_slice[3])
+#                 len_row = block_slice[1] - block_slice[0]
+#                 len_col = block_slice[3] - block_slice[2]
+#                 slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
+
+#                 # print(H_prev)
+#                 # print(H_prev[key_term][slice_row, slice_col])
+#                 # print(H_pred[index_edge][slice_out].reshape(len_row, len_col))
+
+#                 condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
+
+#                 if (numbers[edge_index[0][index_edge]].item() == int(condition_atomic_number_i) and numbers[edge_index[1][index_edge]].item() == int(condition_atomic_number_j)):
+#                     H_prev[key_term][slice_row, slice_col] = H_pred[index_edge][slice_out].reshape(len_row, len_col)
+
+#     return H_prev
 
 
 def plot_orbitals(H_pred, numbers, edge_index, equivariant_blocks, atom_orbitals, out_slices):  
@@ -364,13 +396,9 @@ def plot_orbitals(H_pred, numbers, edge_index, equivariant_blocks, atom_orbitals
     return H_orbitals
 
 
-
-
-
 def assemble_hamiltonian(H_pred, numbers, edge_index, equivariant_blocks, atom_orbitals, out_slices):  
 
     H_full = {}
-
 
     elements = torch.unique(numbers,sorted=True)
 

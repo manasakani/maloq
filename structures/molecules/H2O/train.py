@@ -15,14 +15,8 @@ import torch.distributed as dist
 import torch
 import random
 
-import data as data
-import training as training
-import structure as structure
-import SO2 as SO2
-import so2_model as so2_model
-import SO3 as SO3
-import compute_env as env
-import utils as utils
+import data, training, structure, SO2, so2_model, SO3, compute_env as env, utils
+
 from e3nn.o3 import Irreps
 print("Imported libraries", flush=True)
 
@@ -192,15 +186,6 @@ def main(folder):
     training_data_loader = data.batch_data_molecules(training_molecules, device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
     validation_data_loader = data.batch_data_molecules(validation_molecules, device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
     
-    # create new construct_kernel for the training, this time on the cpu
-    construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
-                                        out_js_list, 
-                                        default_dtype_torch=dtype, 
-                                        spinful=False,
-                                        no_parity=no_parity, 
-                                        if_sort=False, 
-                                        device_torch='cpu')
-    
     print("training model...")
     training.train_and_validate_model_subgraph(model,
                                                 optimizer,
@@ -213,12 +198,21 @@ def main(folder):
                                                 min_lr=1e-10,
                                                 save_file=save_file,
                                                 dtype=dtype,
-                                                unflatten=True,
+                                                unflatten=False,
                                                 construct_kernel=construct_kernel,
                                                 equivariant_blocks=equivariant_blocks, 
                                                 atom_orbitals=atom_orbitals, 
                                                 out_slices=out_slices)
     print("Model trained")
+
+    # create new construct_kernel for the training, this time on the cpu
+    construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
+                                        out_js_list, 
+                                        default_dtype_torch=dtype, 
+                                        spinful=False,
+                                        no_parity=no_parity, 
+                                        if_sort=False, 
+                                        device_torch='cpu')
     
     if show_fit_for == 'train':
         training.evaluate_model(model, training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)

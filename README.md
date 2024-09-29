@@ -9,11 +9,14 @@ Developers: [anonimized]
 
 To train an H2O molecule:
 
-1. Enter /structures/molecules/a-HfO2/train
-2. To train the network: run main.py --f [path/to/datasets] --run train
-3. To test the network: run main.py --f [path/to/datasets] --run test
+1. Enter /structures/molecules/a-HfO2/
+2. To train the network: run train.py --f [path/to/datasets]
+3. To test the network: run test.py --f [path/to/datasets] 
 
 To train an HfO2 material:
 
-1. Enter /structures/materials/a-HfO2/train
+1. Enter /structures/materials/H2O/
+2. To train the network: run train.py --f [path/to/datasets]
+3. To test the network: run test.py --f [path/to/datasets] 
+
 
