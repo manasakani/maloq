@@ -1,15 +1,12 @@
 # This file contains the functions to process the data, create the input data object for the GNN, and batch the data for training
 
-# from lib.utils import periodic_table
 import torch
 import numpy as np
-import lib.utils as utils
+import utils
 
-import torch.nn as nn
 from torch_geometric.data import Data as gnnData
 from torch_geometric.data import Batch, Data
 from torch.utils.data import Dataset, DataLoader
-
 from ase.geometry import find_mic
 import torch.distributed as dist
 
@@ -500,8 +497,6 @@ def createdata_subgraph_cartesian(structure, start, length, equivariant_blocks, 
     return data
 
 
-
-
 # Creates a dataloader for a dataset with a list of molecules
 def batch_data_SO2(structures, device, num_graph=1, batch_size=1, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
 
@@ -523,9 +518,7 @@ def batch_data_SO2(structures, device, num_graph=1, batch_size=1, equivariant_bl
     return loader
     
 
-
-# Creates a dataloader with a batch of subgraphs for a dataset of a single large graph
-# Partition the large input Structure into smaller subgraphs for training
+# Subgraphs without periodic boundary conditions
 def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
     """
     structures: list of Structure objects
@@ -560,7 +553,7 @@ def batch_data_subgraph(graph, slice_list, cutoff=2, equivariant_blocks=None, ou
     return loader
 
 
-
+# used in structures/materials/a-HfO2/
 def batch_data_HfO2_cartesian(graph, start, total_length, num_slices, test_list = None, save_file = 'None', cutoff = 2, equivariant_blocks = None, out_slices = None, construct_kernel=None, dtype = torch.float32, add_virtual = True, two_way = False):
 
     data_list = []
@@ -570,18 +563,18 @@ def batch_data_HfO2_cartesian(graph, start, total_length, num_slices, test_list 
     num_atoms = 0
     num_edges = 0
 
-    print(length)
+    print("length of each slice (minus remainder): ", length)
 
     for i in range(num_slices):
         train_data = createdata_subgraph_cartesian(graph, start, length ,equivariant_blocks, out_slices, construct_kernel, dtype, add_virtual, two_way)
-        torch.save(train_data, save_file+'_structure_'+'_training_'+str(start)+'_'+str(start+length)+'.pt')
         data_list.append(train_data)
         start = start + length
         num_atoms += train_data.labelled_node_size
         num_edges += train_data.labelled_edge_size
-        print("Number of atoms:", train_data.labelled_node_size)
-        print("Number of edges:", train_data.labelled_edge_size)
-
+        print("Number of atoms in slice ", i, ":", train_data.labelled_node_size)
+        print("Number of edges in slice ", i, ":", train_data.labelled_edge_size)
+              
+    print("----------------------")
     print("Total Number of Atoms: ", num_atoms)
     print("Total Number of Edges: ", num_edges)
             
@@ -606,20 +599,7 @@ def batch_data_HfO2_cartesian(graph, start, total_length, num_slices, test_list 
 
 
 
-
-
-
-
-
-def batch_data_load(load_data, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
-    """
-    structures: list of Structure objects
-    slice_list: list of indices which define the center of each subgraph
-    cutoff: cutoff boundary of the slice used for training 
-    equivariant_blocks: dictionary containing the start and end indices of the equivariant blocks in i and j direction for each target in targets
-    out_slices: marks the start and end of indices belonging to a certain target. Slice 1 (0 to 1) corresponds to the first target in equivariant blocks
-    construct_kernel: SO2.e3TensorDecomp object
-    """
+def batch_data_load(load_data):
 
     data_list = [load_data]
 

@@ -3,6 +3,8 @@
 *.png
 *.txt
 *.pth
+*.pt
 *_graph_partitions/
 lib/__pycache__/
 lib_equiformer/__pycache__/
+/datasets/

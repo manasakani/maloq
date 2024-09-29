@@ -1,7 +1,7 @@
 import dgl
 import torch
 import numpy as np
-from lib import utils
+import utils
 from dgl.data import DGLDataset
 from ase.geometry import find_mic
 

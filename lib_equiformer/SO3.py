@@ -22,7 +22,7 @@ try:
 except ImportError:
     pass
 
-from lib_equiformer.wigner import wigner_D
+from wigner import wigner_D
 from torch.nn import Linear
 
 

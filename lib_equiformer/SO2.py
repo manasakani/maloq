@@ -1,24 +1,24 @@
-from e3nn.o3 import Irrep, Irreps, wigner_3j, matrix_to_angles, Linear, FullyConnectedTensorProduct, TensorProduct, SphericalHarmonics
-from e3nn.nn import Extract
+# from e3nn.o3 import Irrep, Irreps, wigner_3j, matrix_to_angles, Linear, FullyConnectedTensorProduct, TensorProduct, SphericalHarmonics
+# from e3nn.nn import Extract
+from e3nn.o3 import Irreps, wigner_3j
 import torch
 import numpy as np
 
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from torch.utils.data import Dataset
-import math
-import networkx as nx
-import matplotlib.pyplot as plt
-import torch.nn.functional as F
+# import torch.nn as nn
+# import torch.nn.functional as F
+# from torch.utils.data import DataLoader
+# from torch.utils.data import Dataset
+# import math
+# import matplotlib.pyplot as plt
+# import torch.nn.functional as F
 # from torch_scatter import scatter
-from torch_geometric.utils import degree
-import networkx as nx
+# from torch_geometric.utils import degree
+# import networkx as nx
 
-from lib_equiformer.layer_norm import get_normalization_layer
-from lib.transformer_block import FeedForwardNetwork
-from lib.transformer_block import TransBlockV2,NodeBlockV2,EdgeBlockV2
-from lib_equiformer.SO3 import CoefficientMappingModule, SO3_Rotation, SO3_Embedding
+# from lib_equiformer.layer_norm import get_normalization_layer
+# from lib.transformer_block import FeedForwardNetwork
+# from lib.transformer_block import TransBlockV2,NodeBlockV2,EdgeBlockV2
+# from lib_equiformer.SO3 import CoefficientMappingModule, SO3_Rotation, SO3_Embedding
 
 class GaussianSmearing(torch.nn.Module):
     def __init__(
@@ -231,7 +231,10 @@ def process_targets(orbital_types, index_to_Z, targets):
     
     return equivariant_blocks, out_js_list, out_slices
 
-class e3TensorDecomp: #module that converts between coupled and uncoupled space using Clebsch Gordan coefficients 
+
+# Borrowed from DeepH-E3 (https://github.com/Xiaoxun-Gong/DeepH-E3.git)
+class e3TensorDecomp: 
+    #   module that converts between coupled and uncoupled space using Clebsch Gordan coefficients 
     def __init__(self, net_irreps_out, out_js_list, default_dtype_torch, spinful=False, no_parity=False, if_sort=False, device_torch='cpu'):
         # if spinful:
         #     default_dtype_torch = flt2cplx(default_dtype_torch)
@@ -245,10 +248,10 @@ class e3TensorDecomp: #module that converts between coupled and uncoupled space 
 
         required_irreps_out = Irreps(None)
         in_slices = [0]
-        wms = [] # wm = wigner_multiplier
+        wms = []                                            # wm = wigner_multiplier
         H_slices = [0]
         wms_H = []
-        for H_l1, H_l2 in out_js_list: #for each l1 and l2 of required H blocks in the list 
+        for H_l1, H_l2 in out_js_list:                      # for each l1 and l2 of required H blocks in the list 
             
             # = construct required_irreps_out =
             mul = 1
@@ -256,8 +259,8 @@ class e3TensorDecomp: #module that converts between coupled and uncoupled space 
             required_irreps_out += required_irreps_out_single
             
             # = construct slices =
-            in_slices.append(required_irreps_out.dim) #in_slices represent the orbital interaction 
-            H_slices.append(H_slices[-1] + (2 * H_l1 + 1) * (2 * H_l2 + 1)) #create matrix to store the reconstructed Hamiltonian blocks 
+            in_slices.append(required_irreps_out.dim)       # in_slices represent the orbital interaction 
+            H_slices.append(H_slices[-1] + (2 * H_l1 + 1) * (2 * H_l2 + 1)) # create matrix to store the reconstructed Hamiltonian blocks 
 
             # = get CG coefficients multiplier to act on net_out =
             wm = []
@@ -291,8 +294,8 @@ class e3TensorDecomp: #module that converts between coupled and uncoupled space 
         self.wms_H = wms_H
         
         self.sort = None
-        if if_sort:
-            self.sort = sort_irreps(required_irreps_out)
+        # if if_sort:
+        #     self.sort = sort_irreps(required_irreps_out)   
         
         if self.sort is not None:
             self.required_irreps_out = self.sort.irreps_out
@@ -306,8 +309,8 @@ class e3TensorDecomp: #module that converts between coupled and uncoupled space 
         out = []
         for i in range(len(self.out_js_list)):
             in_slice = slice(self.in_slices[i], self.in_slices[i + 1])
-            net_out_block = net_out[:, in_slice] #25D output edge features are sliced according to dimension of each output l to get the right size for each required H
-            H_block = torch.sum(self.wms[i][None, :, :, :] * net_out_block[:, None, None, :], dim=-1) #l3 converted back into l1 x l2 using Clebsch Gordan coefficients 
+            net_out_block = net_out[:, in_slice] # 25D output edge features are sliced according to dimension of each output l to get the right size for each required H
+            H_block = torch.sum(self.wms[i][None, :, :, :] * net_out_block[:, None, None, :], dim=-1) # l3 converted back into l1 x l2 using Clebsch Gordan coefficients 
             out.append(H_block.reshape(net_out.shape[0], -1))
         return torch.cat(out, dim=-1) # output shape: [edge, (4 spin components,) H_flattened_concatenated]
 

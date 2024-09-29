@@ -3,8 +3,8 @@
 # initialize the electronic structure from Hamiltonian and overlap matrices, 
 # and extract orbital blocks from the Hamiltonian matrix based on the edges between atoms. 
 
-from lib.utils import orbital_type_dict
-import lib.utils as utils
+from utils import orbital_type_dict
+import utils as utils
 from scipy.sparse import csr_matrix
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,7 +14,6 @@ import os
 
 # Atomic Simulation Environment (ASE) package   
 from ase.io import read
-from ase.build import molecule
 from ase import Atoms
 from ase.neighborlist import NeighborList
 from ase.geometry import find_mic
@@ -22,7 +21,7 @@ from dscribe.descriptors import SOAP
 
 # Graph partitioning packages
 import networkx as nx
-from sklearn.cluster import SpectralClustering, KMeans
+from sklearn.cluster import KMeans
 
 # A structure defines the atomic and electronic structure of collection of atoms
 class Structure:
@@ -130,31 +129,6 @@ class Structure:
         edge_matrix_np = np.array([matrix.row, matrix.col], dtype=np.int64)
         self.edge_matrix = edge_matrix_np
 
-    # def partition_graph(self, n_clusters):
-
-    #     """
-    #     SPECTRAL: Partition the graph into `n_clusters` using spectral clustering.
-    #     """
-    #     # Create a NetworkX graph from the edge matrix
-    #     G = nx.Graph()
-    #     G.add_edges_from(self.edge_matrix.T)
-
-    #     # Convert the graph to an adjacency matrix
-    #     adj_matrix = nx.to_numpy_array(G)
-
-    #     # Perform spectral clustering
-    #     clustering = SpectralClustering(n_clusters=n_clusters, affinity='precomputed', assign_labels='kmeans')
-    #     labels = clustering.fit_predict(adj_matrix)
-
-    #     # Group nodes by their cluster
-    #     partitions = {i: np.where(labels == i)[0] for i in range(n_clusters)}
-
-    #     # write each partition to a different xyz file using write_xyz_file:
-    #     # for i, (cluster, subgraph_nodes) in enumerate(partitions.items()):
-    #     #     filename = 'cluster_' + str(cluster) + '.xyz'
-    #     #     utils.write_xyz_file(filename, self.atomic_structure.get_chemical_symbols(), self.atomic_structure.get_positions(), subgraph_nodes)
-        
-    #     return partitions
 
     def partition_graph(self, n_clusters, write_xyz=False):
 
