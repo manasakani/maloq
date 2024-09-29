@@ -41,19 +41,19 @@ def main(folder):
     # Input parameters and for the H2O molecule dataset
     # ************************************************************
 
-    db_path = folder+'/datasets/schnorb_hamiltonian_water.db'
+    db_path = folder+'/datasets/schnorb_hamiltonian_uracil.db'
     database = ASEAtomsData(db_path)
     print("Number of Molecules in the database: ", len(database))
     norbs = utils.get_number_orbitals_QM7(database)
     print("Number of orbitals: ", norbs)
 
     # Dataset parameters:
-    num_train = 500                                                             # Number of training samples
-    num_validate = 500                                                          # Number of validation samples             
-    num_test = 2500     
+    num_train = 50                                                             # Number of training samples
+    num_validate = 50                                                          # Number of validation samples             
+    num_test = 250     
     show_fit_for = "val"                                                        # Show fit for the training (train) or validation (val) data
 
-    tag = 'H2O'
+    tag = 'uracil'
     restart_file = None                                     
     save_file = 'model'
 
@@ -61,12 +61,12 @@ def main(folder):
         os.makedirs('results_' + tag)
     save_file = 'results_' + tag + '/' + save_file
 
-    num_epochs = 500000                                                           
+    num_epochs = 100                                                           
     batch_size = num_train                                                               
     loss_tol = 1e-10
-    lr = 1e-4
+    lr = 1e-3
     patience = 50
-    threshold = 1e-8
+    threshold = 1e-5
     rcut = 1000.0
 
     # Structure and Network parameters:
@@ -134,10 +134,10 @@ def main(folder):
     edge_channels_list = [sphere_channels, sphere_channels, sphere_channels]  
 
     # *** Preform orbital analysis:
-    atom_orbitals = {'1': [0, 0, 1],'8':[0, 0, 0, 1, 1, 2]}                                                 # Orbital types of each atom in the structure
+    atom_orbitals = {'1': [0, 0, 1], '6':[0, 0, 0, 1, 1, 2], '7':[0, 0, 0, 1, 1, 2], '8':[0, 0, 0, 1, 1, 2]} # Orbital types of each atom in the structure
     numbers = torch.tensor([utils.periodic_table[i] for i in sample_molecule.atomic_species])               # Atomic numbers of each atom in the structure
     no_parity = True                                                                                        # No parity symmetry          
-    orbital_types = [[0,0,1],[0, 0, 0, 1, 1, 2]]                                                            # orbital types of each atom in the structure 
+    orbital_types = [[0,0,1], [0, 0, 0, 1, 1, 2], [0, 0, 0, 1, 1, 2], [0, 0, 0, 1, 1, 2]]                   # orbital types of each atom in the structure 
 
     targets, net_out_irreps, _ = SO2.orbital_analysis(atom_orbitals, targets=None, no_parity=no_parity)
     index_to_Z, _ = torch.unique(numbers, sorted=True, return_inverse=True)
