@@ -54,11 +54,11 @@ def main(folder):
     tag = 'HfO2'                                                                    # String tag for the output files
 
     # Graph partitioning:
-    slice_start_train = -1                                                          # Start index of the slice for training
+    slice_start_train = 25                                                          # Start index of the slice for training
     slice_length_train = 3                                                          # Length of the slice for training                    
     num_slice_train = 1                                                             # Number of slices for training  
     slice_start_val = 25                                                            # Start index of the slice for validation       
-    slice_length_val = 4                                                            # Length of the slice for validation        
+    slice_length_val = 3                                                            # Length of the slice for validation        
     num_slice_val = 1                                                               # Number of slices for validation  
     
     # Restart calculations:
@@ -81,7 +81,7 @@ def main(folder):
     # Material parameters:
     pbc = True
     orbital_basis = 'SZV'
-    rcut = 4.0          
+    rcut = 4.0                                                                      # Interaction radius (1/2*rcut) in Angstroms
     lmax_list = [4]     
     mmax_list = [lmax_list[0]]
 

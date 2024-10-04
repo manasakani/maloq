@@ -5,7 +5,7 @@ The network architecture is directly adapted from EquiformerV2, which is located
 Developers: [anonimized]
 
 1. Set up the python environment with [use requirements.txt]
-2. Download the datasets provided at []
+2. Download the datasets provided at [provided after publication]
 
 To train an H2O molecule:
 
@@ -19,4 +19,4 @@ To train an HfO2 material:
 2. To train the network: run train.py --f [path/to/datasets]
 3. To test the network: run test.py --f [path/to/datasets] 
 
-
+Note: this version of the code was set up to submitfor peer review, with some examples (in /structures) which can be run as tests. However it will still undergo extensive testing (particularily in a distributed environment) and further refactoring before the corresponding repository is made public.

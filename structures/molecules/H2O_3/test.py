@@ -78,8 +78,8 @@ def main(folder):
     sphere_channels = 64 
     num_heads = 2
     attn_hidden_channels = 64 
-    attn_alpha_channels = 32
-    attn_value_channels = 32 
+    attn_alpha_channels = 64
+    attn_value_channels = 64 
     ffn_hidden_channels = 64 
     irreps_in = Irreps([(sphere_channels, (0, 1)), 
                         (sphere_channels, (1, 1)), 

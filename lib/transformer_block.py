@@ -504,11 +504,11 @@ class NodeBlockV2(torch.nn.Module):
     
     def forward(
         self,
-        x,              # SO3_Embedding
+        x,                              # node embedding
         atomic_numbers,
-        edge_distance,
+        edge_distance,                  # edge distance embedding (initial edge features)
         edge_index,
-        edge_fea,
+        edge_fea,                       # edge embedding
         batch           # for GraphDropPath
     ):
 

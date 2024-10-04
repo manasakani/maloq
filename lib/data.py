@@ -507,7 +507,7 @@ def batch_data_molecules(structures, device, num_graph=1, batch_size=1, equivari
         data_list.append(data)
     
     dataset = CustomDataset(data_list)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn, num_workers=0)
 
     print("*** Batch properties:")
     for batch in loader:

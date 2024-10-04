@@ -18,14 +18,26 @@ class GaussianSmearing(torch.nn.Module):
     ):
         super(GaussianSmearing, self).__init__()
         self.num_output = num_gaussians
+
+        # will create a set of Gaussian basis functions with centers at each value of offset:
         offset = torch.linspace(start, stop, num_gaussians)
+
         self.coeff = (
             -0.5 / (basis_width_scalar * (offset[1] - offset[0])).item() ** 2
         )
+
         self.register_buffer("offset", offset)
 
     def forward(self, dist):
+        # the input dist is a tensor of scalar distances with shape (num_edges,)
+        # self.offset is a tensor of shape (num_gaussians,)
+        # the output dist will be a tensor of shape (num_edges, num_gaussians) containing the scalar distance to each 
+        # of the "num_gaussians" Gaussian centers, for each edge in the input tensor
+
+        # for each distance, find the scalar distance to each Gaussian center:
         dist = dist.view(-1, 1) - self.offset.view(1, -1)
+        
+        # apply the Gaussian function to each distance:
         return torch.exp(self.coeff * torch.pow(dist, 2))
     
 
@@ -108,10 +120,10 @@ class SO2Net(torch.nn.Module):
         self.num_distance_basis = edge_channels_list[0] #first entry of edge_channels_list represents the number of distance basis functions
 
         self.distance_expansion = GaussianSmearing(
-                                0.0,
-                                5,
-                                edge_channels_list[0],
-                                2.0,
+                                0.0,                        # start
+                                5,                          # stop
+                                edge_channels_list[0],      # num_gaussians used to expand the distance
+                                2.0,                        # basis_width_scalar
                             )
 
         self.num_resolutions = 1
@@ -296,19 +308,23 @@ class SO2Net(torch.nn.Module):
     ):  
         device = batch.y.device
         dtype = batch.y.dtype
-
-        atomic_numbers = batch.x
-        edge_distance = batch.edge_attr[:,0]
-        edge_distance_vec = batch.edge_attr[:, [2, 3, 1]]
-        edge_index = batch.edge_index
+                         
+                                                                            # note: the batch size dimension multiplies the # nodes and # edges
+        atomic_numbers = batch.x                                            # shape = (num_nodes) = [3]
+        edge_distance = batch.edge_attr[:,0]                                # shape = (num_edges) = [6]
+        edge_distance_vec = batch.edge_attr[:, [2, 3, 1]]                   # shape = (num_edges, 3) = [6, 3]
+        edge_index = batch.edge_index                                       # shape = (2, num_edges) = [2, 6]
 
         num_subgraph_nodes = len(atomic_numbers)
         num_subgraph_edges = len(edge_distance)
 
         # Initialise the node embedding with atomic_numbers
+        # length of angular momentum coefficients = (lmax+1)^2 = (4+1)^2 = 25 = 1(l=0) + 3(l=1) + 5(l=2) + 7(l=3) + 9(l=4)
+        # node embedding = (num atoms, num coefficients, sphere_channels) = (3, 25, 64)
         node_embedding = SO3_Embedding(num_subgraph_nodes, self.lmax_list, self.sphere_channels, device, dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, third dimension is the number of channels
+        # edge embedding = (num edges, num coefficients, sphere_channels) = (6, 25, 64)
         edge_embedding = SO3_Embedding(num_subgraph_edges, self.lmax_list, self.sphere_channels, device, dtype) #first dimension is the number of edges, second dimension is the number of coefficients, 
-        
+
         # Initialize the l = 0, m = 0 coefficients for each resolution
         offset_res = 0
         for i in range(self.num_resolutions):
@@ -321,9 +337,9 @@ class SO2Net(torch.nn.Module):
         
         edge_distance_embedding = self.distance_expansion(edge_distance)
 
-        # Create rotation matrices for the edges
-        edge_rot_mat = init_edge_rot_mat(edge_distance_vec)
-        self.SO3_rotation[0].set_wigner(edge_rot_mat)
+        # Create 3D rotation matrices for each of the edges
+        edge_rot_mat = init_edge_rot_mat(edge_distance_vec)                 # shape = (num_edges, 3, 3) = [6, 3, 3]
+        self.SO3_rotation[0].set_wigner(edge_rot_mat)                       # set the rotation matrices for each of the edges in the edge list
         
         # Process the graph through the layers
         for i in range(self.num_layers):

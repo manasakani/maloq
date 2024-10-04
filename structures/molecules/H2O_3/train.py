@@ -9,7 +9,6 @@ sys.path.append(lib_equiformer_root)
 print(f"Added {lib_root} to the path", flush=True)
 print(f"Added {lib_equiformer_root} to the path", flush=True)
 
-
 import argparse
 import numpy as np
 import torch.distributed as dist
@@ -17,11 +16,12 @@ import torch
 import random
 
 import data, training, structure, SO2, so2_model, SO3, compute_env as env, utils
+
+from e3nn.o3 import Irreps
 print("Imported libraries", flush=True)
 
 # SchNetPack package for database handling
 from schnetpack.data import ASEAtomsData
-from e3nn.o3 import Irreps
 
 # Adding units to the dataset
 # spkconvert --distunit Angstrom --propunit energy:Hartree,forces:Hartree/Angstrom,hamiltonian:Hartree,overlap:dimensionless /Users/manasakani/Documents/ETH/Repos/ham_predict/datasets/schnorb_hamiltonian_water.db
@@ -51,17 +51,22 @@ def main(folder):
     num_train = 500                                                             # Number of training samples
     num_validate = 500                                                          # Number of validation samples             
     num_test = 2500     
+    show_fit_for = "val"                                                        # Show fit for the training (train) or validation (val) data
 
-    tag = 'H2O_test'
-    restart_file = 'model'                                          
+    tag = 'H2O'
+    restart_file = None                                     
     save_file = 'model'
 
     if not os.path.exists('results_' + tag):
         os.makedirs('results_' + tag)
     save_file = 'results_' + tag + '/' + save_file
 
-    batch_size = num_test                                                               
+    num_epochs = 500000                                                           
+    batch_size = num_train                                                               
+    loss_tol = 1e-10
     lr = 1e-4
+    patience = 50
+    threshold = 1e-8
     rcut = 1000.0
 
     # Structure and Network parameters:
@@ -76,10 +81,10 @@ def main(folder):
 
     # Hyperparameters of the SO2 model for H2O
     sphere_channels = 64 
-    num_heads = 2
+    num_heads = 2          
     attn_hidden_channels = 64 
-    attn_alpha_channels = 32
-    attn_value_channels = 32 
+    attn_alpha_channels = 64 #32
+    attn_value_channels = 64 #32 
     ffn_hidden_channels = 64 
     irreps_in = Irreps([(sphere_channels, (0, 1)), 
                         (sphere_channels, (1, 1)), 
@@ -97,17 +102,28 @@ def main(folder):
 
     # *** Prepare the dataset:
     sample_molecule = None
-    testing_molecules = []
-    for i in range(num_test):
-        molecule_index = int(testing_data_indices[i])
-        testing_molecules.append(structure.Structure(None, None, None,
+    training_molecules = []
+    validation_molecules = []
+    for i in range(num_train):
+        molecule_index = int(training_data_indices[i])
+        training_molecules.append(structure.Structure(None, None, None,
                                             pbc, 
                                             orbital_basis, 
                                             dataset='schnet', 
                                             database_props=database.__getitem__(molecule_index), 
                                             self_interaction=False, bothways=bothways, rcut=rcut))
-        
-    sample_molecule = testing_molecules[0]
+    
+    for i in range(num_validate):
+        molecule_index = int(validation_data_indices[i])
+        validation_molecules.append(structure.Structure(None, None, None,
+                                                pbc, 
+                                                orbital_basis, 
+                                                dataset='schnet', 
+                                                database_props=database.__getitem__(molecule_index), 
+                                                self_interaction=False, bothways=bothways, rcut=rcut))
+    
+    sample_molecule = training_molecules[0]
+
     print("Dataset initialized")
 
     # ************************************************************
@@ -158,18 +174,38 @@ def main(folder):
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     if restart_file is not None:
-        model, optimizer = env.dist_restart('results_' + tag[:-5] + '/' + restart_file + '.pt', model, optimizer)
+        model, optimizer = env.dist_restart('results_' + tag + '/' + restart_file + '.pt', model, optimizer)
 
     print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
     print("Model initialized")
 
     # ************************************************************
-    # Run the testing process
+    # Run the training process
     # ************************************************************
 
-    testing_data_loader = data.batch_data_molecules(testing_molecules, device, num_test, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    training_data_loader = data.batch_data_molecules(training_molecules, device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    validation_data_loader = data.batch_data_molecules(validation_molecules, device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    
+    print("training model...")
+    training.train_and_validate_model_subgraph(model,
+                                                optimizer,
+                                                training_data_loader,
+                                                validation_data_loader,
+                                                num_epochs,
+                                                loss_tol,
+                                                patience,
+                                                threshold,
+                                                min_lr=1e-10,
+                                                save_file=save_file,
+                                                dtype=dtype,
+                                                unflatten=False,
+                                                construct_kernel=construct_kernel,
+                                                equivariant_blocks=equivariant_blocks, 
+                                                atom_orbitals=atom_orbitals, 
+                                                out_slices=out_slices)
+    print("Model trained")
 
-    # create new construct_kernel for the evaluation, this time on the cpu
+    # create new construct_kernel for the training, this time on the cpu
     construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
                                         out_js_list, 
                                         default_dtype_torch=dtype, 
@@ -177,9 +213,12 @@ def main(folder):
                                         no_parity=no_parity, 
                                         if_sort=False, 
                                         device_torch='cpu')
-       
-    training.evaluate_model(model, testing_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
     
+    if show_fit_for == 'train':
+        training.evaluate_model(model, training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+    else:
+        training.evaluate_model(model, validation_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Amorphous GNNs --- HfO2")

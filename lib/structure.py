@@ -202,6 +202,7 @@ class Structure:
                 with open(hamiltonian_pickle, "wb") as f:
                     pickle.dump(self.hamiltonian, f)
 
+        # In case we want the overlap matrix
         # if os.path.exists(overlap_pickle):
         #     print("Unpickling overlap matrix...")
         #     with open(overlap_pickle, "rb") as f:
@@ -309,12 +310,13 @@ class Structure:
 
         # Plot the matrix using matplotlib
         plt.figure()
-        plt.imshow(full_matrix, cmap='viridis')
-        plt.colorbar()
-        plt.title('CSR Matrix Visualization')
-        plt.xlabel('Column Index')
-        plt.ylabel('Row Index')
-        plt.savefig('hamiltonian_matrix.png', dpi=300)
+        plt.imshow(full_matrix, cmap='Blues')
+        c = plt.colorbar()
+        c.ax.yaxis.label.set_size(15)
+        c.set_label(r"log(|$(H_{ij})_{\alpha \beta}^{GT}$|)", fontsize=15)
+        plt.xticks([])
+        plt.yticks([])
+        plt.savefig('hamiltonian_matrix.png', dpi=500)
 
 
     def make_soap_features(self, pbc):
