@@ -88,10 +88,8 @@ class SO2Net(torch.nn.Module):
         self.lmax_list = lmax_list
         self.mmax_list = mmax_list
     
-        ffn_activation='scaled_silu'
-        use_grid_mlp=False
-        use_sep_s2_act=False
-        norm_type='layer_norm_sh'           # normalizes l=0 and l>0 coefficients separately
+        ffn_activation =    'scaled_silu'
+        norm_type      =    'layer_norm_sh'           # normalizes l=0 and l>0 coefficients separately
 
         self.sphere_channels = sphere_channels
         attn_hidden_channels= attn_hidden_channels
@@ -101,17 +99,17 @@ class SO2Net(torch.nn.Module):
         ffn_hidden_channels=ffn_hidden_channels
 
         use_gate_act=True
-        use_s2_act_attn=False
         attn_activation='scaled_silu'
         use_attn_renorm=True
 
         SO3_grid = None
 
-        use_m_share_rad = True # Originally True
+        use_m_share_rad = True                      # (?) share the radial part of the edge embedding for all m values
 
         max_num_elements = 100
         use_atom_edge_embedding = True
 
+        # Dropouts
         alpha_drop=0,
         drop_path_rate=0
         proj_drop=0.0
@@ -126,8 +124,7 @@ class SO2Net(torch.nn.Module):
                                 2.0,                        # basis_width_scalar
                             )
 
-        self.num_resolutions = 1
-        sphere_channels_all = self.num_resolutions*self.output_channels
+        sphere_channels_all = self.output_channels
         self.sphere_embedding = nn.Embedding(max_num_elements, sphere_channels_all)
 
         self.node_lin = Linear(irreps_in=irreps_in, irreps_out=irreps_out, biases=True)
@@ -159,12 +156,9 @@ class SO2Net(torch.nn.Module):
                         use_atom_edge_embedding,
                         use_m_share_rad,
                         attn_activation,
-                        use_s2_act_attn,
                         use_attn_renorm,
                         ffn_activation,
                         use_gate_act,
-                        use_grid_mlp,
-                        use_sep_s2_act,
                         norm_type,
                         alpha_drop, 
                         drop_path_rate,
@@ -192,12 +186,9 @@ class SO2Net(torch.nn.Module):
                         use_atom_edge_embedding,
                         use_m_share_rad,
                         attn_activation,
-                        use_s2_act_attn,
                         use_attn_renorm,
                         ffn_activation,
                         use_gate_act,
-                        use_grid_mlp,
-                        use_sep_s2_act,
                         norm_type,
                         alpha_drop, 
                         drop_path_rate,
@@ -207,105 +198,8 @@ class SO2Net(torch.nn.Module):
             self.blocks.append(block2)
 
 
-    def forward(self, batch, total_num_nodes=None):
+    def forward(self, batch):
 
-        # if the dataset was created using DGL dataloader, the input is a list of DGL graphs
-        if dist.is_available() and dist.is_initialized():
-            if isinstance(batch[0], dgl.DGLGraph):
-                # If batch is a list or tuple, process each graph individually 
-                # needed for some samplers used by DGL
-                if isinstance(batch, (list, tuple)):
-                    node_outputs = []
-                    edge_outputs = []
-
-                    for subgraph in batch:
-                        node_output, edge_output = self.process_graph(subgraph, total_num_nodes)
-                        node_outputs.append(node_output)
-                        edge_outputs.append(edge_output)
-
-                    return node_outputs, edge_outputs
-                else:
-                    # Process a single graph
-                    return self.process_graph(batch, total_num_nodes)
-                
-        # if the dataset was created using PyTorch Geometric dataloader, the input is a PyTorch Geometric data object
-        else:
-            return self.forward_noDGL(batch)
-
-
-    def process_graph(self, graph, total_num_nodes):
-        """
-        total_num_nodes = total number of nodes in the entire graph, from which this batch was extracted
-
-        """
-        # Extract features from the graph
-        device = graph.device
-        dtype = torch.float32
-
-        atomic_numbers = graph.ndata['_N/feat']['_N']                                   # _N/feat = node features
-        edge_distance = graph.edata['_N:_E:_N/edge_attr'][:, 0]                               # _E/edge_attr = edge features
-        edge_distance_vec = graph.edata['_N:_E:_N/edge_attr'][:, [2, 3, 1]]                    
-
-        u, v = graph.edges() 
-        edge_index = torch.stack([u, v], dim=0)  
-
-        num_subgraph_nodes = len(atomic_numbers)
-        num_subgraph_edges = len(edge_distance)
-
-        # Initialize node and edge embeddings - SO3_Embedding
-        node_embedding = SO3_Embedding(num_subgraph_nodes, self.lmax_list, self.sphere_channels, device, dtype)
-        edge_embedding = SO3_Embedding(num_subgraph_edges, self.lmax_list, self.sphere_channels, device, dtype)
-
-        # Initialize the l = 0, m = 0 coefficients for each resolution
-        offset_res = 0
-        for i in range(self.num_resolutions):
-            if self.num_resolutions == 1:
-                node_embedding.embedding[:, offset_res, :] = self.sphere_embedding(atomic_numbers)               # l = 0, m = 0 node feature = atomic numbers 
-                edge_embedding.embedding[:, offset_res, :] = self.distance_expansion(edge_distance)              # l = 0, m = 0 edge feature = edge distances
-
-        node_embedding.set_lmax_mmax(self.lmax_list, self.mmax_list)
-        edge_embedding.set_lmax_mmax(self.lmax_list, self.mmax_list)
-
-        edge_distance_embedding = self.distance_expansion(edge_distance)
-
-        # Create rotation matrices for the edges
-        edge_rot_mat = init_edge_rot_mat(edge_distance_vec)
-        self.SO3_rotation[0].set_wigner(edge_rot_mat)
-
-        # Process the graph through the layers
-        for i in range(self.num_layers):
-
-            # update the node embedding
-            node_embedding = self.blocks[2 * i](
-                node_embedding,
-                atomic_numbers,
-                edge_distance_embedding,
-                edge_index,
-                edge_embedding,
-                batch=None
-            )
-
-            # update the edge embedding
-            edge_embedding = self.blocks[2 * i + 1](
-                node_embedding,
-                atomic_numbers,
-                edge_distance_embedding,
-                edge_index,
-                edge_embedding,
-                batch=None
-            )
-
-        # Convert the output irreps to the coupled space irrep representation needed to reconstruct the Hamiltonian using the linear layer from e3nn library
-        node_output = convert_to_irreps(node_embedding, self.output_channels, self.lmax_list, self.node_lin)
-        edge_output = convert_to_irreps(edge_embedding, self.output_channels, self.lmax_list, self.edge_lin)
-
-        return node_output, edge_output
-
-
-    def forward_noDGL(
-        self,
-        batch
-    ):  
         device = batch.y.device
         dtype = batch.y.dtype
                          
@@ -325,18 +219,18 @@ class SO2Net(torch.nn.Module):
         # edge embedding = (num edges, num coefficients, sphere_channels) = (6, 25, 64)
         edge_embedding = SO3_Embedding(num_subgraph_edges, self.lmax_list, self.sphere_channels, device, dtype) #first dimension is the number of edges, second dimension is the number of coefficients, 
 
-        # Initialize the l = 0, m = 0 coefficients for each resolution
+        # Initialize the l = 0, m = 0 coefficients:
         offset_res = 0
-        for i in range(self.num_resolutions):
-            if self.num_resolutions == 1:
-                node_embedding.embedding[:, offset_res, :] = self.sphere_embedding(atomic_numbers)        
-                edge_embedding.embedding[:, offset_res, :] = self.distance_expansion(edge_distance)
+        
+        node_element_embedding = self.sphere_embedding(atomic_numbers)
+        edge_distance_embedding = self.distance_expansion(edge_distance)
+
+        node_embedding.embedding[:, offset_res, :] = node_element_embedding
+        edge_embedding.embedding[:, offset_res, :] = edge_distance_embedding
 
         node_embedding.set_lmax_mmax(self.lmax_list, self.mmax_list)
         edge_embedding.set_lmax_mmax(self.lmax_list, self.mmax_list)
         
-        edge_distance_embedding = self.distance_expansion(edge_distance)
-
         # Create 3D rotation matrices for each of the edges
         edge_rot_mat = init_edge_rot_mat(edge_distance_vec)                 # shape = (num_edges, 3, 3) = [6, 3, 3]
         self.SO3_rotation[0].set_wigner(edge_rot_mat)                       # set the rotation matrices for each of the edges in the edge list

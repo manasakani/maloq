@@ -48,8 +48,8 @@ def main(folder):
     print("Number of orbitals: ", norbs)
 
     # Dataset parameters:
-    num_train = 1                                                              # Number of training samples
-    num_validate = 1                                                            # Number of validation samples             
+    num_train = 10                                                              # Number of training samples
+    num_validate = 10                                                            # Number of validation samples             
     num_test = 2500     
     show_fit_for = "val"                                                        # Show fit for the training (train) or validation (val) data
 
@@ -61,7 +61,7 @@ def main(folder):
         os.makedirs('results_' + tag)
     save_file = 'results_' + tag + '/' + save_file
 
-    num_epochs = 500000                                                           
+    num_epochs = 100                                                           
     batch_size = num_train                                                               
     loss_tol = 1e-10
     lr = 1e-4

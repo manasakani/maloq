@@ -2,6 +2,8 @@
 Model to predict the electronic structure matrices of large amorphous materials.
 The network architecture is directly adapted from EquiformerV2, which is located at the repository: []
 
+Note: this version is the 'minimal code' which will be used for the SC project
+
 Developers: [anonimized]
 
 1. Set up the python environment with [use requirements.txt]

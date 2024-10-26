@@ -44,8 +44,8 @@ class FeedForwardNetwork(torch.nn.Module):
 
         activation (str):           Type of activation function
         use_gate_act (bool):        If `True`, use gate activation. Otherwise, use S2 activation
-        use_grid_mlp (bool):        If `True`, use projecting to grids and performing MLPs. 
-        use_sep_s2_act (bool):      If `True`, use separable grid MLP when `use_grid_mlp` is True.
+        # use_grid_mlp (bool):        If `True`, use projecting to grids and performing MLPs. - REMOVED
+        # use_sep_s2_act (bool):      If `True`, use separable grid MLP when `use_grid_mlp` is True. - REMOVED
     """
 
     def __init__(
@@ -58,8 +58,6 @@ class FeedForwardNetwork(torch.nn.Module):
         SO3_grid,  
         activation='scaled_silu', 
         use_gate_act=False, 
-        use_grid_mlp=False, 
-        use_sep_s2_act=True
     ):
         super(FeedForwardNetwork, self).__init__()
         self.sphere_channels = sphere_channels
@@ -71,74 +69,33 @@ class FeedForwardNetwork(torch.nn.Module):
         self.sphere_channels_all = self.num_resolutions * self.sphere_channels
         self.SO3_grid = SO3_grid
         self.use_gate_act = use_gate_act
-        self.use_grid_mlp = use_grid_mlp
-        self.use_sep_s2_act = use_sep_s2_act
 
         self.max_lmax = max(self.lmax_list)
         
         self.so3_linear_1 = SO3_LinearV2(self.sphere_channels_all, self.hidden_channels, lmax=self.max_lmax)
-        if self.use_grid_mlp:
-            if self.use_sep_s2_act:
-                self.scalar_mlp = nn.Sequential(
-                    nn.Linear(self.sphere_channels_all, self.hidden_channels, bias=True), 
-                    nn.SiLU(), 
-                )
-            else:
-                self.scalar_mlp = None
-            self.grid_mlp = nn.Sequential(
-                nn.Linear(self.hidden_channels, self.hidden_channels, bias=False), 
-                nn.SiLU(), 
-                nn.Linear(self.hidden_channels, self.hidden_channels, bias=False),
-                nn.SiLU(), 
-                nn.Linear(self.hidden_channels, self.hidden_channels, bias=False)
-            )
+
+        if self.use_gate_act:
+            self.gating_linear = torch.nn.Linear(self.sphere_channels_all, self.max_lmax * self.hidden_channels)
+            self.gate_act = GateActivation(self.max_lmax, self.max_lmax, self.hidden_channels)
         else:
-            if self.use_gate_act:
-                self.gating_linear = torch.nn.Linear(self.sphere_channels_all, self.max_lmax * self.hidden_channels)
-                self.gate_act = GateActivation(self.max_lmax, self.max_lmax, self.hidden_channels)
-            else:
-                if self.use_sep_s2_act:
-                    self.gating_linear = torch.nn.Linear(self.sphere_channels_all, self.hidden_channels)
-                    self.s2_act = SeparableS2Activation(self.max_lmax, self.max_lmax)
-                else:
-                    self.gating_linear = None
-                    self.s2_act = S2Activation(self.max_lmax, self.max_lmax)
+            self.gating_linear = None
+            self.s2_act = S2Activation(self.max_lmax, self.max_lmax)
         self.so3_linear_2 = SO3_LinearV2(self.hidden_channels, self.output_channels, lmax=self.max_lmax)
         
     
     def forward(self, input_embedding):
 
         gating_scalars = None
-        if self.use_grid_mlp:
-            if self.use_sep_s2_act:
-                gating_scalars = self.scalar_mlp(input_embedding.embedding.narrow(1, 0, 1))    
-        else:
-            if self.gating_linear is not None:
-                gating_scalars = self.gating_linear(input_embedding.embedding.narrow(1, 0, 1))
+        
+        if self.gating_linear is not None:
+            gating_scalars = self.gating_linear(input_embedding.embedding.narrow(1, 0, 1))
 
         input_embedding = self.so3_linear_1(input_embedding)
         
-        if self.use_grid_mlp:
-            # Project to grid
-            input_embedding_grid = input_embedding.to_grid(self.SO3_grid, lmax=self.max_lmax)
-            # Perform point-wise operations
-            input_embedding_grid = self.grid_mlp(input_embedding_grid)
-            # Project back to spherical harmonic coefficients
-            input_embedding._from_grid(input_embedding_grid, self.SO3_grid, lmax=self.max_lmax)
-
-            if self.use_sep_s2_act:
-                input_embedding.embedding = torch.cat(
-                    (gating_scalars, input_embedding.embedding.narrow(1, 1, input_embedding.embedding.shape[1] - 1)), 
-                    dim=1
-                )
+        if self.use_gate_act:
+            input_embedding.embedding = self.gate_act(gating_scalars, input_embedding.embedding)
         else:
-            if self.use_gate_act:
-                input_embedding.embedding = self.gate_act(gating_scalars, input_embedding.embedding)
-            else:
-                if self.use_sep_s2_act:
-                    input_embedding.embedding = self.s2_act(gating_scalars, input_embedding.embedding, self.SO3_grid)
-                else:
-                    input_embedding.embedding = self.s2_act(input_embedding.embedding, self.SO3_grid)
+            input_embedding.embedding = self.s2_act(input_embedding.embedding, self.SO3_grid)
 
         input_embedding = self.so3_linear_2(input_embedding)
 
@@ -165,10 +122,8 @@ class SO2NodeUpdate(torch.nn.Module):
         use_atom_edge_embedding=True, 
         use_m_share_rad=False,
         activation='scaled_silu', 
-        use_s2_act_attn=False, 
         use_attn_renorm=True,
         use_gate_act=False, 
-        use_sep_s2_act=True,
         alpha_drop=0.0,
     ):
         super(SO2NodeUpdate, self).__init__()
@@ -203,23 +158,15 @@ class SO2NodeUpdate(torch.nn.Module):
         else:
             self.source_embedding, self.target_embedding = None, None
         
-        self.use_s2_act_attn    = use_s2_act_attn
         self.use_attn_renorm    = use_attn_renorm
         self.use_gate_act       = use_gate_act
-        self.use_sep_s2_act     = use_sep_s2_act
-        
-        assert not self.use_s2_act_attn     # since this is not used
-        
+                
         # Create SO(2) convolution blocks
         extra_m0_output_channels = None
-        if not self.use_s2_act_attn:
-            extra_m0_output_channels = self.num_heads * self.attn_alpha_channels
-            if self.use_gate_act:
-                extra_m0_output_channels = extra_m0_output_channels + max(self.lmax_list) * self.hidden_channels
-            else:
-                if self.use_sep_s2_act:
-                    extra_m0_output_channels = extra_m0_output_channels + self.hidden_channels
-        
+        extra_m0_output_channels = self.num_heads * self.attn_alpha_channels
+        if self.use_gate_act:
+            extra_m0_output_channels = extra_m0_output_channels + max(self.lmax_list) * self.hidden_channels
+            
         if self.use_m_share_rad:
             self.edge_channels_list = self.edge_channels_list + [3 * self.sphere_channels * (max(self.lmax_list) + 1)]
             self.rad_func = RadialFunction(self.edge_channels_list)
@@ -247,20 +194,15 @@ class SO2NodeUpdate(torch.nn.Module):
             extra_m0_output_channels=extra_m0_output_channels # for attention weights and/or gate activation
         )
 
-        if self.use_s2_act_attn:
-            self.alpha_norm = None
-            self.alpha_act = None
-            self.alpha_dot = None
+        if self.use_attn_renorm:
+            self.alpha_norm = torch.nn.LayerNorm(self.attn_alpha_channels)
         else:
-            if self.use_attn_renorm:
-                self.alpha_norm = torch.nn.LayerNorm(self.attn_alpha_channels)
-            else:
-                self.alpha_norm = torch.nn.Identity()
-            self.alpha_act = SmoothLeakyReLU()
-            self.alpha_dot = torch.nn.Parameter(torch.randn(self.num_heads, self.attn_alpha_channels))
-            #torch_geometric.nn.inits.glorot(self.alpha_dot) # Following GATv2
-            std = 1.0 / math.sqrt(self.attn_alpha_channels)
-            torch.nn.init.uniform_(self.alpha_dot, -std, std)
+            self.alpha_norm = torch.nn.Identity()
+        self.alpha_act = SmoothLeakyReLU()
+        self.alpha_dot = torch.nn.Parameter(torch.randn(self.num_heads, self.attn_alpha_channels))
+        #torch_geometric.nn.inits.glorot(self.alpha_dot) # Following GATv2
+        std = 1.0 / math.sqrt(self.attn_alpha_channels)
+        torch.nn.init.uniform_(self.alpha_dot, -std, std)
         
         self.alpha_dropout = None
         # if alpha_drop != 0.0:
@@ -272,19 +214,12 @@ class SO2NodeUpdate(torch.nn.Module):
                 mmax=max(self.mmax_list), 
                 num_channels=self.hidden_channels
             )
-        else:   
-            if self.use_sep_s2_act:     
-                # separable S2 activation
-                self.s2_act = SeparableS2Activation(
-                    lmax=max(self.lmax_list), 
-                    mmax=max(self.mmax_list)
-                )
-            else:                       
-                # S2 activation
-                self.s2_act = S2Activation(
-                    lmax=max(self.lmax_list), 
-                    mmax=max(self.mmax_list)
-                )
+        else:                         
+            # S2 activation
+            self.s2_act = S2Activation(
+                lmax=max(self.lmax_list), 
+                mmax=max(self.mmax_list)
+            )
         
         self.so2_conv_2 = SO2_Convolution(
             self.hidden_channels,
@@ -294,10 +229,7 @@ class SO2NodeUpdate(torch.nn.Module):
             self.mappingReduced,
             internal_weights=True,
             edge_channels_list=None, 
-            extra_m0_output_channels=(
-                self.num_heads if self.use_s2_act_attn 
-                else None
-            ) # for attention weights
+            extra_m0_output_channels=None
         )
 
         self.proj = SO3_LinearV2(self.num_heads * self.attn_value_channels, self.output_channels, lmax=self.lmax_list[0])
@@ -350,10 +282,7 @@ class SO2NodeUpdate(torch.nn.Module):
         x_message._rotate(self.SO3_rotation, self.lmax_list, self.mmax_list)
 
         # First SO(2)-convolution
-        if self.use_s2_act_attn:
-            x_message = self.so2_conv_1(x_message, x_edge)
-        else:
-            x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
+        x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
         
         # Activation
         x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
@@ -363,29 +292,19 @@ class SO2NodeUpdate(torch.nn.Module):
             x_0_alpha  = x_0_extra.narrow(1, 0, x_alpha_num_channels) # for attention weights
             x_message.embedding = self.gate_act(x_0_gating, x_message.embedding)
         else:
-            if self.use_sep_s2_act:
-                x_0_gating = x_0_extra.narrow(1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels) # for activation
-                x_0_alpha  = x_0_extra.narrow(1, 0, x_alpha_num_channels) # for attention weights
-                x_message.embedding = self.s2_act(x_0_gating, x_message.embedding, self.SO3_grid)
-            else:
-                x_0_alpha = x_0_extra
-                x_message.embedding = self.s2_act(x_message.embedding, self.SO3_grid)
-            ##x_message._grid_act(self.SO3_grid, self.value_act, self.mappingReduced)
+            # S2 activation
+            x_0_alpha = x_0_extra
+            x_message.embedding = self.s2_act(x_message.embedding, self.SO3_grid)
 
         # Second SO(2)-convolution
-        if self.use_s2_act_attn:
-            x_message, x_0_extra = self.so2_conv_2(x_message, x_edge)
-        else:
-            x_message = self.so2_conv_2(x_message, x_edge)
+        x_message = self.so2_conv_2(x_message, x_edge)
         
         # Attention weights
-        if self.use_s2_act_attn:
-            alpha = x_0_extra
-        else:
-            x_0_alpha = x_0_alpha.reshape(-1, self.num_heads, self.attn_alpha_channels)
-            x_0_alpha = self.alpha_norm(x_0_alpha)
-            x_0_alpha = self.alpha_act(x_0_alpha)
-            alpha = torch.einsum('bik, ik -> bi', x_0_alpha, self.alpha_dot)
+        x_0_alpha = x_0_alpha.reshape(-1, self.num_heads, self.attn_alpha_channels)
+        x_0_alpha = self.alpha_norm(x_0_alpha)
+        x_0_alpha = self.alpha_act(x_0_alpha)
+        alpha = torch.einsum('bik, ik -> bi', x_0_alpha, self.alpha_dot)
+
         alpha = torch_geometric.utils.softmax(alpha, edge_index[1]) 
         alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)
         if self.alpha_dropout is not None:
@@ -434,12 +353,9 @@ class NodeBlockV2(torch.nn.Module):
         use_m_share_rad=False,
 
         attn_activation='silu',
-        use_s2_act_attn=False, 
         use_attn_renorm=True,
         ffn_activation='silu',
         use_gate_act=False, 
-        use_grid_mlp=False,
-        use_sep_s2_act=True,
 
         norm_type='rms_norm_sh',
 
@@ -469,10 +385,8 @@ class NodeBlockV2(torch.nn.Module):
             use_atom_edge_embedding=use_atom_edge_embedding, 
             use_m_share_rad=use_m_share_rad,
             activation=attn_activation, 
-            use_s2_act_attn=use_s2_act_attn,
             use_attn_renorm=use_attn_renorm,
             use_gate_act=use_gate_act,
-            use_sep_s2_act=use_sep_s2_act,
             alpha_drop=alpha_drop,
         )
 
@@ -492,8 +406,6 @@ class NodeBlockV2(torch.nn.Module):
             SO3_grid=SO3_grid,  
             activation=ffn_activation,
             use_gate_act=use_gate_act,
-            use_grid_mlp=use_grid_mlp,
-            use_sep_s2_act=use_sep_s2_act
         )
 
         if sphere_channels != output_channels:
@@ -576,10 +488,8 @@ class SO2EdgeUpdate(torch.nn.Module):
         use_atom_edge_embedding=True, 
         use_m_share_rad=False,
         activation='scaled_silu', 
-        use_s2_act_attn=False, 
         use_attn_renorm=True,
         use_gate_act=False, 
-        use_sep_s2_act=True,
         alpha_drop=0.0,
     ):
         super(SO2EdgeUpdate, self).__init__()
@@ -614,23 +524,16 @@ class SO2EdgeUpdate(torch.nn.Module):
         else:
             self.source_embedding, self.target_embedding = None, None
         
-        self.use_s2_act_attn    = use_s2_act_attn
         self.use_attn_renorm    = use_attn_renorm
         self.use_gate_act       = use_gate_act
-        self.use_sep_s2_act     = use_sep_s2_act
         
-        assert not self.use_s2_act_attn     # since this is not used
         
         # Create SO(2) convolution blocks
         extra_m0_output_channels = None
-        if not self.use_s2_act_attn:
-            extra_m0_output_channels = self.num_heads * self.attn_alpha_channels
-            if self.use_gate_act:
-                extra_m0_output_channels = extra_m0_output_channels + max(self.lmax_list) * self.hidden_channels
-            else:
-                if self.use_sep_s2_act:
-                    extra_m0_output_channels = extra_m0_output_channels + self.hidden_channels
-        
+        extra_m0_output_channels = self.num_heads * self.attn_alpha_channels
+        if self.use_gate_act:
+            extra_m0_output_channels = extra_m0_output_channels + max(self.lmax_list) * self.hidden_channels
+            
         if self.use_m_share_rad:
             self.edge_channels_list = self.edge_channels_list + [3 * self.sphere_channels * (max(self.lmax_list) + 1)]
             self.rad_func = RadialFunction(self.edge_channels_list)
@@ -659,20 +562,15 @@ class SO2EdgeUpdate(torch.nn.Module):
             extra_m0_output_channels=extra_m0_output_channels # for attention weights and/or gate activation
         )
 
-        if self.use_s2_act_attn:
-            self.alpha_norm = None
-            self.alpha_act = None
-            self.alpha_dot = None
+        if self.use_attn_renorm:
+            self.alpha_norm = torch.nn.LayerNorm(self.attn_alpha_channels)
         else:
-            if self.use_attn_renorm:
-                self.alpha_norm = torch.nn.LayerNorm(self.attn_alpha_channels)
-            else:
-                self.alpha_norm = torch.nn.Identity()
-            self.alpha_act = SmoothLeakyReLU()
-            self.alpha_dot = torch.nn.Parameter(torch.randn(self.num_heads, self.attn_alpha_channels))
-            #torch_geometric.nn.inits.glorot(self.alpha_dot) # Following GATv2
-            std = 1.0 / math.sqrt(self.attn_alpha_channels)
-            torch.nn.init.uniform_(self.alpha_dot, -std, std)
+            self.alpha_norm = torch.nn.Identity()
+        self.alpha_act = SmoothLeakyReLU()
+        self.alpha_dot = torch.nn.Parameter(torch.randn(self.num_heads, self.attn_alpha_channels))
+        #torch_geometric.nn.inits.glorot(self.alpha_dot) # Following GATv2
+        std = 1.0 / math.sqrt(self.attn_alpha_channels)
+        torch.nn.init.uniform_(self.alpha_dot, -std, std)
         
         self.alpha_dropout = None
         # if alpha_drop != 0.0:
@@ -684,20 +582,12 @@ class SO2EdgeUpdate(torch.nn.Module):
                 mmax=max(self.mmax_list), 
                 num_channels=self.hidden_channels
             )
-        else:   
-            if self.use_sep_s2_act:     
-                # separable S2 activation
-                self.s2_act = SeparableS2Activation(
-                    lmax=max(self.lmax_list), 
-                    mmax=max(self.mmax_list)
-                )
-            else:                       
-                # S2 activation
-                self.s2_act = S2Activation(
-                    lmax=max(self.lmax_list), 
-                    mmax=max(self.mmax_list)
-                )
-        
+        else:                     
+            # S2 activation
+            self.s2_act = S2Activation(
+                lmax=max(self.lmax_list), 
+                mmax=max(self.mmax_list)
+            )
 
         self.proj = SO3_LinearV2(self.hidden_channels, self.output_channels, lmax=self.lmax_list[0])
         
@@ -749,10 +639,7 @@ class SO2EdgeUpdate(torch.nn.Module):
         x_message._rotate(self.SO3_rotation, self.lmax_list, self.mmax_list)
 
         # First SO(2)-convolution
-        if self.use_s2_act_attn:
-            x_message = self.so2_conv_1(x_message, x_edge)
-        else:
-            x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
+        x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
         
         # Activation
         x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
@@ -794,13 +681,10 @@ class EdgeBlockV2(torch.nn.Module):
         use_m_share_rad=False,
 
         attn_activation='silu',
-        use_s2_act_attn=False, 
         use_attn_renorm=True,
         ffn_activation='silu',
         use_gate_act=False, 
-        use_grid_mlp=False,
-        use_sep_s2_act=True,
-
+        
         norm_type='rms_norm_sh',
 
         alpha_drop=0.0, 
@@ -829,10 +713,8 @@ class EdgeBlockV2(torch.nn.Module):
             use_atom_edge_embedding=use_atom_edge_embedding, 
             use_m_share_rad=use_m_share_rad,
             activation=attn_activation, 
-            use_s2_act_attn=use_s2_act_attn,
             use_attn_renorm=use_attn_renorm,
             use_gate_act=use_gate_act,
-            use_sep_s2_act=use_sep_s2_act,
             alpha_drop=alpha_drop,
         )
 
@@ -850,8 +732,6 @@ class EdgeBlockV2(torch.nn.Module):
             SO3_grid=SO3_grid,  
             activation=ffn_activation,
             use_gate_act=use_gate_act,
-            use_grid_mlp=use_grid_mlp,
-            use_sep_s2_act=use_sep_s2_act
         )
 
         if sphere_channels != output_channels:
