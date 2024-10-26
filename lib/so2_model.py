@@ -65,16 +65,17 @@ def convert_to_irreps(input,output_channels,lmax_list,lin_node):
 
     return test_output
     
+# Note: we use Gate activation in all cases
 class SO2Net(torch.nn.Module):
 
     def __init__(
         self,
-        num_layers, 
+        num_layers,                                             # num_MP_layers
         lmax_list, 
         mmax_list, 
-        mappingReduced, 
+        mappingReduced,                                         # SO3.CoefficientMappingModule(lmax_list, mmax_list)
         sphere_channels,
-        edge_channels_list,
+        edge_channels_list,                                     # [sphere_channels, sphere_channels, sphere_channels]  
         attn_hidden_channels,
         num_heads,
         attn_alpha_channels,
@@ -88,41 +89,31 @@ class SO2Net(torch.nn.Module):
         self.lmax_list = lmax_list
         self.mmax_list = mmax_list
     
-        ffn_activation =    'scaled_silu'
-        norm_type      =    'layer_norm_sh'           # normalizes l=0 and l>0 coefficients separately
+        ffn_activation =    'scaled_silu'                   # activation function used in the feedforward network
+        norm_type      =    'layer_norm_sh'                 # normalizes l=0 and l>0 coefficients separately
 
-        self.sphere_channels = sphere_channels
-        attn_hidden_channels= attn_hidden_channels
-        num_heads=num_heads
-        attn_alpha_channels=attn_alpha_channels
-        attn_value_channels=attn_value_channels
-        ffn_hidden_channels=ffn_hidden_channels
+        self.sphere_channels    =   sphere_channels
+        attn_hidden_channels    =   attn_hidden_channels
+        num_heads               =   num_heads
+        attn_alpha_channels     =   attn_alpha_channels
+        attn_value_channels     =   attn_value_channels
+        ffn_hidden_channels     =   ffn_hidden_channels
+        attn_activation         =   'scaled_silu'
+        use_attn_renorm         =   True
 
-        use_gate_act=True
-        attn_activation='scaled_silu'
-        use_attn_renorm=True
+        use_m_share_rad         =   True                    # (?) share the radial part of the edge embedding for all m values
 
-        SO3_grid = None
+        max_num_elements        =   100                     # maximum number of elements which can exist in the dataset (used for the embedding layer)
+        use_atom_edge_embedding =   True
 
-        use_m_share_rad = True                      # (?) share the radial part of the edge embedding for all m values
-
-        max_num_elements = 100
-        use_atom_edge_embedding = True
-
-        # Dropouts
-        alpha_drop=0,
-        drop_path_rate=0
-        proj_drop=0.0
-
-        self.output_channels = edge_channels_list[-1] #last entry of edge_channels_list is used for the output channels between each layer 
-        self.num_distance_basis = edge_channels_list[0] #first entry of edge_channels_list represents the number of distance basis functions
+        self.output_channels    =   edge_channels_list[-1]  # last entry of edge_channels_list is used for the output channels between each layer 
 
         self.distance_expansion = GaussianSmearing(
                                 0.0,                        # start
                                 5,                          # stop
                                 edge_channels_list[0],      # num_gaussians used to expand the distance
                                 2.0,                        # basis_width_scalar
-                            )
+                                )
 
         sphere_channels_all = self.output_channels
         self.sphere_embedding = nn.Embedding(max_num_elements, sphere_channels_all)
@@ -150,7 +141,6 @@ class SO2Net(torch.nn.Module):
                         mmax_list,
                         self.SO3_rotation,
                         mappingReduced,
-                        SO3_grid,
                         max_num_elements,
                         edge_channels_list,
                         use_atom_edge_embedding,
@@ -158,11 +148,7 @@ class SO2Net(torch.nn.Module):
                         attn_activation,
                         use_attn_renorm,
                         ffn_activation,
-                        use_gate_act,
                         norm_type,
-                        alpha_drop, 
-                        drop_path_rate,
-                        proj_drop
                         )
             
 
@@ -180,7 +166,6 @@ class SO2Net(torch.nn.Module):
                         mmax_list,
                         self.SO3_rotation,
                         mappingReduced,
-                        SO3_grid,
                         max_num_elements,
                         edge_channels_list,
                         use_atom_edge_embedding,
@@ -188,11 +173,7 @@ class SO2Net(torch.nn.Module):
                         attn_activation,
                         use_attn_renorm,
                         ffn_activation,
-                        use_gate_act,
                         norm_type,
-                        alpha_drop, 
-                        drop_path_rate,
-                        proj_drop
                         )
 
             self.blocks.append(block2)
@@ -244,7 +225,6 @@ class SO2Net(torch.nn.Module):
                             edge_distance_embedding,
                             edge_index,
                             edge_embedding,
-                            batch=None                       # for GraphDropPath
                         )  
             
             edge_embedding = self.blocks[2*i+1](
@@ -253,7 +233,6 @@ class SO2Net(torch.nn.Module):
                             edge_distance_embedding,
                             edge_index,
                             edge_embedding,
-                            batch=None                       # for GraphDropPath
                         )
 
         node_output = convert_to_irreps(node_embedding, self.output_channels, self.lmax_list, self.node_lin)
@@ -264,6 +243,9 @@ class SO2Net(torch.nn.Module):
 
 # Borrowed from EquiformerV2 (https://github.com/atomicarchitects/equiformer_v2.git)
 def init_edge_rot_mat(edge_distance_vec):
+    """
+    Takes the edge distance vectors and returns the 3D rotation matrix for each edge
+    """
     edge_vec_0 = edge_distance_vec
     edge_vec_0_distance = torch.sqrt(torch.sum(edge_vec_0**2, dim=1))
 
@@ -330,4 +312,3 @@ def init_edge_rot_mat(edge_distance_vec):
     edge_rot_mat = torch.transpose(edge_rot_mat_inv, 1, 2)
 
     return edge_rot_mat.detach()
-
