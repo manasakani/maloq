@@ -38,8 +38,8 @@ class FeedForwardNetwork(torch.nn.Module):
         hidden_channels (int):      Number of hidden channels used during feedforward network
         output_channels (int):      Number of output channels
 
-        lmax_list (list:int):       List of degrees (l) for each resolution
-        mmax_list (list:int):       List of orders (m) for each resolution
+        lmax (int):                 Max degree (l) 
+        mmax (int):                 Max order (m) 
 
         activation (str):           Type of activation function
         
@@ -54,27 +54,23 @@ class FeedForwardNetwork(torch.nn.Module):
         sphere_channels,
         hidden_channels, 
         output_channels,
-        lmax_list,
-        mmax_list,
+        lmax,
+        mmax,
         activation='scaled_silu', 
     ):
         super(FeedForwardNetwork, self).__init__()
         self.sphere_channels = sphere_channels
         self.hidden_channels = hidden_channels
         self.output_channels = output_channels
-        self.lmax_list = lmax_list
-        self.mmax_list = mmax_list
-        self.num_resolutions = len(lmax_list)
-        self.sphere_channels_all = self.num_resolutions * self.sphere_channels
-
-        self.max_lmax = max(self.lmax_list)
+        self.lmax = lmax
+        self.mmax = mmax
         
-        self.so3_linear_1 = SO3_LinearV2(self.sphere_channels_all, self.hidden_channels, lmax=self.max_lmax)
+        self.so3_linear_1 = SO3_LinearV2(self.sphere_channels, self.hidden_channels, lmax=self.lmax)
 
-        self.gating_linear = torch.nn.Linear(self.sphere_channels_all, self.max_lmax * self.hidden_channels)
-        self.gate_act = GateActivation(self.max_lmax, self.max_lmax, self.hidden_channels)
+        self.gating_linear = torch.nn.Linear(self.sphere_channels, self.lmax * self.hidden_channels)
+        self.gate_act = GateActivation(self.lmax, self.lmax, self.hidden_channels)
         
-        self.so3_linear_2 = SO3_LinearV2(self.hidden_channels, self.output_channels, lmax=self.max_lmax)
+        self.so3_linear_2 = SO3_LinearV2(self.hidden_channels, self.output_channels, lmax=self.lmax)
         
     
     def forward(self, input_embedding):
@@ -103,8 +99,8 @@ class SO2NodeUpdate(torch.nn.Module):
         attn_alpha_channels,
         attn_value_channels, 
         output_channels,
-        lmax_list,
-        mmax_list,
+        lmax,
+        mmax,
         SO3_rotation, 
         mappingReduced, 
         max_num_elements,
@@ -122,9 +118,8 @@ class SO2NodeUpdate(torch.nn.Module):
         self.attn_alpha_channels = attn_alpha_channels
         self.attn_value_channels = attn_value_channels
         self.output_channels = output_channels
-        self.lmax_list = lmax_list
-        self.mmax_list = mmax_list
-        self.num_resolutions = len(self.lmax_list)
+        self.lmax = lmax
+        self.mmax = mmax
         
         self.SO3_rotation = SO3_rotation
         self.mappingReduced = mappingReduced
@@ -150,13 +145,13 @@ class SO2NodeUpdate(torch.nn.Module):
         # Create SO(2) convolution blocks
         extra_m0_output_channels = None
         extra_m0_output_channels = self.num_heads * self.attn_alpha_channels
-        extra_m0_output_channels = extra_m0_output_channels + max(self.lmax_list) * self.hidden_channels # for gate activation
+        extra_m0_output_channels = extra_m0_output_channels + self.lmax * self.hidden_channels # for gate activation
             
         if self.use_m_share_rad:
-            self.edge_channels_list = self.edge_channels_list + [3 * self.sphere_channels * (max(self.lmax_list) + 1)]
+            self.edge_channels_list = self.edge_channels_list + [3 * self.sphere_channels * (self.lmax + 1)]
             self.rad_func = RadialFunction(self.edge_channels_list)
-            expand_index = torch.zeros([(max(self.lmax_list) + 1) ** 2]).long()
-            for l in range(max(self.lmax_list) + 1):
+            expand_index = torch.zeros([(self.lmax + 1) ** 2]).long()
+            for l in range(self.lmax + 1):
                 start_idx = l ** 2
                 length = 2 * l + 1
                 expand_index[start_idx : (start_idx + length)] = l
@@ -165,8 +160,8 @@ class SO2NodeUpdate(torch.nn.Module):
         self.so2_conv_1 = SO2_Convolution(
             3 * self.sphere_channels,
             self.hidden_channels,
-            self.lmax_list[0],
-            self.mmax_list[0],
+            self.lmax,
+            self.mmax,
             self.mappingReduced,
             internal_weights=(
                 False if not self.use_m_share_rad 
@@ -190,23 +185,23 @@ class SO2NodeUpdate(torch.nn.Module):
         torch.nn.init.uniform_(self.alpha_dot, -std, std)
         
         self.gate_act = GateActivation(
-            lmax=max(self.lmax_list), 
-            mmax=max(self.mmax_list), 
+            lmax=self.lmax, 
+            mmax=self.mmax, 
             num_channels=self.hidden_channels
         )
         
         self.so2_conv_2 = SO2_Convolution(
             self.hidden_channels,
             self.num_heads * self.attn_value_channels,
-            self.lmax_list[0],
-            self.mmax_list[0],
+            self.lmax,
+            self.mmax,
             self.mappingReduced,
             internal_weights=True,
             edge_channels_list=None, 
             extra_m0_output_channels=None
         )
 
-        self.proj = SO3_LinearV2(self.num_heads * self.attn_value_channels, self.output_channels, lmax=self.lmax_list[0])
+        self.proj = SO3_LinearV2(self.num_heads * self.attn_value_channels, self.output_channels, lmax=self.lmax)
         
         
     def forward(
@@ -244,17 +239,17 @@ class SO2NodeUpdate(torch.nn.Module):
             dtype=x_target.dtype
         )
         x_message.set_embedding(x_message_data)
-        x_message.set_lmax_mmax(self.lmax_list.copy(), self.mmax_list.copy())
+        x_message.set_lmax_mmax(self.lmax, self.mmax)
 
         # radial function (scale all m components within a type-L vector of one channel with the same weight)
         if self.use_m_share_rad:
             x_edge_weight = self.rad_func(x_edge)
-            x_edge_weight = x_edge_weight.reshape(-1, (max(self.lmax_list) + 1), 3 * self.sphere_channels) # 3x for the 3 concatenated features
+            x_edge_weight = x_edge_weight.reshape(-1, (self.lmax + 1), 3 * self.sphere_channels) # 3x for the 3 concatenated features
             x_edge_weight = torch.index_select(x_edge_weight, dim=1, index=self.expand_index) # [E, (L_max + 1) ** 2, C]
             x_message.embedding = x_message.embedding * x_edge_weight
 
         # Rotate the irreps to align with the edge
-        x_message._rotate(self.SO3_rotation, self.lmax_list[0], self.mmax_list[0])
+        x_message._rotate(self.SO3_rotation, self.lmax, self.mmax)
 
         # First SO(2)-convolution
         x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
@@ -306,17 +301,14 @@ class NodeBlockV2(torch.nn.Module):
         attn_value_channels,
         ffn_hidden_channels,
         output_channels, 
-
-        lmax_list,
-        mmax_list,
-        
+        lmax,
+        mmax,
         SO3_rotation,
         mappingReduced,
         max_num_elements,
         edge_channels_list,
         use_atom_edge_embedding=True,
         use_m_share_rad=False,
-
         attn_activation='silu',
         use_attn_renorm=True,
         ffn_activation='silu',
@@ -324,8 +316,7 @@ class NodeBlockV2(torch.nn.Module):
     ):
         super(NodeBlockV2, self).__init__()
 
-        max_lmax = max(lmax_list)
-        self.norm_1 = get_normalization_layer(norm_type, lmax=max_lmax, num_channels=sphere_channels)
+        self.norm_1 = get_normalization_layer(norm_type, lmax=lmax, num_channels=sphere_channels)
 
         self.ga = SO2NodeUpdate(
             sphere_channels=sphere_channels,
@@ -334,8 +325,8 @@ class NodeBlockV2(torch.nn.Module):
             attn_alpha_channels=attn_alpha_channels,
             attn_value_channels=attn_value_channels, 
             output_channels=sphere_channels,
-            lmax_list=lmax_list,
-            mmax_list=mmax_list,
+            lmax=lmax,
+            mmax=mmax,
             SO3_rotation=SO3_rotation, 
             mappingReduced=mappingReduced, 
             max_num_elements=max_num_elements,
@@ -346,22 +337,19 @@ class NodeBlockV2(torch.nn.Module):
             use_attn_renorm=use_attn_renorm,
         )
 
-        self.drop_path = None
-        self.proj_drop = None
-
-        self.norm_2 = get_normalization_layer(norm_type, lmax=max_lmax, num_channels=sphere_channels)
+        self.norm_2 = get_normalization_layer(norm_type, lmax=lmax, num_channels=sphere_channels)
         
         self.ffn = FeedForwardNetwork(
             sphere_channels=sphere_channels,
             hidden_channels=ffn_hidden_channels, 
             output_channels=output_channels,
-            lmax_list=lmax_list,
-            mmax_list=mmax_list,
+            lmax=lmax,
+            mmax=mmax,
             activation=ffn_activation,
         )
 
         if sphere_channels != output_channels:
-            self.ffn_shortcut = SO3_LinearV2(sphere_channels, output_channels, lmax=max_lmax)
+            self.ffn_shortcut = SO3_LinearV2(sphere_channels, output_channels, lmax=lmax)
         else:
             self.ffn_shortcut = None
 
@@ -419,8 +407,8 @@ class SO2EdgeUpdate(torch.nn.Module):
         attn_alpha_channels,
         attn_value_channels, 
         output_channels,
-        lmax_list,
-        mmax_list,
+        lmax,
+        mmax,
         SO3_rotation, 
         mappingReduced, 
         max_num_elements,
@@ -438,9 +426,8 @@ class SO2EdgeUpdate(torch.nn.Module):
         self.attn_alpha_channels = attn_alpha_channels
         self.attn_value_channels = attn_value_channels
         self.output_channels = output_channels
-        self.lmax_list = lmax_list
-        self.mmax_list = mmax_list
-        self.num_resolutions = len(self.lmax_list)
+        self.lmax = lmax
+        self.mmax = mmax
         
         self.SO3_rotation = SO3_rotation
         self.mappingReduced = mappingReduced
@@ -467,14 +454,14 @@ class SO2EdgeUpdate(torch.nn.Module):
         # Create SO(2) convolution blocks
         extra_m0_output_channels = None
         extra_m0_output_channels = self.num_heads * self.attn_alpha_channels
-        extra_m0_output_channels = extra_m0_output_channels + max(self.lmax_list) * self.hidden_channels
+        extra_m0_output_channels = extra_m0_output_channels + self.lmax * self.hidden_channels
             
         if self.use_m_share_rad:
-            self.edge_channels_list = self.edge_channels_list + [3 * self.sphere_channels * (max(self.lmax_list) + 1)]
+            self.edge_channels_list = self.edge_channels_list + [3 * self.sphere_channels * (self.lmax + 1)]
             self.rad_func = RadialFunction(self.edge_channels_list)
 
-            expand_index = torch.zeros([(max(self.lmax_list) + 1) ** 2]).long()
-            for l in range(max(self.lmax_list) + 1):
+            expand_index = torch.zeros([(self.lmax + 1) ** 2]).long()
+            for l in range(self.lmax + 1):
                 start_idx = l ** 2
                 length = 2 * l + 1
                 expand_index[start_idx : (start_idx + length)] = l
@@ -483,8 +470,8 @@ class SO2EdgeUpdate(torch.nn.Module):
         self.so2_conv_1 = SO2_Convolution(
             3 * self.sphere_channels,
             self.hidden_channels,
-            self.lmax_list[0],
-            self.mmax_list[0],
+            self.lmax,
+            self.mmax,
             self.mappingReduced,
             internal_weights=(
                 False if not self.use_m_share_rad 
@@ -508,12 +495,12 @@ class SO2EdgeUpdate(torch.nn.Module):
         torch.nn.init.uniform_(self.alpha_dot, -std, std)
         
         self.gate_act = GateActivation(
-            lmax=max(self.lmax_list), 
-            mmax=max(self.mmax_list), 
+            lmax=self.lmax, 
+            mmax=self.mmax, 
             num_channels=self.hidden_channels
         )
 
-        self.proj = SO3_LinearV2(self.hidden_channels, self.output_channels, lmax=self.lmax_list[0])
+        self.proj = SO3_LinearV2(self.hidden_channels, self.output_channels, lmax=self.lmax)
         
         
     def forward(
@@ -550,17 +537,17 @@ class SO2EdgeUpdate(torch.nn.Module):
             dtype=x_target.dtype
         )
         x_message.set_embedding(x_message_data)
-        x_message.set_lmax_mmax(self.lmax_list.copy(), self.mmax_list.copy())
+        x_message.set_lmax_mmax(self.lmax, self.mmax)
 
         # radial function (scale all m components within a type-L vector of one channel with the same weight)
         if self.use_m_share_rad:
             x_edge_weight = self.rad_func(x_edge)
-            x_edge_weight = x_edge_weight.reshape(-1, (max(self.lmax_list) + 1), 3 * self.sphere_channels)
+            x_edge_weight = x_edge_weight.reshape(-1, (self.lmax + 1), 3 * self.sphere_channels)
             x_edge_weight = torch.index_select(x_edge_weight, dim=1, index=self.expand_index) # [E, (L_max + 1) ** 2, C]
             x_message.embedding = x_message.embedding * x_edge_weight
 
         # Rotate the irreps to align with the edge
-        x_message._rotate(self.SO3_rotation, self.lmax_list[0], self.mmax_list[0])
+        x_message._rotate(self.SO3_rotation, self.lmax, self.mmax)
 
         # First SO(2)-convolution
         x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
@@ -592,8 +579,8 @@ class EdgeBlockV2(torch.nn.Module):
         ffn_hidden_channels,
         output_channels, 
 
-        lmax_list,
-        mmax_list,
+        lmax,
+        mmax,
         
         SO3_rotation,
         mappingReduced,
@@ -610,8 +597,7 @@ class EdgeBlockV2(torch.nn.Module):
     ):
         super(EdgeBlockV2, self).__init__()
 
-        max_lmax = max(lmax_list)
-        self.norm_1 = get_normalization_layer(norm_type, lmax=max_lmax, num_channels=sphere_channels)
+        self.norm_1 = get_normalization_layer(norm_type, lmax=lmax, num_channels=sphere_channels)
 
         self.ga = SO2EdgeUpdate(
             sphere_channels=sphere_channels,
@@ -620,8 +606,8 @@ class EdgeBlockV2(torch.nn.Module):
             attn_alpha_channels=attn_alpha_channels,
             attn_value_channels=attn_value_channels, 
             output_channels=sphere_channels,
-            lmax_list=lmax_list,
-            mmax_list=mmax_list,
+            lmax=lmax,
+            mmax=mmax,
             SO3_rotation=SO3_rotation, 
             mappingReduced=mappingReduced, 
             max_num_elements=max_num_elements,
@@ -632,19 +618,19 @@ class EdgeBlockV2(torch.nn.Module):
             use_attn_renorm=use_attn_renorm,
         )
 
-        self.norm_2 = get_normalization_layer(norm_type, lmax=max_lmax, num_channels=sphere_channels)
+        self.norm_2 = get_normalization_layer(norm_type, lmax=lmax, num_channels=sphere_channels)
         
         self.ffn = FeedForwardNetwork(
             sphere_channels=sphere_channels,
             hidden_channels=ffn_hidden_channels, 
             output_channels=output_channels,
-            lmax_list=lmax_list,
-            mmax_list=mmax_list,
+            lmax=lmax,
+            mmax=mmax,
             activation=ffn_activation,
         )
 
         if sphere_channels != output_channels:
-            self.ffn_shortcut = SO3_LinearV2(sphere_channels, output_channels, lmax=max_lmax)
+            self.ffn_shortcut = SO3_LinearV2(sphere_channels, output_channels, lmax=lmax)
         else:
             self.ffn_shortcut = None
 

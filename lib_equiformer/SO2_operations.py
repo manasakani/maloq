@@ -101,7 +101,6 @@ class SO2_Convolution(torch.nn.Module):
         num_channels_rad = 0    # for radial function
 
         num_channels_m0 = 0
-        # for i in range(self.num_resolutions):
         num_coefficients = self.lmax + 1
         num_channels_m0 = num_channels_m0 + num_coefficients * self.sphere_channels
 

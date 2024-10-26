@@ -41,30 +41,6 @@ class GaussianSmearing(torch.nn.Module):
         return torch.exp(self.coeff * torch.pow(dist, 2))
     
 
-def convert_to_irreps(input, output_channels, lmax, lin_node):
-        
-    """
-    Converts the output irreps to the coupled space irrep representation needed to reconstruct the Hamiltonian using the linear layer from e3nn library 
-    e.g. map 64x0e+64x1e+64x2e+64x3e+64x4e to 1x0e+1x1e+1x1e+1x0e+1x1e+1x2e+..+1x1e+1x2e+1x3e+1x4e
-
-    """
-
-    # prepare sorted_output:
-    test_input = input.embedding.transpose(-1,-2) #rearrange from l major order into feature major order so that e.g. 64 x 1e can be extracted correctly after flattening the columns belonging to l = 1
-    feature_size = test_input.shape[0]
-    sorted_output = torch.zeros(feature_size, output_channels*((lmax+1)**2))
-    device = input.embedding.device
-
-    for l in range(lmax+1):
-        start = l**2*output_channels
-        end = l**2*output_channels+output_channels*(2*l+1)
-        sorted_output[:,start:end] = torch.squeeze(test_input[:,:,l**2:l**2+(2*l+1)].reshape(feature_size, 1, -1))
-
-    # convert:
-    test_output = lin_node(sorted_output.to(device))
-
-    return test_output
-    
 # Note: we use Gate activation in all cases
 class SO2Net(torch.nn.Module):
 
@@ -137,8 +113,8 @@ class SO2Net(torch.nn.Module):
                         attn_value_channels,
                         ffn_hidden_channels,
                         self.sphere_channels, 
-                        [lmax],
-                        [mmax],
+                        lmax,
+                        mmax,
                         self.SO3_rotation,
                         mappingReduced,
                         max_num_elements,
@@ -162,8 +138,8 @@ class SO2Net(torch.nn.Module):
                         attn_value_channels,
                         ffn_hidden_channels,
                         self.sphere_channels, 
-                        [lmax],
-                        [mmax],
+                        lmax,
+                        mmax,
                         self.SO3_rotation,
                         mappingReduced,
                         max_num_elements,
@@ -240,6 +216,31 @@ class SO2Net(torch.nn.Module):
 
         return node_output, edge_output
 
+
+def convert_to_irreps(input, output_channels, lmax, lin_node):
+        
+    """
+    Converts the output irreps to the coupled space irrep representation needed to reconstruct the Hamiltonian using the linear layer from e3nn library 
+    e.g. map 64x0e+64x1e+64x2e+64x3e+64x4e to 1x0e+1x1e+1x1e+1x0e+1x1e+1x2e+..+1x1e+1x2e+1x3e+1x4e
+
+    """
+
+    # prepare sorted_output:
+    test_input = input.embedding.transpose(-1,-2) #rearrange from l major order into feature major order so that e.g. 64 x 1e can be extracted correctly after flattening the columns belonging to l = 1
+    feature_size = test_input.shape[0]
+    sorted_output = torch.zeros(feature_size, output_channels*((lmax+1)**2))
+    device = input.embedding.device
+
+    for l in range(lmax+1):
+        start = l**2*output_channels
+        end = l**2*output_channels+output_channels*(2*l+1)
+        sorted_output[:,start:end] = torch.squeeze(test_input[:,:,l**2:l**2+(2*l+1)].reshape(feature_size, 1, -1))
+
+    # convert:
+    test_output = lin_node(sorted_output.to(device))
+
+    return test_output
+    
 
 # Borrowed from EquiformerV2 (https://github.com/atomicarchitects/equiformer_v2.git)
 def init_edge_rot_mat(edge_distance_vec):

@@ -76,8 +76,8 @@ def main(folder):
     num_MP_layers = 2                                                           # Number of message passing layers
     dtype = torch.float64                                                       # Use double precision floating point for benchmarking
     torch.set_default_dtype(torch.float64)
-    lmax_list = [4] 
-    mmax_list = [4]
+    lmax = 4
+    mmax = 4
 
     # Hyperparameters of the SO2 model for H2O
     sphere_channels = 64 
@@ -155,11 +155,11 @@ def main(folder):
                                           device_torch=device)
     
     # *** Initialize the model:
-    mappingReduced = SO3.CoefficientMappingModule(lmax_list, mmax_list)
+    mappingReduced = SO3.CoefficientMappingModule(lmax, mmax)
     irreps_out = net_out_irreps
     model = so2_model.SO2Net(num_MP_layers, 
-                                lmax_list, 
-                                mmax_list, 
+                                lmax, 
+                                mmax, 
                                 mappingReduced, 
                                 sphere_channels, 
                                 edge_channels_list, 
