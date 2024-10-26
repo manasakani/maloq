@@ -165,8 +165,8 @@ class SO2NodeUpdate(torch.nn.Module):
         self.so2_conv_1 = SO2_Convolution(
             3 * self.sphere_channels,
             self.hidden_channels,
-            self.lmax_list,
-            self.mmax_list,
+            self.lmax_list[0],
+            self.mmax_list[0],
             self.mappingReduced,
             internal_weights=(
                 False if not self.use_m_share_rad 
@@ -198,8 +198,8 @@ class SO2NodeUpdate(torch.nn.Module):
         self.so2_conv_2 = SO2_Convolution(
             self.hidden_channels,
             self.num_heads * self.attn_value_channels,
-            self.lmax_list,
-            self.mmax_list,
+            self.lmax_list[0],
+            self.mmax_list[0],
             self.mappingReduced,
             internal_weights=True,
             edge_channels_list=None, 
@@ -238,7 +238,7 @@ class SO2NodeUpdate(torch.nn.Module):
         x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) 
         x_message = SO3_Embedding(
             0,
-            x_target.lmax_list.copy(), 
+            x_target.lmax, 
             x_target.num_channels * 3, 
             device=x_target.device, 
             dtype=x_target.dtype
@@ -254,7 +254,7 @@ class SO2NodeUpdate(torch.nn.Module):
             x_message.embedding = x_message.embedding * x_edge_weight
 
         # Rotate the irreps to align with the edge
-        x_message._rotate(self.SO3_rotation, self.lmax_list, self.mmax_list)
+        x_message._rotate(self.SO3_rotation, self.lmax_list[0], self.mmax_list[0])
 
         # First SO(2)-convolution
         x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
@@ -393,13 +393,13 @@ class NodeBlockV2(torch.nn.Module):
         if self.ffn_shortcut is not None:
             shortcut_embedding = SO3_Embedding(
                 0, 
-                output_embedding.lmax_list.copy(), 
+                output_embedding.lmax, 
                 self.ffn_shortcut.in_features, 
                 device=output_embedding.device, 
                 dtype=output_embedding.dtype
             )
             shortcut_embedding.set_embedding(x_res)
-            shortcut_embedding.set_lmax_mmax(output_embedding.lmax_list.copy(), output_embedding.lmax_list.copy())
+            shortcut_embedding.set_lmax_mmax(output_embedding.lmax, output_embedding.lmax)
             shortcut_embedding = self.ffn_shortcut(shortcut_embedding)
             x_res = shortcut_embedding.embedding
 
@@ -483,8 +483,8 @@ class SO2EdgeUpdate(torch.nn.Module):
         self.so2_conv_1 = SO2_Convolution(
             3 * self.sphere_channels,
             self.hidden_channels,
-            self.lmax_list,
-            self.mmax_list,
+            self.lmax_list[0],
+            self.mmax_list[0],
             self.mappingReduced,
             internal_weights=(
                 False if not self.use_m_share_rad 
@@ -544,7 +544,7 @@ class SO2EdgeUpdate(torch.nn.Module):
         x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) #concatenate source and target node embeddings along channel dimension
         x_message = SO3_Embedding(
             0,
-            x_target.lmax_list.copy(), 
+            x_target.lmax, 
             x_target.num_channels * 3, 
             device=x_target.device, 
             dtype=x_target.dtype
@@ -560,7 +560,7 @@ class SO2EdgeUpdate(torch.nn.Module):
             x_message.embedding = x_message.embedding * x_edge_weight
 
         # Rotate the irreps to align with the edge
-        x_message._rotate(self.SO3_rotation, self.lmax_list, self.mmax_list)
+        x_message._rotate(self.SO3_rotation, self.lmax_list[0], self.mmax_list[0])
 
         # First SO(2)-convolution
         x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
@@ -678,13 +678,13 @@ class EdgeBlockV2(torch.nn.Module):
         if self.ffn_shortcut is not None:
             shortcut_embedding = SO3_Embedding(
                 0, 
-                output_embedding.lmax_list.copy(), 
+                output_embedding.lmax, 
                 self.ffn_shortcut.in_features, 
                 device=output_embedding.device, 
                 dtype=output_embedding.dtype
             )
             shortcut_embedding.set_embedding(x_res)
-            shortcut_embedding.set_lmax_mmax(output_embedding.lmax_list.copy(), output_embedding.lmax_list.copy())
+            shortcut_embedding.set_lmax_mmax(output_embedding.lmax, output_embedding.lmax)
             shortcut_embedding = self.ffn_shortcut(shortcut_embedding)
             x_res = shortcut_embedding.embedding
 

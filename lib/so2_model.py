@@ -41,7 +41,7 @@ class GaussianSmearing(torch.nn.Module):
         return torch.exp(self.coeff * torch.pow(dist, 2))
     
 
-def convert_to_irreps(input,output_channels,lmax_list,lin_node):
+def convert_to_irreps(input, output_channels, lmax, lin_node):
         
     """
     Converts the output irreps to the coupled space irrep representation needed to reconstruct the Hamiltonian using the linear layer from e3nn library 
@@ -52,10 +52,10 @@ def convert_to_irreps(input,output_channels,lmax_list,lin_node):
     # prepare sorted_output:
     test_input = input.embedding.transpose(-1,-2) #rearrange from l major order into feature major order so that e.g. 64 x 1e can be extracted correctly after flattening the columns belonging to l = 1
     feature_size = test_input.shape[0]
-    sorted_output = torch.zeros(feature_size, output_channels*((lmax_list[0]+1)**2))
+    sorted_output = torch.zeros(feature_size, output_channels*((lmax+1)**2))
     device = input.embedding.device
 
-    for l in range(lmax_list[0]+1):
+    for l in range(lmax+1):
         start = l**2*output_channels
         end = l**2*output_channels+output_channels*(2*l+1)
         sorted_output[:,start:end] = torch.squeeze(test_input[:,:,l**2:l**2+(2*l+1)].reshape(feature_size, 1, -1))
@@ -71,9 +71,9 @@ class SO2Net(torch.nn.Module):
     def __init__(
         self,
         num_layers,                                             # num_MP_layers
-        lmax_list, 
-        mmax_list, 
-        mappingReduced,                                         # SO3.CoefficientMappingModule(lmax_list, mmax_list)
+        lmax, 
+        mmax, 
+        mappingReduced,                                         # SO3.CoefficientMappingModule(lmax, mmax)
         sphere_channels,
         edge_channels_list,                                     # [sphere_channels, sphere_channels, sphere_channels]  
         attn_hidden_channels,
@@ -86,8 +86,8 @@ class SO2Net(torch.nn.Module):
     ):
         super(SO2Net, self).__init__()
 
-        self.lmax_list = lmax_list
-        self.mmax_list = mmax_list
+        self.lmax = lmax
+        self.mmax = mmax
     
         ffn_activation =    'scaled_silu'                   # activation function used in the feedforward network
         norm_type      =    'layer_norm_sh'                 # normalizes l=0 and l>0 coefficients separately
@@ -123,7 +123,7 @@ class SO2Net(torch.nn.Module):
         self.num_layers = num_layers
 
         self.SO3_rotation = nn.ModuleList()
-        self.SO3_rotation.append(SO3_Rotation(lmax_list[0]))
+        self.SO3_rotation.append(SO3_Rotation(lmax))
 
         self.blocks = nn.ModuleList()
     
@@ -137,8 +137,8 @@ class SO2Net(torch.nn.Module):
                         attn_value_channels,
                         ffn_hidden_channels,
                         self.sphere_channels, 
-                        lmax_list,
-                        mmax_list,
+                        [lmax],
+                        [mmax],
                         self.SO3_rotation,
                         mappingReduced,
                         max_num_elements,
@@ -162,8 +162,8 @@ class SO2Net(torch.nn.Module):
                         attn_value_channels,
                         ffn_hidden_channels,
                         self.sphere_channels, 
-                        lmax_list,
-                        mmax_list,
+                        [lmax],
+                        [mmax],
                         self.SO3_rotation,
                         mappingReduced,
                         max_num_elements,
@@ -196,9 +196,9 @@ class SO2Net(torch.nn.Module):
         # Initialise the node embedding with atomic_numbers
         # length of angular momentum coefficients = (lmax+1)^2 = (4+1)^2 = 25 = 1(l=0) + 3(l=1) + 5(l=2) + 7(l=3) + 9(l=4)
         # node embedding = (num atoms, num coefficients, sphere_channels) = (3, 25, 64)
-        node_embedding = SO3_Embedding(num_subgraph_nodes, self.lmax_list, self.sphere_channels, device, dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, third dimension is the number of channels
+        node_embedding = SO3_Embedding(num_subgraph_nodes, self.lmax, self.sphere_channels, device, dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, third dimension is the number of channels
         # edge embedding = (num edges, num coefficients, sphere_channels) = (6, 25, 64)
-        edge_embedding = SO3_Embedding(num_subgraph_edges, self.lmax_list, self.sphere_channels, device, dtype) #first dimension is the number of edges, second dimension is the number of coefficients, 
+        edge_embedding = SO3_Embedding(num_subgraph_edges, self.lmax, self.sphere_channels, device, dtype) #first dimension is the number of edges, second dimension is the number of coefficients, 
 
         # Initialize the l = 0, m = 0 coefficients:
         offset_res = 0
@@ -209,8 +209,8 @@ class SO2Net(torch.nn.Module):
         node_embedding.embedding[:, offset_res, :] = node_element_embedding
         edge_embedding.embedding[:, offset_res, :] = edge_distance_embedding
 
-        node_embedding.set_lmax_mmax(self.lmax_list, self.mmax_list)
-        edge_embedding.set_lmax_mmax(self.lmax_list, self.mmax_list)
+        node_embedding.set_lmax_mmax([self.lmax], [self.mmax])
+        edge_embedding.set_lmax_mmax([self.lmax], [self.mmax])
         
         # Create 3D rotation matrices for each of the edges
         edge_rot_mat = init_edge_rot_mat(edge_distance_vec)                 # shape = (num_edges, 3, 3) = [6, 3, 3]
@@ -235,8 +235,8 @@ class SO2Net(torch.nn.Module):
                             edge_embedding,
                         )
 
-        node_output = convert_to_irreps(node_embedding, self.output_channels, self.lmax_list, self.node_lin)
-        edge_output = convert_to_irreps(edge_embedding, self.output_channels, self.lmax_list, self.edge_lin)
+        node_output = convert_to_irreps(node_embedding, self.output_channels, self.lmax, self.node_lin)
+        edge_output = convert_to_irreps(edge_embedding, self.output_channels, self.lmax, self.edge_lin)
 
         return node_output, edge_output
 
