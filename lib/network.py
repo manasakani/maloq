@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.distributed as dist
 from e3nn.o3 import Linear
-from transformer_block import NodeBlockV2,EdgeBlockV2
+from transformer_block import NodeBlockV2, EdgeBlockV2
 from SO3 import SO3_Rotation, SO3_Embedding
 
 import torch.distributed as dist
@@ -10,6 +10,7 @@ if dist.is_available() and dist.is_initialized():
      from torch_scatter import scatter
      import dgl
 
+import time
 
 # Borrowed from mace-ocp (https://github.com/ACEsuit/mace-ocp.git)
 class GaussianSmearing(torch.nn.Module):
@@ -172,21 +173,20 @@ class SO2Net(torch.nn.Module):
         # Initialise the node embedding with atomic_numbers
         # length of angular momentum coefficients = (lmax+1)^2 = (4+1)^2 = 25 = 1(l=0) + 3(l=1) + 5(l=2) + 7(l=3) + 9(l=4)
         # node embedding = (num atoms, num coefficients, sphere_channels) = (3, 25, 64)
-        node_embedding = SO3_Embedding(num_subgraph_nodes, self.lmax, self.sphere_channels, device, dtype) #first dimension is the number of atoms, second dimension is the number of coefficients, third dimension is the number of channels
         # edge embedding = (num edges, num coefficients, sphere_channels) = (6, 25, 64)
-        edge_embedding = SO3_Embedding(num_subgraph_edges, self.lmax, self.sphere_channels, device, dtype) #first dimension is the number of edges, second dimension is the number of coefficients, 
-
-        # Initialize the l = 0, m = 0 coefficients:
-        offset_res = 0
+        node_embedding = SO3_Embedding(num_subgraph_nodes, self.lmax, self.sphere_channels, device, dtype) # [number of atoms, number of coefficients, number of channels]
+        edge_embedding = SO3_Embedding(num_subgraph_edges, self.lmax, self.sphere_channels, device, dtype) # [number of edges, number of coefficients, number of channels]
         
         node_element_embedding = self.sphere_embedding(atomic_numbers)
         edge_distance_embedding = self.distance_expansion(edge_distance)
 
+        # Initialize the l = 0, m = 0 coefficients of each embedding:
+        offset_res = 0
         node_embedding.embedding[:, offset_res, :] = node_element_embedding
         edge_embedding.embedding[:, offset_res, :] = edge_distance_embedding
 
-        node_embedding.set_lmax_mmax([self.lmax], [self.mmax])
-        edge_embedding.set_lmax_mmax([self.lmax], [self.mmax])
+        # node_embedding.set_lmax_mmax([self.lmax], [self.mmax])
+        # edge_embedding.set_lmax_mmax([self.lmax], [self.mmax])
         
         # Create 3D rotation matrices for each of the edges
         edge_rot_mat = init_edge_rot_mat(edge_distance_vec)                 # shape = (num_edges, 3, 3) = [6, 3, 3]
@@ -238,7 +238,7 @@ def convert_to_irreps(input, output_channels, lmax, lin_node):
 
     # convert:
     test_output = lin_node(sorted_output.to(device))
-
+    
     return test_output
     
 

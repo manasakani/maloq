@@ -4,11 +4,13 @@ import torch.nn as nn
 class RadialFunction(nn.Module):
     '''
         Contruct a radial function (linear layers + layer normalization + SiLU) given a list of channels
+        edge_channels_list = [sphere_channels, m_output_channels, ..., m_output_channels] 
     '''
     def __init__(self, channels_list):
         super().__init__()
         modules = []
         input_channels = channels_list[0]
+        
         for i in range(len(channels_list)):
             if i == 0:
                 continue

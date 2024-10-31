@@ -390,6 +390,7 @@ class SO3_LinearV2(torch.nn.Module):
         '''
             1. Use `torch.einsum` to prevent slicing and concatenation
             2. Need to specify some behaviors in `no_weight_decay` and weight initialization.
+            3. Applies bias to scalar features only
         '''
         super().__init__()
         self.in_features = in_features

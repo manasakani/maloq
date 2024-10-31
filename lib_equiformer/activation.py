@@ -118,7 +118,7 @@ class GateActivation(torch.nn.Module):
             length = min((2 * l + 1), (2 * self.mmax + 1))
             expand_index[start_idx : (start_idx + length)] = (l - 1)
             start_idx = start_idx + length            
-        self.register_buffer('expand_index', expand_index)
+        self.register_buffer('expand_index', expand_index)          # for lmax=4, tensor([0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3])
 
         self.scalar_act = torch.nn.SiLU() #SwiGLU(self.num_channels, self.num_channels)  # #
         self.gate_act   = torch.nn.Sigmoid() #torch.nn.SiLU() # #

@@ -15,7 +15,7 @@ import torch.distributed as dist
 import torch
 import random
 
-import data, training, structure, SO2, so2_model, SO3, compute_env as env, utils
+import data, training, structure, SO2, network, SO3, compute_env as env, utils
 
 from e3nn.o3 import Irreps
 print("Imported libraries", flush=True)
@@ -49,7 +49,7 @@ def main(folder):
 
     # Dataset parameters:
     num_train = 10                                                              # Number of training samples
-    num_validate = 10                                                            # Number of validation samples             
+    num_validate = 10                                                           # Number of validation samples             
     num_test = 2500     
     show_fit_for = "val"                                                        # Show fit for the training (train) or validation (val) data
 
@@ -157,7 +157,7 @@ def main(folder):
     # *** Initialize the model:
     mappingReduced = SO3.CoefficientMappingModule(lmax, mmax)
     irreps_out = net_out_irreps
-    model = so2_model.SO2Net(num_MP_layers, 
+    model = network.SO2Net(num_MP_layers, 
                                 lmax, 
                                 mmax, 
                                 mappingReduced, 

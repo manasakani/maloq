@@ -102,15 +102,15 @@ class SO2_Convolution(torch.nn.Module):
 
         num_channels_m0 = 0
         num_coefficients = self.lmax + 1
-        num_channels_m0 = num_channels_m0 + num_coefficients * self.sphere_channels
+        num_channels_m0 = num_channels_m0 + num_coefficients * self.sphere_channels             # m = 0 input block, size of [(l_max + 1) * 3/1*sphere_channels]
 
         # SO(2) convolution for m = 0
-        m0_output_channels = self.m_output_channels * (num_channels_m0 // self.sphere_channels)
+        m0_output_channels = self.m_output_channels * (num_channels_m0 // self.sphere_channels) # m = 0 output block, size of [(l_max + 1) * m_output_channels]
         if self.extra_m0_output_channels is not None:
-            m0_output_channels = m0_output_channels + self.extra_m0_output_channels
-        self.fc_m0 = Linear(num_channels_m0, m0_output_channels)
-        num_channels_rad = num_channels_rad + self.fc_m0.in_features
-        
+            m0_output_channels = m0_output_channels + self.extra_m0_output_channels             # m = 0 output block, size of [(l_max + 1) * m_output_channels + extra_m0_output_channels]
+        self.fc_m0 = Linear(num_channels_m0, m0_output_channels)                                # Linear layer for m = 0 output block, dims [(l_max + 1) * 3/1*sphere_channels] -> [(l_max + 1) * m_output_channels]
+        num_channels_rad = num_channels_rad + self.fc_m0.in_features                            # for radial function, size of [(l_max + 1) * 3/1*sphere_channels]
+
         # SO(2) convolution for non-zero m
         self.so2_m_conv = nn.ModuleList()
         for m in range(1, self.mmax + 1):
@@ -147,12 +147,12 @@ class SO2_Convolution(torch.nn.Module):
         offset_rad = 0
 
         # Compute m=0 coefficients separately since they only have real values (no imaginary)
-        x_0 = x.embedding.narrow(1, 0, self.mappingReduced.m_size[0])
-        x_0 = x_0.reshape(num_edges, -1)
+        x_0 = x.embedding.narrow(1, 0, self.mappingReduced.m_size[0])               # m=0 coefficient block of the embeddings, shape [num_edges, (l_max + 1), 3/1*sphere_channels]
+        x_0 = x_0.reshape(num_edges, -1)                                            # reshape the m=0 coefficients, shape [num_edges, (l_max + 1)*3/1*sphere_channels]
         if self.rad_func is not None:
             x_edge_0 = x_edge.narrow(1, 0, self.fc_m0.in_features)
-            x_0 = x_0 * x_edge_0
-        x_0 = self.fc_m0(x_0)
+            x_0 = x_0 * x_edge_0                                                    # multiply the input features with the radial function
+        x_0 = self.fc_m0(x_0)                                                       # apply linear layer to the m=0 coefficients   
 
         x_0_extra = None
         # extract extra m0 features 
@@ -169,7 +169,7 @@ class SO2_Convolution(torch.nn.Module):
         offset = self.mappingReduced.m_size[0]
         for m in range(1, self.mmax + 1):
             # Get the m order coefficients
-            x_m = x.embedding.narrow(1, offset, 2 * self.mappingReduced.m_size[m])
+            x_m = x.embedding.narrow(1, offset, 2 * self.mappingReduced.m_size[m])      # size of the m-th block of the embeddings, shape [num_edges, 2*(l_max - m + 1), 3/1*sphere_channels]
             x_m = x_m.reshape(num_edges, 2, -1)
 
             # Perform SO(2) convolution
