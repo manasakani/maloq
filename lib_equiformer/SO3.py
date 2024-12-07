@@ -255,6 +255,21 @@ class SO3_Embedding():
             self.lmax = lmax
             self.mmax = mmax
 
+    # Flatten the embedding for MPI4py
+    def flatten_embedding(self):
+        """
+        Flattens the embedding for communication via Allgatherv.
+        """
+        return self.embedding.view(-1).cpu().detach().numpy()
+
+    # Restore embedding from flattened data
+    def unflatten_embedding(self, flattened_data):
+        """
+        Reshapes the gathered flat data back into self.embedding's original shape.
+        """
+        restored_embedding = torch.from_numpy(flattened_data).to(self.device).to(self.dtype)
+        restored_embedding = restored_embedding.view(self.length, self.num_coefficients, self.num_channels)
+        self.set_embedding(restored_embedding)
 
     # Expand the node embeddings to the number of edges
     def _expand_edge(self, edge_index):

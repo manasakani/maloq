@@ -112,7 +112,8 @@ def create_input_data_molecules(structure, equivariant_blocks, out_slices, const
     edge_labels = torch.tensor(np.array(edge_labels),dtype=dtype, device=device)
     y = construct_kernel.get_net_out(edge_labels) #convert Hamiltonian labels from uncoupled space to coupled space (to avoid conversion during training)
 
-    node_labels = torch.tensor(node_labels,dtype=dtype, device=device)
+    node_labels = torch.tensor(np.array(node_labels),dtype=dtype, device=device)
+    # node_labels = torch.tensor(node_labels, dtype=dtype, device=device)
     node_y = construct_kernel.get_net_out(node_labels)
 
     data = gnnData(x=x, edge_index=edge_index, edge_attr=edge_fea, y=y, node_y=node_y)
