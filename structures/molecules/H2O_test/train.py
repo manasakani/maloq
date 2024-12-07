@@ -66,9 +66,12 @@ def main(folder):
     restart_file = None                                     
     save_file = 'model'
 
-    if not os.path.exists('results_' + tag):
-        os.makedirs('results_' + tag)
-    save_file = 'results_' + tag + '/' + save_file
+    @env.only_rank_zero
+    def make_output_folder(save_file, tag): 
+        if not os.path.exists('results_' + tag):
+            os.makedirs('results_' + tag)
+        save_file = 'results_' + tag + '/' + save_file
+    make_output_folder(save_file, tag)
 
     num_epochs = 100                                                           
     batch_size = num_train                                                               
