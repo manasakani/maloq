@@ -15,6 +15,7 @@ import random
 
 import data, training, structure, SO2, network, SO3, compute_env as env, utils
 import warnings
+from mpi4py import MPI
 from e3nn.o3 import Irreps
 
 # ************************************************************
@@ -71,7 +72,15 @@ def main(folder):
         if not os.path.exists('results_' + tag):
             os.makedirs('results_' + tag)
         save_file = 'results_' + tag + '/' + save_file
-    make_output_folder(save_file, tag)
+        return save_file
+    save_file = make_output_folder(save_file, tag)
+
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        size = dist.get_world_size()
+        comm = MPI.COMM_WORLD
+        save_file = comm.bcast(save_file, root=0)
+
 
     num_epochs = 100                                                           
     batch_size = num_train                                                               
