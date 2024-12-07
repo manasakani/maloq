@@ -6,8 +6,6 @@ lib_root = os.path.join(project_root, 'lib')
 lib_equiformer_root = os.path.join(project_root, 'lib_equiformer')
 sys.path.append(lib_root)
 sys.path.append(lib_equiformer_root)
-print(f"Added {lib_root} to the path", flush=True)
-print(f"Added {lib_equiformer_root} to the path", flush=True)
 
 import argparse
 import numpy as np
@@ -16,9 +14,20 @@ import torch
 import random
 
 import data, training, structure, SO2, network, SO3, compute_env as env, utils
-
+import warnings
 from e3nn.o3 import Irreps
-print("Imported libraries", flush=True)
+
+# ************************************************************
+# Distributed training setup (if running on multiple GPUs)
+# ************************************************************
+
+device, world_size = env.initialize_compute_env()
+print("Device: ", device, ", World size: ", world_size, flush=True)
+
+env.rank_zero_print(f"Added {lib_root} to the path", flush=True)
+env.rank_zero_print(f"Added {lib_equiformer_root} to the path", flush=True)
+env.rank_zero_print("Imported libraries", flush=True)
+warnings.filterwarnings("ignore", category=UserWarning, message=".*To copy construct from a tensor.*")
 
 # SchNetPack package for database handling
 from schnetpack.data import ASEAtomsData
@@ -34,8 +43,8 @@ def main(folder):
     np.random.seed(42)
     random.seed(42)
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Device: ", device)
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # print("Device: ", device)
 
     # ************************************************************
     # Input parameters and for the H2O molecule dataset
@@ -43,9 +52,9 @@ def main(folder):
 
     db_path = folder+'/datasets/schnorb_hamiltonian_water.db'
     database = ASEAtomsData(db_path)
-    print("Number of Molecules in the database: ", len(database))
+    env.rank_zero_print("Number of Molecules in the database: ", len(database))
     norbs = utils.get_number_orbitals_QM7(database)
-    print("Number of orbitals: ", norbs)
+    env.rank_zero_print("Number of orbitals: ", norbs)
 
     # Dataset parameters:
     num_train = 10                                                              # Number of training samples
@@ -124,7 +133,7 @@ def main(folder):
     
     sample_molecule = training_molecules[0]
 
-    print("Dataset initialized")
+    env.rank_zero_print("Dataset initialized")
 
     # ************************************************************
     # Initialize the SO2 model
@@ -176,8 +185,8 @@ def main(folder):
     if restart_file is not None:
         model, optimizer = env.dist_restart('results_' + tag + '/' + restart_file + '.pt', model, optimizer)
 
-    print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
-    print("Model initialized")
+    env.rank_zero_print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
+    env.rank_zero_print("Model initialized")
 
     # ************************************************************
     # Run the training process
@@ -186,7 +195,7 @@ def main(folder):
     training_data_loader = data.batch_data_molecules(training_molecules, device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
     validation_data_loader = data.batch_data_molecules(validation_molecules, device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
     
-    print("training model...")
+    env.rank_zero_print("training model...")
     training.train_and_validate_model_subgraph(model,
                                                 optimizer,
                                                 training_data_loader,
@@ -203,7 +212,7 @@ def main(folder):
                                                 equivariant_blocks=equivariant_blocks, 
                                                 atom_orbitals=atom_orbitals, 
                                                 out_slices=out_slices)
-    print("Model trained")
+    env.rank_zero_print("Model trained")
 
     # create new construct_kernel for the training, this time on the cpu
     construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
@@ -225,6 +234,6 @@ if __name__ == "__main__":
     parser.add_argument("-f", "--folder", default="", required=False)
     args = parser.parse_args()
 
-    print(f"Starting main ... dataset folder is '{args.folder}'", flush=True)
+    env.rank_zero_print(f"Starting main ... dataset folder is '{args.folder}'", flush=True)
 
     main(args.folder)
