@@ -431,6 +431,16 @@ class SO3_Embedding():
         edge_embeddings = torch.stack(edge_embeddings)
         self.set_embedding(edge_embeddings)
 
+        if rank == 0:
+            print("Rank: ", rank, "Edge embeddings: ", edge_embeddings)
+        dist.barrier()
+        if rank == 1:
+            print("Rank: ", rank, "Edge embeddings: ", edge_embeddings)
+        dist.barrier()
+        if rank == 2:
+            print("Rank: ", rank, "Edge embeddings: ", edge_embeddings)
+        dist.barrier()
+
         
 
     # Initialize an embedding of irreps of a neighborhood
