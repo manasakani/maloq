@@ -297,6 +297,7 @@ class SO2Net(torch.nn.Module):
                             atomic_numbers,
                             edge_distance_embedding_local,
                             edge_index_local,
+                            edge_index,
                             edge_embedding_local,
                         )  
             
@@ -305,6 +306,7 @@ class SO2Net(torch.nn.Module):
                             atomic_numbers,
                             edge_distance_embedding_local,
                             edge_index_local,
+                            edge_index,
                             edge_embedding_local,
                         )
 

@@ -206,12 +206,15 @@ class SO2NodeUpdate(torch.nn.Module):
         atomic_numbers,
         edge_distance,
         edge_index,
+        global_edge_index,
         edge_fea
     ):
 
+        # _______________________________________________________________________
         rank = dist.get_rank()
         size = dist.get_world_size()
         comm = MPI.COMM_WORLD
+        # _______________________________________________________________________
 
         # Compute edge scalar features (invariant to rotations)
         # Uses atomic numbers and edge distance as inputs
@@ -260,10 +263,6 @@ class SO2NodeUpdate(torch.nn.Module):
         
         # Second SO(2)-convolution
         x_message = self.so2_conv_2(x_message, x_edge)
-
-        # ---------------------------------------------------------------------
-        # *** x_message is distributed correctly on 1-3 ranks up to here ***
-        # ---------------------------------------------------------------------
         
         # Attention weights
         x_0_alpha = x_0_alpha.reshape(-1, self.num_heads, self.attn_alpha_channels) # shape of [E, num_heads, attn_alpha_channels]
@@ -273,13 +272,14 @@ class SO2NodeUpdate(torch.nn.Module):
 
         # X_0_alpha and alpha are independently distributed until here (can be concatenated across ranks)
 
-        # allgatherv alpha across ranks, before softmax
+        # allgatherv alpha across ranks, before softmax, so every rank has the entire set of attention weights:
+        # NOTE: THIS CAN BE DONE WITHOUT GATHERING THE ENTIRE EDGE INDEX
+
         alpha_shape = alpha.shape
         alpha = alpha.cpu().detach().numpy().reshape(-1)
         local_alpha_size = len(alpha)
         all_counts = comm.allgather(local_alpha_size)
         displacements = np.cumsum([0] + all_counts[:-1])
-
         total_alpha_size = sum(all_counts)
         alpha_all = np.empty(total_alpha_size, dtype=np.float64)
         comm.Allgatherv(alpha, [alpha_all, all_counts, displacements, MPI.DOUBLE])
@@ -287,26 +287,30 @@ class SO2NodeUpdate(torch.nn.Module):
         alpha = alpha_all.reshape(-1, alpha_shape[1])
         alpha = torch.tensor(alpha, device=x.device)
 
-        if rank == 0:
-            print("rank ", rank, " alpha: ", alpha)
-            print("rank ", rank, " edge_index[1]: ", edge_index[1])
-
-        dist.barrier()
-        sdfg
-
-        # the following requires comm in the message dimension
-        alpha = torch_geometric.utils.softmax(alpha, edge_index[1]) 
+        # normalize the incoming weights to every node to compute the final attention weights along each edge
+        alpha = torch_geometric.utils.softmax(alpha, global_edge_index[1])          # softmax over the incoming edges
         alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)                 # shape of [E, 1, num_heads, 1]
+
+        # extract only the alpha for the local edges to use for the attention mechanism
+        local_edge_idx = (global_edge_index.T.unsqueeze(1) == edge_index.T.unsqueeze(0)).all(dim=2).nonzero(as_tuple=True)[0]
+        alpha = alpha[local_edge_idx]
         
-        # Attention weights * non-linear messages
+        # Attention weights * non-linear messages (weight each message by the corresponding attention weight)
         attn = x_message.embedding                                                                      # shape of [E, (lmax+1)^2, # hidden channels]
         attn = attn.reshape(attn.shape[0], attn.shape[1], self.num_heads, self.attn_value_channels)     # shape of [E, #channels, num_heads, attn_value_channels]
         attn = attn * alpha
         attn = attn.reshape(attn.shape[0], attn.shape[1], self.num_heads * self.attn_value_channels)
         x_message.embedding = attn
 
+        # Rotate back the irreps
+        x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
+
+        # ---------------------------------------------------------------------
+        # *** x_message is distributed correctly on 1-3 ranks up to here ***
+        # ---------------------------------------------------------------------
+
         # print the x_message embedding:
-        print("after attention")
+        print("after rotation back")
         # print("rank ", rank, " x_message embedding: ", x_message.embedding)
         if rank == 0:
             print("rank ", rank, " x_message embedding: ", x_message.embedding)
@@ -315,9 +319,6 @@ class SO2NodeUpdate(torch.nn.Module):
             print("rank ", rank, " x_message embedding: ", x_message.embedding)
         dist.barrier()
         sdfg
-
-        # Rotate back the irreps
-        x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
 
         # Aggregate incoming neighboring messages for each target node
         x_message._reduce_edge(edge_index[1], len(x.embedding))
@@ -393,6 +394,7 @@ class NodeBlockV2(torch.nn.Module):
         atomic_numbers,
         edge_distance,                  # edge distance embedding (initial edge features)
         edge_index,
+        global_edge_index,
         edge_fea,                       # edge embedding
     ):
 
@@ -410,7 +412,7 @@ class NodeBlockV2(torch.nn.Module):
         output_embedding = self.ga(output_embedding, 
             atomic_numbers,
             edge_distance,
-            edge_index, edge_fea)
+            edge_index, global_edge_index, edge_fea)
 
         # Add the residual connection and update the output embedding
         output_embedding.embedding = output_embedding.embedding + x_res
