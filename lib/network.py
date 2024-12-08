@@ -206,77 +206,78 @@ class SO2Net(torch.nn.Module):
         # Initialize the l = 0, m = 0 coefficients of each embedding:
 
         offset_res = 0
-        node_element_embedding = self.sphere_embedding(atomic_numbers[start_node:end_node])
-        edge_distance_embedding = self.distance_expansion(edge_distance[start_edge:end_edge])
-        node_embedding_local.embedding[:, offset_res, :] = node_element_embedding
-        edge_embedding_local.embedding[:, offset_res, :] = edge_distance_embedding
+        node_element_embedding_local = self.sphere_embedding(atomic_numbers[start_node:end_node])
+        edge_distance_embedding_local = self.distance_expansion(edge_distance[start_edge:end_edge])
+        node_embedding_local.embedding[:, offset_res, :] = node_element_embedding_local
+        edge_embedding_local.embedding[:, offset_res, :] = edge_distance_embedding_local
         
         # Create 3D rotation matrices for each of the edges - note that all the edges are needed for a deterministic rotation matrix:
         edge_rot_mat_local = init_edge_rot_mat(edge_distance_vec)[start_edge:end_edge, :, :]                 # shape = (num_edges, 3, 3) = [6, 3, 3]
-        
+    
+        edge_index_local = edge_index[:, start_edge:end_edge]                                                # shape = (2, num_edges) = [2, 6]
 
         # **** TEMP: allgatherv them back for debug **** 
         # NOTE: allgatherv expects a flattened numpy array, so all the data needs to be flattened
 
-        # ___ nodes & edges ___
+        # # ___ nodes & edges ___
         
-        node_embedding_local_np = node_embedding_local.flatten_embedding()
-        edge_embedding_local_np = edge_embedding_local.flatten_embedding()
+        # node_embedding_local_np = node_embedding_local.flatten_embedding()
+        # edge_embedding_local_np = edge_embedding_local.flatten_embedding()
 
-        local_node_size = len(node_embedding_local_np)
-        local_edge_size = len(edge_embedding_local_np)
+        # local_node_size = len(node_embedding_local_np)
+        # local_edge_size = len(edge_embedding_local_np)
 
-        all_node_counts = comm.allgather(local_node_size)
-        all_edge_counts = comm.allgather(local_edge_size)
+        # all_node_counts = comm.allgather(local_node_size)
+        # all_edge_counts = comm.allgather(local_edge_size)
 
-        displacements_nodes = np.cumsum([0] + all_node_counts[:-1])
-        displacements_edges = np.cumsum([0] + all_edge_counts[:-1])
+        # displacements_nodes = np.cumsum([0] + all_node_counts[:-1])
+        # displacements_edges = np.cumsum([0] + all_edge_counts[:-1])
 
-        recvbuf_nodes = np.empty(sum(all_node_counts), dtype=np.float64)
-        recvbuf_edges = np.empty(sum(all_edge_counts), dtype=np.float64)
+        # recvbuf_nodes = np.empty(sum(all_node_counts), dtype=np.float64)
+        # recvbuf_edges = np.empty(sum(all_edge_counts), dtype=np.float64)
 
-        comm.Allgatherv(node_embedding_local_np, [recvbuf_nodes, all_node_counts, displacements_nodes, MPI.DOUBLE])
-        comm.Allgatherv(edge_embedding_local_np, [recvbuf_edges, all_edge_counts, displacements_edges, MPI.DOUBLE])
+        # comm.Allgatherv(node_embedding_local_np, [recvbuf_nodes, all_node_counts, displacements_nodes, MPI.DOUBLE])
+        # comm.Allgatherv(edge_embedding_local_np, [recvbuf_edges, all_edge_counts, displacements_edges, MPI.DOUBLE])
 
-        num_subgraph_nodes_global = comm.allreduce(num_subgraph_nodes_local)
-        num_subgraph_edges_global = comm.allreduce(num_subgraph_edges_local)
+        # num_subgraph_nodes_global = comm.allreduce(num_subgraph_nodes_local)
+        # num_subgraph_edges_global = comm.allreduce(num_subgraph_edges_local)
         
-        node_embedding = SO3_Embedding(num_subgraph_nodes_global, self.lmax, self.sphere_channels, device, dtype)
-        node_embedding.unflatten_embedding(recvbuf_nodes)
+        # node_embedding = SO3_Embedding(num_subgraph_nodes_global, self.lmax, self.sphere_channels, device, dtype)
+        # node_embedding.unflatten_embedding(recvbuf_nodes)
 
-        edge_embedding = SO3_Embedding(num_subgraph_edges_global, self.lmax, self.sphere_channels, device, dtype)
-        edge_embedding.unflatten_embedding(recvbuf_edges)
+        # edge_embedding = SO3_Embedding(num_subgraph_edges_global, self.lmax, self.sphere_channels, device, dtype)
+        # edge_embedding.unflatten_embedding(recvbuf_edges)
 
-        # ___ edge rotation matrices ___
+        # # ___ edge rotation matrices ___
 
-        rot_mat_local_np = edge_rot_mat_local.cpu().detach().numpy().reshape(-1)
-        local_size = len(rot_mat_local_np)
+        # rot_mat_local_np = edge_rot_mat_local.cpu().detach().numpy().reshape(-1)
+        # local_size = len(rot_mat_local_np)
 
-        all_counts = comm.allgather(local_size)
-        displacements = np.cumsum([0] + all_counts[:-1])
+        # all_counts = comm.allgather(local_size)
+        # displacements = np.cumsum([0] + all_counts[:-1])
 
-        total_size = sum(all_counts)
-        recvbuf = np.empty(total_size, dtype=np.float64) # !!! DTYPES ARE HARDCODED TO FLOAT64 FOR H2O DEBUG EXAMPLE !!!
+        # total_size = sum(all_counts)
+        # recvbuf = np.empty(total_size, dtype=np.float64) # !!! DTYPES ARE HARDCODED TO FLOAT64 FOR H2O DEBUG EXAMPLE !!!
 
-        comm.Allgatherv(rot_mat_local_np, [recvbuf, all_counts, displacements, MPI.DOUBLE])
-        recvbuf_reshaped = recvbuf.reshape(-1, 3, 3)     # rotation matrices are always 3x3
+        # comm.Allgatherv(rot_mat_local_np, [recvbuf, all_counts, displacements, MPI.DOUBLE])
+        # recvbuf_reshaped = recvbuf.reshape(-1, 3, 3)     # rotation matrices are always 3x3
 
-        edge_rot_mat = torch.tensor(recvbuf_reshaped, dtype=dtype, device=device)
+        # edge_rot_mat = torch.tensor(recvbuf_reshaped, dtype=dtype, device=device)
 
-        # ___ edge distance embedding ___
-        edge_distance_embedding_shape = edge_distance_embedding.shape
-        edge_distance_embedding_np = edge_distance_embedding.cpu().detach().numpy().reshape(-1)
-        local_size = len(edge_distance_embedding_np)
+        # # ___ edge distance embedding ___
+        # edge_distance_embedding_shape = edge_distance_embedding.shape
+        # edge_distance_embedding_np = edge_distance_embedding.cpu().detach().numpy().reshape(-1)
+        # local_size = len(edge_distance_embedding_np)
 
-        all_counts = comm.allgather(local_size)
-        displacements = np.cumsum([0] + all_counts[:-1])
+        # all_counts = comm.allgather(local_size)
+        # displacements = np.cumsum([0] + all_counts[:-1])
 
-        total_size = sum(all_counts)
-        recvbuf = np.empty(total_size, dtype=np.float64) # !!! DTYPES ARE HARDCODED TO FLOAT64 FOR H2O DEBUG EXAMPLE !!!
-        comm.Allgatherv(edge_distance_embedding_np, [recvbuf, all_counts, displacements, MPI.DOUBLE])
-        recvbuf_reshaped = recvbuf.reshape(-1, edge_distance_embedding_shape[1])
+        # total_size = sum(all_counts)
+        # recvbuf = np.empty(total_size, dtype=np.float64) # !!! DTYPES ARE HARDCODED TO FLOAT64 FOR H2O DEBUG EXAMPLE !!!
+        # comm.Allgatherv(edge_distance_embedding_np, [recvbuf, all_counts, displacements, MPI.DOUBLE])
+        # recvbuf_reshaped = recvbuf.reshape(-1, edge_distance_embedding_shape[1])
 
-        edge_distance_embedding = torch.tensor(recvbuf_reshaped, dtype=dtype, device=device)
+        # edge_distance_embedding = torch.tensor(recvbuf_reshaped, dtype=dtype, device=device)
 
         # print(f"Rank {rank}: Restored global node embedding shape: {node_embedding.embedding.shape}")
         # print(f"Rank {rank}: Restored global edge embedding shape: {edge_embedding.embedding.shape}")
@@ -286,29 +287,29 @@ class SO2Net(torch.nn.Module):
 
         # **** TEMP END: allgather them back for debug: ****
 
-        self.SO3_rotation[0].set_wigner(edge_rot_mat)                                              # set the rotation matrices for each of the edges in the edge list
+        self.SO3_rotation[0].set_wigner(edge_rot_mat_local)                                              # set the rotation matrices for each of the edges in the edge list
 
         # Process the graph through the layers
         for i in range(self.num_layers):
 
-            node_embedding = self.blocks[2*i](
-                            node_embedding,                  # SO3_Embedding
+            node_embedding_local = self.blocks[2*i](
+                            node_embedding_local,                  # SO3_Embedding
                             atomic_numbers,
-                            edge_distance_embedding,
-                            edge_index,
-                            edge_embedding,
+                            edge_distance_embedding_local,
+                            edge_index_local,
+                            edge_embedding_local,
                         )  
             
-            edge_embedding = self.blocks[2*i+1](
-                            node_embedding,                  # SO3_Embedding
+            edge_embedding_local = self.blocks[2*i+1](
+                            node_embedding_local,                  # SO3_Embedding
                             atomic_numbers,
-                            edge_distance_embedding,
-                            edge_index,
-                            edge_embedding,
+                            edge_distance_embedding_local,
+                            edge_index_local,
+                            edge_embedding_local,
                         )
 
-        node_output = convert_to_irreps(node_embedding, self.output_channels, self.lmax, self.node_lin)
-        edge_output = convert_to_irreps(edge_embedding, self.output_channels, self.lmax, self.edge_lin)
+        node_output = convert_to_irreps(node_embedding_local, self.output_channels, self.lmax, self.node_lin)
+        edge_output = convert_to_irreps(edge_embedding_local, self.output_channels, self.lmax, self.edge_lin)
 
         return node_output, edge_output
 

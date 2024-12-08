@@ -15,6 +15,7 @@ import os
 import math
 import torch
 import torch.nn as nn
+import numpy as np
 
 try:
     from e3nn import o3
@@ -24,7 +25,8 @@ except ImportError:
 
 from wigner import wigner_D
 from torch.nn import Linear
-
+from mpi4py import MPI
+import torch.distributed as dist
 
 class CoefficientMappingModule(torch.nn.Module):
     """
@@ -256,6 +258,14 @@ class SO3_Embedding():
             self.mmax = mmax
 
     # Flatten the embedding for MPI4py
+    def _flatten_embedding(self, embedding):
+        """
+        Flattens the embedding for communication via Allgatherv.
+        """
+
+        return embedding.view(-1).cpu().detach().numpy()
+
+    # Flatten the embedding for MPI4py
     def flatten_embedding(self):
         """
         Flattens the embedding for communication via Allgatherv.
@@ -273,9 +283,171 @@ class SO3_Embedding():
 
     # Expand the node embeddings to the number of edges
     def _expand_edge(self, edge_index):
-        embedding = self.embedding[edge_index]
-        self.set_embedding(embedding)
 
+        rank = dist.get_rank()
+        size = dist.get_world_size()
+        comm = MPI.COMM_WORLD
+
+        print("Expanding edge")
+        print("rank ", rank, " edge_index ", edge_index)
+        dist.barrier()
+
+        local_num_nodes = self.length
+        total_num_nodes = comm.allreduce(local_num_nodes, op=MPI.SUM)
+        num_nodes_local = total_num_nodes // size
+        num_edges_local = total_num_nodes // size
+
+        start_node = rank * num_nodes_local
+        end_node = start_node + num_nodes_local
+        start_edge = rank * num_edges_local
+        end_edge = start_edge + num_edges_local
+
+        if rank == size - 1:
+            end_node += total_num_nodes % size
+
+        local_node_nums = torch.arange(start_node, end_node)
+        print("Rank: ", rank, "Local nodes: ", local_node_nums)
+
+        # start and end nodes on every rank:
+        start_nodes = comm.allgather(start_node)
+        end_nodes = comm.allgather(end_node)
+        # print("Total number of nodes: ", total_num_nodes, "rank: ", rank, "start nodes: ", start_nodes, " end nodes: ", end_nodes)
+
+        #  get 'remote' nodes in this rank to be recieved from remote ranks
+        remote_node_ranks = []
+        remote_nodes = []
+        for node in edge_index:
+            if node < start_node or node >= end_node:
+                if rank == 0:
+                    print(node)
+                for i, (start, end) in enumerate(zip(start_nodes, end_nodes)):
+                    if node >= start and node < end:
+                        remote_node_ranks.append(i)
+                        remote_nodes.append(node)
+                        break
+
+        print("rank ", rank, " Remote node ranks: ", remote_node_ranks)
+        print("rank ", rank, " Remote nodes: ", remote_nodes) 
+
+        # Nodes to recieve on this rank
+        nodes_to_recv = {}
+        for i, remote_rank in enumerate(remote_node_ranks):
+            if remote_rank not in nodes_to_recv:
+                nodes_to_recv[remote_rank] = []
+            if remote_nodes[i].item() not in nodes_to_recv[remote_rank]:
+                nodes_to_recv[remote_rank].append(remote_nodes[i].item())
+
+        # allgatherv the edge_indices on each rank:
+        length_local_edge_idx = len(edge_index)
+        edge_index_np = edge_index.cpu().numpy()
+        counts = comm.allgather(length_local_edge_idx)
+        displacements = [0] + [sum(counts[:i]) for i in range(1, size)]
+
+        total_length_edge_idx = sum(counts)        
+        all_edge_idx = torch.zeros(total_length_edge_idx, dtype=torch.int64)
+        comm.Allgatherv(edge_index_np, [all_edge_idx, counts, displacements, MPI.LONG])
+        print("rank ", rank, " All edge index: ", all_edge_idx)
+
+        # Nodes to send from this rank
+        nodes_to_send = {}
+        # iterate over all_edge_idx, if this rank has a node which that rank does not, add it to the nodes to send
+        for i, (c, d) in enumerate(zip(counts, displacements)):
+            # look at all the nodes in the edge index for rank i
+            for node in all_edge_idx[d:d+c]:
+                # if the node is not in the local nodes for rank 1, but is in the current local nodes:
+                if node not in range(start_nodes[i], end_nodes[i]) and node in local_node_nums:
+                    # add the note to the send list, i is the rank to send to
+                    if i not in nodes_to_send:
+                        nodes_to_send[i] = []
+
+                    if node not in nodes_to_send[i]:
+                        nodes_to_send[i].append(node)
+                    
+        print("rank ", rank, " Nodes to send: ", nodes_to_send)
+        print("rank ", rank, " Nodes to recv: ", nodes_to_recv)
+
+        num_nodes_to_recv = sum([len(nodes) for nodes in nodes_to_recv.values()])
+                
+        # Send/Receive embeddings
+        send_requests = []
+        # recv_requests = []
+        recv_bufs = np.empty(num_nodes_to_recv * self.num_coefficients * self.num_channels, dtype=np.float64)  # Hardcoded datatype!!!
+        recv_nodes = np.empty(num_nodes_to_recv)
+
+        # Non-blocking sends
+        for target_rank, nodes in nodes_to_send.items():
+
+            if nodes:
+
+                nodes_tensor = torch.tensor(nodes, dtype=torch.long)
+                # indices = torch.where(local_node_nums == torch.tensor(nodes))[0].item()
+                indices = []
+                for node in nodes_tensor:
+                    idx = torch.where(local_node_nums == node)[0]
+                    if idx.numel() == 0:
+                        raise ValueError(f"No match found for node: {node}")
+                    indices.append(idx.item())
+
+                print("rank ", rank, "Sending nodes: ", nodes, " in indices ", indices, " to rank: ", target_rank)
+
+                sendbuf = self._flatten_embedding(self.embedding[indices])
+                print("rank ", rank, " sendbuf shape: ", sendbuf.shape)
+                req = comm.isend(sendbuf, dest=target_rank, tag=rank)
+                send_requests.append(req)
+
+        print("rank ", rank, " sends done, waiting")
+        # MPI.Request.Waitall(send_requests)
+        # print("rank ", rank, " sends done")
+
+        # Non-blocking recvs
+        recv_pointer = 0
+        for i, (source_rank, nodes) in enumerate(nodes_to_recv.items()):
+
+            if nodes: 
+                # print(f"Rank {rank}: Receiving nodes {nodes} from rank {source_rank}")
+                req = comm.irecv(source=source_rank, tag=source_rank)
+
+                start_idx = recv_pointer
+                end_idx = start_idx + len(nodes) * self.num_coefficients * self.num_channels
+                recv_bufs[start_idx:end_idx] = req.wait()
+                recv_nodes[i] = source_rank
+                recv_pointer = end_idx
+        
+        MPI.Request.Waitall(send_requests)
+        # print("rank ", rank, " sends done")
+
+        received_embeddings = recv_bufs.reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
+        # print("shape of received embeddings: ", received_embeddings.shape)
+        # print("nodes for recv: ", recv_nodes)
+
+        # Wait for communications to complete
+        dist.barrier()
+        print("rank ", rank, " comm done")
+        dist.barrier()
+
+        # Expand edge embeddings with received remote embeddings
+        edge_embeddings = []
+        for i, node in enumerate(edge_index):
+            if node.cpu() in local_node_nums:
+                local_idx = node - start_node
+                edge_embeddings.append(self.embedding[local_idx])
+
+            elif node in remote_nodes:
+                owner_rank = remote_node_ranks[remote_nodes.index(node)]
+                # print("Rank ", rank, " Node ", node, " is owned by rank ", owner_rank)
+                embedding_idx = recv_nodes.tolist().index(owner_rank)
+                # print("Rank ", rank, " Embedding index: ", embedding_idx)
+                edge_embeddings.append(torch.tensor(received_embeddings[embedding_idx]).to(self.device))
+                # print("Rank ", rank, " Received embedding with shape: ", received_embeddings[embedding_idx].shape, " and type: ", type(received_embeddings[embedding_idx]))
+
+        
+        edge_embeddings = torch.stack(edge_embeddings)
+
+        self.set_embedding(edge_embeddings)
+        # dist.barrier()
+        # print("______________________________________________________")
+        # dist.barrier()
+        
 
     # Initialize an embedding of irreps of a neighborhood
     def expand_edge(self, edge_index):

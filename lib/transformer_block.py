@@ -4,7 +4,8 @@ import torch.nn.functional as F
 import math
 import torch_geometric
 import copy
-import mpi4py
+from mpi4py import MPI
+import torch.distributed as dist
 
 # Note: we only use Gate Activation in this implementation
 from activation import (
@@ -206,22 +207,31 @@ class SO2NodeUpdate(torch.nn.Module):
         edge_index,
         edge_fea
     ):
-         
+
+        rank = dist.get_rank()
+        size = dist.get_world_size()
+        comm = MPI.COMM_WORLD
+
         # Compute edge scalar features (invariant to rotations)
         # Uses atomic numbers and edge distance as inputs
-        if self.use_atom_edge_embedding:
-            source_element = atomic_numbers[edge_index[0]]  # Source atom atomic number
-            target_element = atomic_numbers[edge_index[1]]  # Target atom atomic number
-            source_embedding = self.source_embedding(source_element)
-            target_embedding = self.target_embedding(target_element)
-            x_edge = torch.cat((edge_distance, source_embedding, target_embedding), dim=1)      # shape of [#edges, 3 * #channels]
-        else:
-            x_edge = edge_distance  
+        source_element = atomic_numbers[edge_index[0]]  # Source atom atomic number
+        target_element = atomic_numbers[edge_index[1]]  # Target atom atomic number
+        source_embedding = self.source_embedding(source_element)
+        target_embedding = self.target_embedding(target_element)
+        x_edge = torch.cat((edge_distance, source_embedding, target_embedding), dim=1)      # shape of [#edges, 3 * #channels]
 
         x_source = x.clone()
         x_target = x.clone()
+
         x_source._expand_edge(edge_index[0, :]) #first dimension is the number of edges
+        print(f"Rank {rank} has x_source of size {x_source.embedding.size()}")
+        dist.barrier()
+
         x_target._expand_edge(edge_index[1, :])
+
+        print(f"Rank {rank} has x_source of size {x_source.embedding.size()}")
+        dist.barrier()
+        sdfg
         
         # to form the message, concatenate the embeddings of the source node, target node, and the edge between them
         x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) 
@@ -356,7 +366,11 @@ class NodeBlockV2(torch.nn.Module):
         output_embedding = x
         x_res = output_embedding.embedding
 
-        # Normalize the input embedding
+        rank = dist.get_rank()
+        size = dist.get_world_size()
+        comm = MPI.COMM_WORLD
+
+        # Normalize the input embedding (done independantly for each embedding)
         output_embedding.embedding = self.norm_1(output_embedding.embedding)
 
         # Perform the SO2NodeUpdate
