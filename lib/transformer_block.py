@@ -224,9 +224,6 @@ class SO2NodeUpdate(torch.nn.Module):
         x_target = x.clone()
 
         x_source._expand_edge(edge_index[0, :]) #first dimension is the number of edges
-        print(f"Rank {rank} has x_source of size {x_source.embedding.size()}")
-        dist.barrier()
-
         x_target._expand_edge(edge_index[1, :])
 
         print(f"Rank {rank} has x_source of size {x_source.embedding.size()}")

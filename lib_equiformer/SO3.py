@@ -283,14 +283,20 @@ class SO3_Embedding():
 
     # Expand the node embeddings to the number of edges
     def _expand_edge(self, edge_index):
+        """
+        This function was originally quite simple on one node:
+            edge_embeddings = self.embeddings[edge_index]
+            self.set_embedding(edge_embeddings)
+        
+        It's now been extended to account for the distributed case. The node embeddings which are needed on the current rank (due to being in the
+        edge_index) but only exist on other ranks are communicated using non-blocking p2p communication.
+        """
 
         rank = dist.get_rank()
         size = dist.get_world_size()
         comm = MPI.COMM_WORLD
 
-        print("Expanding edge")
-        print("rank ", rank, " edge_index ", edge_index)
-        dist.barrier()
+        # print("rank ", rank, " edge_index ", edge_index)
 
         local_num_nodes = self.length
         total_num_nodes = comm.allreduce(local_num_nodes, op=MPI.SUM)
@@ -326,8 +332,8 @@ class SO3_Embedding():
                         remote_nodes.append(node)
                         break
 
-        print("rank ", rank, " Remote node ranks: ", remote_node_ranks)
-        print("rank ", rank, " Remote nodes: ", remote_nodes) 
+        # print("rank ", rank, " Remote node ranks: ", remote_node_ranks)
+        # print("rank ", rank, " Remote nodes: ", remote_nodes) 
 
         # Nodes to recieve on this rank
         nodes_to_recv = {}
@@ -346,7 +352,6 @@ class SO3_Embedding():
         total_length_edge_idx = sum(counts)        
         all_edge_idx = torch.zeros(total_length_edge_idx, dtype=torch.int64)
         comm.Allgatherv(edge_index_np, [all_edge_idx, counts, displacements, MPI.LONG])
-        print("rank ", rank, " All edge index: ", all_edge_idx)
 
         # Nodes to send from this rank
         nodes_to_send = {}
@@ -363,14 +368,13 @@ class SO3_Embedding():
                     if node not in nodes_to_send[i]:
                         nodes_to_send[i].append(node)
                     
-        print("rank ", rank, " Nodes to send: ", nodes_to_send)
-        print("rank ", rank, " Nodes to recv: ", nodes_to_recv)
+        # print("rank ", rank, " Nodes to send: ", nodes_to_send)
+        # print("rank ", rank, " Nodes to recv: ", nodes_to_recv)
 
         num_nodes_to_recv = sum([len(nodes) for nodes in nodes_to_recv.values()])
                 
         # Send/Receive embeddings
         send_requests = []
-        # recv_requests = []
         recv_bufs = np.empty(num_nodes_to_recv * self.num_coefficients * self.num_channels, dtype=np.float64)  # Hardcoded datatype!!!
         recv_nodes = np.empty(num_nodes_to_recv)
 
@@ -388,16 +392,11 @@ class SO3_Embedding():
                         raise ValueError(f"No match found for node: {node}")
                     indices.append(idx.item())
 
-                print("rank ", rank, "Sending nodes: ", nodes, " in indices ", indices, " to rank: ", target_rank)
+                # print("rank ", rank, "Sending nodes: ", nodes, " in indices ", indices, " to rank: ", target_rank)
 
                 sendbuf = self._flatten_embedding(self.embedding[indices])
-                print("rank ", rank, " sendbuf shape: ", sendbuf.shape)
                 req = comm.isend(sendbuf, dest=target_rank, tag=rank)
                 send_requests.append(req)
-
-        print("rank ", rank, " sends done, waiting")
-        # MPI.Request.Waitall(send_requests)
-        # print("rank ", rank, " sends done")
 
         # Non-blocking recvs
         recv_pointer = 0
@@ -414,16 +413,8 @@ class SO3_Embedding():
                 recv_pointer = end_idx
         
         MPI.Request.Waitall(send_requests)
-        # print("rank ", rank, " sends done")
 
         received_embeddings = recv_bufs.reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
-        # print("shape of received embeddings: ", received_embeddings.shape)
-        # print("nodes for recv: ", recv_nodes)
-
-        # Wait for communications to complete
-        dist.barrier()
-        print("rank ", rank, " comm done")
-        dist.barrier()
 
         # Expand edge embeddings with received remote embeddings
         edge_embeddings = []
@@ -434,19 +425,12 @@ class SO3_Embedding():
 
             elif node in remote_nodes:
                 owner_rank = remote_node_ranks[remote_nodes.index(node)]
-                # print("Rank ", rank, " Node ", node, " is owned by rank ", owner_rank)
                 embedding_idx = recv_nodes.tolist().index(owner_rank)
-                # print("Rank ", rank, " Embedding index: ", embedding_idx)
                 edge_embeddings.append(torch.tensor(received_embeddings[embedding_idx]).to(self.device))
-                # print("Rank ", rank, " Received embedding with shape: ", received_embeddings[embedding_idx].shape, " and type: ", type(received_embeddings[embedding_idx]))
-
         
         edge_embeddings = torch.stack(edge_embeddings)
-
         self.set_embedding(edge_embeddings)
-        # dist.barrier()
-        # print("______________________________________________________")
-        # dist.barrier()
+
         
 
     # Initialize an embedding of irreps of a neighborhood
