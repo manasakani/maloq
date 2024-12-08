@@ -226,10 +226,6 @@ class SO2NodeUpdate(torch.nn.Module):
         x_source._expand_edge(edge_index[0, :]) #first dimension is the number of edges
         x_target._expand_edge(edge_index[1, :])
 
-        print(f"Rank {rank} has x_source of size {x_source.embedding.size()}")
-        dist.barrier()
-        sdfg
-        
         # to form the message, concatenate the embeddings of the source node, target node, and the edge between them
         x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) 
         x_message = SO3_Embedding(
@@ -263,6 +259,10 @@ class SO2NodeUpdate(torch.nn.Module):
         
         # Second SO(2)-convolution
         x_message = self.so2_conv_2(x_message, x_edge)
+
+        # ---------------------------------------------------------------------
+        # *** x_message is distributed correctly on 1-3 ranks up to here ***
+        # ---------------------------------------------------------------------
         
         # Attention weights
         x_0_alpha = x_0_alpha.reshape(-1, self.num_heads, self.attn_alpha_channels) # shape of [E, num_heads, attn_alpha_channels]
@@ -279,6 +279,17 @@ class SO2NodeUpdate(torch.nn.Module):
         attn = attn * alpha
         attn = attn.reshape(attn.shape[0], attn.shape[1], self.num_heads * self.attn_value_channels)
         x_message.embedding = attn
+
+        # print the x_message embedding:
+        # print("after attention")
+        # # print("rank ", rank, " x_message embedding: ", x_message.embedding)
+        # if rank == 0:
+        #     print("rank ", rank, " x_message embedding: ", x_message.embedding)
+        # dist.barrier()
+        # if rank == 1:
+        #     print("rank ", rank, " x_message embedding: ", x_message.embedding)
+        # dist.barrier()
+        sdfg
 
         # Rotate back the irreps
         x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)

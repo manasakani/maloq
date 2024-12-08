@@ -312,7 +312,7 @@ class SO3_Embedding():
             end_node += total_num_nodes % size
 
         local_node_nums = torch.arange(start_node, end_node)
-        print("Rank: ", rank, "Local nodes: ", local_node_nums)
+        # print("Rank: ", rank, "Local nodes: ", local_node_nums)
 
         # start and end nodes on every rank:
         start_nodes = comm.allgather(start_node)
@@ -389,7 +389,7 @@ class SO3_Embedding():
                 for node in nodes_tensor:
                     idx = torch.where(local_node_nums == node)[0]
                     if idx.numel() == 0:
-                        raise ValueError(f"No match found for node: {node}")
+                        raise ValueError(f"comm error, check ln 392 in SO3.py")
                     indices.append(idx.item())
 
                 # print("rank ", rank, "Sending nodes: ", nodes, " in indices ", indices, " to rank: ", target_rank)
@@ -403,7 +403,7 @@ class SO3_Embedding():
         for i, (source_rank, nodes) in enumerate(nodes_to_recv.items()):
 
             if nodes: 
-                # print(f"Rank {rank}: Receiving nodes {nodes} from rank {source_rank}")
+                # print(f"Rank {rank}: getting nodes {nodes} from rank {source_rank}")
                 req = comm.irecv(source=source_rank, tag=source_rank)
 
                 start_idx = recv_pointer
@@ -430,17 +430,6 @@ class SO3_Embedding():
         
         edge_embeddings = torch.stack(edge_embeddings)
         self.set_embedding(edge_embeddings)
-
-        if rank == 0:
-            print("Rank: ", rank, "Edge embeddings: ", edge_embeddings)
-        dist.barrier()
-        if rank == 1:
-            print("Rank: ", rank, "Edge embeddings: ", edge_embeddings)
-        dist.barrier()
-        if rank == 2:
-            print("Rank: ", rank, "Edge embeddings: ", edge_embeddings)
-        dist.barrier()
-
         
 
     # Initialize an embedding of irreps of a neighborhood
