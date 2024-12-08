@@ -6,6 +6,7 @@ import torch_geometric
 import copy
 from mpi4py import MPI
 import torch.distributed as dist
+import numpy as np
 
 # Note: we only use Gate Activation in this implementation
 from activation import (
@@ -270,6 +271,30 @@ class SO2NodeUpdate(torch.nn.Module):
         x_0_alpha = self.alpha_act(x_0_alpha)
         alpha = torch.einsum('bik, ik -> bi', x_0_alpha, self.alpha_dot)
 
+        # X_0_alpha and alpha are independently distributed until here (can be concatenated across ranks)
+
+        # allgatherv alpha across ranks, before softmax
+        alpha_shape = alpha.shape
+        alpha = alpha.cpu().detach().numpy().reshape(-1)
+        local_alpha_size = len(alpha)
+        all_counts = comm.allgather(local_alpha_size)
+        displacements = np.cumsum([0] + all_counts[:-1])
+
+        total_alpha_size = sum(all_counts)
+        alpha_all = np.empty(total_alpha_size, dtype=np.float64)
+        comm.Allgatherv(alpha, [alpha_all, all_counts, displacements, MPI.DOUBLE])
+
+        alpha = alpha_all.reshape(-1, alpha_shape[1])
+        alpha = torch.tensor(alpha, device=x.device)
+
+        if rank == 0:
+            print("rank ", rank, " alpha: ", alpha)
+            print("rank ", rank, " edge_index[1]: ", edge_index[1])
+
+        dist.barrier()
+        sdfg
+
+        # the following requires comm in the message dimension
         alpha = torch_geometric.utils.softmax(alpha, edge_index[1]) 
         alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)                 # shape of [E, 1, num_heads, 1]
         
@@ -281,14 +306,14 @@ class SO2NodeUpdate(torch.nn.Module):
         x_message.embedding = attn
 
         # print the x_message embedding:
-        # print("after attention")
-        # # print("rank ", rank, " x_message embedding: ", x_message.embedding)
-        # if rank == 0:
-        #     print("rank ", rank, " x_message embedding: ", x_message.embedding)
-        # dist.barrier()
-        # if rank == 1:
-        #     print("rank ", rank, " x_message embedding: ", x_message.embedding)
-        # dist.barrier()
+        print("after attention")
+        # print("rank ", rank, " x_message embedding: ", x_message.embedding)
+        if rank == 0:
+            print("rank ", rank, " x_message embedding: ", x_message.embedding)
+        dist.barrier()
+        if rank == 1:
+            print("rank ", rank, " x_message embedding: ", x_message.embedding)
+        dist.barrier()
         sdfg
 
         # Rotate back the irreps
