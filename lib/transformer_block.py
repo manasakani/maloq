@@ -207,7 +207,8 @@ class SO2NodeUpdate(torch.nn.Module):
         edge_distance,
         edge_index,
         global_edge_index,
-        edge_fea
+        edge_fea,
+        iteration
     ):
 
         # _______________________________________________________________________
@@ -220,8 +221,8 @@ class SO2NodeUpdate(torch.nn.Module):
         print("start of SO2NodeUpdate")
         print("_________________________")
 
-        print("rank ", rank, " local edge index: ", edge_index)
-        dist.barrier()
+        # print("rank ", rank, " local edge index: ", edge_index)
+        # dist.barrier()
 
         # Compute edge scalar features (invariant to rotations)
         # Uses atomic numbers and edge distance as inputs
@@ -237,6 +238,12 @@ class SO2NodeUpdate(torch.nn.Module):
         x_source._expand_edge(edge_index[0, :]) #first dimension is the number of edges
         x_target._expand_edge(edge_index[1, :])
 
+        # if iteration == 1:
+        #     for i in range(len(x_target.embedding)):
+        #         print(rank, " ", i, " sum embedding ", torch.sum(x_target.embedding[i]))
+        #     dist.barrier()
+        #     dghj
+
         # to form the message, concatenate the embeddings of the source node, target node, and the edge between them
         x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) 
         x_message = SO3_Embedding(
@@ -248,6 +255,14 @@ class SO2NodeUpdate(torch.nn.Module):
         )
         x_message.set_embedding(x_message_data)                                                # shape of [#edges, #channels, 3 * #channels]
         x_message.set_lmax_mmax(self.lmax, self.mmax)
+
+        
+        # if iteration == 0:
+        #     for i, target_node in enumerate(edge_index.T):
+        #         print(rank, " ", i, " sum embedding ", torch.sum(x_message.embedding[i]))
+        # dist.barrier()
+        # dghj
+
 
         print("_________________________")
         print("start of radial function")
@@ -352,6 +367,14 @@ class SO2NodeUpdate(torch.nn.Module):
         remote_edge_idx = (global_edge_index.T.unsqueeze(1) == edge_index.T.unsqueeze(0)).all(dim=2).nonzero(as_tuple=True)[0]
         x_message._reduce_edge(edge_index[0], local_edge_idx, remote_edge_idx, len(x.embedding))
 
+        # if iteration == 1:
+        #     print("after aggregation")
+        #     for i in range(size):
+        #         if rank == i:
+        #             print("rank ", rank, " x_message embedding: ", x_message.embedding)
+        #         dist.barrier()
+        #     sdfg
+
         # Project
         node_embedding = self.proj(x_message)
 
@@ -435,6 +458,7 @@ class NodeBlockV2(torch.nn.Module):
         edge_index,
         global_edge_index,
         edge_fea,                       # edge embedding
+        iteration
     ):
 
         output_embedding = x
@@ -451,8 +475,8 @@ class NodeBlockV2(torch.nn.Module):
         output_embedding = self.ga(output_embedding, 
             atomic_numbers,
             edge_distance,
-            edge_index, global_edge_index, edge_fea)
-
+            edge_index, global_edge_index, edge_fea, iteration)
+    
         # Add the residual connection and update the output embedding
         output_embedding.embedding = output_embedding.embedding + x_res
         x_res = output_embedding.embedding

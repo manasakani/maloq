@@ -232,6 +232,7 @@ class SO2Net(torch.nn.Module):
                             edge_index_local,
                             edge_index,
                             edge_embedding_local,
+                            i
                         )  
 
             edge_embedding_local = self.blocks[2*i+1](
@@ -240,29 +241,43 @@ class SO2Net(torch.nn.Module):
                             edge_distance_embedding_local,
                             edge_index_local,
                             edge_index,
-                            edge_embedding_local,
+                            edge_embedding_local
                         )
             
-        # print the x_message embedding:
-        print("after node update")
-        for i in range(size):
-            if rank == i:
-                print("rank ", rank, " node_embedding_local embedding: ", node_embedding_local.embedding)
-            dist.barrier()
-        sdfg
+        # # print the x_message embedding:
+        # print("after node update")
+        # for i in range(size):
+        #     if rank == i:
+        #         # print("rank ", rank, " node_embedding_local embedding: ", node_embedding_local.embedding)
+        #         for j in range(len(edge_embedding_local.embedding)):
+        #             print("rank ", rank, " sum of edge_embedding_local embedding: ", torch.sum(edge_embedding_local.embedding[j]))            
+        #     dist.barrier()
 
 
-        dist.barrier()  
-        print("Rank {} of {} finished processing the graph".format(rank, size), flush=True)
-        dist.barrier()  
+        # basis transformation
+        local_node_output = convert_to_irreps(node_embedding_local, self.output_channels, self.lmax, self.node_lin)
+        local_edge_output = convert_to_irreps(edge_embedding_local, self.output_channels, self.lmax, self.edge_lin)
 
-       
-        sdfg
+        # allgatherv the node and edge outputs:
+        node_output = local_node_output.cpu().detach().numpy().reshape(-1)
+        local_node_size = len(node_output)
+        all_counts = comm.allgather(local_node_size)
+        displacements = np.cumsum([0] + all_counts[:-1])
+        total_node_size = sum(all_counts)
+        node_output_all = np.empty(total_node_size, dtype=np.float64) # !!!! dtype=np.float64
+        comm.Allgatherv(node_output, [node_output_all, all_counts, displacements, MPI.DOUBLE])
+        node_output_all = node_output_all.reshape(-1, local_node_output.shape[1])
+        node_output = torch.tensor(node_output_all, device=device, dtype=dtype)
 
-
-
-        node_output = convert_to_irreps(node_embedding_local, self.output_channels, self.lmax, self.node_lin)
-        edge_output = convert_to_irreps(edge_embedding_local, self.output_channels, self.lmax, self.edge_lin)
+        edge_output = local_edge_output.cpu().detach().numpy().reshape(-1)
+        local_edge_size = len(edge_output)
+        all_counts = comm.allgather(local_edge_size)
+        displacements = np.cumsum([0] + all_counts[:-1])
+        total_edge_size = sum(all_counts)
+        edge_output_all = np.empty(total_edge_size, dtype=np.float64)
+        comm.Allgatherv(edge_output, [edge_output_all, all_counts, displacements, MPI.DOUBLE])
+        edge_output_all = edge_output_all.reshape(-1, local_edge_output.shape[1])
+        edge_output = torch.tensor(edge_output_all, device=device, dtype=dtype)
 
         return node_output, edge_output
 
