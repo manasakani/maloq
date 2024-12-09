@@ -235,10 +235,7 @@ class SO2NodeUpdate(torch.nn.Module):
         x_target = x.clone()
 
         x_source._expand_edge(edge_index[0, :]) #first dimension is the number of edges
-        dist.barrier()
         x_target._expand_edge(edge_index[1, :])
-        dist.barrier()
-        sdfg
 
         # to form the message, concatenate the embeddings of the source node, target node, and the edge between them
         x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) 
@@ -353,7 +350,7 @@ class SO2NodeUpdate(torch.nn.Module):
 
         # Aggregate incoming neighboring messages for each target node
         remote_edge_idx = (global_edge_index.T.unsqueeze(1) == edge_index.T.unsqueeze(0)).all(dim=2).nonzero(as_tuple=True)[0]
-        x_message._reduce_edge(edge_index[1], local_edge_idx, remote_edge_idx, len(x.embedding))
+        x_message._reduce_edge(edge_index[0], local_edge_idx, remote_edge_idx, len(x.embedding))
 
         # print the x_message embedding:
         print("after rotation back")
