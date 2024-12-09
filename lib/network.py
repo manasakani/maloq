@@ -201,7 +201,6 @@ class SO2Net(torch.nn.Module):
         edge_embedding_local = SO3_Embedding(num_subgraph_edges_local, self.lmax, self.sphere_channels, device, dtype) # [number of edges, number of coefficients, number of channels]
         
         print(f"Rank {rank} of {size}, start_node: {start_node}, end_node: {end_node}, start_edge: {start_edge}, end_edge: {end_edge}", flush=True)
-        print(f"Rank {rank} of {size}, node_embedding.shape: {node_embedding_local.embedding.shape}, edge_embedding.shape: {edge_embedding_local.embedding.shape}", flush=True)
 
         # Initialize the l = 0, m = 0 coefficients of each embedding:
 
@@ -215,10 +214,6 @@ class SO2Net(torch.nn.Module):
         edge_rot_mat_local = init_edge_rot_mat(edge_distance_vec)[start_edge:end_edge, :, :]                 # shape = (num_edges, 3, 3) = [6, 3, 3]
     
         edge_index_local = edge_index[:, start_edge:end_edge]                                                # shape = (2, num_edges) = [2, 6]
-
-        dist.barrier()        
-
-        # **** TEMP END: allgather them back for debug: ****
 
         self.SO3_rotation[0].set_wigner(edge_rot_mat_local)                                              # set the rotation matrices for each of the edges in the edge list
 
@@ -244,42 +239,19 @@ class SO2Net(torch.nn.Module):
                             edge_embedding_local
                         )
             
-        # # print the x_message embedding:
-        # print("after node update")
         # for i in range(size):
         #     if rank == i:
         #         # print("rank ", rank, " node_embedding_local embedding: ", node_embedding_local.embedding)
         #         for j in range(len(edge_embedding_local.embedding)):
         #             print("rank ", rank, " sum of edge_embedding_local embedding: ", torch.sum(edge_embedding_local.embedding[j]))            
         #     dist.barrier()
+        # sfgh
 
-
-        # basis transformation
+        # basis transformation to get hamiltonian blocks
         local_node_output = convert_to_irreps(node_embedding_local, self.output_channels, self.lmax, self.node_lin)
         local_edge_output = convert_to_irreps(edge_embedding_local, self.output_channels, self.lmax, self.edge_lin)
 
-        # allgatherv the node and edge outputs:
-        node_output = local_node_output.cpu().detach().numpy().reshape(-1)
-        local_node_size = len(node_output)
-        all_counts = comm.allgather(local_node_size)
-        displacements = np.cumsum([0] + all_counts[:-1])
-        total_node_size = sum(all_counts)
-        node_output_all = np.empty(total_node_size, dtype=np.float64) # !!!! dtype=np.float64
-        comm.Allgatherv(node_output, [node_output_all, all_counts, displacements, MPI.DOUBLE])
-        node_output_all = node_output_all.reshape(-1, local_node_output.shape[1])
-        node_output = torch.tensor(node_output_all, device=device, dtype=dtype)
-
-        edge_output = local_edge_output.cpu().detach().numpy().reshape(-1)
-        local_edge_size = len(edge_output)
-        all_counts = comm.allgather(local_edge_size)
-        displacements = np.cumsum([0] + all_counts[:-1])
-        total_edge_size = sum(all_counts)
-        edge_output_all = np.empty(total_edge_size, dtype=np.float64)
-        comm.Allgatherv(edge_output, [edge_output_all, all_counts, displacements, MPI.DOUBLE])
-        edge_output_all = edge_output_all.reshape(-1, local_edge_output.shape[1])
-        edge_output = torch.tensor(edge_output_all, device=device, dtype=dtype)
-
-        return node_output, edge_output
+        return local_node_output, local_edge_output, start_node, end_node, start_edge, end_edge
 
 
 def convert_to_irreps(input, output_channels, lmax, lin_node):

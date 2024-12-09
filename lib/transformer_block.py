@@ -217,16 +217,19 @@ class SO2NodeUpdate(torch.nn.Module):
         comm = MPI.COMM_WORLD
         # _______________________________________________________________________
 
-        print("_________________________")
-        print("start of SO2NodeUpdate")
-        print("_________________________")
+        # print("_________________________")
+        # print("start of SO2NodeUpdate")
+        # print("_________________________")
+
+        # print("rank ", rank, " x.requires_grad: ", x.embedding.requires_grad)  
+        # dist.barrier()
 
         # print("rank ", rank, " local edge index: ", edge_index)
         # dist.barrier()
 
         # Compute edge scalar features (invariant to rotations)
         # Uses atomic numbers and edge distance as inputs
-        source_element = atomic_numbers[edge_index[0]]  # Source atom atomic number
+        source_element = atomic_numbers[edge_index[0]]  # Source atom atomic number     
         target_element = atomic_numbers[edge_index[1]]  # Target atom atomic number
         source_embedding = self.source_embedding(source_element)
         target_embedding = self.target_embedding(target_element)
@@ -235,8 +238,16 @@ class SO2NodeUpdate(torch.nn.Module):
         x_source = x.clone()
         x_target = x.clone()
 
+        # print("rank ", rank, " x_source.requires_grad: ", x_source.embedding.requires_grad)  
+        # print("rank ", rank, " x_target.requires_grad: ", x_target.embedding.requires_grad)  
+        # dist.barrier()
+
         x_source._expand_edge(edge_index[0, :]) #first dimension is the number of edges
         x_target._expand_edge(edge_index[1, :])
+
+        # print("x_source.requires_grad: ", x_source.embedding.requires_grad)  
+        # print("x_target.requires_grad: ", x_target.embedding.requires_grad)  
+        # dist.barrier()
 
         # if iteration == 1:
         #     for i in range(len(x_target.embedding)):
@@ -256,17 +267,9 @@ class SO2NodeUpdate(torch.nn.Module):
         x_message.set_embedding(x_message_data)                                                # shape of [#edges, #channels, 3 * #channels]
         x_message.set_lmax_mmax(self.lmax, self.mmax)
 
-        
-        # if iteration == 0:
-        #     for i, target_node in enumerate(edge_index.T):
-        #         print(rank, " ", i, " sum embedding ", torch.sum(x_message.embedding[i]))
-        # dist.barrier()
-        # dghj
-
-
-        print("_________________________")
-        print("start of radial function")
-        print("_________________________")
+        # print("_________________________")
+        # print("start of radial function")
+        # print("_________________________")
 
         # radial function (linear layers + layer normalization + SiLU)
         if self.use_m_share_rad:
@@ -275,23 +278,23 @@ class SO2NodeUpdate(torch.nn.Module):
             x_edge_weight = torch.index_select(x_edge_weight, dim=1, index=self.expand_index) # [E, (L_max + 1) ** 2, C]
             x_message.embedding = x_message.embedding * x_edge_weight
 
-        print("_________________________")
-        print("First rotation")
-        print("_________________________")
+        # print("_________________________")
+        # print("First rotation")
+        # print("_________________________")
 
         # Rotate the irreps to align with the edge
         x_message._rotate(self.SO3_rotation, self.lmax, self.mmax)
 
-        print("_________________________")
-        print("SO2 Convolution 1")
-        print("_________________________")
+        # print("_________________________")
+        # print("SO2 Convolution 1")
+        # print("_________________________")
 
         # First SO(2)-convolution
         x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
 
-        print("_________________________")
-        print("Gate Activation")
-        print("_________________________")
+        # print("_________________________")
+        # print("Gate Activation")
+        # print("_________________________")
         
         # Activation (Gate activation)
         x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
@@ -299,16 +302,16 @@ class SO2NodeUpdate(torch.nn.Module):
         x_0_alpha  = x_0_extra.narrow(1, 0, x_alpha_num_channels) # for attention weights, shape [E, num_heads * attn_alpha_channels]
         x_message.embedding = self.gate_act(x_0_gating, x_message.embedding)
 
-        print("_________________________")
-        print("SO2 Convolution 2")
-        print("_________________________")
+        # print("_________________________")
+        # print("SO2 Convolution 2")
+        # print("_________________________")
         
         # Second SO(2)-convolution
         x_message = self.so2_conv_2(x_message, x_edge)
 
-        print("_________________________")
-        print("Attention weights")
-        print("_________________________")
+        # print("_________________________")
+        # print("Attention weights")
+        # print("_________________________")
         
         # Attention weights
         x_0_alpha = x_0_alpha.reshape(-1, self.num_heads, self.attn_alpha_channels) # shape of [E, num_heads, attn_alpha_channels]
@@ -348,9 +351,9 @@ class SO2NodeUpdate(torch.nn.Module):
         attn = attn.reshape(attn.shape[0], attn.shape[1], self.num_heads * self.attn_value_channels)
         x_message.embedding = attn
 
-        print("_________________________")
-        print("Second Rotation")
-        print("_________________________")
+        # print("_________________________")
+        # print("Second Rotation")
+        # print("_________________________")
 
         # Rotate back the irreps
         x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
@@ -359,21 +362,13 @@ class SO2NodeUpdate(torch.nn.Module):
         # *** x_message is distributed correctly on 1-3 ranks up to here ***
         # ---------------------------------------------------------------------
 
-        print("_________________________")
-        print("Aggregation")
-        print("_________________________")
+        # print("_________________________")
+        # print("Aggregation")
+        # print("_________________________")
 
         # Aggregate incoming neighboring messages for each target node
         remote_edge_idx = (global_edge_index.T.unsqueeze(1) == edge_index.T.unsqueeze(0)).all(dim=2).nonzero(as_tuple=True)[0]
         x_message._reduce_edge(edge_index[0], local_edge_idx, remote_edge_idx, len(x.embedding))
-
-        # if iteration == 1:
-        #     print("after aggregation")
-        #     for i in range(size):
-        #         if rank == i:
-        #             print("rank ", rank, " x_message embedding: ", x_message.embedding)
-        #         dist.barrier()
-        #     sdfg
 
         # Project
         node_embedding = self.proj(x_message)

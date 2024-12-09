@@ -15,10 +15,22 @@ import torch.distributed as dist
 import torch
 import random
 
-import data, training, structure, SO2, so2_model, SO3, compute_env as env, utils
-
+import data, training, structure, SO2, network, SO3, compute_env as env, utils
+import warnings
+from mpi4py import MPI
 from e3nn.o3 import Irreps
-print("Imported libraries", flush=True)
+
+# ************************************************************
+# Distributed training setup (if running on multiple GPUs)
+# ************************************************************
+
+device, world_size = env.initialize_compute_env()
+print("Device: ", device, ", World size: ", world_size, flush=True)
+
+env.rank_zero_print(f"Added {lib_root} to the path", flush=True)
+env.rank_zero_print(f"Added {lib_equiformer_root} to the path", flush=True)
+env.rank_zero_print("Imported libraries", flush=True)
+warnings.filterwarnings("ignore", category=UserWarning, message=".*To copy construct from a tensor.*")
 
 # SchNetPack package for database handling
 from schnetpack.data import ASEAtomsData
@@ -34,11 +46,11 @@ def main(folder):
     np.random.seed(42)
     random.seed(42)
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Device: ", device)
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # print("Device: ", device)
 
     # ************************************************************
-    # Input parameters and for the H2O molecule dataset
+    # Input parameters and for the malondialdehyde molecule dataset
     # ************************************************************
 
     db_path = folder+'/datasets/schnorb_hamiltonian_malondialdehyde.db'
@@ -48,7 +60,7 @@ def main(folder):
     print("Number of orbitals: ", norbs)
 
     # Dataset parameters:
-    num_train = 50                                                             # Number of training samples
+    num_train = 1                                                             # Number of training samples
     num_validate = 50                                                          # Number of validation samples             
     num_test = 250     
     show_fit_for = "val"                                                        # Show fit for the training (train) or validation (val) data
@@ -57,9 +69,19 @@ def main(folder):
     restart_file = None                                     
     save_file = 'model'
 
-    if not os.path.exists('results_' + tag):
-        os.makedirs('results_' + tag)
-    save_file = 'results_' + tag + '/' + save_file
+    @env.only_rank_zero
+    def make_output_folder(save_file, tag): 
+        if not os.path.exists('results_' + tag):
+            os.makedirs('results_' + tag)
+        save_file = 'results_' + tag + '/' + save_file
+        return save_file
+    save_file = make_output_folder(save_file, tag)
+
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        size = dist.get_world_size()
+        comm = MPI.COMM_WORLD
+        save_file = comm.bcast(save_file, root=0)
 
     num_epochs = 100                                                           
     batch_size = num_train                                                               
@@ -76,8 +98,8 @@ def main(folder):
     num_MP_layers = 2                                                           # Number of message passing layers
     dtype = torch.float64                                                       # Use double precision floating point for benchmarking
     torch.set_default_dtype(torch.float64)
-    lmax_list = [4] 
-    mmax_list = [4]
+    lmax = 4 
+    mmax = 4
 
     # Hyperparameters of the SO2 model for H2O
     sphere_channels = 64 
@@ -155,11 +177,11 @@ def main(folder):
                                           device_torch=device)
     
     # *** Initialize the model:
-    mappingReduced = SO3.CoefficientMappingModule(lmax_list, mmax_list)
+    mappingReduced = SO3.CoefficientMappingModule(lmax, mmax)
     irreps_out = net_out_irreps
-    model = so2_model.SO2Net(num_MP_layers, 
-                                lmax_list, 
-                                mmax_list, 
+    model = network.SO2Net(num_MP_layers, 
+                                lmax, 
+                                mmax, 
                                 mappingReduced, 
                                 sphere_channels, 
                                 edge_channels_list, 

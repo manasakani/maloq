@@ -9,6 +9,8 @@ import time
 import torch.optim as optim
 import compute_env as env
 import gc
+from mpi4py import MPI
+import numpy as np
 
 @env.only_rank_zero
 def save_training_state(model, optimizer, track_loss_edge, track_loss_node, track_validation_edge, track_validation_node, save_file):
@@ -42,6 +44,21 @@ def save_training_state(model, optimizer, track_loss_edge, track_loss_node, trac
 ############################################################
 # Functions to compute the loss with different filtering
 ############################################################
+
+def get_loss_full_batch(node_output, edge_output, batch, start_node, end_node, start_edge, end_edge, criterion):
+    
+    """
+    Process a batch of data (forward pass + loss) for labels and targets in the uncoupled basis
+    """
+
+    # Compute the loss
+    loss_node = criterion(node_output, batch.node_y[start_node:end_node])            # node_y is the node label
+    loss_edge = criterion(edge_output, batch.y[start_edge:end_edge])                 # y is the edge label
+    output = torch.cat([node_output, edge_output], dim=0)
+    labels = torch.cat([batch.node_y[start_node:end_node], batch.y[start_edge:end_edge]], dim=0)
+    loss = criterion(output, labels)     
+
+    return loss_node, loss_edge, loss
 
 def get_loss_flattened(node_output, edge_output, batch, criterion):
     """
@@ -153,24 +170,39 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
 
             batch_start_time = time.time()
 
+            # _________________________________________________________
+            # Gradient cleanup
             optimizer.zero_grad() 
 
+            # _________________________________________________________
             # Forward pass
             batch = batch.to(device)
-            node_output, edge_output = model(batch)
+            node_output, edge_output, start_node, end_node, start_edge, end_edge = model(batch)
             forward_pass_time = time.time()
 
+            # _________________________________________________________
             # Loss computation
-            if unflatten:
-                loss_node, loss_edge, mse_loss = get_loss_unflattened(node_output, edge_output, batch, criterion, construct_kernel, equivariant_blocks, atom_orbitals, out_slices)
-            else:
-                loss_node, loss_edge, mse_loss = get_loss_flattened(node_output, edge_output, batch, criterion)
-                
+            loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, start_node, end_node, start_edge, end_edge, criterion)
+            
+            global_loss = local_loss.clone()
+            global_loss_node = loss_node.clone()
+            global_loss_edge = loss_edge.clone()
+
+            dist.all_reduce(global_loss, op=dist.ReduceOp.SUM)
+            dist.all_reduce(global_loss_node, op=dist.ReduceOp.SUM)
+            dist.all_reduce(global_loss_edge, op=dist.ReduceOp.SUM)
+
+            world_size = dist.get_world_size()
+            global_loss /= world_size
+            global_loss_node /= world_size
+            global_loss_edge /= world_size
+
+            # _________________________________________________________
             # Backward pass
-            loss = mse_loss
-            loss.backward()    
+            global_loss.backward()    
             backward_pass_time = time.time()                              
                         
+            # _________________________________________________________
             # Parameter update
             optimizer.step()
 
@@ -181,9 +213,9 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
 
         epoch_end_time = time.time()
         epoch_duration = epoch_end_time - epoch_start_time
-        track_loss_node.append(loss_node.cpu().detach().numpy()) 
-        track_loss_edge.append(loss_edge.cpu().detach().numpy())
-        track_training_loss.append(loss.cpu().detach().numpy())
+        track_loss_node.append(global_loss_node.cpu().detach().numpy()) 
+        track_loss_edge.append(global_loss_edge.cpu().detach().numpy())
+        track_training_loss.append(global_loss.cpu().detach().numpy())
             
         @env.only_rank_zero
         def print_train_info(): 
@@ -193,7 +225,7 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
             print(f"--> Total Batch process time: {batch_duration:.4f} seconds")
             print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
             print(f"--> Memory info: {torch.cuda.mem_get_info(device)}")
-            print("Epoch: " + str(epoch)+ " loss: " + str(loss))
+            print("Epoch: " + str(epoch)+ " loss: " + str(global_loss))
         print_train_info()
 
         # Validate the model
@@ -204,24 +236,35 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
                 batch = batch.to(device)
 
                 # Forward pass
-                node_output, edge_output = model(batch) 
+                node_output, edge_output, start_node, end_node, start_edge, end_edge = model(batch) 
 
                 # Loss computation
-                if unflatten:
-                    loss_node, loss_edge, loss = get_loss_unflattened(node_output, edge_output, batch, criterion, construct_kernel, equivariant_blocks, atom_orbitals, out_slices)
-                else:
-                    loss_node, loss_edge, loss = get_loss_flattened(node_output, edge_output, batch, criterion)
-                validation_loss += loss.cpu().detach().numpy()
+                loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, start_node, end_node, start_edge, end_edge, criterion)
+                    
+                global_val_loss = local_loss.clone()
+                global_loss_node = loss_node.clone()
+                global_loss_edge = loss_edge.clone()
 
-        track_validation_node.append(loss_node.cpu().detach().numpy())
-        track_validation_edge.append(loss_edge.cpu().detach().numpy())
-        track_validation_loss.append(loss.cpu().detach().numpy())
+                dist.all_reduce(global_val_loss, op=dist.ReduceOp.SUM)
+                dist.all_reduce(global_loss_node, op=dist.ReduceOp.SUM)
+                dist.all_reduce(global_loss_edge, op=dist.ReduceOp.SUM)
+
+                world_size = dist.get_world_size()
+                global_val_loss /= world_size
+                global_loss_node /= world_size
+                global_loss_edge /= world_size
+
+                validation_loss += global_val_loss.cpu().detach().numpy()
+
+        track_validation_node.append(global_loss_node.cpu().detach().numpy())
+        track_validation_edge.append(global_loss_edge.cpu().detach().numpy())
+        track_validation_loss.append(global_val_loss.cpu().detach().numpy())
 
         @env.only_rank_zero
         def print_val_info():
             print("Validation loss: ", validation_loss)
-            print("Validation node loss: ", loss_node.cpu().detach().numpy())
-            print("Validation edge loss: ", loss_edge.cpu().detach().numpy())
+            print("Validation node loss: ", global_loss_node.cpu().detach().numpy())
+            print("Validation edge loss: ", global_loss_edge.cpu().detach().numpy())
         print_val_info()
 
         # save the model and the current training status every 100 epochs
@@ -236,11 +279,11 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
             print("Learning rate has reached the minimum threshold. Stopping training.")
             break
 
-        if loss < loss_tol:
+        if global_loss < loss_tol:
             print("Loss has reached the minimum threshold. Stopping training.")
             break
             
-    print("Final loss: ", loss) 
+    print("Final loss: ", global_loss) 
     save_training_state(model, optimizer, track_loss_edge, track_loss_node, track_validation_edge, track_validation_node, save_file)
 
 
@@ -262,6 +305,9 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
     if dist.is_available() and dist.is_initialized():
         # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
         model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+        rank = dist.get_rank()
+        size = dist.get_world_size()
+        comm = MPI.COMM_WORLD
     
     with torch.no_grad(): 
         MAEloss_total = 0.0
@@ -271,32 +317,52 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
             test_batch = test_batch.to(device)
 
             # Forward pass
-            test_node, test_edge = model(test_batch)
+            local_test_node, local_test_edge, start_node, end_node, start_edge, end_edge = model(test_batch)
             print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
             torch.cuda.synchronize()  
-            test_node = test_node.cpu()
-            test_edge = test_edge.cpu()
-            
-            # if test_batch.labelled_node_size.item() exists, use it, otherwise use the total number of nodes
-            if hasattr(test_batch, 'labelled_node_size'):
-                labelled_node_size = test_batch.labelled_node_size.item()
-                labelled_edge_size = test_batch.labelled_edge_size.item()
-            else:
-                batch_size = len(test_batch)
-                labelled_node_size = test_batch[0].num_nodes * batch_size
-                labelled_edge_size = test_batch[0].num_edges * batch_size
 
-            arange_tensor = torch.arange(labelled_node_size).unsqueeze(0)
+            local_test_node = local_test_node.cpu()
+            local_test_edge = local_test_edge.cpu()
+
+            shape_of_test_node = local_test_node.shape    
+            shape_of_test_edge = local_test_edge.shape
+
+            local_test_node = local_test_node.cpu().detach().numpy().reshape(-1)
+            local_test_edge = local_test_edge.cpu().detach().numpy().reshape(-1)
+
+            local_test_node_size = len(local_test_node)
+            local_test_edge_size = len(local_test_edge)
+
+            node_counts = comm.allgather(local_test_node_size)
+            edge_counts = comm.allgather(local_test_edge_size)
+
+            node_displacements = np.cumsum([0] + node_counts[:-1])
+            edge_displacements = np.cumsum([0] + edge_counts[:-1])
+
+            total_node_size = sum(node_counts)
+            total_edge_size = sum(edge_counts)
+
+            test_node = np.empty(total_node_size, dtype=np.float64)
+            test_edge = np.empty(total_edge_size, dtype=np.float64)
+
+            comm.Allgatherv(local_test_node, [test_node, node_counts, node_displacements, MPI.DOUBLE])
+            comm.Allgatherv(local_test_edge, [test_edge, edge_counts, edge_displacements, MPI.DOUBLE])
+
+            test_node = test_node.reshape(-1, shape_of_test_node[1])
+            test_edge = test_edge.reshape(-1, shape_of_test_edge[1])
+
+
+            arange_tensor = torch.arange(end_node - start_node).unsqueeze(0)
             onsite_edges = torch.cat((arange_tensor, arange_tensor), 0)
 
             # Process node predictions
-            flattened_node_labels = construct_kernel.get_H(test_batch.node_y[0:labelled_node_size].cpu())
-            flattened_node_pred = construct_kernel.get_H(test_node[:labelled_node_size].cpu())
+            flattened_node_labels = construct_kernel.get_H(test_batch.node_y.cpu())
+            flattened_node_pred = construct_kernel.get_H(test_node)
 
-            node_label = utils.unflatten(flattened_node_labels, test_batch.x[0:labelled_node_size],
+            node_label = utils.unflatten(flattened_node_labels, test_batch.x,
                                          onsite_edges, equivariant_blocks, atom_orbitals, out_slices)
             
-            node_pred = utils.unflatten(flattened_node_pred, test_batch.x[0:labelled_node_size],
+            node_pred = utils.unflatten(flattened_node_pred, test_batch.x,
                                         onsite_edges, equivariant_blocks, atom_orbitals, out_slices)
                         
             H_block_node_labels = [matrix.flatten() for matrix in node_label.values()]
@@ -305,15 +371,15 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
             node_pred_tensor = torch.cat(H_block_node_pred)
 
             # Process edge predictions
-            flattened_edge_labels = construct_kernel.get_H(test_batch.y[0:labelled_edge_size].cpu())
-            flattened_edge_pred = construct_kernel.get_H(test_edge[0:labelled_edge_size].cpu())
+            flattened_edge_labels = construct_kernel.get_H(test_batch.y.cpu())
+            flattened_edge_pred = construct_kernel.get_H(test_edge)
 
-            edge_label = utils.unflatten(flattened_edge_labels, test_batch.x[0:labelled_node_size],
-                                         test_batch.edge_index[:, 0:labelled_edge_size],
+            edge_label = utils.unflatten(flattened_edge_labels, test_batch.x,
+                                         test_batch.edge_index,
                                          equivariant_blocks, atom_orbitals, out_slices)
             
-            edge_pred = utils.unflatten(flattened_edge_pred, test_batch.x[0:labelled_node_size],
-                                        test_batch.edge_index[:, 0:labelled_edge_size],
+            edge_pred = utils.unflatten(flattened_edge_pred, test_batch.x,
+                                        test_batch.edge_index,
                                         equivariant_blocks, atom_orbitals, out_slices)
                     
             H_block_edge_labels = [matrix.flatten() for matrix in edge_label.values()]
@@ -379,15 +445,18 @@ def evaluate_model(model, data_loader, construct_kernel, equivariant_blocks, ato
     all_edge_preds = all_edge_preds[::downsample]
 
     # Plotting
-    plt.figure(figsize=(4, 3))
-    plt.scatter(all_edge_labels.cpu().numpy(), all_edge_preds.cpu().numpy(), s=1, alpha=0.5, edgecolor='none', color='crimson', label='Edge')
-    plt.scatter(all_node_labels.cpu().numpy(), all_node_preds.cpu().numpy(), s=1, alpha=0.5, edgecolor='none', color='blue', label='Node')
-    plt.plot(all_node_labels.cpu().numpy(), all_node_labels.cpu().numpy(), c='k', linestyle='dashed', linewidth=0.1, alpha=0.3)
-    plt.xlabel(r"$(H_{ij})_{\alpha \beta}^{GT}$")
-    plt.ylabel(r"$(H_{ij})_{\alpha \beta}^{pred}$")
-    plt.legend()
-    plt.savefig(save_file+'_prediction.png', dpi=300, bbox_inches='tight')
-    plt.close()
+    @env.only_rank_zero
+    def plot_results():
+        plt.figure(figsize=(4, 3))
+        plt.scatter(all_edge_labels.cpu().numpy(), all_edge_preds.cpu().numpy(), s=1, alpha=0.5, edgecolor='none', color='crimson', label='Edge')
+        plt.scatter(all_node_labels.cpu().numpy(), all_node_preds.cpu().numpy(), s=1, alpha=0.5, edgecolor='none', color='blue', label='Node')
+        plt.plot(all_node_labels.cpu().numpy(), all_node_labels.cpu().numpy(), c='k', linestyle='dashed', linewidth=0.1, alpha=0.3)
+        plt.xlabel(r"$(H_{ij})_{\alpha \beta}^{GT}$")
+        plt.ylabel(r"$(H_{ij})_{\alpha \beta}^{pred}$")
+        plt.legend()
+        plt.savefig(save_file+'_prediction.png', dpi=300, bbox_inches='tight')
+        plt.close()
+    plot_results()
 
 
 def assemble_hamiltonian_matrix(model, test_batch, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file='model_in_training.pth'):
