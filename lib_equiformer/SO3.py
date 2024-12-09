@@ -360,6 +360,8 @@ class SO3_Embedding():
         # Send/Receive embeddings
         num_nodes_to_recv = sum([len(nodes) for nodes in nodes_to_recv.values()])
         send_requests = []
+        recv_requests = []
+
         recv_bufs = np.empty(num_nodes_to_recv * self.num_coefficients * self.num_channels, dtype=np.float64)  # Hardcoded datatype!!!
         recv_source = np.empty(num_nodes_to_recv)
         # print("rank ", rank, " recv_bufs shape: ", recv_bufs.shape)
@@ -378,11 +380,10 @@ class SO3_Embedding():
                     indices.append(idx.item())
 
                 # print("rank ", rank, "Sending nodes: ", nodes, " in indices ", indices, " to rank: ", target_rank)
-                
                 sendbuf = self._flatten_embedding(self.embedding[indices])
                 # print("rank ", rank, " sendbuf shape: ", sendbuf.shape)
 
-                req = comm.isend(sendbuf, dest=target_rank, tag=rank)
+                req = comm.Isend(sendbuf, dest=target_rank, tag=rank)
                 send_requests.append(req)
 
         # Non-blocking recvs
@@ -391,15 +392,17 @@ class SO3_Embedding():
 
             if nodes: 
                 # print(f"Rank {rank}: getting nodes {nodes} from rank {source_rank}")
-                req = comm.irecv(source=source_rank, tag=source_rank)
-
                 start_idx = recv_pointer
                 end_idx = start_idx + len(nodes) * self.num_coefficients * self.num_channels
-                recv_bufs[start_idx:end_idx] = req.wait()
+                
+                req = comm.Irecv(recv_bufs[start_idx:end_idx], source=source_rank, tag=source_rank)
+                recv_requests.append(req)
+
                 recv_source[i] = source_rank
                 recv_pointer = end_idx
         
         MPI.Request.Waitall(send_requests)
+        MPI.Request.Waitall(recv_requests)
 
         received_embeddings = recv_bufs.reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
         # print("rank ", rank, " received embeddings shape: ", received_embeddings.shape)
@@ -545,6 +548,7 @@ class SO3_Embedding():
                 
         # Send/Receive embeddings
         send_requests = []
+        recv_requests = []
         recv_bufs = np.empty(num_msgs_to_recv * self.num_coefficients * self.num_channels, dtype=np.float64)  # Hardcoded datatype!!!
         recv_target_nodes = np.empty(num_msgs_to_recv)
         # print("rank ", rank, " recv_bufs shape: ", recv_bufs.shape)
@@ -556,7 +560,7 @@ class SO3_Embedding():
 
                 embedding_idxs_tensor = torch.tensor(embedding_idxs, dtype=torch.long)
                 sendbuf = self._flatten_embedding(self.embedding[embedding_idxs_tensor])
-                req = comm.isend(sendbuf, dest=dest_rank, tag=rank)
+                req = comm.Isend(sendbuf, dest=dest_rank, tag=rank)
                 send_requests.append(req)
 
                 # print("rank ", rank, "Sending embedding_idxs: ", embedding_idxs, " to rank: ", dest_rank)
@@ -570,20 +574,20 @@ class SO3_Embedding():
 
             if embedding_idxs:
 
-                req = comm.irecv(source=source_rank, tag=source_rank)
-
                 start_idx = recv_pointer
                 end_idx = start_idx + len(embedding_idxs) * self.num_coefficients * self.num_channels
                     
                 # print("rank ", rank, " receiving message into buffer of size: ", len(recv_bufs[start_idx:end_idx]))
-                recv_bufs[start_idx:end_idx] = req.wait()
+                req = comm.Irecv(recv_bufs[start_idx:end_idx], source=source_rank, tag=source_rank)
+                recv_requests.append(req)
                 # print("rank ", rank, "received message from rank ", source_rank)
                     
                 recv_target_nodes[i] = source_rank # this is the rank that the message came from
                 recv_pointer = end_idx
 
-        # dist.barrier()
+
         MPI.Request.Waitall(send_requests)
+        MPI.Request.Waitall(recv_requests)
         # print("rank ", rank, " recieved all messages")
         # dist.barrier()
 
