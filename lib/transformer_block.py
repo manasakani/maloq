@@ -216,6 +216,13 @@ class SO2NodeUpdate(torch.nn.Module):
         comm = MPI.COMM_WORLD
         # _______________________________________________________________________
 
+        print("_________________________")
+        print("start of SO2NodeUpdate")
+        print("_________________________")
+
+        print("rank ", rank, " local edge index: ", edge_index)
+        dist.barrier()
+
         # Compute edge scalar features (invariant to rotations)
         # Uses atomic numbers and edge distance as inputs
         source_element = atomic_numbers[edge_index[0]]  # Source atom atomic number
@@ -228,7 +235,10 @@ class SO2NodeUpdate(torch.nn.Module):
         x_target = x.clone()
 
         x_source._expand_edge(edge_index[0, :]) #first dimension is the number of edges
+        dist.barrier()
         x_target._expand_edge(edge_index[1, :])
+        dist.barrier()
+        sdfg
 
         # to form the message, concatenate the embeddings of the source node, target node, and the edge between them
         x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) 
@@ -242,6 +252,10 @@ class SO2NodeUpdate(torch.nn.Module):
         x_message.set_embedding(x_message_data)                                                # shape of [#edges, #channels, 3 * #channels]
         x_message.set_lmax_mmax(self.lmax, self.mmax)
 
+        print("_________________________")
+        print("start of radial function")
+        print("_________________________")
+
         # radial function (linear layers + layer normalization + SiLU)
         if self.use_m_share_rad:
             x_edge_weight = self.rad_func(x_edge)
@@ -249,20 +263,40 @@ class SO2NodeUpdate(torch.nn.Module):
             x_edge_weight = torch.index_select(x_edge_weight, dim=1, index=self.expand_index) # [E, (L_max + 1) ** 2, C]
             x_message.embedding = x_message.embedding * x_edge_weight
 
+        print("_________________________")
+        print("First rotation")
+        print("_________________________")
+
         # Rotate the irreps to align with the edge
         x_message._rotate(self.SO3_rotation, self.lmax, self.mmax)
 
+        print("_________________________")
+        print("SO2 Convolution 1")
+        print("_________________________")
+
         # First SO(2)-convolution
         x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
+
+        print("_________________________")
+        print("Gate Activation")
+        print("_________________________")
         
         # Activation (Gate activation)
         x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
         x_0_gating = x_0_extra.narrow(1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels) # for activation
         x_0_alpha  = x_0_extra.narrow(1, 0, x_alpha_num_channels) # for attention weights, shape [E, num_heads * attn_alpha_channels]
         x_message.embedding = self.gate_act(x_0_gating, x_message.embedding)
+
+        print("_________________________")
+        print("SO2 Convolution 2")
+        print("_________________________")
         
         # Second SO(2)-convolution
         x_message = self.so2_conv_2(x_message, x_edge)
+
+        print("_________________________")
+        print("Attention weights")
+        print("_________________________")
         
         # Attention weights
         x_0_alpha = x_0_alpha.reshape(-1, self.num_heads, self.attn_alpha_channels) # shape of [E, num_heads, attn_alpha_channels]
@@ -287,7 +321,7 @@ class SO2NodeUpdate(torch.nn.Module):
         alpha = alpha_all.reshape(-1, alpha_shape[1])
         alpha = torch.tensor(alpha, device=x.device)
 
-        # normalize the incoming weights to every node to compute the final attention weights along each edge
+        # normalize the incoming weights to every node to compute the final attention weights along every edge
         alpha = torch_geometric.utils.softmax(alpha, global_edge_index[1])          # softmax over the incoming edges
         alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)                 # shape of [E, 1, num_heads, 1]
 
@@ -302,6 +336,10 @@ class SO2NodeUpdate(torch.nn.Module):
         attn = attn.reshape(attn.shape[0], attn.shape[1], self.num_heads * self.attn_value_channels)
         x_message.embedding = attn
 
+        print("_________________________")
+        print("Second Rotation")
+        print("_________________________")
+
         # Rotate back the irreps
         x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
 
@@ -309,9 +347,16 @@ class SO2NodeUpdate(torch.nn.Module):
         # *** x_message is distributed correctly on 1-3 ranks up to here ***
         # ---------------------------------------------------------------------
 
+        print("_________________________")
+        print("Aggregation")
+        print("_________________________")
+
+        # Aggregate incoming neighboring messages for each target node
+        remote_edge_idx = (global_edge_index.T.unsqueeze(1) == edge_index.T.unsqueeze(0)).all(dim=2).nonzero(as_tuple=True)[0]
+        x_message._reduce_edge(edge_index[1], local_edge_idx, remote_edge_idx, len(x.embedding))
+
         # print the x_message embedding:
         print("after rotation back")
-        # print("rank ", rank, " x_message embedding: ", x_message.embedding)
         if rank == 0:
             print("rank ", rank, " x_message embedding: ", x_message.embedding)
         dist.barrier()
@@ -319,9 +364,6 @@ class SO2NodeUpdate(torch.nn.Module):
             print("rank ", rank, " x_message embedding: ", x_message.embedding)
         dist.barrier()
         sdfg
-
-        # Aggregate incoming neighboring messages for each target node
-        x_message._reduce_edge(edge_index[1], len(x.embedding))
 
         # Project
         node_embedding = self.proj(x_message)
