@@ -352,18 +352,18 @@ class SO2NodeUpdate(torch.nn.Module):
         remote_edge_idx = (global_edge_index.T.unsqueeze(1) == edge_index.T.unsqueeze(0)).all(dim=2).nonzero(as_tuple=True)[0]
         x_message._reduce_edge(edge_index[0], local_edge_idx, remote_edge_idx, len(x.embedding))
 
-        # print the x_message embedding:
-        print("after rotation back")
-        if rank == 0:
-            print("rank ", rank, " x_message embedding: ", x_message.embedding)
-        dist.barrier()
-        if rank == 1:
-            print("rank ", rank, " x_message embedding: ", x_message.embedding)
-        dist.barrier()
-        sdfg
-
         # Project
         node_embedding = self.proj(x_message)
+
+        # print the x_message embedding:
+        # print("after rotation back")
+        # if rank == 0:
+        #     print("rank ", rank, " x_message embedding: ", x_message.embedding)
+        # dist.barrier()
+        # if rank == 1:
+        #     print("rank ", rank, " x_message embedding: ", x_message.embedding)
+        # dist.barrier()
+        # sdfg
 
         return node_embedding
     
@@ -570,6 +570,7 @@ class SO2EdgeUpdate(torch.nn.Module):
         atomic_numbers,
         edge_distance,
         edge_index,
+        global_edge_index,
         edge_fea
     ):
          
@@ -693,6 +694,7 @@ class EdgeBlockV2(torch.nn.Module):
         atomic_numbers,
         edge_distance,
         edge_index,
+        global_edge_index,
         edge_fea,
     ):
 
@@ -706,7 +708,7 @@ class EdgeBlockV2(torch.nn.Module):
         output_embedding = self.ga(x,  # use the node embedding from the previous block 
             atomic_numbers,
             edge_distance,
-            edge_index, output_embedding) # put the output_embedding in place of edge_embedding 
+            edge_index, global_edge_index, output_embedding) # put the output_embedding in place of edge_embedding 
         
         # Add the residual connection and update the output embedding
         output_embedding.embedding = output_embedding.embedding + x_res
