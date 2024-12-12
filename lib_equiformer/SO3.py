@@ -406,14 +406,14 @@ class SO3_Embedding():
 
         received_embeddings = recv_bufs.reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
         # print("rank ", rank, " received embeddings shape: ", received_embeddings.shape)
-        # dist.barrier()
 
         # Expand edge embeddings with received remote embeddings
-        edge_embeddings = []
+        edge_embeddings = torch.empty((len(edge_index), self.embedding.shape[1], self.embedding.shape[2]), device=self.device)
+
         for i, node in enumerate(edge_index):
             if node.cpu() in local_node_nums:
                 local_idx = node - start_node
-                edge_embeddings.append(self.embedding[local_idx])
+                edge_embeddings[i,:,:] = self.embedding[local_idx]
 
             elif node in remote_nodes:
                 owner_rank = remote_node_ranks[remote_nodes.index(node)]
@@ -421,11 +421,9 @@ class SO3_Embedding():
                 offset = nodes_in_this_rank.index(node)
 
                 embedding_idx = recv_source.tolist().index(owner_rank) + offset
-                edge_embeddings.append(torch.tensor(received_embeddings[embedding_idx]).to(self.device))
+                edge_embeddings[i,:,:] = torch.tensor(received_embeddings[embedding_idx]).to(self.device)
         
         dist.barrier()
-        
-        edge_embeddings = torch.stack(edge_embeddings)
         self.set_embedding(edge_embeddings)
         
 

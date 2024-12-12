@@ -152,6 +152,7 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
     if dist.is_available() and dist.is_initialized():
         # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the one-way edges
         model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+    world_size = dist.get_world_size()
 
     track_loss_node = []
     track_loss_edge = []
@@ -175,7 +176,8 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
             optimizer.zero_grad() 
 
             # _________________________________________________________
-            # Forward pass
+            # Forward pass 
+            # [Communication of embeddings occurs within the SO3_Embedding class]
             batch = batch.to(device)
             node_output, edge_output, start_node, end_node, start_edge, end_edge = model(batch)
             forward_pass_time = time.time()
@@ -192,7 +194,6 @@ def train_and_validate_model_subgraph(model, optimizer, training_loader, validat
             dist.all_reduce(global_loss_node, op=dist.ReduceOp.SUM)
             dist.all_reduce(global_loss_edge, op=dist.ReduceOp.SUM)
 
-            world_size = dist.get_world_size()
             global_loss /= world_size
             global_loss_node /= world_size
             global_loss_edge /= world_size

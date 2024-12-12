@@ -60,8 +60,8 @@ def main(folder):
     print("Number of orbitals: ", norbs)
 
     # Dataset parameters:
-    num_train = 1                                                             # Number of training samples
-    num_validate = 50                                                          # Number of validation samples             
+    num_train = 11                                                             # Number of training samples
+    num_validate = 10                                                          # Number of validation samples             
     num_test = 250     
     show_fit_for = "val"                                                        # Show fit for the training (train) or validation (val) data
 
@@ -83,7 +83,7 @@ def main(folder):
         comm = MPI.COMM_WORLD
         save_file = comm.bcast(save_file, root=0)
 
-    num_epochs = 100                                                           
+    num_epochs = 50                                                           
     batch_size = num_train                                                               
     loss_tol = 1e-10
     lr = 1e-3

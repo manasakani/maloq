@@ -43,9 +43,6 @@ def main(folder):
     torch.manual_seed(42)
     np.random.seed(42)
     random.seed(42)
-    
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # print("Device: ", device)
 
     # ************************************************************
     # Input parameters and for the H2O molecule dataset
@@ -58,7 +55,7 @@ def main(folder):
     env.rank_zero_print("Number of orbitals: ", norbs)
 
     # Dataset parameters:
-    num_train = 1                                                              # Number of training samples
+    num_train = 11                                                              # Number of training samples
     num_validate = 10                                                           # Number of validation samples             
     num_test = 2500     
     show_fit_for = "val"                                                        # Show fit for the training (train) or validation (val) data

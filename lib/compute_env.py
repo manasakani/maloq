@@ -43,6 +43,11 @@ def initialize_compute_env():
         os.environ["RANK"] = str(local_rank)
         os.environ["WORLD_SIZE"] = str(world_size)
 
+        gpu_id = local_rank % torch.cuda.device_count()
+        torch.cuda.set_device(gpu_id)
+        print(f"Rank {rank} is using GPU {gpu_id}")
+        print("Total number of GPUs found: ", torch.cuda.device_count())
+
         backend = 'gloo'  # Use Gloo for attelas (single GPU)
         dist.init_process_group(backend='gloo', rank=local_rank, world_size=world_size)
         rank_zero_print("Initialized process group in: local", flush=True)
@@ -97,3 +102,38 @@ def dist_restart(restart_file, model, optimizer):
             model.load_state_dict(state_dict)
 
     return model, optimizer
+
+class Domain_Decomp():
+    def __init__(self, structures):
+        
+        self.rank = dist.get_rank()
+        self.size = dist.get_world_size()
+        self.comm = MPI.COMM_WORLD
+
+        total_num_nodes = structure.atomic_numbers.shape[0]
+        total_num_edges = structure.edge_index.shape[1]
+
+        num_subgraph_nodes_local = total_num_nodes // size
+        num_subgraph_edges_local = total_num_edges // size
+
+        start_node = rank * num_subgraph_nodes_local
+        end_node = start_node + num_subgraph_nodes_local
+        start_edge = rank * num_subgraph_edges_local
+        end_edge = start_edge + num_subgraph_edges_local
+
+        if rank == size - 1:
+            num_subgraph_nodes_local += num_subgraph_nodes % size
+            end_node += num_subgraph_nodes % size
+        if rank == size - 1:
+            num_subgraph_edges_local += num_subgraph_edges % size
+            end_edge += num_subgraph_edges % size
+        
+        edge_index_local = edge_index[:, start_edge:end_edge]                                               
+
+        self.start_node = start_node
+        self.end_node = end_node
+        self.start_edge = start_edge
+        self.end_edge = end_edge
+        self.edge_index_local = edge_index_local
+
+        

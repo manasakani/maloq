@@ -65,6 +65,7 @@ def create_input_data_molecules(structure, equivariant_blocks, out_slices, const
     # off-diagonal orbital blocks
     edge_labels = []
     for i in range(len(edge_index[0])):
+        print("Working on edge ", i, " of ", len(edge_index[0]))
         label = np.zeros(out_slices[-1])
         for index_target, equivariant_block in enumerate(equivariant_blocks):
                 for N_M_str, block_slice in equivariant_block.items():
@@ -83,7 +84,7 @@ def create_input_data_molecules(structure, equivariant_blocks, out_slices, const
     # diagonal orbital blocks
     node_labels = []
     for i in range(len(onsite_edge_index[0])):
-
+        print("Working on node ", i, " of ", len(onsite_edge_index[0]))
         label = np.zeros(out_slices[-1])
         for index_target, equivariant_block in enumerate(equivariant_blocks):
                 for N_M_str, block_slice in equivariant_block.items():
@@ -103,16 +104,17 @@ def create_input_data_molecules(structure, equivariant_blocks, out_slices, const
 
     edge_fea = torch.empty((len(edge_index[0]),4))
     for i in range(len(edge_index[0])):
+        print("Working on edge feature ", i, " of ", len(edge_index[0]))
         distance_vector, distance = find_mic(coordinates[edge_index[1][i]] - coordinates[edge_index[0][i]], cell)
         edge_fea[i,:] = torch.cat((torch.tensor([distance]), torch.tensor(distance_vector)))
 
     edge_fea = torch.tensor(edge_fea, dtype=dtype)
     x = torch.tensor(numbers)
 
-    edge_labels = torch.tensor(np.array(edge_labels),dtype=dtype, device=device)
+    edge_labels = torch.tensor(np.array(edge_labels), dtype=dtype, device=device)
     y = construct_kernel.get_net_out(edge_labels) #convert Hamiltonian labels from uncoupled space to coupled space (to avoid conversion during training)
 
-    node_labels = torch.tensor(np.array(node_labels),dtype=dtype, device=device)
+    node_labels = torch.tensor(np.array(node_labels), dtype=dtype, device=device)
     # node_labels = torch.tensor(node_labels, dtype=dtype, device=device)
     node_y = construct_kernel.get_net_out(node_labels)
 
