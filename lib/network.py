@@ -158,84 +158,68 @@ class SO2Net(torch.nn.Module):
             self.blocks.append(block2)
 
 
-    def forward(self, batch):
+    def forward(self, batch, partition):
 
         device = batch.y.device
         dtype = batch.y.dtype
                          
                                                                             # note: the batch size dimension multiplies the # nodes and # edges
-        atomic_numbers = batch.x                                            # shape = (num_nodes) = [3]
-        edge_distance = batch.edge_attr[:,0]                                # shape = (num_edges) = [6]
-        edge_distance_vec = batch.edge_attr[:, [2, 3, 1]]                   # shape = (num_edges, 3) = [6, 3]
+        local_atomic_numbers = batch.x                                            # shape = (num_nodes) = [3]
+        local_edge_distance = batch.edge_attr[:,0]                                # shape = (num_edges) = [6]
+        # global_edge_distance_vec = batch.edge_attr[:, [2, 3, 1]]                 # shape = (num_edges, 3) = [6, 3]
         edge_index = batch.edge_index                                       # shape = (2, num_edges) = [2, 6]
+        
+        global_edge_distance_vec = partition.global_edge_distance_vec       # shape = (num_edges, 3) = [6, 3]
+        start_edge = partition.start_edge
+        end_edge = partition.end_edge
 
-        num_subgraph_nodes = len(atomic_numbers)
-        num_subgraph_edges = len(edge_distance)
-
-        # *** SPLIT THE NODES AND EDGES BETWEEN PROCESSES ***
+        num_subgraph_nodes = len(local_atomic_numbers)
+        num_subgraph_edges = len(local_edge_distance)
 
         rank = dist.get_rank()
         size = dist.get_world_size()
         comm = MPI.COMM_WORLD
         
-        num_subgraph_nodes_local = num_subgraph_nodes // size
-        num_subgraph_edges_local = num_subgraph_edges // size
-
-        start_node = rank * num_subgraph_nodes_local
-        end_node = start_node + num_subgraph_nodes_local
-        start_edge = rank * num_subgraph_edges_local
-        end_edge = start_edge + num_subgraph_edges_local
-
-        if rank == size - 1:
-            num_subgraph_nodes_local += num_subgraph_nodes % size
-            end_node += num_subgraph_nodes % size
-        if rank == size - 1:
-            num_subgraph_edges_local += num_subgraph_edges % size
-            end_edge += num_subgraph_edges % size
-
         # Initialise the node embeddings with atomic_numbers
         # length of angular momentum coefficients = (lmax+1)^2 = (4+1)^2 = 25 = 1(l=0) + 3(l=1) + 5(l=2) + 7(l=3) + 9(l=4)
         # total node embedding = (num atoms, num coefficients, sphere_channels) = (3, 25, 64)
         # total edge embedding = (num edges, num coefficients, sphere_channels) = (6, 25, 64)
-        node_embedding_local = SO3_Embedding(num_subgraph_nodes_local, self.lmax, self.sphere_channels, device, dtype) # [number of atoms, number of coefficients, number of channels]
-        edge_embedding_local = SO3_Embedding(num_subgraph_edges_local, self.lmax, self.sphere_channels, device, dtype) # [number of edges, number of coefficients, number of channels]
+        node_embedding_local = SO3_Embedding(num_subgraph_nodes, self.lmax, self.sphere_channels, device, dtype) # [number of atoms, number of coefficients, number of channels]
+        edge_embedding_local = SO3_Embedding(num_subgraph_edges, self.lmax, self.sphere_channels, device, dtype) # [number of edges, number of coefficients, number of channels]
         
-        print(f"Rank {rank} of {size}, start_node: {start_node}, end_node: {end_node}, start_edge: {start_edge}, end_edge: {end_edge}", flush=True)
+        # print(f"Rank {rank} of {size}, start_node: {start_node}, end_node: {end_node}, start_edge: {start_edge}, end_edge: {end_edge}", flush=True)
 
         # Initialize the l = 0, m = 0 coefficients of each embedding:
-
         offset_res = 0
-        node_element_embedding_local = self.sphere_embedding(atomic_numbers[start_node:end_node])
-        edge_distance_embedding_local = self.distance_expansion(edge_distance[start_edge:end_edge])
+        node_element_embedding_local = self.sphere_embedding(local_atomic_numbers)
+        edge_distance_embedding_local = self.distance_expansion(local_edge_distance)
         node_embedding_local.embedding[:, offset_res, :] = node_element_embedding_local
         edge_embedding_local.embedding[:, offset_res, :] = edge_distance_embedding_local
         
         # Create 3D rotation matrices for each of the edges - note that all the edges are needed for a deterministic rotation matrix:
-        edge_rot_mat_local = init_edge_rot_mat(edge_distance_vec)[start_edge:end_edge, :, :]                 # shape = (num_edges, 3, 3) = [6, 3, 3]
-    
-        edge_index_local = edge_index[:, start_edge:end_edge]                                                # shape = (2, num_edges) = [2, 6]
-
-        self.SO3_rotation[0].set_wigner(edge_rot_mat_local)                                              # set the rotation matrices for each of the edges in the edge list
+        edge_rot_mat_global = init_edge_rot_mat(global_edge_distance_vec)                                           # shape = (num_edges, 3, 3) = [6, 3, 3]
+        edge_rot_mat_local = edge_rot_mat_global[start_edge:end_edge]                                               
+        self.SO3_rotation[0].set_wigner(edge_rot_mat_local)                                                 # set the rotation matrices for each of the edges in the edge list
 
         # Process the graph through the layers
         for i in range(self.num_layers):
 
             node_embedding_local = self.blocks[2*i](
                             node_embedding_local,                  # SO3_Embedding
-                            atomic_numbers,
+                            partition.global_atomic_numbers,
                             edge_distance_embedding_local,
-                            edge_index_local,
                             edge_index,
+                            partition.global_edge_index,
                             edge_embedding_local,
                             i
                         )  
 
             edge_embedding_local = self.blocks[2*i+1](
                             node_embedding_local,                  # SO3_Embedding
-                            atomic_numbers,
+                            partition.global_atomic_numbers,
                             edge_distance_embedding_local,
-                            edge_index_local,
                             edge_index,
+                            partition.global_edge_index,
                             edge_embedding_local
                         )
             
@@ -251,7 +235,7 @@ class SO2Net(torch.nn.Module):
         local_node_output = convert_to_irreps(node_embedding_local, self.output_channels, self.lmax, self.node_lin)
         local_edge_output = convert_to_irreps(edge_embedding_local, self.output_channels, self.lmax, self.edge_lin)
 
-        return local_node_output, local_edge_output, start_node, end_node, start_edge, end_edge
+        return local_node_output, local_edge_output
 
 
 def convert_to_irreps(input, output_channels, lmax, lin_node):

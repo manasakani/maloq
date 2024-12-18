@@ -42,7 +42,6 @@ class Structure:
         self.num_unique_orbitals = None                     # Number of unique orbitals in the system
         self.soap_features = None                           # SOAP descriptor features 
         self.basis = orbital_basis                          # Orbital basis for electronic structure
-        self.rotate_dic = None                              # dictionary of rotation matrices for each edge
         self.atomic_species = None                          # Atomic species in the structure
         self.atomic_numbers = None                          # Atomic numbers in the structure
 
@@ -78,6 +77,7 @@ class Structure:
         # Extract the xyz coordinates and atomic numbers from the database properties
         positions = np.array(database_props['_positions'], dtype=np.float64)
         atomic_numbers = np.array(database_props['_atomic_numbers'], dtype=int)
+        self.atomic_numbers = atomic_numbers
         
         # Create an ASE Atoms object
         self.atomic_structure = Atoms(numbers=atomic_numbers, positions=positions, pbc=pbc)
@@ -481,3 +481,82 @@ class Structure:
             print("!! The hamiltonian and overlap files were probably not loaded into the Structure. !!")
 
         return orbital_blocks
+
+
+# class for multiple molecules merged together into one big structure to make data processing easier:
+class Merged_Structure(Structure):
+    def __init__(self, structures_to_merge, dataset='custom', self_interaction=False, bothways=False):
+
+        # get basic properties from the first structure in the list to use for the Structure constructor
+        super().__init__(
+            xyz_file=structures_to_merge[0].xyz_file,
+            hamiltonian_file=structures_to_merge[0].hamiltonian_file,
+            overlap_file=structures_to_merge[0].overlap_file,
+            pbc=structures_to_merge[0].periodic_cell,
+            orbital_basis=structures_to_merge[0].basis,
+            dataset=dataset,
+            database_props=structures_to_merge[0].database_props,
+            self_interaction=self_interaction,
+            bothways=bothways,
+            rcut=structures_to_merge[0].rcut
+        )
+
+        self.structures_to_merge = structures_to_merge
+        self.merge_structures(self_interaction, bothways)
+
+    def merge_structures(self, self_interaction, bothways):
+        """
+        Merge the atomic structures of the structures in the structures_to_merge
+        """
+
+        # collapse the two for loops!
+        
+        # merge the atomic structures
+        combined_atomic_numbers = []
+        combined_positions = []
+        for structure in self.structures_to_merge:
+            atomic_structure = structure.atomic_structure
+            combined_atomic_numbers.extend(atomic_structure.get_atomic_numbers())
+            combined_positions.extend(atomic_structure.get_positions())
+            combined_pbc = atomic_structure.get_pbc()
+
+            self.num_orbitals_per_atom.extend(structure.num_orbitals_per_atom)
+
+        self.atomic_structure = Atoms(numbers=combined_atomic_numbers, positions=combined_positions, pbc=combined_pbc)
+        self.atomic_species = self.atomic_structure.get_chemical_symbols()
+        self.atomic_numbers = torch.tensor([utils.periodic_table[i] for i in self.atomic_species])
+        
+        unique_atomic_species = set(self.atomic_structure.get_chemical_symbols())
+        self.num_unique_orbitals = np.sum([np.sum(2*np.array(orbital_type_dict[self.basis][species])+1) for species in unique_atomic_species])
+        self.basis = self.structures_to_merge[0].basis
+
+        # Build combined neighbor list
+        node_track = 0
+        self.edge_matrix = []
+        src_edges = []
+        dst_edges = []
+        for structure in self.structures_to_merge:
+            structure_edge_matrix = structure.edge_matrix
+
+            # update the edge matrix to reflect the new atom indices
+            new_edge_matrix_0 = [i + node_track for i in structure_edge_matrix[0]]
+            new_edge_matrix_1 = [i + node_track for i in structure_edge_matrix[1]]
+            src_edges.extend(new_edge_matrix_0)
+            dst_edges.extend(new_edge_matrix_1)
+            node_track += len(structure.atomic_numbers)
+
+        self.edge_matrix = np.array([src_edges, dst_edges], dtype=np.int64)
+
+        # merge the hamiltonian dictionaries, while updating the new atom indices
+        hamiltonian = {}
+        overlap = {}
+        Hsize = 0
+        for structure in self.structures_to_merge:
+            for key in structure.hamiltonian:
+                new_key = (key[0] + Hsize, key[1] + Hsize)
+                hamiltonian[new_key] = structure.hamiltonian[key]
+
+            Hsize += max(self.hamiltonian.keys(), key=lambda x: x[0])[0]
+            
+        self.hamiltonian = hamiltonian
+        self.structures_to_merge[0].imagesc_dict(hamiltonian, log=True)

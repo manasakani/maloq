@@ -3,6 +3,7 @@ import torch.distributed as dist
 from mpi4py import MPI
 import torch
 import functools
+import numpy as np
 
 # Initialize the compute environment for distributed training
 def initialize_compute_env():
@@ -48,9 +49,12 @@ def initialize_compute_env():
         print(f"Rank {rank} is using GPU {gpu_id}")
         print("Total number of GPUs found: ", torch.cuda.device_count())
 
-        backend = 'gloo'  # Use Gloo for attelas (single GPU)
-        dist.init_process_group(backend='gloo', rank=local_rank, world_size=world_size)
+        backend = 'gloo'  # Use Gloo for attelas 
+        # backend = 'nccl'  # Use Gloo for burmy
+
+        dist.init_process_group(backend=backend, rank=local_rank, world_size=world_size)
         rank_zero_print("Initialized process group in: local", flush=True)
+        rank_zero_print(f"Backend: {backend}", flush=True)
 
     rank_zero_print(f"RANK: {rank}", flush=True)
     rank_zero_print(f"WORLD_SIZE: {world_size}", flush=True)
@@ -64,7 +68,6 @@ def remove_module_prefix(state_dict):
     prefix = 'module.'
     return {k[len(prefix):] if k.startswith(prefix) else k: v for k, v in state_dict.items()}
 
-# to run a function only on rank 0 in distributed training
 def only_rank_zero(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -75,7 +78,6 @@ def only_rank_zero(func):
             return func(*args, **kwargs)
     return wrapper
 
-# Utility function that only prints if rank is 0
 def rank_zero_print(*args, **kwargs):
     if dist.is_available() and dist.is_initialized():
         if dist.get_rank() == 0:
@@ -103,37 +105,74 @@ def dist_restart(restart_file, model, optimizer):
 
     return model, optimizer
 
+
+def allgatherv_cpu_numpy_1D(local_data, device, comm):
+
+    local_data_shape = local_data.shape
+    local_data = local_data.numpy().reshape(-1)
+    local_data_size = len(local_data)
+
+    global_data_counts = comm.allgather(local_data_size)
+    global_data_displs = np.cumsum([0] + global_data_counts[:-1])
+    global_data = np.empty(sum(global_data_counts), dtype=local_data.dtype)
+
+    comm.Allgatherv(local_data, [global_data, global_data_counts, global_data_displs, MPI.DOUBLE])
+
+    return global_data
+
+
 class Domain_Decomp():
-    def __init__(self, structures):
+    def __init__(self, structure, device):
         
         self.rank = dist.get_rank()
         self.size = dist.get_world_size()
         self.comm = MPI.COMM_WORLD
+        self.device = device
 
-        total_num_nodes = structure.atomic_numbers.shape[0]
-        total_num_edges = structure.edge_index.shape[1]
-
-        num_subgraph_nodes_local = total_num_nodes // size
-        num_subgraph_edges_local = total_num_edges // size
-
-        start_node = rank * num_subgraph_nodes_local
-        end_node = start_node + num_subgraph_nodes_local
-        start_edge = rank * num_subgraph_edges_local
-        end_edge = start_edge + num_subgraph_edges_local
-
-        if rank == size - 1:
-            num_subgraph_nodes_local += num_subgraph_nodes % size
-            end_node += num_subgraph_nodes % size
-        if rank == size - 1:
-            num_subgraph_edges_local += num_subgraph_edges % size
-            end_edge += num_subgraph_edges % size
+        total_num_nodes = len(structure.atomic_numbers) 
+        total_num_edges = structure.edge_matrix.shape[1]
         
-        edge_index_local = edge_index[:, start_edge:end_edge]                                               
+        local_num_nodes = total_num_nodes // self.size
+        local_num_edges = total_num_edges // self.size
 
+        start_node = self.rank * local_num_nodes
+        end_node = start_node + local_num_nodes
+        start_edge = self.rank * local_num_edges
+        end_edge = start_edge + local_num_edges
+
+        if self.rank == self.size - 1:
+            local_num_nodes += total_num_nodes % self.size
+            end_node += total_num_nodes % self.size
+        if self.rank == self.size - 1:
+            local_num_edges += total_num_edges % self.size
+            end_edge += total_num_edges % self.size
+        
         self.start_node = start_node
         self.end_node = end_node
         self.start_edge = start_edge
         self.end_edge = end_edge
-        self.edge_index_local = edge_index_local
+
+        # the numbers correspond to the full set of nodes and edges in the structure
+        self.local_node_index = np.arange(start_node, end_node)
+        self.local_edge_index = structure.edge_matrix[:, start_edge:end_edge]
+        global_edge_index = structure.edge_matrix
+        self.global_edge_index = torch.tensor(global_edge_index, device=self.device)
+
+        # assigned during data creation:
+        self.global_edge_distance_vec = None
+        self.global_atomic_numbers = torch.tensor(structure.atomic_numbers, device=self.device)
+
+    def print_info(self):
+        dist.barrier()
+        for i in range(self.size):
+            if self.rank == i:
+                print("________________________________________________________")
+                print(f"Rank {self.rank} has {self.end_node - self.start_node} nodes and {self.end_edge - self.start_edge} edges:")
+                print(f"Rank {self.rank} has nodes from {self.start_node} to {self.end_node}")
+                print(f"Rank {self.rank} has edges from {self.start_edge} to {self.end_edge}")
+            self.comm.Barrier()
+
+        
+
 
         

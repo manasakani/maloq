@@ -81,12 +81,13 @@ def main(folder):
     loss_tol = 0                                                                    # Loss tolerance for early stopping
     patience = 500
     threshold = 1e-3
-    dtype = torch.float32
+    dtype = torch.float64
+    torch.set_default_dtype(torch.float64)
 
     # Material parameters:
     pbc = True
     orbital_basis = 'SZV'
-    rcut = 4.0                                                                      # Interaction radius (1/2*rcut) in Angstroms
+    rcut = 1.2       # !!! CHANGE TO 4.0 !!!                                       # Interaction radius (1/2*rcut) in Angstroms
     lmax = 4     
     mmax = 4
 
@@ -122,6 +123,16 @@ def main(folder):
                                         bothways=True, 
                                         rcut = rcut)
     print("Validation structure created", flush=True)
+
+    assert(num_train % batch_size == 0) # batch size should divide the number of training samples for current distribution
+    partition = {}
+    partition['train'] = env.Domain_Decomp([a_HfO2_train], batch_size, device)
+    partition['validate'] = env.Domain_Decomp([a_HfO2_val], batch_size, device)
+    dist.barrier()
+
+    partition['train'].print_info()
+    partition['validate'].print_info()
+    dist.barrier()
 
     # make sure all ranks have created the structures before proceeding
     if dist.is_initialized():
@@ -196,14 +207,15 @@ def main(folder):
 
     # *** Create the input dataloader: slice_length partitioning
     print("Creating training data loader...", flush=True)
-    training_data_loader = data.batch_data_molecules([a_HfO2_train], device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    training_data_loader = data.batch_data_molecules([a_HfO2_train], partition['train'], device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
     print("Creating training data loader...", flush=True)
-    validation_data_loader = data.batch_data_molecules([a_HfO2_val], device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    validation_data_loader = data.batch_data_molecules([a_HfO2_val], partition['validate'], device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
     print("Data loaders created")
 
     print("Training model...", flush=True)
     training.train_and_validate_model_subgraph(model, 
                                                 optimizer, 
+                                                partition,
                                                 training_data_loader, 
                                                 validation_data_loader, 
                                                 num_epochs, 

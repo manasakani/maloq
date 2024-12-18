@@ -285,8 +285,6 @@ class SO3_Embedding():
         # print("start expand edge")
         # print("____________________________________________________")
 
-        # print("rank ", rank, " edge_index ", edge_index)
-
         local_num_nodes = self.length
         total_num_nodes = comm.allreduce(local_num_nodes, op=MPI.SUM)
         num_nodes_local = total_num_nodes // size
@@ -315,9 +313,6 @@ class SO3_Embedding():
                         remote_node_ranks.append(i)
                         remote_nodes.append(node)
                         break
-
-        # print("rank ", rank, " Remote node ranks: ", remote_node_ranks)
-        # print("rank ", rank, " Remote nodes: ", remote_nodes) 
 
         # Nodes to recieve on this rank
         nodes_to_recv = {}
@@ -381,7 +376,6 @@ class SO3_Embedding():
 
                 # print("rank ", rank, "Sending nodes: ", nodes, " in indices ", indices, " to rank: ", target_rank)
                 sendbuf = self._flatten_embedding(self.embedding[indices])
-                # print("rank ", rank, " sendbuf shape: ", sendbuf.shape)
 
                 req = comm.Isend(sendbuf, dest=target_rank, tag=rank)
                 send_requests.append(req)
@@ -517,13 +511,6 @@ class SO3_Embedding():
                         messages_to_send[j].append(i)
                         break
 
-        # print("within aggregate")
-        # for i in range(size):
-        #     if rank == i:
-        #         print("rank ", rank, " new_embedding embedding: ", new_embedding)
-        #     dist.barrier()
-
-
         # messages to send are in the form of {rank: [indices of rank's embedding to be recieved]}
         messages_to_recv = {}
         for i, target_node in enumerate(global_edge_index):
@@ -549,7 +536,6 @@ class SO3_Embedding():
         recv_requests = []
         recv_bufs = np.empty(num_msgs_to_recv * self.num_coefficients * self.num_channels, dtype=np.float64)  # Hardcoded datatype!!!
         recv_target_nodes = np.empty(num_msgs_to_recv)
-        # print("rank ", rank, " recv_bufs shape: ", recv_bufs.shape)
 
         # Non-blocking sends
         for dest_rank, embedding_idxs in messages_to_send.items():

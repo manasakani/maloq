@@ -60,7 +60,7 @@ def main(folder):
     print("Number of orbitals: ", norbs)
 
     # Dataset parameters:
-    num_train = 11                                                             # Number of training samples
+    num_train = 1                                                             # Number of training samples
     num_validate = 10                                                          # Number of validation samples             
     num_test = 250     
     show_fit_for = "val"                                                        # Show fit for the training (train) or validation (val) data
@@ -148,6 +148,15 @@ def main(folder):
 
     print("Dataset initialized")
 
+    assert(num_train % batch_size == 0) # batch size should divide the number of training samples for current distribution
+    partition = {}
+    partition['train'] = env.Domain_Decomp(training_molecules, batch_size, device)
+    partition['validate'] = env.Domain_Decomp(validation_molecules, batch_size, device)
+    dist.barrier()
+
+    partition['train'].print_info()
+    partition['validate'].print_info()
+
     # ************************************************************
     # Initialize the SO2 model
     # ************************************************************
@@ -205,8 +214,8 @@ def main(folder):
     # Run the training process
     # ************************************************************
 
-    training_data_loader = data.batch_data_molecules(training_molecules, device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
-    validation_data_loader = data.batch_data_molecules(validation_molecules, device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    training_data_loader = data.batch_data_molecules(training_molecules, partition['train'], device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    validation_data_loader = data.batch_data_molecules(validation_molecules, partition['validate'], device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
     
     print("training model...")
     training.train_and_validate_model_subgraph(model,
@@ -237,9 +246,9 @@ def main(folder):
                                         device_torch='cpu')
     
     if show_fit_for == 'train':
-        training.evaluate_model(model, training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+        training.evaluate_model(model, partition['train'], training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
     else:
-        training.evaluate_model(model, validation_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+        training.evaluate_model(model, partition['validate'], validation_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
 
 
 if __name__ == "__main__":

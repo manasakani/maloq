@@ -9,6 +9,7 @@ from torch_geometric.data import Batch, Data
 from torch.utils.data import Dataset, DataLoader
 from ase.geometry import find_mic
 import torch.distributed as dist
+from mpi4py import MPI
 
 # Custom dataset class for the GNN
 class CustomDataset(Dataset):
@@ -40,51 +41,80 @@ def split_data_indices(num_train, num_validate, num_test, num_total, offset=0):
     return train_indices, validate_indices, test_indices
 
 
-def create_input_data_molecules(structure, equivariant_blocks, out_slices, construct_kernel, device, dtype):
+def create_input_data_molecules(structure, partition, equivariant_blocks, out_slices, construct_kernel, device, dtype):
+    """
+    Adds the structure data to the data list
+    Need to keep track of the batch size, since the start and end nodes index the full data list and not just the current structure.
+    """
+
+    comm = partition.comm
+    
+    start_node = partition.start_node
+    end_node = partition.end_node
+    start_edge = partition.start_edge
+    end_edge = partition.end_edge
+    local_edge_index = partition.local_edge_index
+    global_edge_index = partition.global_edge_index
 
     # Note: for SO2 network, edge_index has two-way edges, and does not include self-connections 
-    edge_index = structure.edge_matrix
-    numbers = torch.tensor([utils.periodic_table[i] for i in structure.atomic_species])
-    coordinates = structure.atomic_structure.get_positions()
+    global_atomic_numbers = torch.tensor([utils.periodic_table[i] for i in structure.atomic_species])
+    local_atomic_numbers = global_atomic_numbers[start_node:end_node]
+
+    global_coordinates = structure.atomic_structure.get_positions()
     cell = structure.atomic_structure.get_cell()
 
-    # Make targets:
-
     # off-diagonal orbital blocks for each edge (bothways)
-    edge_hams = structure.get_orbital_blocks(edge_index)
-    edge_index = torch.tensor(edge_index)
-    H_blocks_edge = [edge_hams[(edge_index[0][i].item(), edge_index[1][i].item())] for i in range(len(edge_index[0]))]
-    H_blocks_edge = np.array(H_blocks_edge, dtype=object)
+    edge_hams = structure.get_orbital_blocks(local_edge_index)
+    local_edge_index = torch.tensor(local_edge_index)
+    H_blocks_edge = [edge_hams[(local_edge_index[0][i].item(), local_edge_index[1][i].item())] for i in range(len(local_edge_index[0]))]
+
+    # The following does the equivalent of [H_blocks_edge = np.array(H_blocks_edge, dtype=object)] while circumventing some of numpy's size checks for objects:
+    H_blocks_edge = [np.array(block) for block in H_blocks_edge]
+    H_blocks_edge_object = np.empty(len(H_blocks_edge), dtype=object)
+    for i, block in enumerate(H_blocks_edge):
+        H_blocks_edge_object[i] = block
+    H_blocks_edge = H_blocks_edge_object
 
     # diagonal orbital blocks (onsite Hamiltonian)
-    onsite_edge_index = np.array([np.arange(len(numbers)),np.arange(len(numbers))])
-    onsite_hams = structure.get_orbital_blocks(onsite_edge_index)
-    onsite = [onsite_hams[(onsite_edge_index[0][i].item(), onsite_edge_index[1][i].item())] for i in range(len(numbers))]  
-    onsite = np.array(onsite, dtype=object)
+    local_onsite_edge_index = np.array([np.arange(start_node, end_node), np.arange(start_node, end_node)])
+    print("Local onsite edge index: ", local_onsite_edge_index)
+    onsite_hams = structure.get_orbital_blocks(local_onsite_edge_index)
+    H_blocks_node = [onsite_hams[(local_onsite_edge_index[0][i].item(), local_onsite_edge_index[1][i].item())] for i in range(len(local_atomic_numbers))]  
 
-    # off-diagonal orbital blocks
+    # The following does the equivalent of [H_blocks_node = np.array(H_blocks_node, dtype=object)] while circumventing some of numpy's size checks for objects:
+    H_blocks_node = [np.array(block) for block in H_blocks_node]
+    H_blocks_node_object = np.empty(len(H_blocks_node), dtype=object)
+    for i, block in enumerate(H_blocks_node):
+        H_blocks_node_object[i] = block
+    H_blocks_node = H_blocks_node_object
+
+    # Prepare the off-diagonal orbital blocks --> Edge labels
     edge_labels = []
-    for i in range(len(edge_index[0])):
-        print("Working on edge ", i, " of ", len(edge_index[0]))
+    for i in range(len(local_edge_index[0])):
+        print("Working on edge ", i, " of ", len(local_edge_index[0]))
         label = np.zeros(out_slices[-1])
         for index_target, equivariant_block in enumerate(equivariant_blocks):
                 for N_M_str, block_slice in equivariant_block.items():
                     slice_row = slice(block_slice[0], block_slice[1])
                     slice_col = slice(block_slice[2], block_slice[3])
+
                     # len_row = block_slice[1] - block_slice[0]
                     # len_col = block_slice[3] - block_slice[2]
                     slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
                     condition_number_i, condition_number_j = N_M_str.split()
 
-                    if (numbers[edge_index[0][i]].item() == int(condition_number_i) and numbers[edge_index[1][i]].item() == int(condition_number_j)):
+                    if (global_atomic_numbers[local_edge_index[0][i]].item() == int(condition_number_i) 
+                        and global_atomic_numbers[local_edge_index[1][i]].item() == int(condition_number_j)):
+
                         label[slice_out] += np.squeeze(H_blocks_edge[i][slice_row, slice_col].reshape(1,-1))
 
         edge_labels.append(label)
 
-    # diagonal orbital blocks
+
+    # Prepare the diagonal orbital blocks --> Node labels
     node_labels = []
-    for i in range(len(onsite_edge_index[0])):
-        print("Working on node ", i, " of ", len(onsite_edge_index[0]))
+    for i in range(len(local_onsite_edge_index[0])):
+        print("Working on node ", i, " of ", len(local_onsite_edge_index[0]))
         label = np.zeros(out_slices[-1])
         for index_target, equivariant_block in enumerate(equivariant_blocks):
                 for N_M_str, block_slice in equivariant_block.items():
@@ -94,31 +124,66 @@ def create_input_data_molecules(structure, equivariant_blocks, out_slices, const
                     # len_col = block_slice[3] - block_slice[2]
                     slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
                     condition_number_i, condition_number_j = N_M_str.split()
-                    if (numbers[onsite_edge_index[0][i]].item() == int(condition_number_i) and numbers[onsite_edge_index[1][i]].item() == int(condition_number_j)):
-                        label[slice_out] += np.squeeze(onsite[i][slice_row, slice_col].reshape(1,-1))
+
+                    if (global_atomic_numbers[local_onsite_edge_index[0][i]].item() == int(condition_number_i) 
+                        and global_atomic_numbers[local_onsite_edge_index[1][i]].item() == int(condition_number_j)):
+
+                        label[slice_out] += np.squeeze(H_blocks_node[i][slice_row, slice_col].reshape(1,-1))
 
         node_labels.append(label)
-    numbers = numbers.numpy()
-
-    coordinates = torch.tensor(coordinates)
-
-    edge_fea = torch.empty((len(edge_index[0]),4))
-    for i in range(len(edge_index[0])):
-        print("Working on edge feature ", i, " of ", len(edge_index[0]))
-        distance_vector, distance = find_mic(coordinates[edge_index[1][i]] - coordinates[edge_index[0][i]], cell)
+    dist.barrier()
+    
+    # Edge distances --> edge features
+    edge_fea = torch.empty((len(local_edge_index[0]),4))
+    global_coordinates = torch.tensor(global_coordinates)
+    for i in range(len(local_edge_index[0])):
+        print("Working on edge feature ", i, " of ", len(local_edge_index[0]))
+        distance_vector, distance = find_mic(global_coordinates[local_edge_index[1][i]] - global_coordinates[local_edge_index[0][i]], cell)
         edge_fea[i,:] = torch.cat((torch.tensor([distance]), torch.tensor(distance_vector)))
 
     edge_fea = torch.tensor(edge_fea, dtype=dtype)
-    x = torch.tensor(numbers)
 
+    # --> allgatherv the global edge distance vector, because this is needed for deterministic rotation matrices
+    dist.barrier()
+    edge_distance_vec = edge_fea[:, [2, 3, 1]]
+
+    flattened_edge_distance_vec = edge_distance_vec.cpu().detach().numpy().reshape(-1) # gloo
+    local_edge_dist_vec_size = len(flattened_edge_distance_vec)
+    # flattened_edge_distance_vec = edge_distance_vec.detach().reshape(-1).contiguous()  # nccl
+    # local_edge_dist_vec_size = flattened_edge_distance_vec.numel()
+    
+    all_counts = comm.allgather(local_edge_dist_vec_size)
+    displacements = np.cumsum([0] + all_counts[:-1])
+
+    total_edge_dist_vec_size = sum(all_counts)
+    global_edge_distance_vec = torch.empty(total_edge_dist_vec_size, dtype=dtype)
+    
+    ###
+    comm.Allgatherv(flattened_edge_distance_vec, [global_edge_distance_vec, all_counts, displacements, MPI.DOUBLE])
+    ###
+    # gathered_tensors = comm.allgather(flattened_edge_distance_vec) # trying regular allgather with 3 ranks
+    # dist.barrier()
+    # print("!!! Replace this allgather with Allgatherv !!!")
+    # global_edge_distance_vec = torch.cat(gathered_tensors)
+    ###
+    global_edge_distance_vec = global_edge_distance_vec.reshape(-1, 3)
+    dist.barrier()
+
+    # fill in globals in the partition object that are needed during the forward pass
+    partition.global_edge_distance_vec = torch.tensor(global_edge_distance_vec, device=device)
+    partition.global_atomic_numbers = torch.tensor(global_atomic_numbers, device=device)
+
+    # Atomic numbers --> node features
+    local_atomic_numbers = local_atomic_numbers.numpy()
+    x = torch.tensor(local_atomic_numbers)
+
+    # convert Hamiltonian labels from uncoupled space to coupled space (to avoid conversion during training)
     edge_labels = torch.tensor(np.array(edge_labels), dtype=dtype, device=device)
-    y = construct_kernel.get_net_out(edge_labels) #convert Hamiltonian labels from uncoupled space to coupled space (to avoid conversion during training)
-
     node_labels = torch.tensor(np.array(node_labels), dtype=dtype, device=device)
-    # node_labels = torch.tensor(node_labels, dtype=dtype, device=device)
+    y = construct_kernel.get_net_out(edge_labels) 
     node_y = construct_kernel.get_net_out(node_labels)
 
-    data = gnnData(x=x, edge_index=edge_index, edge_attr=edge_fea, y=y, node_y=node_y)
+    data = gnnData(x=x, edge_index=local_edge_index, edge_attr=edge_fea, y=y, node_y=node_y)
 
     return data
 
@@ -501,12 +566,13 @@ def createdata_subgraph_cartesian(structure, start, length, equivariant_blocks, 
 
 
 # Creates a dataloader for a dataset with a list of molecules
-def batch_data_molecules(structures, device, num_graph=1, batch_size=1, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
+def batch_data_molecules(structures, partition, device, num_graph=1, batch_size=1, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
 
     data_list = []
 
     for i in range(num_graph):
-        data = create_input_data_molecules(structures[i], equivariant_blocks, out_slices, construct_kernel, device, dtype=dtype)
+
+        data = create_input_data_molecules(structures[i], partition, equivariant_blocks, out_slices, construct_kernel, device, dtype=dtype)
         data_list.append(data)
     
     dataset = CustomDataset(data_list)
@@ -599,40 +665,6 @@ def batch_data_HfO2_cartesian(graph, start, total_length, num_slices, test_list 
         print("Average Reduced Node Degree", np.mean(np.array(batch.reduced_node_degree)))     
 
     return loader
-
-
-
-def batch_data_load(load_data):
-
-    data_list = [load_data]
-
-    dataset = CustomDataset(data_list)
-
-    if dist.is_initialized():
-        sampler = torch.utils.data.distributed.DistributedSampler(dataset)
-        loader = DataLoader(dataset, sampler=sampler, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
-    else:
-        loader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=custom_collate_fn)
-
-    print("*** Batch properties:")
-    for batch in loader:
-        print("--> Batch: ")
-        print("Node Features (x):", batch.x.size())
-        print("Edge Index:", batch.edge_index.size())
-        print("Edge Features (edge_attr):", batch.edge_attr.size())    
-
-    return loader
-
-
-
-
-
-
-
-
-
-
-
 
 def batch_data_graphpartition(graph, num_subgraph, num_batch, equivariant_blocks=None, out_slices=None, construct_kernel=None, dtype=torch.float64):
 
