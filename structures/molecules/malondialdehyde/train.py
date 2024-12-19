@@ -60,7 +60,7 @@ def main(folder):
     print("Number of orbitals: ", norbs)
 
     # Dataset parameters:
-    num_train = 1                                                             # Number of training samples
+    num_train = 11                                                             # Number of training samples
     num_validate = 10                                                          # Number of validation samples             
     num_test = 250     
     show_fit_for = "val"                                                        # Show fit for the training (train) or validation (val) data
@@ -83,7 +83,7 @@ def main(folder):
         comm = MPI.COMM_WORLD
         save_file = comm.bcast(save_file, root=0)
 
-    num_epochs = 50                                                           
+    num_epochs = 100                                                           
     batch_size = num_train                                                               
     loss_tol = 1e-10
     lr = 1e-3
@@ -145,16 +145,23 @@ def main(folder):
                                                 self_interaction=False, bothways=bothways, rcut=rcut))
     
     sample_molecule = training_molecules[0]
+    env.rank_zero_print("Dataset initialized")
 
-    print("Dataset initialized")
+    # ************************************************************
+    # Merge structures into a single graph, and partition it
+    # ************************************************************
 
-    assert(num_train % batch_size == 0) # batch size should divide the number of training samples for current distribution
+    training_structure_merged = structure.Merged_Structure(training_molecules, dataset='schnet', self_interaction=False, bothways=bothways)
+    validation_structure_merged = structure.Merged_Structure(validation_molecules, dataset='schnet', self_interaction=False, bothways=bothways)
+
     partition = {}
-    partition['train'] = env.Domain_Decomp(training_molecules, batch_size, device)
-    partition['validate'] = env.Domain_Decomp(validation_molecules, batch_size, device)
+    partition['train'] = env.Domain_Decomp(training_structure_merged, device)
+    partition['validate'] = env.Domain_Decomp(validation_structure_merged, device)
     dist.barrier()
 
+    env.rank_zero_print("--> Training graph partition:")
     partition['train'].print_info()
+    env.rank_zero_print("--> Validation graph partition:")
     partition['validate'].print_info()
 
     # ************************************************************
@@ -214,12 +221,13 @@ def main(folder):
     # Run the training process
     # ************************************************************
 
-    training_data_loader = data.batch_data_molecules(training_molecules, partition['train'], device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
-    validation_data_loader = data.batch_data_molecules(validation_molecules, partition['validate'], device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    training_data_loader = data.batch_data_molecules([training_structure_merged], partition['train'], device, 1, 1, equivariant_blocks, out_slices, construct_kernel, dtype)
+    validation_data_loader = data.batch_data_molecules([validation_structure_merged], partition['validate'], device, 1, 1, equivariant_blocks, out_slices, construct_kernel, dtype)
     
     print("training model...")
     training.train_and_validate_model_subgraph(model,
                                                 optimizer,
+                                                partition,
                                                 training_data_loader,
                                                 validation_data_loader,
                                                 num_epochs,
@@ -252,7 +260,7 @@ def main(folder):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Amorphous GNNs --- HfO2")
+    parser = argparse.ArgumentParser(description="Amorphous GNNs --- malondialdehyde")
     parser.add_argument("-f", "--folder", default="", required=False)
     args = parser.parse_args()
 

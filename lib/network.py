@@ -206,7 +206,7 @@ class SO2Net(torch.nn.Module):
 
             node_embedding_local = self.blocks[2*i](
                             node_embedding_local,                  # SO3_Embedding
-                            partition.global_atomic_numbers,
+                            partition,
                             edge_distance_embedding_local,
                             edge_index,
                             partition.global_edge_index,
@@ -216,7 +216,7 @@ class SO2Net(torch.nn.Module):
 
             edge_embedding_local = self.blocks[2*i+1](
                             node_embedding_local,                  # SO3_Embedding
-                            partition.global_atomic_numbers,
+                            partition, 
                             edge_distance_embedding_local,
                             edge_index,
                             partition.global_edge_index,

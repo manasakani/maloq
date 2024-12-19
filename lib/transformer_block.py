@@ -203,7 +203,7 @@ class SO2NodeUpdate(torch.nn.Module):
     def forward(
         self,
         x,
-        atomic_numbers,
+        partition,
         edge_distance,
         edge_index,
         global_edge_index,
@@ -215,6 +215,7 @@ class SO2NodeUpdate(torch.nn.Module):
         rank = dist.get_rank()
         size = dist.get_world_size()
         comm = MPI.COMM_WORLD
+        atomic_numbers = partition.global_atomic_numbers
         # _______________________________________________________________________
 
         # print("_________________________")
@@ -232,8 +233,8 @@ class SO2NodeUpdate(torch.nn.Module):
         x_source = x.clone()
         x_target = x.clone()
 
-        x_source._expand_edge(edge_index[0, :]) #first dimension is the number of edges
-        x_target._expand_edge(edge_index[1, :])
+        x_source._expand_edge(edge_index[0, :], partition.expand_edge_0) 
+        x_target._expand_edge(edge_index[1, :], partition.expand_edge_1)
 
         # to form the message, concatenate the embeddings of the source node, target node, and the edge between them
         x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) 
@@ -338,17 +339,12 @@ class SO2NodeUpdate(torch.nn.Module):
         # Rotate back the irreps
         x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
 
-        # ---------------------------------------------------------------------
-        # *** x_message is distributed correctly on 1-3 ranks up to here ***
-        # ---------------------------------------------------------------------
-
         # print("_________________________")
         # print("Aggregation")
         # print("_________________________")
 
         # Aggregate incoming neighboring messages for each target node
-        remote_edge_idx = (global_edge_index.T.unsqueeze(1) == edge_index.T.unsqueeze(0)).all(dim=2).nonzero(as_tuple=True)[0]
-        x_message._reduce_edge(edge_index[0], local_edge_idx, remote_edge_idx, len(x.embedding))
+        x_message._reduce_edge(edge_index[0], local_edge_idx, len(x.embedding), partition.reduce_edge)
 
         # Project
         node_embedding = self.proj(x_message)
@@ -418,7 +414,7 @@ class NodeBlockV2(torch.nn.Module):
     def forward(
         self,
         x,                              # node embedding
-        atomic_numbers,
+        partition,
         edge_distance,                  # edge distance embedding (initial edge features)
         edge_index,
         global_edge_index,
@@ -433,12 +429,14 @@ class NodeBlockV2(torch.nn.Module):
         size = dist.get_world_size()
         comm = MPI.COMM_WORLD
 
+        atomic_numbers = partition.global_atomic_numbers
+
         # Normalize the input embedding (done independantly for each embedding)
         output_embedding.embedding = self.norm_1(output_embedding.embedding)
 
         # Perform the SO2NodeUpdate
         output_embedding = self.ga(output_embedding, 
-            atomic_numbers,
+            partition,
             edge_distance,
             edge_index, global_edge_index, edge_fea, iteration)
     
@@ -556,12 +554,14 @@ class SO2EdgeUpdate(torch.nn.Module):
     def forward(
         self,
         x,
-        atomic_numbers,
+        partition,
         edge_distance,
         edge_index,
         global_edge_index,
         edge_fea
     ):
+
+        atomic_numbers = partition.global_atomic_numbers
          
         # Compute edge scalar features (invariant to rotations)
         # Uses atomic numbers and edge distance as inputs
@@ -576,8 +576,8 @@ class SO2EdgeUpdate(torch.nn.Module):
 
         x_source = x.clone()
         x_target = x.clone()
-        x_source._expand_edge(edge_index[0, :]) #first dimension is the number of edges
-        x_target._expand_edge(edge_index[1, :])
+        x_source._expand_edge(edge_index[0, :], partition.expand_edge_0) #first dimension is the number of edges
+        x_target._expand_edge(edge_index[1, :], partition.expand_edge_1)
         
         x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) #concatenate source and target node embeddings along channel dimension
         x_message = SO3_Embedding(
@@ -680,7 +680,7 @@ class EdgeBlockV2(torch.nn.Module):
     def forward(
         self,
         x,              # SO3_Embedding
-        atomic_numbers,
+        partition,
         edge_distance,
         edge_index,
         global_edge_index,
@@ -695,7 +695,7 @@ class EdgeBlockV2(torch.nn.Module):
 
         # Perform the SO2EdgeUpdate
         output_embedding = self.ga(x,  # use the node embedding from the previous block 
-            atomic_numbers,
+            partition,
             edge_distance,
             edge_index, global_edge_index, output_embedding) # put the output_embedding in place of edge_embedding 
         

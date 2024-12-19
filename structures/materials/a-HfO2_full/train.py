@@ -41,7 +41,7 @@ def main(folder):
     print(f"Folder: {folder}", flush=True)
 
     # ************************************************************
-    # Input parameters and for the HfO2 dataset
+    # Input parameters for the HfO2 dataset
     # ************************************************************
 
     train_data_folder = os.path.join(folder, 'datasets/HfO2_2')
@@ -126,8 +126,8 @@ def main(folder):
 
     assert(num_train % batch_size == 0) # batch size should divide the number of training samples for current distribution
     partition = {}
-    partition['train'] = env.Domain_Decomp([a_HfO2_train], batch_size, device)
-    partition['validate'] = env.Domain_Decomp([a_HfO2_val], batch_size, device)
+    partition['train'] = env.Domain_Decomp(a_HfO2_train, device)
+    partition['validate'] = env.Domain_Decomp(a_HfO2_val, device)
     dist.barrier()
 
     partition['train'].print_info()

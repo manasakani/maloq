@@ -132,6 +132,7 @@ class Domain_Decomp():
         total_num_nodes = len(structure.atomic_numbers) 
         total_num_edges = structure.edge_matrix.shape[1]
         
+        # splitting the nodes and edges among the ranks
         local_num_nodes = total_num_nodes // self.size
         local_num_edges = total_num_edges // self.size
 
@@ -157,10 +158,21 @@ class Domain_Decomp():
         self.local_edge_index = structure.edge_matrix[:, start_edge:end_edge]
         global_edge_index = structure.edge_matrix
         self.global_edge_index = torch.tensor(global_edge_index, device=self.device)
-
-        # assigned during data creation:
-        self.global_edge_distance_vec = None
         self.global_atomic_numbers = torch.tensor(structure.atomic_numbers, device=self.device)
+
+        # created and assigned during data creation:
+        self.global_edge_distance_vec = None
+
+        # _________________________________________________________________________________________
+        # initialize communication patterns for message passing
+
+        # message creation
+        self.expand_edge_0 = self.init_comm_pattern_expand(self.local_edge_index[0, :])     # source node
+        self.expand_edge_1 = self.init_comm_pattern_expand(self.local_edge_index[1, :])     # target node
+
+        # aggregation
+        self.reduce_edge = self.init_comm_pattern_reduce(self.local_edge_index[0, :])
+
 
     def print_info(self):
         dist.barrier()
@@ -172,7 +184,150 @@ class Domain_Decomp():
                 print(f"Rank {self.rank} has edges from {self.start_edge} to {self.end_edge}")
             self.comm.Barrier()
 
+    def init_comm_pattern_expand(self, edge_index):
+
+        # expand edge:
+        local_num_nodes = len(self.local_node_index)
+        total_num_nodes = self.comm.allreduce(local_num_nodes, op=MPI.SUM)
+        num_nodes_local = total_num_nodes // self.size
+        local_node_nums = torch.arange(self.start_node, self.end_node)
         
+        # start and end nodes on every rank:
+        start_nodes = self.comm.allgather(self.start_node)
+        end_nodes = self.comm.allgather(self.end_node)
+
+        #  get 'remote' nodes in this rank to be recieved from remote ranks
+        remote_node_ranks = []
+        remote_nodes = []
+        for node in edge_index:
+            if node < self.start_node or node >= self.end_node:
+                for i, (start, end) in enumerate(zip(start_nodes, end_nodes)):
+                    if node >= start and node < end:
+                        if node not in remote_nodes:
+                            remote_node_ranks.append(i)
+                            remote_nodes.append(node)
+                        break                
+
+        # Nodes to recieve on this rank
+        nodes_to_recv = {}
+        for i, remote_rank in enumerate(remote_node_ranks):
+            if remote_rank not in nodes_to_recv:
+                nodes_to_recv[remote_rank] = []
+            if remote_nodes[i].item() not in nodes_to_recv[remote_rank]:
+                nodes_to_recv[remote_rank].append(remote_nodes[i].item())
+
+        # allgatherv the edge_indices on each rank:
+        length_local_edge_idx = len(edge_index)
+        edge_index_np = edge_index
+        counts = self.comm.allgather(length_local_edge_idx)
+        displacements = [0] + [sum(counts[:i]) for i in range(1, self.size)]
+
+        total_length_edge_idx = sum(counts)        
+        all_edge_idx = torch.zeros(total_length_edge_idx, dtype=torch.int64)
+        self.comm.Allgatherv(edge_index_np, [all_edge_idx, counts, displacements, MPI.LONG])
+
+        # Nodes to send from this rank
+        nodes_to_send = {}
+        # iterate over all_edge_idx, if this rank has a node which that rank does not, add it to the nodes to send
+        for i, (c, d) in enumerate(zip(counts, displacements)):
+            # look at all the nodes in the edge index for rank i
+            for node in all_edge_idx[d:d+c]:
+                # if the node is not in the local nodes for rank 1, but is in the current local nodes:
+                if node in local_node_nums:
+                    if node < start_nodes[i] or node >= end_nodes[i]:
+                        # add the note to the send list, i is the rank to send to
+                        if i not in nodes_to_send:
+                            nodes_to_send[i] = []
+
+                        if node not in nodes_to_send[i]:
+                            nodes_to_send[i].append(node)
+
+        # dist.barrier()
+        # print("rank ", self.rank, " Nodes to send (during message creation): ", nodes_to_send)
+        # print("rank ", self.rank, " Nodes to recv (during message creation): ", nodes_to_recv)
+        # dist.barrier()
+
+        expand_edge_dict = {}
+        expand_edge_dict['nodes_to_send'] = nodes_to_send
+        expand_edge_dict['nodes_to_recv'] = nodes_to_recv
+        expand_edge_dict['remote_nodes'] = remote_nodes
+        expand_edge_dict['remote_node_ranks'] = remote_node_ranks
+        expand_edge_dict['local_node_nums'] = local_node_nums
+        expand_edge_dict['start_node'] = self.start_node
+        expand_edge_dict['end_node'] = self.end_node
+
+        return expand_edge_dict
 
 
+    def init_comm_pattern_reduce(self, edge_index):
+
+        rank = dist.get_rank()
+        size = dist.get_world_size()
+        comm = MPI.COMM_WORLD
+
+        local_num_nodes = len(self.local_node_index)
+        total_num_nodes = self.comm.allreduce(local_num_nodes, op=MPI.SUM)
+        num_nodes_local = total_num_nodes // self.size
+
+        # nodes owned by this rank
+        local_node_nums = torch.arange(self.start_node, self.end_node)
+
+        # start and end nodes on every rank:
+        start_nodes = self.comm.allgather(self.start_node)
+        end_nodes = self.comm.allgather(self.end_node)
+        # print("Total number of nodes: ", total_num_nodes, "rank: ", rank, "start nodes: ", start_nodes, " end nodes: ", end_nodes)
+
+        # allgather the edge_indices on each rank to make a global_edge_index and counts and displacements:
+        length_local_edge_idx = len(edge_index)
+        edge_index_np = edge_index
+        counts = comm.allgather(length_local_edge_idx)
+        displacements = [0] + [sum(counts[:i]) for i in range(1, size)]
+
+        total_length_edge_idx = sum(counts)
+        global_edge_index = torch.zeros(total_length_edge_idx, dtype=torch.int64)
+        comm.Allgatherv(edge_index_np, [global_edge_index, counts, displacements, MPI.LONG])
+
+        local_edge_index_torch = torch.tensor(self.local_edge_index, device=self.device)
+        local_edge_idx = (self.global_edge_index.T.unsqueeze(1) == local_edge_index_torch.T.unsqueeze(0)).all(dim=2).nonzero(as_tuple=True)[0]
+        
+        # messages to send are in the form of {rank: [indices of own self.embedding to send to rank]}
+        messages_to_send = {}
+        for i, target_node in enumerate(edge_index):
+            if target_node in local_node_nums:
+                pass # this is where the self-edges are handled
+            else:
+                for j, (start, end) in enumerate(zip(start_nodes, end_nodes)):
+                    if target_node >= start and target_node < end:
+                        if j not in messages_to_send:
+                            messages_to_send[j] = []
+                        messages_to_send[j].append(i)
+                        break
+
+        # messages to send are in the form of {rank: [indices of rank's embedding to be recieved]}
+        messages_to_recv = {}
+        for i, target_node in enumerate(global_edge_index):
+            if target_node in local_node_nums and i not in local_edge_idx: # check here
+                for j, (c, d) in enumerate(zip(counts, displacements)):
+                    if i >= d and i < d + c:
+                        if j not in messages_to_recv:
+                            messages_to_recv[j] = []
+                        messages_to_recv[j].append(i-d)
+                        break
+
+        # the messages are the indices of the local embeddings on the source rank
+        # dist.barrier()
+        # print(f"Rank {rank}: messages_to_send (during message aggregation) = {messages_to_send}")
+        # print(f"Rank {rank}: messages_to_recv (during message aggregation) = {messages_to_recv}")
+        # dist.barrier()
+        
+        reduce_edge_dict = {}
+        reduce_edge_dict['messages_to_send'] = messages_to_send
+        reduce_edge_dict['messages_to_recv'] = messages_to_recv
+        reduce_edge_dict['local_node_nums'] = local_node_nums
+        reduce_edge_dict['global_edge_index'] = global_edge_index
+        reduce_edge_dict['start_node'] = self.start_node    
+        reduce_edge_dict['end_node'] = self.end_node
+
+
+        return reduce_edge_dict
         
