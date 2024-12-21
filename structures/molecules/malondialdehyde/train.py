@@ -60,7 +60,7 @@ def main(folder):
     print("Number of orbitals: ", norbs)
 
     # Dataset parameters:
-    num_train = 11                                                             # Number of training samples
+    num_train = 1                                                             # Number of training samples
     num_validate = 10                                                          # Number of validation samples             
     num_test = 250     
     show_fit_for = "val"                                                        # Show fit for the training (train) or validation (val) data

@@ -76,7 +76,7 @@ def main(folder):
 
     # Network training:
     num_MP_layers = 1                                                               # Number of message passing layers 
-    num_epochs = 50000                                                              # Number of epochs                                                
+    num_epochs = 100# 50000                                                              # Number of epochs                                                
     learning_rate = 1e-4                                                            # Initial Learning rate                 
     loss_tol = 0                                                                    # Loss tolerance for early stopping
     patience = 500
@@ -243,10 +243,10 @@ def main(folder):
 
     if show_fit_for == "train":
         print("Plotting fit to training data", flush=True)
-        training.evaluate_model(model, training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+        training.evaluate_model(model, partition['train'], training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
     else:
         print("Plotting fit to validation data...", flush=True)
-        training.evaluate_model(model, validation_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+        training.evaluate_model(model, partition['validate'], validation_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
 
 
 if __name__ == "__main__":

@@ -77,7 +77,6 @@ def create_input_data_molecules(structure, partition, equivariant_blocks, out_sl
 
     # diagonal orbital blocks (onsite Hamiltonian)
     local_onsite_edge_index = np.array([np.arange(start_node, end_node), np.arange(start_node, end_node)])
-    print("Local onsite edge index: ", local_onsite_edge_index)
     onsite_hams = structure.get_orbital_blocks(local_onsite_edge_index)
     H_blocks_node = [onsite_hams[(local_onsite_edge_index[0][i].item(), local_onsite_edge_index[1][i].item())] for i in range(len(local_atomic_numbers))]  
 
@@ -91,7 +90,7 @@ def create_input_data_molecules(structure, partition, equivariant_blocks, out_sl
     # Prepare the off-diagonal orbital blocks --> Edge labels
     edge_labels = []
     for i in range(len(local_edge_index[0])):
-        print("Working on edge ", i, " of ", len(local_edge_index[0]))
+        # print("Working on edge ", i, " of ", len(local_edge_index[0]))
         label = np.zeros(out_slices[-1])
         for index_target, equivariant_block in enumerate(equivariant_blocks):
                 for N_M_str, block_slice in equivariant_block.items():
@@ -114,7 +113,7 @@ def create_input_data_molecules(structure, partition, equivariant_blocks, out_sl
     # Prepare the diagonal orbital blocks --> Node labels
     node_labels = []
     for i in range(len(local_onsite_edge_index[0])):
-        print("Working on node ", i, " of ", len(local_onsite_edge_index[0]))
+        # print("Working on node ", i, " of ", len(local_onsite_edge_index[0]))
         label = np.zeros(out_slices[-1])
         for index_target, equivariant_block in enumerate(equivariant_blocks):
                 for N_M_str, block_slice in equivariant_block.items():
@@ -137,7 +136,7 @@ def create_input_data_molecules(structure, partition, equivariant_blocks, out_sl
     edge_fea = torch.empty((len(local_edge_index[0]),4))
     global_coordinates = torch.tensor(global_coordinates)
     for i in range(len(local_edge_index[0])):
-        print("Working on edge feature ", i, " of ", len(local_edge_index[0]))
+        # print("Working on edge feature ", i, " of ", len(local_edge_index[0]))
         distance_vector, distance = find_mic(global_coordinates[local_edge_index[1][i]] - global_coordinates[local_edge_index[0][i]], cell)
         edge_fea[i,:] = torch.cat((torch.tensor([distance]), torch.tensor(distance_vector)))
 

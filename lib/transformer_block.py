@@ -224,8 +224,8 @@ class SO2NodeUpdate(torch.nn.Module):
 
         # Compute edge scalar features (invariant to rotations)
         # Uses atomic numbers and edge distance as inputs
-        source_element = atomic_numbers[edge_index[0]]  # Source atom atomic number     
-        target_element = atomic_numbers[edge_index[1]]  # Target atom atomic number
+        source_element = atomic_numbers[edge_index[0]]  
+        target_element = atomic_numbers[edge_index[1]]  
         source_embedding = self.source_embedding(source_element)
         target_embedding = self.target_embedding(target_element)
         x_edge = torch.cat((edge_distance, source_embedding, target_embedding), dim=1)      # shape of [#edges, 3 * #channels]
@@ -237,6 +237,7 @@ class SO2NodeUpdate(torch.nn.Module):
         x_target._expand_edge(edge_index[1, :], partition.expand_edge_1)
 
         # to form the message, concatenate the embeddings of the source node, target node, and the edge between them
+        # note, the source node is the one that recieves the message..
         x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) 
         x_message = SO3_Embedding(
             0,
@@ -345,6 +346,7 @@ class SO2NodeUpdate(torch.nn.Module):
 
         # Aggregate incoming neighboring messages for each target node
         x_message._reduce_edge(edge_index[0], local_edge_idx, len(x.embedding), partition.reduce_edge)
+        # x_message._reduce_edge(edge_index[1], local_edge_idx, len(x.embedding), partition.reduce_edge) # WRONG EDGE IDX FOR TESTING
 
         # Project
         node_embedding = self.proj(x_message)

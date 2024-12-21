@@ -167,11 +167,12 @@ class Domain_Decomp():
         # initialize communication patterns for message passing
 
         # message creation
-        self.expand_edge_0 = self.init_comm_pattern_expand(self.local_edge_index[0, :])     # source node
-        self.expand_edge_1 = self.init_comm_pattern_expand(self.local_edge_index[1, :])     # target node
+        self.expand_edge_0 = self.init_comm_pattern_expand(self.local_edge_index[0, :])     # dst node
+        self.expand_edge_1 = self.init_comm_pattern_expand(self.local_edge_index[1, :])     # src node
 
         # aggregation
         self.reduce_edge = self.init_comm_pattern_reduce(self.local_edge_index[0, :])
+        # self.reduce_edge = self.init_comm_pattern_reduce(self.local_edge_index[1, :]) # WRONG EDGE FOR TESTING
 
 
     def print_info(self):
@@ -180,8 +181,8 @@ class Domain_Decomp():
             if self.rank == i:
                 print("________________________________________________________")
                 print(f"Rank {self.rank} has {self.end_node - self.start_node} nodes and {self.end_edge - self.start_edge} edges:")
-                print(f"Rank {self.rank} has nodes from {self.start_node} to {self.end_node}")
-                print(f"Rank {self.rank} has edges from {self.start_edge} to {self.end_edge}")
+                print(f"Rank {self.rank} has nodes from {self.start_node} to {self.end_node}: {self.local_node_index}")
+                print(f"Rank {self.rank} has edges from {self.start_edge} to {self.end_edge}: {self.local_edge_index}")
             self.comm.Barrier()
 
     def init_comm_pattern_expand(self, edge_index):
@@ -242,10 +243,10 @@ class Domain_Decomp():
                         if node not in nodes_to_send[i]:
                             nodes_to_send[i].append(node)
 
-        # dist.barrier()
-        # print("rank ", self.rank, " Nodes to send (during message creation): ", nodes_to_send)
-        # print("rank ", self.rank, " Nodes to recv (during message creation): ", nodes_to_recv)
-        # dist.barrier()
+        dist.barrier()
+        print("rank ", self.rank, " Nodes to send (during message creation): ", nodes_to_send)
+        print("rank ", self.rank, " Nodes to recv (during message creation): ", nodes_to_recv)
+        dist.barrier()
 
         expand_edge_dict = {}
         expand_edge_dict['nodes_to_send'] = nodes_to_send
@@ -315,10 +316,10 @@ class Domain_Decomp():
                         break
 
         # the messages are the indices of the local embeddings on the source rank
-        # dist.barrier()
-        # print(f"Rank {rank}: messages_to_send (during message aggregation) = {messages_to_send}")
-        # print(f"Rank {rank}: messages_to_recv (during message aggregation) = {messages_to_recv}")
-        # dist.barrier()
+        dist.barrier()
+        print(f"Rank {rank}: messages_to_send (during message aggregation) = {messages_to_send}")
+        print(f"Rank {rank}: messages_to_recv (during message aggregation) = {messages_to_recv}")
+        dist.barrier()
         
         reduce_edge_dict = {}
         reduce_edge_dict['messages_to_send'] = messages_to_send
@@ -327,7 +328,9 @@ class Domain_Decomp():
         reduce_edge_dict['global_edge_index'] = global_edge_index
         reduce_edge_dict['start_node'] = self.start_node    
         reduce_edge_dict['end_node'] = self.end_node
-
+        reduce_edge_dict['start_nodes'] = start_nodes
+        reduce_edge_dict['counts'] = counts
+        reduce_edge_dict['displacements'] = displacements
 
         return reduce_edge_dict
         
