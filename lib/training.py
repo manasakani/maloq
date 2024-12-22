@@ -372,9 +372,11 @@ def evaluate_model(model, partition, data_loader, construct_kernel, equivariant_
             label_tensor = torch.cat([node_label_tensor, edge_label_tensor])
             MAEloss_total += torch.mean(torch.abs(pred_tensor - label_tensor))
 
+            hartree_to_eV = 27.21138602
             print("Mean Absolute Node Error in mHartree: ", torch.mean(torch.abs(node_pred_tensor - node_label_tensor)) * 1e3)
             print("Mean Absolute Edge Error in mHartree: ", torch.mean(torch.abs(edge_pred_tensor - edge_label_tensor)) * 1e3)
             print("Mean Absolute Error in mHartree: ", MAEloss_total * 1e3)
+            print("Mean Absolute Error in meV: ", MAEloss_total * hartree_to_eV * 1e3)
 
             # Collect results for plotting
             local_node_labels.append(node_label_tensor)

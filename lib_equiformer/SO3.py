@@ -342,9 +342,6 @@ class SO3_Embedding():
                 recv_source[i] = source_rank
                 recv_pointer = end_idx
 
-        # comm_time = time.time()
-        # print("rank ", rank, " time taken to communicate: ", comm_time - start_time)
-
         # --> Slot in the local embeddings while waiting for comm
         edge_embeddings = torch.empty((len(edge_index), self.embedding.shape[1], self.embedding.shape[2]), device=self.device)
         edge_index = torch.tensor(edge_index, dtype=torch.long, device=self.device)
@@ -358,9 +355,6 @@ class SO3_Embedding():
         # Wait for all sends and recvs to complete
         MPI.Request.Waitall(send_requests)
         MPI.Request.Waitall(recv_requests)
-
-        # local_embedding_time = time.time()
-        # print("rank ", rank, " time taken to slot in local embeddings: ", local_embedding_time - comm_time)
 
         received_embeddings = recv_bufs.reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
         received_embeddings = torch.tensor(received_embeddings).to(self.device)
@@ -394,16 +388,11 @@ class SO3_Embedding():
 
         # Assign received_embeddings to edge_embeddings
         edge_embeddings[is_remote] = received_embeddings[embedding_indices]
-
-        # remote_embedding_time = time.time()
-        # print("rank ", rank, " time taken to slot in remote embeddings: ", remote_embedding_time - local_embedding_time)
-
         self.set_embedding(edge_embeddings)
 
-        # end_time = time.time()
-        # print("rank ", rank, " time taken to expand edge: ", end_time - start_time)
-        # dist.barrier()
-        # print("-----------------")
+        end_time = time.time()
+        print("rank ", rank, " time taken to create messages: ", end_time - start_time)
+        
     
 
     # Compute the sum of the embeddings of the neighborhood
@@ -425,7 +414,7 @@ class SO3_Embedding():
     # Compute the sum of the embeddings of the neighborhood
     def _reduce_edge(self, edge_index, local_edge_idx, num_nodes, reduce_edge_dict):
         """
-        Distribute version is now done with 2x in-place index_add_ operations, 
+        Distributed aggregation is now done with 2x in-place index_add_ operations, 
         once for the local messages and once for the remote messages.
         """
 
@@ -451,7 +440,6 @@ class SO3_Embedding():
         messages_to_send = reduce_edge_dict['messages_to_send']             # dictionary of messages to send to other ranks in the form {rank: [indices to send from current rank]}
         messages_to_recv = reduce_edge_dict['messages_to_recv']             # dictionary of messages to receive from other ranks in the form {rank: [rank's indices to receive]}
         global_edge_index = reduce_edge_dict['global_edge_index']           # global edge index of the destination nodes
-        counts = reduce_edge_dict['counts']                                 # counts of the nodes owned by each rank (used for allgatherv)
         displacements = reduce_edge_dict['displacements']                   # displacements of the nodes owned by each rank (used for allgatherv)
         
         num_msgs_to_recv = sum([len(msgs) for msgs in messages_to_recv.values()])
@@ -460,7 +448,6 @@ class SO3_Embedding():
         send_requests = []
         recv_requests = []
         recv_bufs = np.empty(num_msgs_to_recv * self.num_coefficients * self.num_channels, dtype=np.float64)  # Hardcoded datatype!!!
-        # recv_target_nodes = np.empty(num_msgs_to_recv)
 
         # Non-blocking sends
         for dest_rank, embedding_idxs in messages_to_send.items():
@@ -486,33 +473,24 @@ class SO3_Embedding():
                     
                 req = comm.Irecv(recv_bufs[start_idx:end_idx], source=source_rank, tag=source_rank)
                 recv_requests.append(req)
-                # print("rank ", rank, "received message from rank ", source_rank)
-                # recv_target_nodes[i] = source_rank # this is the rank that the message came from
                 recv_pointer = end_idx
-
-                # remote idx slots should contain the positions where the corresponding embeddings should go in the new_embedding:
+                # print("rank ", rank, "received message from rank ", source_rank)
+                
                 # embedding_idxs are indices of the remote rank's embedding which were sent to the current rank
-
+                # remote idx slots should contain the positions where the corresponding embeddings should go in the new_embedding
                 node_start = displacements[source_rank]
                 for j, idx in enumerate(embedding_idxs):
                     node_to_sum_into = global_edge_index[node_start + idx]
-                    # print("________________________________________________________")
-                    # print("rank ", rank, " node to sum into: ", node_to_sum_into)
-                    # print("rank ", rank, " torch.where(local_node_nums == node_to_sum_into): ", torch.where(local_node_nums == node_to_sum_into))
-                    # print("________________________________________________________")
                     remote_idx_slots[slot_pointer] = torch.where(local_node_nums == node_to_sum_into)[0].item()
                     slot_pointer += 1
 
-        # print("rank ", rank, " remote_idx_slots: ", remote_idx_slots)
-
-        # --> aggregate the local embeddings
+        # --> aggregate the local embeddings while waiting for comm
         edge_index = torch.tensor(edge_index, dtype=torch.long, device=self.device)
         local_node_nums = torch.tensor(local_node_nums, dtype=torch.long, device=self.device)
 
         is_local = (edge_index >= start_node) & (edge_index < end_node)
         local_indices = edge_index[is_local] - start_node
         new_embedding.index_add_(0, local_indices, self.embedding[is_local])
-        # print("rank ", rank, " local_indices: ", local_indices)
         
         # Wait for comm
         MPI.Request.Waitall(send_requests)
@@ -521,60 +499,12 @@ class SO3_Embedding():
         received_embeddings = recv_bufs.reshape(num_msgs_to_recv, self.num_coefficients, self.num_channels)
         received_embeddings = torch.tensor(received_embeddings).to(self.device)
         num_received_embeddings = received_embeddings.shape[0]
-        # print("rank ", rank, " num_received_embeddings: ", num_received_embeddings)
-
-        before_reduce_time = time.time()
-        print("rank ", rank, " time taken to slot in local embeddings + comm: ", before_reduce_time - start_time)
-
-        # --> aggregate the remote embeddings recieved
-        # TODO: vectorize this with index_add_!
-        # embeddings_from_this_node = 0
-        # for i, target_node in enumerate(global_edge_index):
-
-        #     # if we find an edge to one of the current rank's nodes, which the current rank does not own
-        #     if target_node.cpu() in local_node_nums and i not in local_edge_idx:
-        #         # get the rank which owns this message
-        #         for j, (c, d) in enumerate(zip(counts, displacements)):
-        #             if i >= d and i < d + c:
-
-        #                 # the rank which owns this message is j
-        #                 # the node is target_node
-
-        #                 # 'target_node' from rank 'j' should be added to the position of 'target_node' in the current rank's list of embeddings
-
-        #                 # CHECK THAT IT WORKS FOR MULTIPLE MESSAGES FROM THE SAME REMOTE RANK
-        #                 indices_remote_rank = messages_to_recv[j] # indices of the embeddings on the remote rank
-        #                 for k, idx in enumerate(indices_remote_rank):
-        #                     # print("rank ", rank, " target node: ", target_node, " indices_remote_rank: ", idx)
-        #                     # rank 1 is recieving a message coming to its node 1 (target_node) from the position of 2 in rank 0's list of embeddings
-        #                     local_idx = torch.where(local_node_nums == target_node)[0]
-        #                     # remote_idx_slots[k] = local_idx
-
-
-        #                     # it's not k, but the position of the node in the received embeddings
-        #                     new_embedding[local_idx] += received_embeddings[embeddings_from_this_node+k]
-        #                     # break
-        #                 embeddings_from_this_node += len(indices_remote_rank)
-
-        # get_time = time.time()
-        # print("rank ", rank, " time taken to aggregate indices for embeddings: ", get_time - start_time)
-
-        # INDEX ADD:
-        # dist.barrier()
-        # print("rank ", rank, " remote_idx_slots: ", remote_idx_slots)
 
         # --> aggregate the remote embeddings recieved
         new_embedding.index_add_(0, remote_idx_slots, received_embeddings)
-
-        # for i in range(size):
-        #     if rank == i:
-        #         print("rank ", rank, " new_embedding: ", new_embedding, flush=True)          
-        #     dist.barrier()
-        # print("rank ", rank, " done", flush=True)
-        # exit()
         
         end_time = time.time()
-        print("rank ", rank, " time taken to reduce edge: ", end_time - start_time)
+        print("rank ", rank, " time taken to aggregate messages: ", end_time - start_time)
 
         self.set_embedding(new_embedding)
 
