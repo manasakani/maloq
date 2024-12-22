@@ -256,6 +256,8 @@ class Domain_Decomp():
         expand_edge_dict['local_node_nums'] = local_node_nums
         expand_edge_dict['start_node'] = self.start_node
         expand_edge_dict['end_node'] = self.end_node
+        expand_edge_dict['displacements'] = displacements
+        expand_edge_dict['global_edge_idx'] = all_edge_idx
 
         return expand_edge_dict
 

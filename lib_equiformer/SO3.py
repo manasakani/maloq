@@ -273,18 +273,14 @@ class SO3_Embedding():
         self.set_embedding(edge_embeddings)
 
 
-    # Expand the node embeddings to the number of edges
+    # Expand the node embeddings to the number of edges - Distributed version
     def _expand_edge(self, edge_index, expand_edge_dict):
         """
-        This function was originally quite simple on one node:
-            edge_embeddings = self.embeddings[edge_index]
-            self.set_embedding(edge_embeddings)
-        
         It's now been extended to account for the distributed case. The node embeddings which are needed on the current rank (due to being in the
         edge_index) but only exist on other ranks are communicated using non-blocking p2p communication.
         """
 
-        start_time = time.time()
+        # start_time = time.time()
 
         rank = dist.get_rank()
         size = dist.get_world_size()
@@ -299,6 +295,11 @@ class SO3_Embedding():
         remote_nodes = expand_edge_dict['remote_nodes']
         remote_node_ranks = expand_edge_dict['remote_node_ranks']
         local_node_nums = expand_edge_dict['local_node_nums']
+        displacements = expand_edge_dict['displacements']
+        global_edge_idx = expand_edge_dict['global_edge_idx']
+
+        local_node_nums = torch.tensor(local_node_nums, dtype=torch.long, device=self.device)
+        remote_nodes = torch.tensor(remote_nodes, dtype=torch.long, device=self.device)
 
         # --> Send/Receive embeddings
         num_nodes_to_recv = sum([len(nodes) for nodes in nodes_to_recv.values()])
@@ -329,6 +330,12 @@ class SO3_Embedding():
 
         # Non-blocking recvs posts
         recv_pointer = 0
+
+        is_remote = torch.isin(edge_index, remote_nodes)
+        remote_edge_nodes = edge_index[is_remote]
+        embedding_indices = torch.ones(len(remote_edge_nodes), dtype=torch.long, device=self.device) # indices of received_embeddings to slot into the new embedding
+        
+        node_track = 0
         for i, (source_rank, nodes) in enumerate(nodes_to_recv.items()):
 
             if nodes: 
@@ -342,10 +349,13 @@ class SO3_Embedding():
                 recv_source[i] = source_rank
                 recv_pointer = end_idx
 
+                for node in nodes:  # node is the identity of the recieved node, not the index
+                    embedding_indices[torch.where(remote_edge_nodes == node)[0]] = node_track # locations in the new embedding where this recieved embedding should go
+                    node_track += 1 # track the number of nodes received
+
         # --> Slot in the local embeddings while waiting for comm
         edge_embeddings = torch.empty((len(edge_index), self.embedding.shape[1], self.embedding.shape[2]), device=self.device)
         edge_index = torch.tensor(edge_index, dtype=torch.long, device=self.device)
-        local_node_nums = torch.tensor(local_node_nums, dtype=torch.long, device=self.device)
 
         is_local = torch.isin(edge_index, local_node_nums)
         local_edge_nodes = edge_index[is_local]
@@ -360,39 +370,17 @@ class SO3_Embedding():
         received_embeddings = torch.tensor(received_embeddings).to(self.device)
 
         # --> Slot in the recieved remote embeddings
-        remote_nodes = torch.tensor(remote_nodes, dtype=torch.long, device=self.device)
-        remote_node_ranks = torch.tensor(remote_node_ranks, dtype=torch.long, device=self.device)
-
-        # Identify remote nodes in edge_index, and filter edge_index to get only remote nodes
-        is_remote = torch.isin(edge_index, remote_nodes)
-        remote_edge_nodes = edge_index[is_remote]
-
-        # Map remote nodes to their owner ranks
-        node_to_rank = dict(zip(remote_nodes.tolist(), remote_node_ranks.tolist()))
-        owner_ranks = torch.tensor([node_to_rank[node.item()] for node in remote_edge_nodes], dtype=torch.long)
-
-        # Compute offsets for each remote node
-        offsets = []
-        for rank, node in zip(owner_ranks, remote_edge_nodes):
-            nodes_in_rank = torch.tensor(nodes_to_recv[rank.item()], dtype=torch.long, device=self.device)
-            offset = (nodes_in_rank == node).nonzero(as_tuple=True)[0].item()
-            offsets.append(offset)
-        offsets = torch.tensor(offsets, dtype=torch.long)
-
-        # Calculate indices in received_embeddings
-        recv_source_list = recv_source.tolist()
-        embedding_indices = torch.tensor(
-            [recv_source_list.index(rank.item()) + offset for rank, offset in zip(owner_ranks, offsets)],
-            dtype=torch.long
-        )
-
-        # Assign received_embeddings to edge_embeddings
         edge_embeddings[is_remote] = received_embeddings[embedding_indices]
         self.set_embedding(edge_embeddings)
 
-        end_time = time.time()
-        print("rank ", rank, " time taken to create messages: ", end_time - start_time)
-        
+        # end_time = time.time()
+        # print("rank ", rank, " time taken to create messages: ", end_time - start_time)
+
+        # for i in range(size):
+        #     if i == rank:
+        #         print("rank ", rank, " edge embeddings: ", edge_embeddings)
+        #     dist.barrier()
+        # exit()
     
 
     # Compute the sum of the embeddings of the neighborhood
@@ -427,7 +415,7 @@ class SO3_Embedding():
             dtype=self.embedding.dtype,
         )
 
-        start_time = time.time()
+        # start_time = time.time()
 
         rank = dist.get_rank()
         size = dist.get_world_size()
@@ -503,10 +491,16 @@ class SO3_Embedding():
         # --> aggregate the remote embeddings recieved
         new_embedding.index_add_(0, remote_idx_slots, received_embeddings)
         
-        end_time = time.time()
-        print("rank ", rank, " time taken to aggregate messages: ", end_time - start_time)
+        # end_time = time.time()
+        # print("rank ", rank, " time taken to aggregate messages: ", end_time - start_time)
 
         self.set_embedding(new_embedding)
+
+        # for i in range(size):
+        #     if i == rank:
+        #         print("rank ", rank, " new_embedding: ", new_embedding)
+        #     dist.barrier()
+        # exit()
 
 
     # Reshape the embedding l -> m

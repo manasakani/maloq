@@ -233,7 +233,7 @@ class SO2NodeUpdate(torch.nn.Module):
         x_source = x.clone()
         x_target = x.clone()
 
-        x_source._expand_edge(edge_index[0, :], partition.expand_edge_0) 
+        x_source._expand_edge(edge_index[0, :], partition.expand_edge_0)  
         x_target._expand_edge(edge_index[1, :], partition.expand_edge_1)
 
         # to form the message, concatenate the embeddings of the source node, target node, and the edge between them
