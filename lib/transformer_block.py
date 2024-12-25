@@ -216,6 +216,7 @@ class SO2NodeUpdate(torch.nn.Module):
         size = dist.get_world_size()
         comm = MPI.COMM_WORLD
         atomic_numbers = partition.global_atomic_numbers
+        local_edge_idx = partition.local_edge_idx
         # _______________________________________________________________________
 
         # print("_________________________")
@@ -323,7 +324,6 @@ class SO2NodeUpdate(torch.nn.Module):
         alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)                 # shape of [E, 1, num_heads, 1]
 
         # extract only the alpha for the local edges to use for the attention mechanism
-        local_edge_idx = (global_edge_index.T.unsqueeze(1) == edge_index.T.unsqueeze(0)).all(dim=2).nonzero(as_tuple=True)[0]
         alpha = alpha[local_edge_idx]
 
         # Attention weights * non-linear messages (weight each message by the corresponding attention weight)
@@ -346,7 +346,6 @@ class SO2NodeUpdate(torch.nn.Module):
 
         # Aggregate incoming neighboring messages for each target node
         x_message._reduce_edge(edge_index[0], local_edge_idx, len(x.embedding), partition.reduce_edge)
-        # x_message._reduce_edge(edge_index[1], local_edge_idx, len(x.embedding), partition.reduce_edge) # WRONG EDGE IDX FOR TESTING
 
         # Project
         node_embedding = self.proj(x_message)

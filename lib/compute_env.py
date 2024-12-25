@@ -162,6 +162,7 @@ class Domain_Decomp():
 
         # created and assigned during data creation:
         self.global_edge_distance_vec = None
+        self.local_edge_idx = None
 
         # _________________________________________________________________________________________
         # initialize communication patterns for message passing
@@ -289,10 +290,11 @@ class Domain_Decomp():
         total_length_edge_idx = sum(counts)
         global_edge_index = torch.zeros(total_length_edge_idx, dtype=torch.int64)
         comm.Allgatherv(edge_index_np, [global_edge_index, counts, displacements, MPI.LONG])
-
-        local_edge_index_torch = torch.tensor(self.local_edge_index, device=self.device)
-        local_edge_idx = (self.global_edge_index.T.unsqueeze(1) == local_edge_index_torch.T.unsqueeze(0)).all(dim=2).nonzero(as_tuple=True)[0]
         
+        local_edge_idx = torch.arange(self.start_edge, self.end_edge)
+        local_edge_idx = local_edge_idx.to(self.device)
+        self.local_edge_idx = local_edge_idx
+
         # messages to send are in the form of {rank: [indices of own self.embedding to send to rank]}
         messages_to_send = {}
         for i, target_node in enumerate(edge_index):

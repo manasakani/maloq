@@ -367,11 +367,19 @@ class SO3_Embedding():
         MPI.Request.Waitall(recv_requests)
 
         received_embeddings = recv_bufs.reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
+
+        time_memcpy = time.time()
         received_embeddings = torch.tensor(received_embeddings).to(self.device)
+        print("rank ", rank, " time taken to memcpy DtoH (creating messages): ", time.time() - time_memcpy)
 
         # --> Slot in the recieved remote embeddings
         edge_embeddings[is_remote] = received_embeddings[embedding_indices]
         self.set_embedding(edge_embeddings)
+
+        # free gpu memory:
+        del edge_embeddings
+        del received_embeddings
+        torch.cuda.empty_cache()
 
         # end_time = time.time()
         # print("rank ", rank, " time taken to create messages: ", end_time - start_time)
@@ -485,7 +493,9 @@ class SO3_Embedding():
         MPI.Request.Waitall(recv_requests)
 
         received_embeddings = recv_bufs.reshape(num_msgs_to_recv, self.num_coefficients, self.num_channels)
+        time_memcpy = time.time()
         received_embeddings = torch.tensor(received_embeddings).to(self.device)
+        print("rank ", rank, " time taken to memcpy DtoH (aggregate): ", time.time() - time_memcpy)
         num_received_embeddings = received_embeddings.shape[0]
 
         # --> aggregate the remote embeddings recieved
@@ -495,6 +505,11 @@ class SO3_Embedding():
         # print("rank ", rank, " time taken to aggregate messages: ", end_time - start_time)
 
         self.set_embedding(new_embedding)
+
+        # free gpu memory:
+        del new_embedding
+        del received_embeddings
+        torch.cuda.empty_cache()
 
         # for i in range(size):
         #     if i == rank:
