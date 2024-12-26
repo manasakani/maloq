@@ -249,16 +249,14 @@ def convert_to_irreps(input, output_channels, lmax, lin_node):
     # prepare sorted_output:
     test_input = input.embedding.transpose(-1,-2) #rearrange from l major order into feature major order so that e.g. 64 x 1e can be extracted correctly after flattening the columns belonging to l = 1
     feature_size = test_input.shape[0]
-    sorted_output = torch.zeros(feature_size, output_channels*((lmax+1)**2))
-    device = input.embedding.device
-
+    sorted_output = torch.zeros(feature_size, output_channels*((lmax+1)**2), device=input.embedding.device)
     for l in range(lmax+1):
         start = l**2*output_channels
         end = l**2*output_channels+output_channels*(2*l+1)
         sorted_output[:,start:end] = torch.squeeze(test_input[:,:,l**2:l**2+(2*l+1)].reshape(feature_size, 1, -1))
 
     # convert:
-    test_output = lin_node(sorted_output.to(device))
+    test_output = lin_node(sorted_output)
     
     return test_output
     
