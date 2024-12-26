@@ -15,21 +15,24 @@ import torch.distributed as dist
 import torch
 import random
 
-import data as data
-import training as training
-import structure as structure
-import SO2 as SO2
-import network as network
-import SO3 as SO3
-import compute_env as env
-import utils as utils
+import data, training, structure, SO2, network, SO3, compute_env as env, utils
+import warnings
+from mpi4py import MPI
 from e3nn.o3 import Irreps
-print("Imported libraries", flush=True)
+
+# ************************************************************
+# Distributed training setup (if running on multiple GPUs)
+# ************************************************************
+
+device, world_size = env.initialize_compute_env()
+print("Device: ", device, ", World size: ", world_size, flush=True)
+
+env.rank_zero_print(f"Added {lib_root} to the path", flush=True)
+env.rank_zero_print(f"Added {lib_equiformer_root} to the path", flush=True)
+env.rank_zero_print("Imported libraries", flush=True)
+warnings.filterwarnings("ignore", category=UserWarning, message=".*To copy construct from a tensor.*")
 
 def main(folder):
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("No GPUs are available!")
 
     # Set random seed for reproducibility
     torch.manual_seed(42)
@@ -38,14 +41,7 @@ def main(folder):
     print(f"Folder: {folder}", flush=True)
 
     # ************************************************************
-    # Distributed training setup (if running on multiple GPUs)
-    # ************************************************************
-
-    device, world_size = env.initialize_compute_env()
-    print("Device: ", device, ", World size: ", world_size, flush=True)
-
-    # ************************************************************
-    # Input parameters and for the HfO2 dataset
+    # Input parameters for the HfO2 dataset
     # ************************************************************
 
     train_data_folder = os.path.join(folder, 'datasets/HfO2_2')
@@ -53,37 +49,47 @@ def main(folder):
     show_fit_for = "train"                                                          # Show fit for the training (train) or validation (val) data
     tag = 'HfO2'                                                                    # String tag for the output files
 
-    # Graph partitioning:
-    slice_start_train = 25                                                          # Start index of the slice for training
-    slice_length_train = 6                                                          # Length of the slice for training                    
-    num_slice_train = 1                                                             # Number of slices for training  
-    slice_start_val = 25                                                            # Start index of the slice for validation       
-    slice_length_val = 3                                                            # Length of the slice for validation        
-    num_slice_val = 1                                                               # Number of slices for validation  
-    
+    # Dataset parameters:
+    num_train = 1                                                                   # Number of training samples
+    num_validate = 1                                                                # Number of validation samples             
+    num_test = 1     
+    batch_size = 1                                                                  # Single graph batch size 
+    show_fit_for = "val"                                                            # Show fit for the training (train) or validation (val) data
+
     # Restart calculations:
     restart_file = None
     save_file = 'model'
 
-    if not os.path.exists('results_' + tag):
-        os.makedirs('results_' + tag)
-    save_file = 'results_' + tag + '/' + save_file
-    
+    @env.only_rank_zero
+    def make_output_folder(save_file, tag): 
+        if not os.path.exists('results_' + tag):
+            os.makedirs('results_' + tag)
+        save_file = 'results_' + tag + '/' + save_file
+        return save_file
+    save_file = make_output_folder(save_file, tag)
+
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        size = dist.get_world_size()
+        comm = MPI.COMM_WORLD
+        save_file = comm.bcast(save_file, root=0)
+
     # Network training:
     num_MP_layers = 1                                                               # Number of message passing layers 
-    num_epochs = 50000                                                              # Number of epochs                                                
+    num_epochs = 100# 50000                                                              # Number of epochs                                                
     learning_rate = 1e-4                                                            # Initial Learning rate                 
     loss_tol = 0                                                                    # Loss tolerance for early stopping
     patience = 500
     threshold = 1e-3
-    dtype = torch.float32
+    dtype = torch.float64
+    torch.set_default_dtype(torch.float64)
 
     # Material parameters:
     pbc = True
     orbital_basis = 'SZV'
-    rcut = 4.0                                                                      # Interaction radius (1/2*rcut) in Angstroms
+    rcut = 1.2                                                                      # Interaction radius (1/2*rcut) in Angstroms
     lmax = 4     
-    mmax = lmax
+    mmax = 4
 
     # *** Initialize the hyperparameters of the SO2 model:
     sphere_channels = 128
@@ -117,6 +123,16 @@ def main(folder):
                                         bothways=True, 
                                         rcut = rcut)
     print("Validation structure created", flush=True)
+
+    assert(num_train % batch_size == 0) # batch size should divide the number of training samples for current distribution
+    partition = {}
+    partition['train'] = env.Domain_Decomp(a_HfO2_train, device)
+    partition['validate'] = env.Domain_Decomp(a_HfO2_val, device)
+    dist.barrier()
+
+    partition['train'].print_info()
+    partition['validate'].print_info()
+    dist.barrier()
 
     # make sure all ranks have created the structures before proceeding
     if dist.is_initialized():
@@ -154,7 +170,7 @@ def main(folder):
                                           spinful=False,
                                           no_parity=no_parity, 
                                           if_sort=False, 
-                                          device_torch='cpu') #the data is created on cpu, so the construct_kernel must be on cpu 
+                                          device_torch=device) #the data is created on cpu, so the construct_kernel must be on cpu 
     print("Orbital analysis completed", flush=True)
 
     # *** Initialize the model:
@@ -190,25 +206,47 @@ def main(folder):
     # ************************************************************
 
     # *** Create the input dataloader: slice_length partitioning
-    train_data_loader = data.batch_data_HfO2_cartesian(a_HfO2_train, slice_start_train, slice_length_train, num_slice_train, 
-                                                        equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel,
-                                                        dtype=torch.float32)
+    print("Creating training data loader...", flush=True)
+    training_data_loader = data.batch_data_molecules([a_HfO2_train], partition['train'], device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    print("Creating training data loader...", flush=True)
+    validation_data_loader = data.batch_data_molecules([a_HfO2_val], partition['validate'], device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    print("Data loaders created")
 
-    validation_loader = data.batch_data_HfO2_cartesian(a_HfO2_val, slice_start_val, slice_length_val, num_slice_val, 
-                                                        equivariant_blocks=equivariant_blocks, out_slices=out_slices, construct_kernel=construct_kernel, 
-                                                        dtype=torch.float32)
-    print("data loaders created")
+    print("Training model...", flush=True)
+    training.train_and_validate_model_subgraph(model, 
+                                                optimizer, 
+                                                partition,
+                                                training_data_loader, 
+                                                validation_data_loader, 
+                                                num_epochs, 
+                                                loss_tol, 
+                                                patience, 
+                                                threshold, 
+                                                min_lr=1e-10,
+                                                save_file=save_file, 
+                                                dtype=dtype,
+                                                unflatten=False,
+                                                construct_kernel=construct_kernel,
+                                                equivariant_blocks=equivariant_blocks, 
+                                                atom_orbitals=atom_orbitals, 
+                                                out_slices=out_slices)
+    print("Model trained")
 
-    print("training...", flush=True)
-    training.train_and_validate_model_subgraph(model, optimizer, train_data_loader, validation_loader, num_epochs, loss_tol, patience, threshold, save_file=save_file, schedule=True, dtype=dtype)
-    print("Training completed", flush=True)
+    # create new construct_kernel for the training, this time on the cpu
+    construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
+                                        out_js_list, 
+                                        default_dtype_torch=dtype, 
+                                        spinful=False,
+                                        no_parity=no_parity, 
+                                        if_sort=False, 
+                                        device_torch='cpu')
 
     if show_fit_for == "train":
         print("Plotting fit to training data", flush=True)
-        training.evaluate_model(model, train_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+        training.evaluate_model(model, partition['train'], training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
     else:
         print("Plotting fit to validation data...", flush=True)
-        training.evaluate_model(model, validation_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+        training.evaluate_model(model, partition['validate'], validation_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
 
 
 if __name__ == "__main__":

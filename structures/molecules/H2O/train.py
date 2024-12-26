@@ -6,8 +6,6 @@ lib_root = os.path.join(project_root, 'lib')
 lib_equiformer_root = os.path.join(project_root, 'lib_equiformer')
 sys.path.append(lib_root)
 sys.path.append(lib_equiformer_root)
-print(f"Added {lib_root} to the path", flush=True)
-print(f"Added {lib_equiformer_root} to the path", flush=True)
 
 import argparse
 import numpy as np
@@ -15,10 +13,23 @@ import torch.distributed as dist
 import torch
 import random
 
-import data, training, structure, SO2, so2_model, SO3, compute_env as env, utils
-
+import data, training, structure, SO2, network, SO3, compute_env as env, utils
+import warnings
+from mpi4py import MPI
 from e3nn.o3 import Irreps
-print("Imported libraries", flush=True)
+
+# ************************************************************
+# Distributed training setup (if running on multiple GPUs)
+# ************************************************************
+
+device, world_size = env.initialize_compute_env()
+print("Device: ", device, ", World size: ", world_size, flush=True)
+print("NCCL: ", torch.cuda.nccl.version())
+
+env.rank_zero_print(f"Added {lib_root} to the path", flush=True)
+env.rank_zero_print(f"Added {lib_equiformer_root} to the path", flush=True)
+env.rank_zero_print("Imported libraries", flush=True)
+warnings.filterwarnings("ignore", category=UserWarning, message=".*To copy construct from a tensor.*")
 
 # SchNetPack package for database handling
 from schnetpack.data import ASEAtomsData
@@ -33,9 +44,6 @@ def main(folder):
     torch.manual_seed(42)
     np.random.seed(42)
     random.seed(42)
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Device: ", device)
 
     # ************************************************************
     # Input parameters and for the H2O molecule dataset
@@ -43,13 +51,13 @@ def main(folder):
 
     db_path = folder+'/datasets/schnorb_hamiltonian_water.db'
     database = ASEAtomsData(db_path)
-    print("Number of Molecules in the database: ", len(database))
+    env.rank_zero_print("Number of Molecules in the database: ", len(database))
     norbs = utils.get_number_orbitals_QM7(database)
-    print("Number of orbitals: ", norbs)
+    env.rank_zero_print("Number of orbitals: ", norbs)
 
     # Dataset parameters:
-    num_train = 500                                                             # Number of training samples
-    num_validate = 500                                                          # Number of validation samples             
+    num_train = 11                                                              # Number of training samples
+    num_validate = 10                                                           # Number of validation samples             
     num_test = 2500     
     show_fit_for = "val"                                                        # Show fit for the training (train) or validation (val) data
 
@@ -57,11 +65,21 @@ def main(folder):
     restart_file = None                                     
     save_file = 'model'
 
-    if not os.path.exists('results_' + tag):
-        os.makedirs('results_' + tag)
-    save_file = 'results_' + tag + '/' + save_file
+    @env.only_rank_zero
+    def make_output_folder(save_file, tag): 
+        if not os.path.exists('results_' + tag):
+            os.makedirs('results_' + tag)
+        save_file = 'results_' + tag + '/' + save_file
+        return save_file
+    save_file = make_output_folder(save_file, tag)
 
-    num_epochs = 500000                                                           
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        size = dist.get_world_size()
+        comm = MPI.COMM_WORLD
+        save_file = comm.bcast(save_file, root=0)
+
+    num_epochs = 100                                                           
     batch_size = num_train                                                               
     loss_tol = 1e-10
     lr = 1e-4
@@ -76,8 +94,8 @@ def main(folder):
     num_MP_layers = 2                                                           # Number of message passing layers
     dtype = torch.float64                                                       # Use double precision floating point for benchmarking
     torch.set_default_dtype(torch.float64)
-    lmax_list = [4] 
-    mmax_list = [4]
+    lmax = 4
+    mmax = 4
 
     # Hyperparameters of the SO2 model for H2O
     sphere_channels = 64 
@@ -93,7 +111,7 @@ def main(folder):
                         (sphere_channels, (4, 1))])
 
     # ************************************************************
-    # Create the dataset
+    # Create the dataset of input structures/molecules
     # ************************************************************
 
     offset = 0
@@ -102,11 +120,11 @@ def main(folder):
 
     # *** Prepare the dataset:
     sample_molecule = None
-    training_molecules = []
-    validation_molecules = []
+    training_structure = []
+    validation_structure = []
     for i in range(num_train):
         molecule_index = int(training_data_indices[i])
-        training_molecules.append(structure.Structure(None, None, None,
+        training_structure.append(structure.Structure(None, None, None,
                                             pbc, 
                                             orbital_basis, 
                                             dataset='schnet', 
@@ -115,16 +133,32 @@ def main(folder):
     
     for i in range(num_validate):
         molecule_index = int(validation_data_indices[i])
-        validation_molecules.append(structure.Structure(None, None, None,
+        validation_structure.append(structure.Structure(None, None, None,
                                                 pbc, 
                                                 orbital_basis, 
                                                 dataset='schnet', 
                                                 database_props=database.__getitem__(molecule_index), 
                                                 self_interaction=False, bothways=bothways, rcut=rcut))
-    
-    sample_molecule = training_molecules[0]
 
-    print("Dataset initialized")
+    sample_molecule = training_structure[0]
+    env.rank_zero_print("Dataset initialized")
+
+    # ************************************************************
+    # Merge structures into a single graph, and partition it
+    # ************************************************************
+
+    training_structure_merged = structure.Merged_Structure(training_structure, dataset='schnet', self_interaction=False, bothways=bothways)
+    validation_structure_merged = structure.Merged_Structure(validation_structure, dataset='schnet', self_interaction=False, bothways=bothways)
+
+    partition = {}
+    partition['train'] = env.Domain_Decomp(training_structure_merged, device)
+    partition['validate'] = env.Domain_Decomp(validation_structure_merged, device)
+    dist.barrier()
+
+    env.rank_zero_print("--> Training graph partition:")
+    partition['train'].print_info()
+    env.rank_zero_print("--> Validation graph partition:")
+    partition['validate'].print_info()
 
     # ************************************************************
     # Initialize the SO2 model
@@ -155,11 +189,11 @@ def main(folder):
                                           device_torch=device)
     
     # *** Initialize the model:
-    mappingReduced = SO3.CoefficientMappingModule(lmax_list, mmax_list)
+    mappingReduced = SO3.CoefficientMappingModule(lmax, mmax)
     irreps_out = net_out_irreps
-    model = so2_model.SO2Net(num_MP_layers, 
-                                lmax_list, 
-                                mmax_list, 
+    model = network.SO2Net(num_MP_layers, 
+                                lmax, 
+                                mmax, 
                                 mappingReduced, 
                                 sphere_channels, 
                                 edge_channels_list, 
@@ -176,19 +210,20 @@ def main(folder):
     if restart_file is not None:
         model, optimizer = env.dist_restart('results_' + tag + '/' + restart_file + '.pt', model, optimizer)
 
-    print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
-    print("Model initialized")
+    env.rank_zero_print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
+    env.rank_zero_print("Model initialized")
 
     # ************************************************************
     # Run the training process
     # ************************************************************
 
-    training_data_loader = data.batch_data_molecules(training_molecules, device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
-    validation_data_loader = data.batch_data_molecules(validation_molecules, device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    training_data_loader = data.batch_data_molecules([training_structure_merged], partition['train'], device, 1, 1, equivariant_blocks, out_slices, construct_kernel, dtype)
+    validation_data_loader = data.batch_data_molecules([validation_structure_merged], partition['validate'], device, 1, 1, equivariant_blocks, out_slices, construct_kernel, dtype)
     
-    print("training model...")
+    env.rank_zero_print("training model...")
     training.train_and_validate_model_subgraph(model,
                                                 optimizer,
+                                                partition,
                                                 training_data_loader,
                                                 validation_data_loader,
                                                 num_epochs,
@@ -203,7 +238,7 @@ def main(folder):
                                                 equivariant_blocks=equivariant_blocks, 
                                                 atom_orbitals=atom_orbitals, 
                                                 out_slices=out_slices)
-    print("Model trained")
+    env.rank_zero_print("Model trained")
 
     # create new construct_kernel for the training, this time on the cpu
     construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
@@ -215,9 +250,9 @@ def main(folder):
                                         device_torch='cpu')
     
     if show_fit_for == 'train':
-        training.evaluate_model(model, training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+        training.evaluate_model(model, partition['train'], training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
     else:
-        training.evaluate_model(model, validation_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+        training.evaluate_model(model, partition['validate'], validation_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
 
 
 if __name__ == "__main__":
@@ -225,6 +260,6 @@ if __name__ == "__main__":
     parser.add_argument("-f", "--folder", default="", required=False)
     args = parser.parse_args()
 
-    print(f"Starting main ... dataset folder is '{args.folder}'", flush=True)
+    env.rank_zero_print(f"Starting main ... dataset folder is '{args.folder}'", flush=True)
 
     main(args.folder)
