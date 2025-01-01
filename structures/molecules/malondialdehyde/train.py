@@ -14,6 +14,7 @@ import numpy as np
 import torch.distributed as dist
 import torch
 import random
+import time
 
 import data, training, structure, SO2, network, SO3, compute_env as env, utils
 import warnings
@@ -45,9 +46,6 @@ def main(folder):
     torch.manual_seed(42)
     np.random.seed(42)
     random.seed(42)
-    
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # print("Device: ", device)
 
     # ************************************************************
     # Input parameters and for the malondialdehyde molecule dataset
@@ -95,9 +93,9 @@ def main(folder):
     pbc = False
     bothways = True
     orbital_basis = 'def2_SVP' 
-    num_MP_layers = 2                                                           # Number of message passing layers
+    num_MP_layers = 2     
     dtype = torch.float64                                                       # Use double precision floating point for benchmarking
-    torch.set_default_dtype(torch.float64)
+    torch.set_default_dtype(torch.float64)                                                    
     lmax = 4 
     mmax = 4
 
@@ -224,6 +222,7 @@ def main(folder):
     training_data_loader = data.batch_data_molecules([training_structure_merged], partition['train'], device, 1, 1, equivariant_blocks, out_slices, construct_kernel, dtype)
     validation_data_loader = data.batch_data_molecules([validation_structure_merged], partition['validate'], device, 1, 1, equivariant_blocks, out_slices, construct_kernel, dtype)
     
+    start = time.time()
     print("training model...")
     training.train_and_validate_model_subgraph(model,
                                                 optimizer,
@@ -243,6 +242,8 @@ def main(folder):
                                                 atom_orbitals=atom_orbitals, 
                                                 out_slices=out_slices)
     print("Model trained")
+    dist.barrier()
+    env.rank_zero_print("Total time taken: ", time.time()-start)
 
     # create new construct_kernel for the training, this time on the cpu
     construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 

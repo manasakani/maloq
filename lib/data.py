@@ -156,9 +156,9 @@ def create_input_data_molecules(structure, partition, equivariant_blocks, out_sl
 
     total_edge_dist_vec_size = sum(all_counts)
     global_edge_distance_vec = torch.empty(total_edge_dist_vec_size, dtype=dtype)
-    
     ###
-    comm.Allgatherv(flattened_edge_distance_vec, [global_edge_distance_vec, all_counts, displacements, MPI.DOUBLE])
+    mpi_message_dtype = utils.dtype_converter(dtype, input_library='torch', output_library='mpi') 
+    comm.Allgatherv(flattened_edge_distance_vec, [global_edge_distance_vec, all_counts, displacements, mpi_message_dtype])
     ###
     # gathered_tensors = comm.allgather(flattened_edge_distance_vec) # trying regular allgather with 3 ranks
     # dist.barrier()

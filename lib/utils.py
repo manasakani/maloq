@@ -3,7 +3,7 @@ import torch
 from scipy.spatial.transform import Rotation
 from e3nn.o3 import Irrep, Irreps, matrix_to_angles
 from ase.neighborlist import NeighborList
-
+from mpi4py import MPI
 
 periodic_table = {'Ac': 89, 'Ag': 47, 'Al': 13, 'Am': 95, 'Ar': 18, 'As': 33, 'At': 85, 'Au': 79, 'B': 5, 'Ba': 56,
                   'Be': 4, 'Bi': 83, 'Bk': 97, 'Br': 35, 'C': 6, 'Ca': 20, 'Cd': 48, 'Ce': 58, 'Cf': 98, 'Cl': 17,
@@ -519,3 +519,74 @@ def reconstruct_hamiltonian(H_label, atomic_numbers, atom_orbitals, save_file=No
             file.write(f"       {i_cp2k}        {j_cp2k}  {value:.8e}\n")
 
     print(f"Hamiltonian matrix written to {save_file}")
+
+
+def dtype_converter(input_dtype, input_library, output_library):
+    """
+    Converts a datatype between torch, numpy, and MPI.
+
+    Parameters:
+        input_dtype: The input datatype (e.g., torch.float32, np.float32, MPI.FLOAT).
+        input_library: The library of the input datatype ('torch', 'numpy', or 'mpi').
+        output_library: The target library for conversion ('torch', 'numpy', or 'mpi').
+
+    Returns:
+        The equivalent datatype in the target library.
+
+    Raises:
+        ValueError: If the conversion is not supported.
+        NameError: If MPI is not imported and 'mpi' conversion is requested.
+    """
+
+    # Use string representations of MPI datatypes as intermediate keys
+    mpi_types = {
+        "MPI_FLOAT": MPI.FLOAT,
+        "MPI_DOUBLE": MPI.DOUBLE,
+    }
+
+    # Mapping between libraries
+    dtype_mapping = {
+        'torch': {
+            torch.float16: "float16",
+            torch.float32: "float32",
+            torch.float64: "float64",
+        },
+        'numpy': {
+            np.float16: "float16",
+            np.float32: "float32",
+            np.float64: "float64",
+        },
+        'mpi': {
+            "MPI_FLOAT": "float32",
+            "MPI_DOUBLE": "float64",
+        },
+    }
+
+    reverse_mapping = {
+        'torch': {v: k for k, v in dtype_mapping['torch'].items()},
+        'numpy': {v: k for k, v in dtype_mapping['numpy'].items()},
+        'mpi': {v: k for k, v in dtype_mapping['mpi'].items()},
+    }
+
+    if input_library not in dtype_mapping or output_library not in reverse_mapping:
+        raise ValueError(f"Unsupported library. Supported libraries are 'torch', 'numpy', and 'mpi'.")
+
+    # Convert input dtype to an intermediate string representation
+    if input_library == 'mpi' and isinstance(input_dtype, MPI.Datatype):
+        input_dtype = next((key for key, val in mpi_types.items() if val == input_dtype), None)
+        if input_dtype is None:
+            raise ValueError(f"Unsupported MPI datatype: {input_dtype}")
+    else:
+        input_dtype = dtype_mapping[input_library].get(input_dtype)
+        if input_dtype is None:
+            raise ValueError(f"Unsupported input datatype for {input_library}: {input_dtype}")
+
+    # Map intermediate string to the output library's dtype
+    result = reverse_mapping[output_library].get(input_dtype)
+    if output_library == 'mpi' and isinstance(result, str):
+        result = mpi_types.get(result)
+
+    if result is None:
+        raise ValueError(f"Conversion from {input_library} to {output_library} failed for dtype: {input_dtype}")
+
+    return result

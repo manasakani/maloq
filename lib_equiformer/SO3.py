@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import time
+import utils
 
 try:
     from e3nn import o3
@@ -278,6 +279,9 @@ class SO3_Embedding():
         """
         It's now been extended to account for the distributed case. The node embeddings which are needed on the current rank (due to being in the
         edge_index) but only exist on other ranks are communicated using non-blocking p2p communication.
+
+        with torch.no_grad() wraps every operations that doesnt directly modify the embedding, to avoid memory consumption for
+        uneeded gradient tracking.
         """
 
         # start_time = time.time()
@@ -298,86 +302,91 @@ class SO3_Embedding():
         displacements = expand_edge_dict['displacements']
         global_edge_idx = expand_edge_dict['global_edge_idx']
 
-        local_node_nums = torch.tensor(local_node_nums, dtype=torch.long, device=self.device)
-        remote_nodes = torch.tensor(remote_nodes, dtype=torch.long, device=self.device)
+        with torch.no_grad():
 
-        # --> Send/Receive embeddings
-        num_nodes_to_recv = sum([len(nodes) for nodes in nodes_to_recv.values()])
-        send_requests = []
-        recv_requests = []
+            local_node_nums = torch.tensor(local_node_nums, dtype=torch.long, device=self.device)
+            remote_nodes = torch.tensor(remote_nodes, dtype=torch.long, device=self.device)
 
-        recv_bufs = np.empty(num_nodes_to_recv * self.num_coefficients * self.num_channels, dtype=np.float64)  # Hardcoded datatype!!!
-        recv_source = np.empty(num_nodes_to_recv)
+            # --> Send/Receive embeddings
+            num_nodes_to_recv = sum([len(nodes) for nodes in nodes_to_recv.values()])
+            send_requests = []
+            recv_requests = []
 
-        # Non-blocking sends
-        for target_rank, nodes in nodes_to_send.items():
+            numpy_buffer_dtype = utils.dtype_converter(self.dtype, input_library='torch', output_library='numpy')
+            recv_bufs = np.empty(num_nodes_to_recv * self.num_coefficients * self.num_channels, dtype=numpy_buffer_dtype)
+            recv_source = np.empty(num_nodes_to_recv)
 
-            if nodes:
+            # Non-blocking sends
+            for target_rank, nodes in nodes_to_send.items():
 
-                nodes_tensor = torch.tensor(nodes, dtype=torch.long)
-                indices = []
-                for node in nodes_tensor:
-                    idx = torch.where(local_node_nums == node)[0]
-                    if idx.numel() == 0:
-                        raise ValueError(f"comm error, check ln 392 in SO3.py")
-                    indices.append(idx.item())
+                if nodes:
 
-                # print("rank ", rank, "Sending nodes: ", nodes, " in indices ", indices, " to rank: ", target_rank)
-                sendbuf = self._flatten_embedding(self.embedding[indices])
+                    nodes_tensor = torch.tensor(nodes, dtype=torch.long)
+                    indices = []
+                    for node in nodes_tensor:
+                        idx = torch.where(local_node_nums == node)[0]
+                        if idx.numel() == 0:
+                            raise ValueError(f"comm error, check ln 392 in SO3.py")
+                        indices.append(idx.item())
 
-                req = comm.Isend(sendbuf, dest=target_rank, tag=rank)
-                send_requests.append(req)
+                    # print("rank ", rank, "Sending nodes: ", nodes, " in indices ", indices, " to rank: ", target_rank)
+                    sendbuf = self._flatten_embedding(self.embedding[indices])
 
-        # Non-blocking recvs posts
-        recv_pointer = 0
+                    req = comm.Isend(sendbuf, dest=target_rank, tag=rank)
+                    send_requests.append(req)
 
-        is_remote = torch.isin(edge_index, remote_nodes)
-        remote_edge_nodes = edge_index[is_remote]
-        embedding_indices = torch.ones(len(remote_edge_nodes), dtype=torch.long, device=self.device) # indices of received_embeddings to slot into the new embedding
+            # Non-blocking recvs posts
+            recv_pointer = 0
+
+            is_remote = torch.isin(edge_index, remote_nodes)
+            remote_edge_nodes = edge_index[is_remote]
+            embedding_indices = torch.ones(len(remote_edge_nodes), dtype=torch.long, device=self.device) # indices of received_embeddings to slot into the new embedding
+            
+            node_track = 0
+            for i, (source_rank, nodes) in enumerate(nodes_to_recv.items()):
+
+                if nodes: 
+                    # print(f"Rank {rank}: getting nodes {nodes} from rank {source_rank}")
+                    start_idx = recv_pointer
+                    end_idx = start_idx + len(nodes) * self.num_coefficients * self.num_channels
+                    
+                    req = comm.Irecv(recv_bufs[start_idx:end_idx], source=source_rank, tag=source_rank)
+                    recv_requests.append(req)
+
+                    recv_source[i] = source_rank
+                    recv_pointer = end_idx
+
+                    for node in nodes:  # node is the identity of the recieved node, not the index
+                        embedding_indices[torch.where(remote_edge_nodes == node)[0]] = node_track # locations in the new embedding where this recieved embedding should go
+                        node_track += 1 # track the number of nodes received
+
+            
+            # --> Slot in the local embeddings while waiting for comm
+            edge_embeddings = torch.empty((len(edge_index), self.embedding.shape[1], self.embedding.shape[2]), device=self.device)
+            edge_index = torch.tensor(edge_index, dtype=torch.long, device=self.device)
+
+            is_local = torch.isin(edge_index, local_node_nums)
+            local_edge_nodes = edge_index[is_local]
+            local_indices = edge_index[is_local] - start_node
         
-        node_track = 0
-        for i, (source_rank, nodes) in enumerate(nodes_to_recv.items()):
-
-            if nodes: 
-                # print(f"Rank {rank}: getting nodes {nodes} from rank {source_rank}")
-                start_idx = recv_pointer
-                end_idx = start_idx + len(nodes) * self.num_coefficients * self.num_channels
-                
-                req = comm.Irecv(recv_bufs[start_idx:end_idx], source=source_rank, tag=source_rank)
-                recv_requests.append(req)
-
-                recv_source[i] = source_rank
-                recv_pointer = end_idx
-
-                for node in nodes:  # node is the identity of the recieved node, not the index
-                    embedding_indices[torch.where(remote_edge_nodes == node)[0]] = node_track # locations in the new embedding where this recieved embedding should go
-                    node_track += 1 # track the number of nodes received
-
-        # --> Slot in the local embeddings while waiting for comm
-        edge_embeddings = torch.empty((len(edge_index), self.embedding.shape[1], self.embedding.shape[2]), device=self.device)
-        edge_index = torch.tensor(edge_index, dtype=torch.long, device=self.device)
-
-        is_local = torch.isin(edge_index, local_node_nums)
-        local_edge_nodes = edge_index[is_local]
-        local_indices = edge_index[is_local] - start_node
         edge_embeddings[is_local] = self.embedding[local_indices]
-        
+            
         # Wait for all sends and recvs to complete
         MPI.Request.Waitall(send_requests)
         MPI.Request.Waitall(recv_requests)
 
-        received_embeddings = recv_bufs.reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
+        with torch.no_grad():
 
-        # time_memcpy = time.time()
-        received_embeddings = torch.tensor(received_embeddings).to(self.device)
-        # print("rank ", rank, " time taken to memcpy DtoH (creating messages): ", time.time() - time_memcpy)
+            received_embeddings = recv_bufs.reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
+            received_embeddings = torch.tensor(received_embeddings).to(self.device)
 
         # --> Slot in the recieved remote embeddings
         edge_embeddings[is_remote] = received_embeddings[embedding_indices]
+
         self.set_embedding(edge_embeddings)
 
         # free gpu memory:
-        del edge_embeddings
+        del edge_embeddings, local_node_nums, remote_nodes, recv_bufs
         del received_embeddings
         torch.cuda.empty_cache()
 
@@ -439,64 +448,67 @@ class SO3_Embedding():
         displacements = reduce_edge_dict['displacements']                   # displacements of the nodes owned by each rank (used for allgatherv)
         
         num_msgs_to_recv = sum([len(msgs) for msgs in messages_to_recv.values()])
+
+        with torch.no_grad():
                 
-        # --> Send/Receive embeddings
-        send_requests = []
-        recv_requests = []
-        recv_bufs = np.empty(num_msgs_to_recv * self.num_coefficients * self.num_channels, dtype=np.float64)  # Hardcoded datatype!!!
+            # --> Send/Receive embeddings
+            send_requests = []
+            recv_requests = []
+            numpy_buffer_dtype = utils.dtype_converter(self.dtype, input_library='torch', output_library='numpy')
+            recv_bufs = np.empty(num_msgs_to_recv * self.num_coefficients * self.num_channels, dtype=numpy_buffer_dtype)
 
-        # Non-blocking sends
-        for dest_rank, embedding_idxs in messages_to_send.items():
+            # Non-blocking sends
+            for dest_rank, embedding_idxs in messages_to_send.items():
 
-            if embedding_idxs:
+                if embedding_idxs:
 
-                embedding_idxs_tensor = torch.tensor(embedding_idxs, dtype=torch.long)
-                sendbuf = self._flatten_embedding(self.embedding[embedding_idxs_tensor])
-                req = comm.Isend(sendbuf, dest=dest_rank, tag=rank)
-                send_requests.append(req)
-                # print("rank ", rank, "Sending embedding_idxs: ", embedding_idxs, " to rank: ", dest_rank)
+                    # print("rank ", rank, "Sending embedding_idxs: ", embedding_idxs, " to rank: ", dest_rank)
+                    embedding_idxs_tensor = torch.tensor(embedding_idxs, dtype=torch.long)
+                    sendbuf = self._flatten_embedding(self.embedding[embedding_idxs_tensor])
+                    req = comm.Isend(sendbuf, dest=dest_rank, tag=rank)
+                    send_requests.append(req)
 
-        # Non-blocking recvs
-        recv_pointer = 0
-        slot_pointer = 0
-        remote_idx_slots = torch.zeros(num_msgs_to_recv, dtype=torch.long, device=self.device)       # already start collecting where the embeddings should go
-        for i, (source_rank, embedding_idxs) in enumerate(messages_to_recv.items()):
+            # Non-blocking recvs
+            recv_pointer = 0
+            slot_pointer = 0
+            remote_idx_slots = torch.zeros(num_msgs_to_recv, dtype=torch.long, device=self.device)       # already start collecting where the embeddings should go
+            for i, (source_rank, embedding_idxs) in enumerate(messages_to_recv.items()):
 
-            if embedding_idxs:
+                if embedding_idxs:
 
-                start_idx = recv_pointer
-                end_idx = start_idx + len(embedding_idxs) * self.num_coefficients * self.num_channels
+                    start_idx = recv_pointer
+                    end_idx = start_idx + len(embedding_idxs) * self.num_coefficients * self.num_channels
+                        
+                    req = comm.Irecv(recv_bufs[start_idx:end_idx], source=source_rank, tag=source_rank)
+                    recv_requests.append(req)
+                    recv_pointer = end_idx
+                    # print("rank ", rank, "received message from rank ", source_rank)
                     
-                req = comm.Irecv(recv_bufs[start_idx:end_idx], source=source_rank, tag=source_rank)
-                recv_requests.append(req)
-                recv_pointer = end_idx
-                # print("rank ", rank, "received message from rank ", source_rank)
-                
-                # embedding_idxs are indices of the remote rank's embedding which were sent to the current rank
-                # remote idx slots should contain the positions where the corresponding embeddings should go in the new_embedding
-                node_start = displacements[source_rank]
-                for j, idx in enumerate(embedding_idxs):
-                    node_to_sum_into = global_edge_index[node_start + idx]
-                    remote_idx_slots[slot_pointer] = torch.where(local_node_nums == node_to_sum_into)[0].item()
-                    slot_pointer += 1
+                    # embedding_idxs are indices of the remote rank's embedding which were sent to the current rank
+                    # remote idx slots should contain the positions where the corresponding embeddings should go in the new_embedding
+                    node_start = displacements[source_rank]
+                    for j, idx in enumerate(embedding_idxs):
+                        node_to_sum_into = global_edge_index[node_start + idx]
+                        remote_idx_slots[slot_pointer] = torch.where(local_node_nums == node_to_sum_into)[0].item()
+                        slot_pointer += 1
 
-        # --> aggregate the local embeddings while waiting for comm
-        edge_index = torch.tensor(edge_index, dtype=torch.long, device=self.device)
-        local_node_nums = torch.tensor(local_node_nums, dtype=torch.long, device=self.device)
+            # --> aggregate the local embeddings while waiting for comm
+            edge_index = torch.tensor(edge_index, dtype=torch.long, device=self.device)
+            local_node_nums = torch.tensor(local_node_nums, dtype=torch.long, device=self.device)
 
-        is_local = (edge_index >= start_node) & (edge_index < end_node)
-        local_indices = edge_index[is_local] - start_node
+            is_local = (edge_index >= start_node) & (edge_index < end_node)
+            local_indices = edge_index[is_local] - start_node
+
         new_embedding.index_add_(0, local_indices, self.embedding[is_local])
         
         # Wait for comm
         MPI.Request.Waitall(send_requests)
         MPI.Request.Waitall(recv_requests)
 
-        received_embeddings = recv_bufs.reshape(num_msgs_to_recv, self.num_coefficients, self.num_channels)
-        # time_memcpy = time.time()
-        received_embeddings = torch.tensor(received_embeddings).to(self.device)
-        # print("rank ", rank, " time taken to memcpy DtoH (aggregate): ", time.time() - time_memcpy)
-        num_received_embeddings = received_embeddings.shape[0]
+        with torch.no_grad():
+            received_embeddings = recv_bufs.reshape(num_msgs_to_recv, self.num_coefficients, self.num_channels)
+            received_embeddings = torch.tensor(received_embeddings).to(self.device)
+            num_received_embeddings = received_embeddings.shape[0]
 
         # --> aggregate the remote embeddings recieved
         new_embedding.index_add_(0, remote_idx_slots, received_embeddings)
@@ -506,16 +518,9 @@ class SO3_Embedding():
 
         self.set_embedding(new_embedding)
 
-        # free gpu memory:
-        del new_embedding
+        del new_embedding, remote_idx_slots, recv_bufs, edge_index, local_node_nums
         del received_embeddings
         torch.cuda.empty_cache()
-
-        # for i in range(size):
-        #     if i == rank:
-        #         print("rank ", rank, " new_embedding: ", new_embedding)
-        #     dist.barrier()
-        # exit()
 
 
     # Reshape the embedding l -> m

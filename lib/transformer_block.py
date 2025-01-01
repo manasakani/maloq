@@ -7,6 +7,7 @@ import copy
 from mpi4py import MPI
 import torch.distributed as dist
 import numpy as np
+import utils
 
 # Note: we only use Gate Activation in this implementation
 from activation import (
@@ -313,8 +314,10 @@ class SO2NodeUpdate(torch.nn.Module):
         all_counts = comm.allgather(local_alpha_size)
         displacements = np.cumsum([0] + all_counts[:-1])
         total_alpha_size = sum(all_counts)
-        alpha_all = np.empty(total_alpha_size, dtype=np.float64)
-        comm.Allgatherv(alpha, [alpha_all, all_counts, displacements, MPI.DOUBLE])
+        numpy_buffer_dtype = utils.dtype_converter(x_message.dtype, input_library='torch', output_library='numpy')
+        mpi_message_dtype = utils.dtype_converter(x_message.dtype, input_library='torch', output_library='mpi') 
+        alpha_all = np.empty(total_alpha_size, dtype=numpy_buffer_dtype)
+        comm.Allgatherv(alpha, [alpha_all, all_counts, displacements, mpi_message_dtype])
 
         alpha = alpha_all.reshape(-1, alpha_shape[1])
         alpha = torch.tensor(alpha, device=x.device)
