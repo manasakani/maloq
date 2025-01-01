@@ -128,34 +128,66 @@ class Domain_Decomp():
         self.size = dist.get_world_size()
         self.comm = MPI.COMM_WORLD
         self.device = device
-
-        total_num_nodes = len(structure.atomic_numbers) 
-        total_num_edges = structure.edge_matrix.shape[1]
         
-        # splitting the nodes and edges among the ranks
+        # --> Split nodes between ranks
+        total_num_nodes = len(structure.atomic_numbers) 
         local_num_nodes = total_num_nodes // self.size
-        local_num_edges = total_num_edges // self.size
 
         start_node = self.rank * local_num_nodes
         end_node = start_node + local_num_nodes
-        start_edge = self.rank * local_num_edges
-        end_edge = start_edge + local_num_edges
 
         if self.rank == self.size - 1:
             local_num_nodes += total_num_nodes % self.size
             end_node += total_num_nodes % self.size
-        if self.rank == self.size - 1:
-            local_num_edges += total_num_edges % self.size
-            end_edge += total_num_edges % self.size
-        
+
         self.start_node = start_node
         self.end_node = end_node
-        self.start_edge = start_edge
-        self.end_edge = end_edge
+
+        edge_split_type = "by_node"
+
+        # --> Split edges between ranks (naive split)
+        if edge_split_type == "uniform":
+
+            total_num_edges = structure.edge_matrix.shape[1]
+            local_num_edges = total_num_edges // self.size
+
+            start_edge = self.rank * local_num_edges
+            end_edge = start_edge + local_num_edges
+
+            if self.rank == self.size - 1:
+                local_num_edges += total_num_edges % self.size
+                end_edge += total_num_edges % self.size
+        
+            self.start_edge = start_edge
+            self.end_edge = end_edge
+
+        # --> Split edges between ranks (split based on nodes, each rank gets all edges of its nodes, no communication needed for aggregation)
+
+        elif edge_split_type == "by_node":   
+
+            start_edge_idx = 0
+            for i, dst_edge in enumerate(structure.edge_matrix[0]):
+                if dst_edge == self.start_node:
+                    start_edge_idx = i
+                    break
+            
+            # end edge is the last edge of the last node in the local node list
+            end_edge_idx = len(structure.edge_matrix[0]) - 1
+            for i, dst_edge in enumerate(structure.edge_matrix[0][::-1]):
+                if dst_edge == self.end_node - 1:
+                    end_edge_idx = len(structure.edge_matrix[0]) - i
+                    break
+            
+            self.start_edge = start_edge_idx
+            self.end_edge = end_edge_idx
+        
+        else: 
+            print("Edge split type not recognized.")
+                        
 
         # the numbers correspond to the full set of nodes and edges in the structure
         self.local_node_index = np.arange(start_node, end_node)
-        self.local_edge_index = structure.edge_matrix[:, start_edge:end_edge]
+        self.local_edge_index = structure.edge_matrix[:, self.start_edge:self.end_edge]
         global_edge_index = structure.edge_matrix
         self.global_edge_index = torch.tensor(global_edge_index, device=self.device)
         self.global_atomic_numbers = torch.tensor(structure.atomic_numbers, device=self.device)
@@ -185,6 +217,7 @@ class Domain_Decomp():
                 print(f"Rank {self.rank} has nodes from {self.start_node} to {self.end_node}: {self.local_node_index}")
                 print(f"Rank {self.rank} has edges from {self.start_edge} to {self.end_edge}: {self.local_edge_index}")
             self.comm.Barrier()
+        dist.barrier()
 
     def init_comm_pattern_expand(self, edge_index):
 
