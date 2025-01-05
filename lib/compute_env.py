@@ -8,57 +8,27 @@ import numpy as np
 # Initialize the compute environment for distributed training
 def initialize_compute_env():
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    world_size = comm.Get_size()
 
-    if 'SLURM_PROCID' in os.environ:  
-        rank = int(os.environ['SLURM_PROCID'])
-        world_size = int(os.environ['SLURM_NTASKS'])
-        local_rank = int(os.environ['SLURM_LOCALID'])
-        os.environ['RANK'] = str(rank)
-        os.environ['WORLD_SIZE'] = str(world_size)
-        os.environ['LOCAL_RANK'] = str(local_rank)
-        backend = 'gloo'  # Use NCCL for Piz Daint (edit: RDMA may be broken, switching to gloo)
-        dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
-        print("Initialized process group in: SLURM", flush=True)
+    print("Total number of GPUs found: ", torch.cuda.device_count())
+    # gpu_id = rank % torch.cuda.device_count()
+    gpu_id = 0
+    torch.cuda.set_device(gpu_id)
+    print(f"Rank {rank} is using GPU {gpu_id}")
 
-    else:  
-        comm = MPI.COMM_WORLD
-        local_rank = comm.Get_rank()
-        rank = local_rank
-        world_size = comm.Get_size()
+    device = torch.device('cuda:'+ str(gpu_id) if torch.cuda.is_available() else "cpu")
 
-        # get the required env variables on rank 0 and broadcast them to all other ranks
-        if local_rank == 0:
-            os.environ["MASTER_ADDR"] = "127.0.0.1"  
-            os.environ["MASTER_PORT"] = "29500"      
-            master_addr = "127.0.0.1"
-            master_port = "29500"
+    backend = 'gloo'  # Use Gloo for attelas 
+    # backend = 'nccl'  # Use Gloo for burmy
 
-            comm.bcast(master_addr, root=0)
-            comm.bcast(master_port, root=0)
-        else:
-            os.environ["MASTER_ADDR"] = comm.bcast(None, root=0)
-            os.environ["MASTER_PORT"] = comm.bcast(None, root=0)
-
-        # Set environment variables for torch.distributed
-        os.environ["RANK"] = str(local_rank)
-        os.environ["WORLD_SIZE"] = str(world_size)
-
-        gpu_id = local_rank % torch.cuda.device_count()
-        torch.cuda.set_device(gpu_id)
-        print(f"Rank {rank} is using GPU {gpu_id}")
-        print("Total number of GPUs found: ", torch.cuda.device_count())
-
-        backend = 'gloo'  # Use Gloo for attelas 
-        # backend = 'nccl'  # Use Gloo for burmy
-
-        dist.init_process_group(backend=backend, rank=local_rank, world_size=world_size)
-        rank_zero_print("Initialized process group in: local", flush=True)
-        rank_zero_print(f"Backend: {backend}", flush=True)
+    dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
+    rank_zero_print("Initialized process group in: local", flush=True)
+    rank_zero_print(f"Backend: {backend}", flush=True)
 
     rank_zero_print(f"RANK: {rank}", flush=True)
     rank_zero_print(f"WORLD_SIZE: {world_size}", flush=True)
-    rank_zero_print(f"LOCAL_RANK: {local_rank}", flush=True)
     dist.barrier()
 
     return device, world_size
@@ -142,8 +112,9 @@ class Domain_Decomp():
 
         self.start_node = start_node
         self.end_node = end_node
+        self.local_num_nodes = local_num_nodes
 
-        edge_split_type = "incoming"
+        edge_split_type = "by_node"
 
         # --> Split edges between ranks (naive split)
         if edge_split_type == "uniform":
@@ -163,7 +134,7 @@ class Domain_Decomp():
 
         # --> Split edges between ranks (split based on nodes, each rank gets all edges of its nodes, no communication needed for aggregation)
 
-        elif edge_split_type == "incoming":   
+        elif edge_split_type == "by_node":   
 
             start_edge_idx = 0
             for i, dst_edge in enumerate(structure.edge_matrix[0]):
@@ -217,7 +188,6 @@ class Domain_Decomp():
                 print(f"Rank {self.rank} has nodes from {self.start_node} to {self.end_node}: {self.local_node_index}")
                 print(f"Rank {self.rank} has edges from {self.start_edge} to {self.end_edge}: {self.local_edge_index}")
             self.comm.Barrier()
-        dist.barrier()
 
     def init_comm_pattern_expand(self, edge_index):
 
@@ -282,8 +252,43 @@ class Domain_Decomp():
         print("rank ", self.rank, " Nodes to recv (during message creation): ", nodes_to_recv)
         dist.barrier()
 
+        indices_to_send = {}
+        for target_rank, nodes in nodes_to_send.items():
+            if nodes:
+                nodes_tensor = torch.tensor(nodes, dtype=torch.int64, requires_grad=False)
+                indices = torch.empty_like(nodes_tensor)
+                for j, node in enumerate(nodes_tensor):
+                    idx = torch.where(local_node_nums == node)[0]
+                    indices[j] = idx
+                indices_to_send[target_rank] = indices.to(self.device)
+
+
+        edge_index = torch.tensor(edge_index, dtype=torch.long, device=self.device)
+
+        local_node_nums = torch.tensor(local_node_nums, dtype=torch.long, device=self.device)
+        is_local = torch.isin(edge_index, local_node_nums)
+        local_edge_nodes = edge_index[is_local]
+        local_indices = edge_index[is_local] - self.start_node
+
+        remote_nodes = torch.tensor(remote_nodes, dtype=torch.long, device=self.device)
+        is_remote = torch.isin(edge_index, remote_nodes)
+        remote_edge_nodes = edge_index[is_remote]
+        remote_indices = torch.ones(len(remote_edge_nodes), dtype=torch.long, device=self.device) # indices of received_embeddings to slot into the new embedding
+
+        node_track = 0
+        for i, (source_rank, nodes) in enumerate(nodes_to_recv.items()):
+            if nodes: 
+                for node in nodes:  # node is the identity of the recieved node, not the index
+                    remote_indices[torch.where(remote_edge_nodes == node)[0]] = node_track # locations in the new embedding where this recieved embedding should go
+                    node_track += 1 # track the number of nodes received
+
         expand_edge_dict = {}
+        expand_edge_dict['local_indices'] = local_indices
+        expand_edge_dict['remote_indices'] = remote_indices
+        expand_edge_dict['is_local'] = is_local
+        expand_edge_dict['is_remote'] = is_remote
         expand_edge_dict['nodes_to_send'] = nodes_to_send
+        expand_edge_dict['indices_to_send'] = indices_to_send
         expand_edge_dict['nodes_to_recv'] = nodes_to_recv
         expand_edge_dict['remote_nodes'] = remote_nodes
         expand_edge_dict['remote_node_ranks'] = remote_node_ranks
@@ -358,7 +363,37 @@ class Domain_Decomp():
         print(f"Rank {rank}: messages_to_recv (during message aggregation) = {messages_to_recv}")
         dist.barrier()
         
+
+        for dest_rank, embedding_idxs in messages_to_send.items():
+            if embedding_idxs:
+                messages_to_send[dest_rank] = torch.tensor(embedding_idxs, dtype=torch.int64, device=self.device)
+
+
+        edge_index = torch.tensor(edge_index, dtype=torch.long, device=self.device)
+        local_node_nums = torch.tensor(local_node_nums, dtype=torch.long, device=self.device)
+
+        is_local = (edge_index >= self.start_node) & (edge_index < self.end_node)
+        local_indices = edge_index[is_local] - self.start_node
+
+        # get remote indices to write into
+        recv_pointer = 0
+        slot_pointer = 0
+        num_msgs_to_recv = sum([len(msgs) for msgs in messages_to_recv.values()])
+        remote_indices = torch.zeros(num_msgs_to_recv, dtype=torch.long, device=self.device)       # already start collecting where the embeddings should go
+        for source_rank, embedding_idxs in messages_to_recv.items():
+
+            if embedding_idxs:
+                node_start = displacements[source_rank]
+                for j, idx in enumerate(embedding_idxs):
+                    node_to_sum_into = global_edge_index[node_start + idx]
+                    remote_indices[slot_pointer] = torch.where(local_node_nums == node_to_sum_into)[0].item()
+                    slot_pointer += 1
+
+
         reduce_edge_dict = {}
+        reduce_edge_dict['is_local'] = is_local
+        reduce_edge_dict['local_indices'] = local_indices
+        reduce_edge_dict['remote_indices'] = remote_indices
         reduce_edge_dict['messages_to_send'] = messages_to_send
         reduce_edge_dict['messages_to_recv'] = messages_to_recv
         reduce_edge_dict['local_node_nums'] = local_node_nums

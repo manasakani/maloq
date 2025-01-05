@@ -4,6 +4,7 @@ from scipy.spatial.transform import Rotation
 from e3nn.o3 import Irrep, Irreps, matrix_to_angles
 from ase.neighborlist import NeighborList
 from mpi4py import MPI
+import cupy as cp
 
 periodic_table = {'Ac': 89, 'Ag': 47, 'Al': 13, 'Am': 95, 'Ar': 18, 'As': 33, 'At': 85, 'Au': 79, 'B': 5, 'Ba': 56,
                   'Be': 4, 'Bi': 83, 'Bk': 97, 'Br': 35, 'C': 6, 'Ca': 20, 'Cd': 48, 'Ce': 58, 'Cf': 98, 'Cl': 17,
@@ -527,8 +528,8 @@ def dtype_converter(input_dtype, input_library, output_library):
 
     Parameters:
         input_dtype: The input datatype (e.g., torch.float32, np.float32, MPI.FLOAT).
-        input_library: The library of the input datatype ('torch', 'numpy', or 'mpi').
-        output_library: The target library for conversion ('torch', 'numpy', or 'mpi').
+        input_library: The library of the input datatype ('torch', 'numpy', 'cupy' or 'mpi').
+        output_library: The target library for conversion ('torch', 'numpy', 'cupy' or 'mpi').
 
     Returns:
         The equivalent datatype in the target library.
@@ -556,6 +557,11 @@ def dtype_converter(input_dtype, input_library, output_library):
             np.float32: "float32",
             np.float64: "float64",
         },
+        'cupy': {
+            cp.float16: "float16",
+            cp.float32: "float32",
+            cp.float64: "float64",
+        },
         'mpi': {
             "MPI_FLOAT": "float32",
             "MPI_DOUBLE": "float64",
@@ -566,6 +572,7 @@ def dtype_converter(input_dtype, input_library, output_library):
         'torch': {v: k for k, v in dtype_mapping['torch'].items()},
         'numpy': {v: k for k, v in dtype_mapping['numpy'].items()},
         'mpi': {v: k for k, v in dtype_mapping['mpi'].items()},
+        'cupy': {v: k for k, v in dtype_mapping['cupy'].items()},
     }
 
     if input_library not in dtype_mapping or output_library not in reverse_mapping:

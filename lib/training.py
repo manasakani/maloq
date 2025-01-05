@@ -225,15 +225,15 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
             
         @env.only_rank_zero
         def print_train_info(): 
-            print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds")
-            print(f"--> Forward Pass Time: {forward_pass_duration:.4f} seconds")
-            print(f"--> Loss Computation Time: {loss_duration:.4f} seconds")
-            print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds")
-            print(f"--> Total Batch process time: {batch_duration:.4f} seconds")
-            print("--> Peak memory allocated: " + str(torch.cuda.max_memory_allocated(device)/1e9) + " GB")
-            print("--> Current memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + " GB")
-            print(f"--> Memory info: {torch.cuda.mem_get_info(device)}")
-            print("Epoch: " + str(epoch)+ " loss: " + str(global_loss))
+            print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds", flush=True)
+            print(f"--> Forward Pass Time: {forward_pass_duration:.4f} seconds", flush=True)
+            print(f"--> Loss Computation Time: {loss_duration:.4f} seconds", flush=True)
+            print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds", flush=True)
+            print(f"--> Total Batch process time: {batch_duration:.4f} seconds", flush=True)
+            print("--> Peak memory allocated: " + str(torch.cuda.max_memory_allocated(device)/1e9) + " GB", flush=True)
+            print("--> Current memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + " GB", flush=True)
+            print(f"--> Memory info: {torch.cuda.mem_get_info(device)}", flush=True)
+            print("Epoch: " + str(epoch)+ " loss: " + str(global_loss), flush=True)
         print_train_info()
 
         # Validate the model
@@ -445,8 +445,8 @@ def evaluate_model(model, partition, data_loader, construct_kernel, equivariant_
     @env.only_rank_zero
     def plot_results():
         plt.figure(figsize=(4, 3))
-        plt.scatter(all_edge_labels, all_edge_preds, s=1, alpha=0.5, edgecolor='none', color='crimson', label='Edge')
-        plt.scatter(all_node_labels, all_node_preds, s=1, alpha=0.5, edgecolor='none', color='blue', label='Node')
+        plt.scatter(all_edge_labels, all_edge_preds, s=1, alpha=0.2, edgecolor='none', color='crimson', label='Edge')
+        plt.scatter(all_node_labels, all_node_preds, s=1, alpha=0.2, edgecolor='none', color='blue', label='Node')
         plt.plot(all_node_labels, all_node_labels, c='k', linestyle='dashed', linewidth=0.1, alpha=0.3)
         plt.xlabel(r"$(H_{ij})_{\alpha \beta}^{GT}$")
         plt.ylabel(r"$(H_{ij})_{\alpha \beta}^{pred}$")
