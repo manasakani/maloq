@@ -143,7 +143,7 @@ class Domain_Decomp():
         self.start_node = start_node
         self.end_node = end_node
 
-        edge_split_type = "by_node"
+        edge_split_type = "incoming"
 
         # --> Split edges between ranks (naive split)
         if edge_split_type == "uniform":
@@ -163,7 +163,7 @@ class Domain_Decomp():
 
         # --> Split edges between ranks (split based on nodes, each rank gets all edges of its nodes, no communication needed for aggregation)
 
-        elif edge_split_type == "by_node":   
+        elif edge_split_type == "incoming":   
 
             start_edge_idx = 0
             for i, dst_edge in enumerate(structure.edge_matrix[0]):
