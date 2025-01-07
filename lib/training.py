@@ -154,7 +154,7 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
     
     if dist.is_available() and dist.is_initialized():
         # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the one-way edges
-        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device)
     world_size = dist.get_world_size()
 
     track_loss_node = []

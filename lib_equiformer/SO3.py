@@ -320,56 +320,57 @@ class SO3_Embedding():
         is_remote = expand_edge_dict['is_remote']
         nodes_to_send = expand_edge_dict['nodes_to_send']
         nodes_to_recv = expand_edge_dict['nodes_to_recv']
-        remote_nodes = expand_edge_dict['remote_nodes']
-        remote_node_ranks = expand_edge_dict['remote_node_ranks']
-        local_node_nums = expand_edge_dict['local_node_nums']
         indices_to_send = expand_edge_dict['indices_to_send']
-        displacements = expand_edge_dict['displacements']
-        global_edge_idx = expand_edge_dict['global_edge_idx']
 
-        # --> Send/Receive embeddings
-        num_nodes_to_recv = len(remote_indices)
+        with torch.no_grad():
 
-        cupy_buffer_dtype = utils.dtype_converter(self.dtype, input_library='torch', output_library='cupy')
-        recv_bufs = cp.empty(
-            num_nodes_to_recv * self.num_coefficients * self.num_channels,
-            dtype=cupy_buffer_dtype
-        )
+            # --> Send/Receive embeddings
+            num_nodes_to_recv = len(remote_indices)
 
-        # Non-blocking sends
-        sendbufs = {}
-        for target_rank, nodes in nodes_to_send.items():
-            if nodes:
-                sendbufs[target_rank] = self._flatten_embedding(self.embedding[indices_to_send[target_rank]])
+            cupy_buffer_dtype = utils.dtype_converter(self.dtype, input_library='torch', output_library='cupy')
+            recv_bufs = cp.empty(
+                num_nodes_to_recv * self.num_coefficients * self.num_channels,
+                dtype=cupy_buffer_dtype
+            )
 
-        cp.cuda.runtime.deviceSynchronize()
-        nccl.groupStart()
-        for target_rank, nodes in nodes_to_send.items():
-            if nodes:
-                comm.send(sendbufs[target_rank], target_rank, stream=stream)
+            # Non-blocking sends
+            sendbufs = {}
+            for target_rank, nodes in nodes_to_send.items():
+                if nodes:
+                    sendbufs[target_rank] = self._flatten_embedding(self.embedding[indices_to_send[target_rank]])
+
+            cp.cuda.runtime.deviceSynchronize()
+            nccl.groupStart()
+            for target_rank, nodes in nodes_to_send.items():
+                if nodes:
+                    comm.send(sendbufs[target_rank], target_rank, stream=stream)
 
 
-        # Non-blocking recvs posts
-        recv_pointer = 0
-        for i, (source_rank, nodes) in enumerate(nodes_to_recv.items()):
-            if nodes: 
-                start_idx = recv_pointer
-                end_idx = start_idx + len(nodes) * self.num_coefficients * self.num_channels
-                comm.recv(recv_bufs[start_idx:end_idx], source_rank, stream=stream)
-                recv_pointer = end_idx
+            # Non-blocking recvs posts
+            recv_pointer = 0
+            for i, (source_rank, nodes) in enumerate(nodes_to_recv.items()):
+                if nodes: 
+                    start_idx = recv_pointer
+                    end_idx = start_idx + len(nodes) * self.num_coefficients * self.num_channels
+                    comm.recv(recv_bufs[start_idx:end_idx], source_rank, stream=stream)
+                    recv_pointer = end_idx
 
-        nccl.groupEnd()
-        cp.cuda.runtime.deviceSynchronize()
+            nccl.groupEnd()
+            cp.cuda.runtime.deviceSynchronize()
 
-        # --> Slot in the local embeddings while waiting for comm
-        edge_embeddings = torch.empty((len(edge_index), self.embedding.shape[1], self.embedding.shape[2]), device=self.device)
-        edge_embeddings[is_local] = self.embedding[local_indices]
-        
+            # --> Slot in the local embeddings while waiting for comm
+            edge_embeddings = torch.empty((len(edge_index), self.embedding.shape[1], self.embedding.shape[2]), device=self.device)
+
+        edge_embeddings[is_local] = self.embedding[local_indices]               # needs gradients
+    
         # --> Slot in the recieved remote embeddings
         if num_nodes_to_recv:
-            received_embeddings = recv_bufs.reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
-            received_embeddings = torch.tensor(received_embeddings, device=self.device)
-            edge_embeddings[is_remote] = received_embeddings[remote_indices]
+
+            with torch.no_grad():
+                received_embeddings = recv_bufs.reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
+                received_embeddings = torch.tensor(received_embeddings, device=self.device)
+
+            edge_embeddings[is_remote] = received_embeddings[remote_indices]    # needs gradients
 
         self.set_embedding(edge_embeddings)
 
@@ -417,52 +418,52 @@ class SO3_Embedding():
         is_local = reduce_edge_dict['is_local']
         local_indices = reduce_edge_dict['local_indices']
         remote_indices = reduce_edge_dict['remote_indices']
-        local_node_nums = reduce_edge_dict['local_node_nums']               # numbers of the nodes onwed by the current rank
-        start_node = reduce_edge_dict['start_node']                         # start node of the current rank
-        end_node = reduce_edge_dict['end_node']                             # end node of the current rank
         messages_to_send = reduce_edge_dict['messages_to_send']             # dictionary of messages to send to other ranks in the form {rank: [indices to send from current rank]}
         messages_to_recv = reduce_edge_dict['messages_to_recv']             # dictionary of messages to receive from other ranks in the form {rank: [rank's indices to receive]}
-        global_edge_index = reduce_edge_dict['global_edge_index']           # global edge index of the destination nodes
-        displacements = reduce_edge_dict['displacements']                   # displacements of the nodes owned by each rank (used for allgatherv)
         
-        num_msgs_to_recv = len(remote_indices)
-        
-        cupy_buffer_dtype = utils.dtype_converter(self.dtype, input_library='torch', output_library='cupy')
-        recv_bufs = cp.empty(
-            num_msgs_to_recv * self.num_coefficients * self.num_channels,
-            dtype=cupy_buffer_dtype
-        )
+        with torch.no_grad():
 
-        sendbufs = {}
-        for target_rank, embedding_idxs in messages_to_send.items():
-            if len(embedding_idxs) > 0:
-                sendbufs[target_rank] = self._flatten_embedding(self.embedding[embedding_idxs])
+            # --> Send/Receive embeddings
+            num_msgs_to_recv = len(remote_indices)
+            
+            cupy_buffer_dtype = utils.dtype_converter(self.dtype, input_library='torch', output_library='cupy')
+            recv_bufs = cp.empty(
+                num_msgs_to_recv * self.num_coefficients * self.num_channels,
+                dtype=cupy_buffer_dtype
+            )
 
-        cp.cuda.runtime.deviceSynchronize()
-        nccl.groupStart()
-        # Non-blocking sends
-        for target_rank, embedding_idxs in messages_to_send.items():
-            if len(embedding_idxs) > 0:
-                comm.send(sendbufs[target_rank], target_rank, stream=stream)
+            sendbufs = {}
+            for target_rank, embedding_idxs in messages_to_send.items():
+                if len(embedding_idxs) > 0:
+                    sendbufs[target_rank] = self._flatten_embedding(self.embedding[embedding_idxs])
 
-        # Non-blocking recvs
-        recv_pointer = 0
-        for source_rank, embedding_idxs in messages_to_recv.items():
-            if len(embedding_idxs) > 0:
-                start_idx = recv_pointer
-                end_idx = start_idx + len(embedding_idxs) * self.num_coefficients * self.num_channels
-                comm.recv(recv_bufs[start_idx:end_idx], source_rank, stream=stream)
-                recv_pointer = end_idx
+            cp.cuda.runtime.deviceSynchronize()
+            nccl.groupStart()
 
-        nccl.groupEnd()
-        cp.cuda.runtime.deviceSynchronize()
-        # NOTE: This is a blocking operation and such no overlap currently
+            # Sends
+            for target_rank, embedding_idxs in messages_to_send.items():
+                if len(embedding_idxs) > 0:
+                    comm.send(sendbufs[target_rank], target_rank, stream=stream)
+
+            # Recvs
+            recv_pointer = 0
+            for source_rank, embedding_idxs in messages_to_recv.items():
+                if len(embedding_idxs) > 0:
+                    start_idx = recv_pointer
+                    end_idx = start_idx + len(embedding_idxs) * self.num_coefficients * self.num_channels
+                    comm.recv(recv_bufs[start_idx:end_idx], source_rank, stream=stream)
+                    recv_pointer = end_idx
+
+            nccl.groupEnd()
+            cp.cuda.runtime.deviceSynchronize()
+            # NOTE: This is a blocking operation and such no overlap currently
 
         # --> aggregate the local embeddings while waiting for comm
         new_embedding.index_add_(0, local_indices, self.embedding[is_local])
 
-        received_embeddings = recv_bufs.reshape(num_msgs_to_recv, self.num_coefficients, self.num_channels)
-        received_embeddings = torch.tensor(received_embeddings, device=self.device)
+        with torch.no_grad():
+            received_embeddings = recv_bufs.reshape(num_msgs_to_recv, self.num_coefficients, self.num_channels)
+            received_embeddings = torch.tensor(received_embeddings, device=self.device)
 
         # --> aggregate the remote embeddings recieved
         new_embedding.index_add_(0, remote_indices, received_embeddings)

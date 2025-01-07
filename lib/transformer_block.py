@@ -308,26 +308,31 @@ class SO2NodeUpdate(torch.nn.Module):
         # allgatherv alpha across ranks, before softmax, so every rank has the entire set of attention weights:
         # NOTE: THIS CAN BE DONE WITHOUT GATHERING THE ENTIRE EDGE INDEX
 
-        alpha_shape = alpha.shape
-        alpha = alpha.cpu().detach().numpy().reshape(-1)
-        local_alpha_size = len(alpha)
-        all_counts = comm.allgather(local_alpha_size)
-        displacements = np.cumsum([0] + all_counts[:-1])
-        total_alpha_size = sum(all_counts)
-        numpy_buffer_dtype = utils.dtype_converter(x_message.dtype, input_library='torch', output_library='numpy')
-        mpi_message_dtype = utils.dtype_converter(x_message.dtype, input_library='torch', output_library='mpi') 
-        alpha_all = np.empty(total_alpha_size, dtype=numpy_buffer_dtype)
-        comm.Allgatherv(alpha, [alpha_all, all_counts, displacements, mpi_message_dtype])
+        if partition.edge_split_type == "uniform":
+            alpha_shape = alpha.shape
+            alpha = alpha.cpu().detach().numpy().reshape(-1)
+            local_alpha_size = len(alpha)
+            all_counts = comm.allgather(local_alpha_size)
+            displacements = np.cumsum([0] + all_counts[:-1])
+            total_alpha_size = sum(all_counts)
+            numpy_buffer_dtype = utils.dtype_converter(x_message.dtype, input_library='torch', output_library='numpy')
+            mpi_message_dtype = utils.dtype_converter(x_message.dtype, input_library='torch', output_library='mpi') 
+            alpha_all = np.empty(total_alpha_size, dtype=numpy_buffer_dtype)
+            comm.Allgatherv(alpha, [alpha_all, all_counts, displacements, mpi_message_dtype])
 
-        alpha = alpha_all.reshape(-1, alpha_shape[1])
-        alpha = torch.tensor(alpha, device=x.device)
+            alpha = alpha_all.reshape(-1, alpha_shape[1])
+            alpha = torch.tensor(alpha, device=x.device)
 
-        # normalize the incoming weights to every node to compute the final attention weights along every edge
-        alpha = torch_geometric.utils.softmax(alpha, global_edge_index[1])          # softmax over the incoming edges
-        alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)                 # shape of [E, 1, num_heads, 1]
+            # normalize the incoming weights to every node to compute the final attention weights along every edge
+            alpha = torch_geometric.utils.softmax(alpha, global_edge_index[1])          # softmax over the incoming edges
+            alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)                 # shape of [E, 1, num_heads, 1]
 
-        # extract only the alpha for the local edges to use for the attention mechanism
-        alpha = alpha[local_edge_idx]
+            # extract only the alpha for the local edges to use for the attention mechanism
+            alpha = alpha[local_edge_idx]
+        else:
+            offset_local_dst_indices = partition.expand_edge_0["local_indices"]
+            alpha = torch_geometric.utils.softmax(alpha, offset_local_dst_indices)      # softmax over the incoming edges
+            alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)                 # shape of [E, 1, num_heads, 1]
 
         # Attention weights * non-linear messages (weight each message by the corresponding attention weight)
         attn = x_message.embedding                                                                      # shape of [E, (lmax+1)^2, # hidden channels]
