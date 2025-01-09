@@ -29,6 +29,9 @@ from SO3 import (
 )
 from radial_function import RadialFunction
 
+from torch import cuda
+import os
+DEBUG = os.environ.get("DEBUG", False)
 
 # Borrowed from EquiformerV2 (https://github.com/atomicarchitects/equiformer_v2.git)
 class FeedForwardNetwork(torch.nn.Module):
@@ -226,6 +229,11 @@ class SO2NodeUpdate(torch.nn.Module):
 
         # Compute edge scalar features (invariant to rotations)
         # Uses atomic numbers and edge distance as inputs
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_push("Message creation")
+            cuda.nvtx.range_push("Init source and target")
+
         source_element = atomic_numbers[edge_index[0]]  
         target_element = atomic_numbers[edge_index[1]]  
         source_embedding = self.source_embedding(source_element)
@@ -235,8 +243,25 @@ class SO2NodeUpdate(torch.nn.Module):
         x_source = x.clone()
         x_target = x.clone()
 
+        if DEBUG:
+            cuda.synchronize()
+            dist.barrier()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("Expand Edge 1")
+
         x_source._expand_edge(edge_index[0, :], partition.expand_edge_0)  
+
+        if DEBUG:
+            cuda.synchronize()
+            dist.barrier()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("Expand Edge 2")
+    
         x_target._expand_edge(edge_index[1, :], partition.expand_edge_1)
+    
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
 
         # to form the message, concatenate the embeddings of the source node, target node, and the edge between them
         # note, the source node is the one that recieves the message..
@@ -254,10 +279,25 @@ class SO2NodeUpdate(torch.nn.Module):
         # print("_________________________")
         # print("start of radial function")
         # print("_________________________")
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("Radial function")
+
 
         # radial function (linear layers + layer normalization + SiLU)
         if self.use_m_share_rad:
+
+            if DEBUG:
+                cuda.synchronize()
+                cuda.nvtx.range_push("rad_func")
+
             x_edge_weight = self.rad_func(x_edge)
+
+            if DEBUG:
+                cuda.synchronize()
+                cuda.nvtx.range_pop()
+    
             x_edge_weight = x_edge_weight.reshape(-1, (self.lmax + 1), 3 * self.sphere_channels) # 3x for the 3 concatenated features
             x_edge_weight = torch.index_select(x_edge_weight, dim=1, index=self.expand_index) # [E, (L_max + 1) ** 2, C]
             x_message.embedding = x_message.embedding * x_edge_weight
@@ -267,7 +307,18 @@ class SO2NodeUpdate(torch.nn.Module):
         # print("_________________________")
 
         # Rotate the irreps to align with the edge
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_push("Rotate")
+    
         x_message._rotate(self.SO3_rotation, self.lmax, self.mmax)
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("so2 conv 1")
+
 
         # print("_________________________")
         # print("SO2 Convolution 1")
@@ -279,7 +330,12 @@ class SO2NodeUpdate(torch.nn.Module):
         # print("_________________________")
         # print("Gate Activation")
         # print("_________________________")
-        
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("activation")
+
         # Activation (Gate activation)
         x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
         x_0_gating = x_0_extra.narrow(1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels) # for activation
@@ -289,9 +345,19 @@ class SO2NodeUpdate(torch.nn.Module):
         # print("_________________________")
         # print("SO2 Convolution 2")
         # print("_________________________")
-        
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()           
+            cuda.nvtx.range_push("so2 conv 2")
+
         # Second SO(2)-convolution
         x_message = self.so2_conv_2(x_message, x_edge)
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("attention weights")
 
         # print("_________________________")
         # print("Attention weights")
@@ -341,12 +407,23 @@ class SO2NodeUpdate(torch.nn.Module):
         attn = attn.reshape(attn.shape[0], attn.shape[1], self.num_heads * self.attn_value_channels)
         x_message.embedding = attn
 
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("Rotate Inv")
+
+
         # print("_________________________")
         # print("Second Rotation")
         # print("_________________________")
 
         # Rotate back the irreps
         x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("Reduce edge")
 
         # print("_________________________")
         # print("Aggregation")
@@ -355,8 +432,17 @@ class SO2NodeUpdate(torch.nn.Module):
         # Aggregate incoming neighboring messages for each target node
         x_message._reduce_edge(edge_index[0], local_edge_idx, len(x.embedding), partition.reduce_edge)
 
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("proj")
+
         # Project
         node_embedding = self.proj(x_message)
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
 
         return node_embedding
     
@@ -440,8 +526,16 @@ class NodeBlockV2(torch.nn.Module):
 
         atomic_numbers = partition.global_atomic_numbers
 
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_push("norm_1")
+
         # Normalize the input embedding (done independantly for each embedding)
         output_embedding.embedding = self.norm_1(output_embedding.embedding)
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
 
         # Perform the SO2NodeUpdate
         output_embedding = self.ga(output_embedding, 
@@ -450,17 +544,30 @@ class NodeBlockV2(torch.nn.Module):
             edge_index, global_edge_index, edge_fea, iteration)
     
         # Add the residual connection and update the output embedding
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_push("norm_2")
+
         output_embedding.embedding = output_embedding.embedding + x_res
         x_res = output_embedding.embedding
 
         # Normalize the output embedding
         output_embedding.embedding = self.norm_2(output_embedding.embedding)
 
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("ffn")
+
         # Pass through the feedforward network
         output_embedding = self.ffn(output_embedding)
 
         # Add the residual connection
         output_embedding.embedding = output_embedding.embedding + x_res
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
 
         return output_embedding
     
@@ -570,6 +677,11 @@ class SO2EdgeUpdate(torch.nn.Module):
         edge_fea
     ):
 
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_push("Message creation")
+            cuda.nvtx.range_push("Init source and target")
+
         atomic_numbers = partition.global_atomic_numbers
          
         # Compute edge scalar features (invariant to rotations)
@@ -585,9 +697,27 @@ class SO2EdgeUpdate(torch.nn.Module):
 
         x_source = x.clone()
         x_target = x.clone()
+
+        if DEBUG:
+            cuda.synchronize()
+            dist.barrier()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("Expand Edge 1")
+
         x_source._expand_edge(edge_index[0, :], partition.expand_edge_0) #first dimension is the number of edges
+
+        if DEBUG:
+            cuda.synchronize()
+            dist.barrier()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("Expand Edge 2")
+
         x_target._expand_edge(edge_index[1, :], partition.expand_edge_1)
-        
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+
         x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) #concatenate source and target node embeddings along channel dimension
         x_message = SO3_Embedding(
             0,
@@ -599,29 +729,73 @@ class SO2EdgeUpdate(torch.nn.Module):
         x_message.set_embedding(x_message_data)
         x_message.set_lmax_mmax(self.lmax, self.mmax)
 
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("Radial function")
+
         # radial function (linear layers + layer normalization + SiLU)
         if self.use_m_share_rad:
+
+            if DEBUG:
+                cuda.synchronize()
+                cuda.nvtx.range_push("rad_func")
+
             x_edge_weight = self.rad_func(x_edge)
+
+            if DEBUG:
+                cuda.synchronize()
+                cuda.nvtx.range_pop()
+
             x_edge_weight = x_edge_weight.reshape(-1, (self.lmax + 1), 3 * self.sphere_channels)
             x_edge_weight = torch.index_select(x_edge_weight, dim=1, index=self.expand_index) # [E, (L_max + 1) ** 2, C]
             x_message.embedding = x_message.embedding * x_edge_weight
 
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_push("Rotate")
         # Rotate the irreps to align with the edge
         x_message._rotate(self.SO3_rotation, self.lmax, self.mmax)
 
+        if DEBUG:
+            cuda.nvtx.range_pop()
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("so2 conv 1")
+
+
         # First SO(2)-convolution
         x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
-        
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("activation")
+
         # Activation (Gate activation)
         x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
         x_0_gating = x_0_extra.narrow(1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels) # for activation
         x_message.embedding = self.gate_act(x_0_gating, x_message.embedding)
 
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("Rotate Inv")
+
         # Rotate back the irreps
         x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
 
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("proj")
+
         # Project
         edge_embedding = self.proj(x_message)
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
 
         return edge_embedding
 

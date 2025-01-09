@@ -11,6 +11,9 @@ import compute_env as env
 import gc
 from mpi4py import MPI
 import numpy as np
+from torch import cuda
+import os
+DEBUG = os.environ.get("DEBUG", False)
 
 @env.only_rank_zero
 def save_training_state(model, optimizer, track_loss_edge, track_loss_node, track_validation_edge, track_validation_node, save_file):
@@ -167,10 +170,23 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
     model.train()  # Set the model to training mode
     for epoch in range(num_epochs):
 
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_push("Per epoch")
+
+
         # model.train()
         epoch_start_time = time.time()
 
         for batch in training_loader:
+
+            if DEBUG:
+                cuda.synchronize()
+                cuda.nvtx.range_push("Per batch")
+
+                cuda.synchronize()
+                dist.barrier()
+                cuda.nvtx.range_push("Zero grad + batch to device")
 
             batch_start_time = time.time()
 
@@ -182,12 +198,31 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
             # Forward pass 
             # [Communication of embeddings occurs within the SO3_Embedding class]
             batch = batch.to(device)
+
+            if DEBUG:
+                cuda.synchronize()
+                dist.barrier()
+                cuda.nvtx.range_pop()
+                cuda.nvtx.range_push("Forward pass")
+
             node_output, edge_output = model(batch, p_train)
+
+            if DEBUG:
+                cuda.synchronize()
+                dist.barrier()
+                cuda.nvtx.range_pop()
+                cuda.nvtx.range_push("Loss computation")
+
             forward_pass_time = time.time()
 
             # _________________________________________________________
             # Loss computation
             loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion)
+
+            if DEBUG:
+                cuda.synchronize()
+                cuda.nvtx.range_pop()
+                cuda.nvtx.range_push("Loss reduction")
 
             global_loss = local_loss.clone()
             global_loss_node = loss_node.clone()
@@ -202,14 +237,30 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
             global_loss_edge /= world_size
             loss_time = time.time()
 
+            if DEBUG:
+                cuda.synchronize()
+                dist.barrier()  
+                cuda.nvtx.range_pop()
+                cuda.nvtx.range_push("Backwards pass")
+
             # _________________________________________________________
             # Backward pass
-            global_loss.backward()    
+            global_loss.backward()
+
+            if DEBUG: 
+                cuda.synchronize()
+                dist.barrier()  
+                cuda.nvtx.range_pop()   
+
             backward_pass_time = time.time()                              
-                        
             # _________________________________________________________
             # Parameter update
             optimizer.step()
+
+            if DEBUG: 
+                cuda.synchronize()
+                dist.barrier()
+                cuda.nvtx.range_pop()
 
             batch_end_time = time.time()
             forward_pass_duration = forward_pass_time - batch_start_time
@@ -290,7 +341,11 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
         if global_loss < loss_tol:
             print("Loss has reached the minimum threshold. Stopping training.")
             break
-            
+
+        if DEBUG: 
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+
     print("Final loss: ", global_loss) 
     save_training_state(model, optimizer, track_loss_edge, track_loss_node, track_validation_edge, track_validation_node, save_file)
 

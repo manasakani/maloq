@@ -13,6 +13,10 @@ from mpi4py import MPI
 
 import time
 import numpy as np
+from torch import cuda
+import os
+DEBUG = os.environ.get("DEBUG", False)
+
 
 # Borrowed from mace-ocp (https://github.com/ACEsuit/mace-ocp.git)
 class GaussianSmearing(torch.nn.Module):
@@ -160,6 +164,10 @@ class SO2Net(torch.nn.Module):
 
     def forward(self, batch, partition):
 
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_push("Initialize forward")
+
         device = batch.y.device
         dtype = batch.y.dtype
                          
@@ -201,8 +209,15 @@ class SO2Net(torch.nn.Module):
         edge_rot_mat_local = edge_rot_mat_global[start_edge:end_edge]                                               
         self.SO3_rotation[0].set_wigner(edge_rot_mat_local)                                                 # set the rotation matrices for each of the edges in the edge list
 
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
         # Process the graph through the layers
         for i in range(self.num_layers):
+
+            if DEBUG:
+                cuda.synchronize()
+                cuda.nvtx.range_push("Node Block")
 
             node_embedding_local = self.blocks[2*i](
                             node_embedding_local,                  # SO3_Embedding
@@ -214,6 +229,11 @@ class SO2Net(torch.nn.Module):
                             i
                         )  
 
+            if DEBUG:
+                cuda.synchronize()
+                cuda.nvtx.range_pop()
+                cuda.nvtx.range_push("Edge Block")
+
             edge_embedding_local = self.blocks[2*i+1](
                             node_embedding_local,                  # SO3_Embedding
                             partition, 
@@ -222,7 +242,10 @@ class SO2Net(torch.nn.Module):
                             partition.global_edge_index,
                             edge_embedding_local
                         )
-            
+
+            if DEBUG:
+                cuda.nvtx.range_pop()
+
         # for i in range(size):
         #     if rank == i:
         #         # print("rank ", rank, " node_embedding_local embedding: ", node_embedding_local.embedding)
@@ -232,8 +255,17 @@ class SO2Net(torch.nn.Module):
         # sfgh
 
         # basis transformation to get hamiltonian blocks
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_push("Irreps Conversion")
+
         local_node_output = convert_to_irreps(node_embedding_local, self.output_channels, self.lmax, self.node_lin)
         local_edge_output = convert_to_irreps(edge_embedding_local, self.output_channels, self.lmax, self.edge_lin)
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
 
         return local_node_output, local_edge_output
 
