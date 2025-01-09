@@ -103,12 +103,16 @@ class Domain_Decomp():
         total_num_nodes = len(structure.atomic_numbers) 
         local_num_nodes = total_num_nodes // self.size
 
-        start_node = self.rank * local_num_nodes
-        end_node = start_node + local_num_nodes
+        counts = np.array([local_num_nodes] * self.size, dtype=np.int32)
+        for i in range(total_num_nodes % self.size):
+            counts[i] += 1
 
-        if self.rank == self.size - 1:
-            local_num_nodes += total_num_nodes % self.size
-            end_node += total_num_nodes % self.size
+        displacements = np.zeros_like(counts)
+        for i in range(1, len(counts)):
+            displacements[i] = displacements[i-1] + counts[i-1]
+
+        start_node = displacements[self.rank]
+        end_node = displacements[self.rank] + counts[self.rank]
 
         self.start_node = start_node
         self.end_node = end_node
