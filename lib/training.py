@@ -188,7 +188,6 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
                 dist.barrier()
                 cuda.nvtx.range_push("Zero grad + batch to device")
 
-            batch_start_time = time.time()
 
             # _________________________________________________________
             # Gradient cleanup
@@ -205,7 +204,12 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
                 cuda.nvtx.range_pop()
                 cuda.nvtx.range_push("Forward pass")
 
+            cuda.synchronize()
+            dist.barrier()
+            batch_start_time = time.time()
             node_output, edge_output = model(batch, p_train)
+            cuda.synchronize()
+            forward_pass_time = time.time()
 
             if DEBUG:
                 cuda.synchronize()
@@ -213,7 +217,6 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
                 cuda.nvtx.range_pop()
                 cuda.nvtx.range_push("Loss computation")
 
-            forward_pass_time = time.time()
 
             # _________________________________________________________
             # Loss computation
@@ -235,7 +238,7 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
             global_loss /= world_size
             global_loss_node /= world_size
             global_loss_edge /= world_size
-            loss_time = time.time()
+
 
             if DEBUG:
                 cuda.synchronize()
@@ -245,6 +248,9 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
 
             # _________________________________________________________
             # Backward pass
+            cuda.synchronize()
+            dist.barrier()
+            loss_time = time.time()            
             global_loss.backward()
 
             if DEBUG: 
@@ -252,7 +258,7 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
                 dist.barrier()  
                 cuda.nvtx.range_pop()   
 
-            backward_pass_time = time.time()                              
+                            
             # _________________________________________________________
             # Parameter update
             optimizer.step()
@@ -261,6 +267,9 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
                 cuda.synchronize()
                 dist.barrier()
                 cuda.nvtx.range_pop()
+
+            cuda.synchronize()
+            backward_pass_time = time.time()  
 
             batch_end_time = time.time()
             forward_pass_duration = forward_pass_time - batch_start_time
@@ -274,18 +283,16 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
         track_loss_edge.append(global_loss_edge.cpu().detach().numpy())
         track_training_loss.append(global_loss.cpu().detach().numpy())
             
-        @env.only_rank_zero
-        def print_train_info(): 
-            print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds", flush=True)
-            print(f"--> Forward Pass Time: {forward_pass_duration:.4f} seconds", flush=True)
-            print(f"--> Loss Computation Time: {loss_duration:.4f} seconds", flush=True)
-            print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds", flush=True)
-            print(f"--> Total Batch process time: {batch_duration:.4f} seconds", flush=True)
-            print("--> Peak memory allocated: " + str(torch.cuda.max_memory_allocated(device)/1e9) + " GB", flush=True)
-            print("--> Current memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + " GB", flush=True)
-            print(f"--> Memory info: {torch.cuda.mem_get_info(device)}", flush=True)
-            print("Epoch: " + str(epoch)+ " loss: " + str(global_loss), flush=True)
-        print_train_info()
+ 
+        print(f"Epoch {epoch} - Time: {epoch_duration:.4f} seconds", flush=True)
+        print(f"--> Forward Pass Time: {forward_pass_duration:.4f} seconds", flush=True)
+        print(f"--> Loss Computation Time: {loss_duration:.4f} seconds", flush=True)
+        print(f"--> Backward Pass Time: {backward_pass_duration:.4f} seconds", flush=True)
+        print(f"--> Total Batch process time: {batch_duration:.4f} seconds", flush=True)
+        print("--> Peak memory allocated: " + str(torch.cuda.max_memory_allocated(device)/1e9) + " GB", flush=True)
+        print("--> Current memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + " GB", flush=True)
+        print(f"--> Memory info: {torch.cuda.mem_get_info(device)}", flush=True)
+        print("Epoch: " + str(epoch)+ " loss: " + str(global_loss), flush=True)
 
         # Validate the model
         model.eval()

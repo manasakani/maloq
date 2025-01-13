@@ -209,7 +209,7 @@ class SO2NodeUpdate(torch.nn.Module):
         self.proj = SO3_LinearV2(self.num_heads * self.attn_value_channels, self.output_channels, lmax=self.lmax)
 
 
-    def message_wise_operations(self, x_message, x_edge, partition, start_edge, end_edge):
+    def message_wise_operations(self, x_message, x_edge, start_edge, end_edge):
 
          # print("_________________________")
         # print("start of radial function")
@@ -338,45 +338,68 @@ class SO2NodeUpdate(torch.nn.Module):
             cuda.nvtx.range_pop()
             cuda.nvtx.range_push("Expand Edge 2")
     
-        local_target_embedding = x_target._expand_edge_local(partition.expand_edge_1)
+        local_target_embedding_data = x_target._expand_edge_local(partition.expand_edge_1)
         x_target._start_expand_edge_remote(partition.expand_edge_1)
+        # NOTE: set_embedding of x_target is not called
+        # thus lmax could be wrong in x_target
 
         # to form the message, concatenate the embeddings of the source node, target node, and the edge between them
         # note, the source node is the one that recieves the message..
 
         # Perform message-wise operations: Radial function, rotations, SO2-convolutions, gate activation, attention weights, and aggregation
-        split = partition.truly_local_num_edges
+        
+        if partition.overlap:
+            split = partition.truly_local_num_edges
 
-        with torch.cuda.stream(local_stream):
-            x_message_local = SO3_Embedding(split, x_target.lmax,  x_target.num_channels * 3, device=x_target.device, dtype=x_target.dtype)
-            x_message_local_data = torch.cat((source_embedding_data[:split], local_target_embedding, edge_fea.embedding[:split]), dim=2) 
-            x_message_local.set_embedding(x_message_local_data)
-            x_message_local.set_lmax_mmax(self.lmax, self.mmax)
+            with torch.cuda.stream(local_stream):
+                x_message_local = SO3_Embedding(split, x_target.lmax,  x_target.num_channels * 3, device=x_target.device, dtype=x_target.dtype)
+                x_message_local_data = torch.cat((source_embedding_data[:split], local_target_embedding_data, edge_fea.embedding[:split]), dim=2) 
+                x_message_local.set_embedding(x_message_local_data)
+                x_message_local.set_lmax_mmax(self.lmax, self.mmax)
 
-            x_message_embedding_local, x_0_alpha_local = self.message_wise_operations(x_message_local, x_edge[:split], partition, 0, split)
+                x_message_embedding_local, x_0_alpha_local = self.message_wise_operations(x_message_local, x_edge[:split], 0, split)
 
-        with torch.cuda.stream(remote_stream):
+            with torch.cuda.stream(remote_stream):
+                # synchronizes the communication
+                remote_target_embedding_data = x_target._end_expand_edge_remote(partition.expand_edge_1)
+                if DEBUG:
+                    cuda.current_stream().synchronize()
+                    cuda.nvtx.range_pop()
+
+                x_message_remote = SO3_Embedding(edge_fea.embedding.shape[0] - split, x_target.lmax,  x_target.num_channels * 3, device=x_target.device, dtype=x_target.dtype)
+                x_message_remote_data = torch.cat((source_embedding_data[split:], remote_target_embedding_data, edge_fea.embedding[split:]), dim=2) 
+                x_message_remote.set_embedding(x_message_remote_data)
+                x_message_remote.set_lmax_mmax(self.lmax, self.mmax)
+
+                x_message_embedding_remote, x_0_alpha_remote = self.message_wise_operations(x_message_remote, x_edge[split:], split, edge_fea.embedding.shape[0])
+
+            local_stream.synchronize()
+            remote_stream.synchronize()        
+            x_message_embedding = torch.cat((x_message_embedding_local, x_message_embedding_remote), dim=0)
+            x_0_alpha = torch.cat((x_0_alpha_local, x_0_alpha_remote), dim=0)
+
+        else:
             # synchronizes the communication
-            remote_target_embedding = x_target._end_expand_edge_remote(partition.expand_edge_1)
+            remote_target_embedding_data = x_target._end_expand_edge_remote(partition.expand_edge_1)
             if DEBUG:
                 cuda.current_stream().synchronize()
                 cuda.nvtx.range_pop()
 
-            x_message_remote = SO3_Embedding(edge_fea.embedding.shape[0] - split, x_target.lmax,  x_target.num_channels * 3, device=x_target.device, dtype=x_target.dtype)
-            x_message_remote_data = torch.cat((source_embedding_data[split:], remote_target_embedding, edge_fea.embedding[split:]), dim=2) 
-            x_message_remote.set_embedding(x_message_remote_data)
-            x_message_remote.set_lmax_mmax(self.lmax, self.mmax)
+            x_message = SO3_Embedding(edge_fea.embedding.shape[0], x_target.lmax,  x_target.num_channels * 3, device=x_target.device, dtype=x_target.dtype)
+            target_embedding_data = torch.cat((local_target_embedding_data, remote_target_embedding_data), dim=0)
+            x_message_data = torch.cat((source_embedding_data, target_embedding_data, edge_fea.embedding), dim=2) 
+            x_message.set_embedding(x_message_data)
+            x_message.set_lmax_mmax(self.lmax, self.mmax)
 
-            x_message_embedding_remote, x_0_alpha_remote = self.message_wise_operations(x_message_remote, x_edge[split:], partition, split, edge_fea.embedding.shape[0])
 
-        cuda.synchronize()
+            x_message_embedding, x_0_alpha = self.message_wise_operations(x_message, x_edge, 0, edge_fea.embedding.shape[0])
+
+
 
         if DEBUG:
             cuda.synchronize()
             cuda.nvtx.range_push("attention weights")
 
-        x_message_embedding = torch.cat((x_message_embedding_local, x_message_embedding_remote), dim=0)
-        x_0_alpha = torch.cat((x_0_alpha_local, x_0_alpha_remote), dim=0)
 
         x_message = SO3_Embedding(
             0,
@@ -522,12 +545,6 @@ class NodeBlockV2(torch.nn.Module):
         output_embedding = x
         x_res = output_embedding.embedding
 
-        rank = dist.get_rank()
-        size = dist.get_world_size()
-        comm = MPI.COMM_WORLD
-
-        atomic_numbers = partition.global_atomic_numbers
-
         if DEBUG:
             cuda.synchronize()
             cuda.nvtx.range_push("norm_1")
@@ -667,8 +684,78 @@ class SO2EdgeUpdate(torch.nn.Module):
         )
 
         self.proj = SO3_LinearV2(self.hidden_channels, self.output_channels, lmax=self.lmax)
-        
-        
+
+
+    def message_wise_operations(self, x_message, x_edge, start_edge, end_edge):    
+        if DEBUG:
+            cuda.current_stream().synchronize()
+            cuda.nvtx.range_push("Radial function")
+
+        # radial function (linear layers + layer normalization + SiLU)
+        if self.use_m_share_rad:
+
+            if DEBUG:
+                cuda.current_stream().synchronize()
+                cuda.nvtx.range_push("rad_func")
+
+            x_edge_weight = self.rad_func(x_edge)
+
+            if DEBUG:
+                cuda.current_stream().synchronize()
+                cuda.nvtx.range_pop()
+
+            x_edge_weight = x_edge_weight.reshape(-1, (self.lmax + 1), 3 * self.sphere_channels)
+            x_edge_weight = torch.index_select(x_edge_weight, dim=1, index=self.expand_index) # [E, (L_max + 1) ** 2, C]
+            x_message.embedding = x_message.embedding * x_edge_weight
+
+        if DEBUG:
+            cuda.current_stream().synchronize()
+            cuda.nvtx.range_push("Rotate")
+        # Rotate the irreps to align with the edge
+        x_message._rotate(self.SO3_rotation, self.lmax, self.mmax, start_edge, end_edge)
+
+        if DEBUG:
+            cuda.nvtx.range_pop()
+            cuda.current_stream().synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("so2 conv 1")
+
+
+        # First SO(2)-convolution
+        x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
+
+        if DEBUG:
+            cuda.current_stream().synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("activation")
+
+        # Activation (Gate activation)
+        x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
+        x_0_gating = x_0_extra.narrow(1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels) # for activation
+        x_message.embedding = self.gate_act(x_0_gating, x_message.embedding)
+
+        if DEBUG:
+            cuda.current_stream().synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("Rotate Inv")
+
+        # Rotate back the irreps
+        x_message._rotate_inv(self.SO3_rotation, self.mappingReduced, start_edge, end_edge)
+
+        if DEBUG:
+            cuda.current_stream().synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("proj")
+
+        # Project
+        edge_embedding = self.proj(x_message)
+
+        if DEBUG:
+            cuda.current_stream().synchronize()
+            cuda.nvtx.range_pop()
+
+        return edge_embedding
+
     def forward(
         self,
         x,
@@ -681,7 +768,6 @@ class SO2EdgeUpdate(torch.nn.Module):
 
         if DEBUG:
             cuda.synchronize()
-            cuda.nvtx.range_push("Message creation")
             cuda.nvtx.range_push("Init source and target")
 
         atomic_numbers = partition.global_atomic_numbers
@@ -702,102 +788,103 @@ class SO2EdgeUpdate(torch.nn.Module):
 
         if DEBUG:
             cuda.synchronize()
-            dist.barrier()
             cuda.nvtx.range_pop()
             cuda.nvtx.range_push("Expand Edge 1")
 
-        x_source._expand_edge(edge_index[0, :], partition.expand_edge_0) #first dimension is the number of edges
+        source_embedding_data = x_source._expand_edge_local(partition.expand_edge_0)
 
         if DEBUG:
             cuda.synchronize()
-            dist.barrier()
             cuda.nvtx.range_pop()
             cuda.nvtx.range_push("Expand Edge 2")
 
-        x_target._expand_edge(edge_index[1, :], partition.expand_edge_1)
+        local_target_embedding_data = x_target._expand_edge_local(partition.expand_edge_1)
+        x_target._start_expand_edge_remote(partition.expand_edge_1)
+        # NOTE: set_embedding of x_target is not called
+        # thus lmax could be wrong in x_target
 
-        if DEBUG:
-            cuda.synchronize()
-            cuda.nvtx.range_pop()
 
-        x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) #concatenate source and target node embeddings along channel dimension
-        x_message = SO3_Embedding(
-            0,
-            x_target.lmax, 
-            x_target.num_channels * 3, 
-            device=x_target.device, 
-            dtype=x_target.dtype
-        )
-        x_message.set_embedding(x_message_data)
-        x_message.set_lmax_mmax(self.lmax, self.mmax)
+        if partition.overlap:
+            split = partition.truly_local_num_edges
 
-        if DEBUG:
-            cuda.synchronize()
-            cuda.nvtx.range_pop()
-            cuda.nvtx.range_push("Radial function")
+            with torch.cuda.stream(local_stream):
+                x_message_local = SO3_Embedding(
+                    0,
+                    x_target.lmax, 
+                    x_target.num_channels * 3, 
+                    device=x_target.device, 
+                    dtype=x_target.dtype
+                )
+                x_message_local_data = torch.cat((source_embedding_data[:split], local_target_embedding_data, edge_fea.embedding[:split]), dim=2)
+                x_message_local.set_embedding(x_message_local_data)
+                x_message_local.set_lmax_mmax(self.lmax, self.mmax)
 
-        # radial function (linear layers + layer normalization + SiLU)
-        if self.use_m_share_rad:
+                x_message_embedding_local = self.message_wise_operations(x_message_local, x_edge[:split], 0, split)
 
+
+            with torch.cuda.stream(remote_stream):
+                # synchronizes the communication
+                remote_target_embedding_data = x_target._end_expand_edge_remote(partition.expand_edge_1)
+                if DEBUG:
+                    cuda.current_stream().synchronize()
+                    cuda.nvtx.range_pop()
+
+                x_message_remote = SO3_Embedding(
+                    0,
+                    x_target.lmax,
+                    x_target.num_channels * 3, 
+                    device=x_target.device, 
+                    dtype=x_target.dtype
+                )
+                x_message_remote_data = torch.cat((source_embedding_data[split:], remote_target_embedding_data, edge_fea.embedding[split:]), dim=2)
+                x_message_remote.set_embedding(x_message_remote_data)
+                x_message_remote.set_lmax_mmax(self.lmax, self.mmax)
+
+                x_message_embedding_remote = self.message_wise_operations(x_message_remote, x_edge[split:], split, edge_fea.embedding.shape[0])
+
+            local_stream.synchronize()
+            remote_stream.synchronize()
+            edge_embedding_data = torch.cat((x_message_embedding_local.embedding, x_message_embedding_remote.embedding), dim=0)
+
+        else:
+            # synchronizes the communication
+            remote_target_embedding_data = x_target._end_expand_edge_remote(partition.expand_edge_1)
             if DEBUG:
-                cuda.synchronize()
-                cuda.nvtx.range_push("rad_func")
-
-            x_edge_weight = self.rad_func(x_edge)
-
-            if DEBUG:
-                cuda.synchronize()
+                cuda.current_stream().synchronize()
                 cuda.nvtx.range_pop()
 
-            x_edge_weight = x_edge_weight.reshape(-1, (self.lmax + 1), 3 * self.sphere_channels)
-            x_edge_weight = torch.index_select(x_edge_weight, dim=1, index=self.expand_index) # [E, (L_max + 1) ** 2, C]
-            x_message.embedding = x_message.embedding * x_edge_weight
+            x_message = SO3_Embedding(
+                0,
+                x_target.lmax,
+                x_target.num_channels * 3, 
+                device=x_target.device, 
+                dtype=x_target.dtype
+            )
 
-        if DEBUG:
-            cuda.synchronize()
-            cuda.nvtx.range_push("Rotate")
-        # Rotate the irreps to align with the edge
-        x_message._rotate(self.SO3_rotation, self.lmax, self.mmax, 0, x_message.embedding.shape[0])
+            target_embedding_data = torch.cat((local_target_embedding_data, remote_target_embedding_data), dim=0)
+            x_message_data = torch.cat((source_embedding_data, target_embedding_data, edge_fea.embedding), dim=2)
+            x_message.set_embedding(x_message_data)
+            x_message.set_lmax_mmax(self.lmax, self.mmax)
+            x_message_embedding = self.message_wise_operations(x_message, x_edge, 0, edge_fea.embedding.shape[0])
+            edge_embedding_data = x_message_embedding.embedding
 
-        if DEBUG:
-            cuda.nvtx.range_pop()
-            cuda.synchronize()
-            cuda.nvtx.range_pop()
-            cuda.nvtx.range_push("so2 conv 1")
-
-
-        # First SO(2)-convolution
-        x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
-
-        if DEBUG:
-            cuda.synchronize()
-            cuda.nvtx.range_pop()
-            cuda.nvtx.range_push("activation")
-
-        # Activation (Gate activation)
-        x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
-        x_0_gating = x_0_extra.narrow(1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels) # for activation
-        x_message.embedding = self.gate_act(x_0_gating, x_message.embedding)
-
-        if DEBUG:
-            cuda.synchronize()
-            cuda.nvtx.range_pop()
-            cuda.nvtx.range_push("Rotate Inv")
-
-        # Rotate back the irreps
-        x_message._rotate_inv(self.SO3_rotation, self.mappingReduced, 0, x_message.embedding.shape[0])
-
-        if DEBUG:
-            cuda.synchronize()
-            cuda.nvtx.range_pop()
-            cuda.nvtx.range_push("proj")
-
-        # Project
-        edge_embedding = self.proj(x_message)
-
-        if DEBUG:
-            cuda.synchronize()
-            cuda.nvtx.range_pop()
+        if partition.overlap:
+            edge_embedding = SO3_Embedding(
+                0,
+                x_message_embedding_remote.lmax, 
+                x_message_embedding_remote.num_channels, 
+                device=x_message_embedding_remote.device, 
+                dtype=x_message_embedding_remote.dtype
+            )
+        else:
+            edge_embedding = SO3_Embedding(
+                0,
+                x_message.lmax, 
+                x_message.num_channels, 
+                device=x_message.device, 
+                dtype=x_message.dtype
+            )
+        edge_embedding.set_embedding(edge_embedding_data)
 
         return edge_embedding
 

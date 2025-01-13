@@ -21,7 +21,7 @@ def initialize_compute_env():
     device = torch.device('cuda:'+ str(gpu_id) if torch.cuda.is_available() else "cpu")
 
     backend = 'gloo'  # Use Gloo for attelas 
-    # backend = 'nccl'  # Use Gloo for burmy
+    # backend = 'use_nccl'  # Use Gloo for burmy
 
     dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
     rank_zero_print("Initialized process group in: local", flush=True)
@@ -119,6 +119,9 @@ class Domain_Decomp():
         self.local_num_nodes = counts[self.rank]
 
         self.edge_split_type = "incoming"
+        # NOTE: False is for benchmarking purposes
+        self.overlap = False
+        self.use_nccl = True
 
         # --> Split edges between ranks (naive split)
         if self.edge_split_type == "uniform":
@@ -188,6 +191,9 @@ class Domain_Decomp():
         # message creation
         self.expand_edge_0 = self.init_comm_pattern_expand(self.local_edge_index[0, :])     # dst node
         self.expand_edge_1 = self.init_comm_pattern_expand(self.local_edge_index[1, :])     # src node
+        self.expand_edge_0['use_nccl'] = self.use_nccl
+        self.expand_edge_1['use_nccl'] = self.use_nccl
+
 
         # aggregation
         self.reduce_edge = self.init_comm_pattern_reduce(self.local_edge_index[0, :])
