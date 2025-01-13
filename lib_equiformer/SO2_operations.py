@@ -142,13 +142,13 @@ class SO2_Convolution(torch.nn.Module):
         out = []
 
         if DEBUG:
-            cuda.synchronize()
+            cuda.current_stream().synchronize()
             cuda.nvtx.range_push("_m_primary")
         # Reshape the spherical harmonics based on m (order)
         x._m_primary(self.mappingReduced)
 
         if DEBUG:
-            cuda.synchronize()
+            cuda.current_stream().synchronize()
             cuda.nvtx.range_pop()
             cuda.nvtx.range_push("rad_func")
         # radial function
@@ -157,7 +157,7 @@ class SO2_Convolution(torch.nn.Module):
         offset_rad = 0
 
         if DEBUG:
-            cuda.synchronize()
+            cuda.current_stream().synchronize()
             cuda.nvtx.range_pop()
             cuda.nvtx.range_push("m0")
 
@@ -169,7 +169,7 @@ class SO2_Convolution(torch.nn.Module):
             x_0 = x_0 * x_edge_0                                                    # multiply the input features with the radial function
         x_0 = self.fc_m0(x_0)                                                       # apply linear layer to the m=0 coefficients   
         if DEBUG:
-            cuda.synchronize()
+            cuda.current_stream().synchronize()
             cuda.nvtx.range_pop()
 
         x_0_extra = None
@@ -187,7 +187,7 @@ class SO2_Convolution(torch.nn.Module):
         offset = self.mappingReduced.m_size[0]
         for m in range(1, self.mmax + 1):
             if DEBUG:
-                cuda.synchronize()
+                cuda.current_stream().synchronize()
                 cuda.nvtx.range_push("m" + str(m))
             # Get the m order coefficients
             x_m = x.embedding.narrow(1, offset, 2 * self.mappingReduced.m_size[m])      # size of the m-th block of the embeddings, shape [num_edges, 2*(l_max - m + 1), 3/1*sphere_channels]
@@ -206,7 +206,7 @@ class SO2_Convolution(torch.nn.Module):
             offset_rad = offset_rad + self.so2_m_conv[m - 1].fc.in_features
 
             if DEBUG:
-                cuda.synchronize()
+                cuda.current_stream().synchronize()
                 cuda.nvtx.range_pop()
 
         out = torch.cat(out, dim=1)
@@ -221,14 +221,14 @@ class SO2_Convolution(torch.nn.Module):
         out_embedding.set_lmax_mmax([self.lmax], [self.mmax])
 
         if DEBUG:
-            cuda.synchronize()
+            cuda.current_stream().synchronize()
             cuda.nvtx.range_push("_l_primary")
 
         # Reshape the spherical harmonics based on l (degree)
         out_embedding._l_primary(self.mappingReduced)
 
         if DEBUG:
-            cuda.synchronize()
+            cuda.current_stream().synchronize()
             cuda.nvtx.range_pop()
 
         if self.extra_m0_output_channels is not None:

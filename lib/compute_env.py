@@ -116,7 +116,7 @@ class Domain_Decomp():
 
         self.start_node = start_node
         self.end_node = end_node
-        self.local_num_nodes = local_num_nodes
+        self.local_num_nodes = counts[self.rank]
 
         self.edge_split_type = "incoming"
 
@@ -173,6 +173,17 @@ class Domain_Decomp():
 
         # _________________________________________________________________________________________
         # initialize communication patterns for message passing
+
+        # reorder the edge list so that the local edges are at the start of the list:
+        local_node_nums = np.arange(self.start_node, self.end_node)
+        is_local = np.isin(self.local_edge_index[1, :], local_node_nums)
+        src_edge_nodes = np.concatenate([self.local_edge_index[0, :][is_local], self.local_edge_index[0, :][~is_local]])
+        dst_edge_nodes = np.concatenate([self.local_edge_index[1, :][is_local], self.local_edge_index[1, :][~is_local]])
+        self.local_edge_index = np.stack([src_edge_nodes, dst_edge_nodes], axis=0)
+        self.truly_local_num_edges = np.sum(is_local)
+
+        # print("Number of truly local edges: ", self.truly_local_num_edges, flush=True)
+        # print("Number of remote edges: ", np.sum(~is_local), flush=True)
 
         # message creation
         self.expand_edge_0 = self.init_comm_pattern_expand(self.local_edge_index[0, :])     # dst node

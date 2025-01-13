@@ -300,6 +300,81 @@ class SO3_Embedding():
 
 
     # Expand the node embeddings to the number of edges - Distributed version
+    def _expand_edge_local(self, expand_edge_dict):
+        local_indices = expand_edge_dict['local_indices']
+        # NOTE: is local has to be true for the first `len(local_indices)` elements
+        # is_local = expand_edge_dict['is_local'] 
+
+        return self.embedding[local_indices]
+
+    def _start_expand_edge_remote(self, expand_edge_dict):
+
+        comm = comm_nccl.comm
+        stream = comm_nccl.stream
+
+        remote_indices = expand_edge_dict['remote_indices']
+        # NOTE: is local has to be false for the first `len(local_indices)` elements
+        # and false for the next `len(remote_indices)` elements
+        # is_remote = expand_edge_dict['is_remote']
+
+        nodes_to_send = expand_edge_dict['nodes_to_send']
+        nodes_to_recv = expand_edge_dict['nodes_to_recv']
+        indices_to_send = expand_edge_dict['indices_to_send']
+
+        with torch.no_grad():
+            # --> Send/Receive embeddings
+            num_nodes_to_recv = len(remote_indices)
+
+            cupy_buffer_dtype = utils.dtype_converter(self.dtype, input_library='torch', output_library='cupy')
+            self.recv_bufs = cp.empty(
+                num_nodes_to_recv * self.num_coefficients * self.num_channels,
+                dtype=cupy_buffer_dtype
+            )
+
+            # Non-blocking sends
+            sendbufs = {}
+            for target_rank, nodes in nodes_to_send.items():
+                if nodes:
+                    sendbufs[target_rank] = self._flatten_embedding(self.embedding[indices_to_send[target_rank]])
+
+            cp.cuda.runtime.deviceSynchronize()
+
+            with stream: 
+                nccl.groupStart()
+                for target_rank, nodes in nodes_to_send.items():
+                    if nodes:
+                        comm.send(sendbufs[target_rank], target_rank, stream=stream)
+
+
+                # Non-blocking recvs posts
+                recv_pointer = 0
+                for source_rank, nodes in nodes_to_recv.items():
+                    if nodes: 
+                        start_idx = recv_pointer
+                        end_idx = start_idx + len(nodes) * self.num_coefficients * self.num_channels
+                        comm.recv(self.recv_bufs[start_idx:end_idx], source_rank, stream=stream)
+                        recv_pointer = end_idx
+
+                nccl.groupEnd()
+
+    def _end_expand_edge_remote(self, expand_edge_dict):
+        remote_indices = expand_edge_dict['remote_indices']
+        # NOTE: is local has to be false for the first `len(local_indices)` elements
+        # and false for the next `len(remote_indices)` elements
+        # is_remote = expand_edge_dict['is_remote']
+
+        # synchronize communication stream
+        comm_nccl.stream.synchronize()
+
+        num_nodes_to_recv = len(remote_indices)
+        if num_nodes_to_recv:
+            with torch.no_grad():
+                received_embeddings = self.recv_bufs.reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
+                received_embeddings = torch.tensor(received_embeddings, device=self.device)
+
+            return received_embeddings[remote_indices]    # needs gradients
+
+    # Expand the node embeddings to the number of edges - Distributed version
     def _expand_edge(self, edge_index, expand_edge_dict):
         """
         It's now been extended to account for the distributed case. The node embeddings which are needed on the current rank (due to being in the
@@ -309,9 +384,6 @@ class SO3_Embedding():
         size = self.size
         comm = comm_nccl.comm
         stream = comm_nccl.stream
-
-        start_node = expand_edge_dict['start_node']
-        end_node = expand_edge_dict['end_node']
 
         # Get precomputed communication plan
         local_indices = expand_edge_dict['local_indices']
@@ -399,6 +471,7 @@ class SO3_Embedding():
         """
 
         # make the new set of embeddings
+        self.num_channels = self.embedding.shape[2] # NOTE: this is being reset because we distributed the edge computation
         new_embedding = torch.zeros(
             num_nodes,
             self.num_coefficients,
@@ -482,18 +555,18 @@ class SO3_Embedding():
 
 
     # Rotate the embedding
-    def _rotate(self, SO3_rotation, lmax, mmax):
+    def _rotate(self, SO3_rotation, lmax, mmax, start_edge, end_edge):
         
-        embedding_rotate = SO3_rotation[0].rotate(self.embedding, lmax, mmax)
+        embedding_rotate = SO3_rotation[0].rotate(self.embedding, lmax, mmax, start_edge, end_edge)
 
         self.embedding = embedding_rotate
         self.set_lmax_mmax(lmax, mmax)
 
 
     # Rotate the embedding by the inverse of the rotation matrix
-    def _rotate_inv(self, SO3_rotation, mappingReduced):
+    def _rotate_inv(self, SO3_rotation, mappingReduced, start_edge, end_edge):
 
-        embedding_rotate = SO3_rotation[0].rotate_inv(self.embedding, self.lmax, self.mmax)
+        embedding_rotate = SO3_rotation[0].rotate_inv(self.embedding, self.lmax, self.mmax, start_edge, end_edge)
 
         self.embedding = embedding_rotate
 
@@ -529,16 +602,16 @@ class SO3_Rotation(torch.nn.Module):
 
 
     # Rotate the embedding
-    def rotate(self, embedding, out_lmax, out_mmax):
+    def rotate(self, embedding, out_lmax, out_mmax, start_edge, end_edge):
         out_mask = self.mapping.coefficient_idx(out_lmax, out_mmax)
-        wigner = self.wigner[:, out_mask, :]
+        wigner = self.wigner[start_edge:end_edge, out_mask, :]
         return torch.bmm(wigner, embedding)
 
 
     # Rotate the embedding by the inverse of the rotation matrix
-    def rotate_inv(self, embedding, in_lmax, in_mmax):
+    def rotate_inv(self, embedding, in_lmax, in_mmax, start_edge, end_edge):
         in_mask = self.mapping.coefficient_idx(in_lmax, in_mmax)
-        wigner_inv = self.wigner_inv[:, :, in_mask]
+        wigner_inv = self.wigner_inv[start_edge:end_edge, :, in_mask]
         wigner_inv_rescale = self.mapping.get_rotate_inv_rescale(in_lmax, in_mmax)
         wigner_inv = wigner_inv * wigner_inv_rescale
         return torch.bmm(wigner_inv, embedding)

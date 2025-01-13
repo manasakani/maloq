@@ -33,6 +33,11 @@ from torch import cuda
 import os
 DEBUG = os.environ.get("DEBUG", False)
 
+# TODO: remove this and make cleaner
+local_stream = torch.cuda.Stream()
+remote_stream = torch.cuda.Stream()
+
+
 # Borrowed from EquiformerV2 (https://github.com/atomicarchitects/equiformer_v2.git)
 class FeedForwardNetwork(torch.nn.Module):
     """
@@ -202,86 +207,15 @@ class SO2NodeUpdate(torch.nn.Module):
         )
 
         self.proj = SO3_LinearV2(self.num_heads * self.attn_value_channels, self.output_channels, lmax=self.lmax)
-        
-        
-    def forward(
-        self,
-        x,
-        partition,
-        edge_distance,
-        edge_index,
-        global_edge_index,
-        edge_fea,
-        iteration
-    ):
 
-        # _______________________________________________________________________
-        rank = dist.get_rank()
-        size = dist.get_world_size()
-        comm = MPI.COMM_WORLD
-        atomic_numbers = partition.global_atomic_numbers
-        local_edge_idx = partition.local_edge_idx
-        # _______________________________________________________________________
 
-        # print("_________________________")
-        # print("start of SO2NodeUpdate")
-        # print("_________________________")
+    def message_wise_operations(self, x_message, x_edge, partition, start_edge, end_edge):
 
-        # Compute edge scalar features (invariant to rotations)
-        # Uses atomic numbers and edge distance as inputs
-        if DEBUG:
-            cuda.synchronize()
-            cuda.nvtx.range_push("Message creation")
-            cuda.nvtx.range_push("Init source and target")
-
-        source_element = atomic_numbers[edge_index[0]]  
-        target_element = atomic_numbers[edge_index[1]]  
-        source_embedding = self.source_embedding(source_element)
-        target_embedding = self.target_embedding(target_element)
-        x_edge = torch.cat((edge_distance, source_embedding, target_embedding), dim=1)      # shape of [#edges, 3 * #channels]
-
-        x_source = x.clone()
-        x_target = x.clone()
-
-        if DEBUG:
-            cuda.synchronize()
-            dist.barrier()
-            cuda.nvtx.range_pop()
-            cuda.nvtx.range_push("Expand Edge 1")
-
-        x_source._expand_edge(edge_index[0, :], partition.expand_edge_0)  
-
-        if DEBUG:
-            cuda.synchronize()
-            dist.barrier()
-            cuda.nvtx.range_pop()
-            cuda.nvtx.range_push("Expand Edge 2")
-    
-        x_target._expand_edge(edge_index[1, :], partition.expand_edge_1)
-    
-        if DEBUG:
-            cuda.synchronize()
-            cuda.nvtx.range_pop()
-
-        # to form the message, concatenate the embeddings of the source node, target node, and the edge between them
-        # note, the source node is the one that recieves the message..
-        x_message_data = torch.cat((x_source.embedding, x_target.embedding, edge_fea.embedding), dim=2) 
-        x_message = SO3_Embedding(
-            0,
-            x_target.lmax, 
-            x_target.num_channels * 3, 
-            device=x_target.device, 
-            dtype=x_target.dtype
-        )
-        x_message.set_embedding(x_message_data)                                                # shape of [#edges, #channels, 3 * #channels]
-        x_message.set_lmax_mmax(self.lmax, self.mmax)
-
-        # print("_________________________")
+         # print("_________________________")
         # print("start of radial function")
         # print("_________________________")
         if DEBUG:
-            cuda.synchronize()
-            cuda.nvtx.range_pop()
+            cuda.current_stream().synchronize()
             cuda.nvtx.range_push("Radial function")
 
 
@@ -289,13 +223,13 @@ class SO2NodeUpdate(torch.nn.Module):
         if self.use_m_share_rad:
 
             if DEBUG:
-                cuda.synchronize()
+                cuda.current_stream().synchronize()
                 cuda.nvtx.range_push("rad_func")
 
             x_edge_weight = self.rad_func(x_edge)
 
             if DEBUG:
-                cuda.synchronize()
+                cuda.current_stream().synchronize()
                 cuda.nvtx.range_pop()
     
             x_edge_weight = x_edge_weight.reshape(-1, (self.lmax + 1), 3 * self.sphere_channels) # 3x for the 3 concatenated features
@@ -308,17 +242,16 @@ class SO2NodeUpdate(torch.nn.Module):
 
         # Rotate the irreps to align with the edge
         if DEBUG:
-            cuda.synchronize()
+            cuda.current_stream().synchronize()
             cuda.nvtx.range_push("Rotate")
     
-        x_message._rotate(self.SO3_rotation, self.lmax, self.mmax)
+        x_message._rotate(self.SO3_rotation, self.lmax, self.mmax, start_edge, end_edge)
 
         if DEBUG:
-            cuda.synchronize()
+            cuda.current_stream().synchronize()
             cuda.nvtx.range_pop()
             cuda.nvtx.range_pop()
             cuda.nvtx.range_push("so2 conv 1")
-
 
         # print("_________________________")
         # print("SO2 Convolution 1")
@@ -332,7 +265,7 @@ class SO2NodeUpdate(torch.nn.Module):
         # print("_________________________")
 
         if DEBUG:
-            cuda.synchronize()
+            cuda.current_stream().synchronize()
             cuda.nvtx.range_pop()
             cuda.nvtx.range_push("activation")
 
@@ -347,7 +280,7 @@ class SO2NodeUpdate(torch.nn.Module):
         # print("_________________________")
 
         if DEBUG:
-            cuda.synchronize()
+            cuda.current_stream().synchronize()
             cuda.nvtx.range_pop()           
             cuda.nvtx.range_push("so2 conv 2")
 
@@ -355,9 +288,105 @@ class SO2NodeUpdate(torch.nn.Module):
         x_message = self.so2_conv_2(x_message, x_edge)
 
         if DEBUG:
+            cuda.current_stream().synchronize()
+            cuda.nvtx.range_pop()
+
+        return x_message.embedding, x_0_alpha
+
+        
+        
+    def forward(
+        self,
+        x,
+        partition,
+        edge_distance,
+        edge_index,
+        global_edge_index,
+        edge_fea,
+        iteration
+    ):
+
+        # _______________________________________________________________________
+        atomic_numbers = partition.global_atomic_numbers
+        local_edge_idx = partition.local_edge_idx
+        # _______________________________________________________________________
+
+        # Compute edge scalar features (invariant to rotations)
+        # Uses atomic numbers and edge distance as inputs
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_push("Init source and target")
+
+        source_element = atomic_numbers[edge_index[0]]  
+        target_element = atomic_numbers[edge_index[1]]  
+        source_embedding = self.source_embedding(source_element)
+        target_embedding = self.target_embedding(target_element)
+        x_edge = torch.cat((edge_distance, source_embedding, target_embedding), dim=1)      # shape of [#edges, 3 * #channels]
+
+        x_source = x.clone()
+        x_target = x.clone()
+
+        if DEBUG:
             cuda.synchronize()
             cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("Expand Edge 1")
+
+        source_embedding_data = x_source._expand_edge_local(partition.expand_edge_0)
+
+        if DEBUG:
+            cuda.synchronize()
+            cuda.nvtx.range_pop()
+            cuda.nvtx.range_push("Expand Edge 2")
+    
+        local_target_embedding = x_target._expand_edge_local(partition.expand_edge_1)
+        x_target._start_expand_edge_remote(partition.expand_edge_1)
+
+        # to form the message, concatenate the embeddings of the source node, target node, and the edge between them
+        # note, the source node is the one that recieves the message..
+
+        # Perform message-wise operations: Radial function, rotations, SO2-convolutions, gate activation, attention weights, and aggregation
+        split = partition.truly_local_num_edges
+
+        with torch.cuda.stream(local_stream):
+            x_message_local = SO3_Embedding(split, x_target.lmax,  x_target.num_channels * 3, device=x_target.device, dtype=x_target.dtype)
+            x_message_local_data = torch.cat((source_embedding_data[:split], local_target_embedding, edge_fea.embedding[:split]), dim=2) 
+            x_message_local.set_embedding(x_message_local_data)
+            x_message_local.set_lmax_mmax(self.lmax, self.mmax)
+
+            x_message_embedding_local, x_0_alpha_local = self.message_wise_operations(x_message_local, x_edge[:split], partition, 0, split)
+
+        with torch.cuda.stream(remote_stream):
+            # synchronizes the communication
+            remote_target_embedding = x_target._end_expand_edge_remote(partition.expand_edge_1)
+            if DEBUG:
+                cuda.current_stream().synchronize()
+                cuda.nvtx.range_pop()
+
+            x_message_remote = SO3_Embedding(edge_fea.embedding.shape[0] - split, x_target.lmax,  x_target.num_channels * 3, device=x_target.device, dtype=x_target.dtype)
+            x_message_remote_data = torch.cat((source_embedding_data[split:], remote_target_embedding, edge_fea.embedding[split:]), dim=2) 
+            x_message_remote.set_embedding(x_message_remote_data)
+            x_message_remote.set_lmax_mmax(self.lmax, self.mmax)
+
+            x_message_embedding_remote, x_0_alpha_remote = self.message_wise_operations(x_message_remote, x_edge[split:], partition, split, edge_fea.embedding.shape[0])
+
+        cuda.synchronize()
+
+        if DEBUG:
+            cuda.synchronize()
             cuda.nvtx.range_push("attention weights")
+
+        x_message_embedding = torch.cat((x_message_embedding_local, x_message_embedding_remote), dim=0)
+        x_0_alpha = torch.cat((x_0_alpha_local, x_0_alpha_remote), dim=0)
+
+        x_message = SO3_Embedding(
+            0,
+            x_target.lmax, 
+            x_target.num_channels * 3, 
+            device=x_target.device, 
+            dtype=x_target.dtype
+        )
+        x_message.set_embedding(x_message_embedding)
+        x_message.set_lmax_mmax(self.lmax, self.mmax)
 
         # print("_________________________")
         # print("Attention weights")
@@ -369,36 +398,10 @@ class SO2NodeUpdate(torch.nn.Module):
         x_0_alpha = self.alpha_act(x_0_alpha)
         alpha = torch.einsum('bik, ik -> bi', x_0_alpha, self.alpha_dot)
 
-        # X_0_alpha and alpha are independently distributed until here (can be concatenated across ranks)
-
-        # allgatherv alpha across ranks, before softmax, so every rank has the entire set of attention weights:
-        # NOTE: THIS CAN BE DONE WITHOUT GATHERING THE ENTIRE EDGE INDEX
-
-        if partition.edge_split_type == "uniform":
-            alpha_shape = alpha.shape
-            alpha = alpha.cpu().detach().numpy().reshape(-1)
-            local_alpha_size = len(alpha)
-            all_counts = comm.allgather(local_alpha_size)
-            displacements = np.cumsum([0] + all_counts[:-1])
-            total_alpha_size = sum(all_counts)
-            numpy_buffer_dtype = utils.dtype_converter(x_message.dtype, input_library='torch', output_library='numpy')
-            mpi_message_dtype = utils.dtype_converter(x_message.dtype, input_library='torch', output_library='mpi') 
-            alpha_all = np.empty(total_alpha_size, dtype=numpy_buffer_dtype)
-            comm.Allgatherv(alpha, [alpha_all, all_counts, displacements, mpi_message_dtype])
-
-            alpha = alpha_all.reshape(-1, alpha_shape[1])
-            alpha = torch.tensor(alpha, device=x.device)
-
-            # normalize the incoming weights to every node to compute the final attention weights along every edge
-            alpha = torch_geometric.utils.softmax(alpha, global_edge_index[1])          # softmax over the incoming edges
-            alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)                 # shape of [E, 1, num_heads, 1]
-
-            # extract only the alpha for the local edges to use for the attention mechanism
-            alpha = alpha[local_edge_idx]
-        else:
-            offset_local_dst_indices = partition.expand_edge_0["local_indices"]
-            alpha = torch_geometric.utils.softmax(alpha, offset_local_dst_indices)      # softmax over the incoming edges
-            alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)                 # shape of [E, 1, num_heads, 1]
+        # Compute the softmax over the incoming edges
+        offset_local_dst_indices = partition.expand_edge_0["local_indices"]
+        alpha = torch_geometric.utils.softmax(alpha, offset_local_dst_indices)      # softmax over the incoming edges
+        alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)                 # shape of [E, 1, num_heads, 1]
 
         # Attention weights * non-linear messages (weight each message by the corresponding attention weight)
         attn = x_message.embedding                                                                      # shape of [E, (lmax+1)^2, # hidden channels]
@@ -412,13 +415,12 @@ class SO2NodeUpdate(torch.nn.Module):
             cuda.nvtx.range_pop()
             cuda.nvtx.range_push("Rotate Inv")
 
-
         # print("_________________________")
         # print("Second Rotation")
         # print("_________________________")
 
         # Rotate back the irreps
-        x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
+        x_message._rotate_inv(self.SO3_rotation, self.mappingReduced, 0, x_message.embedding.shape[0])
 
         if DEBUG:
             cuda.synchronize()
@@ -755,7 +757,7 @@ class SO2EdgeUpdate(torch.nn.Module):
             cuda.synchronize()
             cuda.nvtx.range_push("Rotate")
         # Rotate the irreps to align with the edge
-        x_message._rotate(self.SO3_rotation, self.lmax, self.mmax)
+        x_message._rotate(self.SO3_rotation, self.lmax, self.mmax, 0, x_message.embedding.shape[0])
 
         if DEBUG:
             cuda.nvtx.range_pop()
@@ -783,7 +785,7 @@ class SO2EdgeUpdate(torch.nn.Module):
             cuda.nvtx.range_push("Rotate Inv")
 
         # Rotate back the irreps
-        x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
+        x_message._rotate_inv(self.SO3_rotation, self.mappingReduced, 0, x_message.embedding.shape[0])
 
         if DEBUG:
             cuda.synchronize()
