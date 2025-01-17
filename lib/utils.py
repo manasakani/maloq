@@ -42,11 +42,11 @@ orbital_type_dict = {
     'SZV': orbital_type_dict_SZV
 }
 
-num_orbitals_per_atom = {
-    'DZVP': num_orbitals_per_atom_DZVP,
-    'def2_SVP': num_orbitals_per_atom_def2_SVP,
-    'SZV': num_orbitals_per_atom_SZV
-}
+# num_orbitals_per_atom = {
+#     'DZVP': num_orbitals_per_atom_DZVP,
+#     'def2_SVP': num_orbitals_per_atom_def2_SVP,
+#     'SZV': num_orbitals_per_atom_SZV
+# }
 
 def element_statistics(numbers):
     index_to_Z, inverse_indices = torch.unique(numbers, sorted=True, return_inverse=True)
@@ -208,86 +208,86 @@ def create_rotation_dic(edge_indices,coordinates,structure):
     return rotate_dic
 
 
-def rotate_data(y,edge_indices,coordinates,orbital_type_dict,atomic_species,rotate_dic):
+# def rotate_data(y,edge_indices,coordinates,orbital_type_dict,atomic_species,rotate_dic):
     
-    coordinates = np.array(coordinates)
-    rotated_y = y
-    for i in range(len(y)):
-        R = rotate_dic[(edge_indices[0][i].item(),edge_indices[1][i].item())]
-        edge = [edge_indices[0][i],edge_indices[1][i]]
-        rotated_y[i] = rotate_ham(R.T,y[i],orbital_type_dict,atomic_species,edge)
+#     coordinates = np.array(coordinates)
+#     rotated_y = y
+#     for i in range(len(y)):
+#         R = rotate_dic[(edge_indices[0][i].item(),edge_indices[1][i].item())]
+#         edge = [edge_indices[0][i],edge_indices[1][i]]
+#         rotated_y[i] = rotate_ham(R.T,y[i],orbital_type_dict,atomic_species,edge)
     
-    return rotated_y
+#     return rotated_y
 
 
-# def rotate_data_back(pred,y,edge_indices,coordinates,orbital_type_dict,atomic_species,rotate_dic,rotate_back):
-def rotate_data_back(pred, y, edge_indices, rotate_dic, structures):
+# # def rotate_data_back(pred,y,edge_indices,coordinates,orbital_type_dict,atomic_species,rotate_dic,rotate_back):
+# def rotate_data_back(pred, y, edge_indices, rotate_dic, structures):
 
-    rotated_pred = []
-    reduced_y = []
+#     rotated_pred = []
+#     reduced_y = []
 
-    graph_num = 0
-    num_edges = int( len(edge_indices[0]) / len(structures) )
+#     graph_num = 0
+#     num_edges = int( len(edge_indices[0]) / len(structures) )
 
-    # iterates over the edges in the graph
-    for i in range(len(y)):
+#     # iterates over the edges in the graph
+#     for i in range(len(y)):
 
-        # Gets the structure for the edge
-        if i > 0 and i % num_edges == 0:
-            graph_num += 1
+#         # Gets the structure for the edge
+#         if i > 0 and i % num_edges == 0:
+#             graph_num += 1
 
-        structure = structures[graph_num]
-        atomic_species = np.array(structure.atomic_structure.get_chemical_symbols())
+#         structure = structures[graph_num]
+#         atomic_species = np.array(structure.atomic_structure.get_chemical_symbols())
 
-        # Calculate the starting index for each atom type in the orbital block
-        unique_elements = set(structure.atomic_structure.get_chemical_symbols())
-        mat_block_start = {}
-        block_start = 0
-        for element in unique_elements:
-            mat_block_start[element] = block_start
-            block_start += num_orbitals_per_atom[structure.basis][element]
+#         # Calculate the starting index for each atom type in the orbital block
+#         unique_elements = set(structure.atomic_structure.get_chemical_symbols())
+#         mat_block_start = {}
+#         block_start = 0
+#         for element in unique_elements:
+#             mat_block_start[element] = block_start
+#             block_start += num_orbitals_per_atom[structure.basis][element]
 
-        atom_i_index = edge_indices[0][i] % len(atomic_species) # local atom index
-        atom_j_index = edge_indices[1][i] % len(atomic_species) # local atom index
+#         atom_i_index = edge_indices[0][i] % len(atomic_species) # local atom index
+#         atom_j_index = edge_indices[1][i] % len(atomic_species) # local atom index
 
-        atom_i_element = atomic_species[atom_i_index]
-        atom_j_element = atomic_species[atom_j_index]
+#         atom_i_element = atomic_species[atom_i_index]
+#         atom_j_element = atomic_species[atom_j_index]
 
-        atom_i_start = mat_block_start[atom_i_element]
-        atom_j_start = mat_block_start[atom_j_element]
+#         atom_i_start = mat_block_start[atom_i_element]
+#         atom_j_start = mat_block_start[atom_j_element]
         
-        # starting_index_i, num_orbitals_i = structure.map_atom_to_orbital(atom_i_index) #edge_indices[0][i])
-        # starting_index_j, num_orbitals_j = structure.map_atom_to_orbital(atom_j_index) #edge_indices[1][i])
+#         # starting_index_i, num_orbitals_i = structure.map_atom_to_orbital(atom_i_index) #edge_indices[0][i])
+#         # starting_index_j, num_orbitals_j = structure.map_atom_to_orbital(atom_j_index) #edge_indices[1][i])
         
-        # atom_i_end = atom_i_start+num_orbitals_i
-        # atom_j_end = atom_j_start+num_orbitals_j
+#         # atom_i_end = atom_i_start+num_orbitals_i
+#         # atom_j_end = atom_j_start+num_orbitals_j
 
-        atom_i_end = atom_i_start + structure.num_orbitals_per_atom[atom_i_index]
-        atom_j_end = atom_j_start + structure.num_orbitals_per_atom[atom_j_index]
+#         atom_i_end = atom_i_start + structure.num_orbitals_per_atom[atom_i_index]
+#         atom_j_end = atom_j_start + structure.num_orbitals_per_atom[atom_j_index]
 
-        prediction = pred[i][atom_i_start:atom_i_end,atom_j_start:atom_j_end].detach().numpy()
-        reshaped_y = y[i][atom_i_start:atom_i_end,atom_j_start:atom_j_end].detach().numpy()
+#         prediction = pred[i][atom_i_start:atom_i_end,atom_j_start:atom_j_end].detach().numpy()
+#         reshaped_y = y[i][atom_i_start:atom_i_end,atom_j_start:atom_j_end].detach().numpy()
         
-        R = rotate_dic[(atom_i_index.item(), atom_j_index.item())]
+#         R = rotate_dic[(atom_i_index.item(), atom_j_index.item())]
 
-        edge = [atom_i_index, atom_j_index]
+#         edge = [atom_i_index, atom_j_index]
 
-        # pad the blocks again
-        blocksize = structure.num_unique_orbitals
-        prediction_padded = np.zeros((blocksize, blocksize))
-        prediction_padded[atom_i_start:atom_i_end,atom_j_start:atom_j_end] = rotate_ham(R,prediction,orbital_type_dict[structure.basis],atomic_species,edge)
-        rotated_pred.append(prediction_padded)
+#         # pad the blocks again
+#         blocksize = structure.num_unique_orbitals
+#         prediction_padded = np.zeros((blocksize, blocksize))
+#         prediction_padded[atom_i_start:atom_i_end,atom_j_start:atom_j_end] = rotate_ham(R,prediction,orbital_type_dict[structure.basis],atomic_species,edge)
+#         rotated_pred.append(prediction_padded)
         
-        reshaped_y_padded = np.zeros((blocksize, blocksize))
-        reshaped_y_padded[atom_i_start:atom_i_end,atom_j_start:atom_j_end] = rotate_ham(R,reshaped_y,orbital_type_dict[structure.basis],atomic_species,edge)
-        reduced_y.append(reshaped_y_padded)
+#         reshaped_y_padded = np.zeros((blocksize, blocksize))
+#         reshaped_y_padded[atom_i_start:atom_i_end,atom_j_start:atom_j_end] = rotate_ham(R,reshaped_y,orbital_type_dict[structure.basis],atomic_species,edge)
+#         reduced_y.append(reshaped_y_padded)
 
-        # rotated_pred.append(rotate_ham(R,prediction,orbital_type_dict[structure.basis],atomic_species,edge))
+#         # rotated_pred.append(rotate_ham(R,prediction,orbital_type_dict[structure.basis],atomic_species,edge))
     
-    rotated_pred = torch.tensor(np.array(rotated_pred))
-    reduced_y = torch.tensor(np.array(reduced_y))
+#     rotated_pred = torch.tensor(np.array(rotated_pred))
+#     reduced_y = torch.tensor(np.array(reduced_y))
     
-    return rotated_pred, reduced_y
+#     return rotated_pred, reduced_y
 
 def unflatten(H_pred, numbers, edge_index, equivariant_blocks, atom_orbitals, out_slices):  
 
@@ -459,11 +459,11 @@ def assemble_hamiltonian(H_pred, numbers, edge_index, equivariant_blocks, atom_o
 
 
 
-def map_atom_to_orbital(atom_index,atomic_numbers,atom_orbitals):
-    num_orbitals_per_atom = [np.sum(2*np.array(atom_orbitals[str(atomic_number)])+1) for atomic_number in atomic_numbers]
-    starting_index = int(np.sum(num_orbitals_per_atom[:atom_index])+1) #since hamiltonian orbital index starts from 1
-    num_orbitals = num_orbitals_per_atom[atom_index]
-    return starting_index, num_orbitals
+# def map_atom_to_orbital(atom_index,atomic_numbers,atom_orbitals):
+#     num_orbitals_per_atom = [np.sum(2*np.array(atom_orbitals[str(atomic_number)])+1) for atomic_number in atomic_numbers]
+#     starting_index = int(np.sum(num_orbitals_per_atom[:atom_index])+1) #since hamiltonian orbital index starts from 1
+#     num_orbitals = num_orbitals_per_atom[atom_index]
+#     return starting_index, num_orbitals
 
 
 

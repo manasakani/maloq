@@ -92,7 +92,7 @@ def allgatherv_cpu_numpy_1D(local_data, device, comm):
 
 
 class Domain_Decomp():
-    def __init__(self, structure, device):
+    def __init__(self, structure, device, overlap=False, use_nccl=True):
         
         self.rank = dist.get_rank()
         self.size = dist.get_world_size()
@@ -101,11 +101,16 @@ class Domain_Decomp():
         
         # --> Split nodes between ranks
         total_num_nodes = len(structure.atomic_numbers) 
-        local_num_nodes = total_num_nodes // self.size
+        
 
-        counts = np.array([local_num_nodes] * self.size, dtype=np.int32)
-        for i in range(total_num_nodes % self.size):
-            counts[i] += 1
+        if structure.counts is not None:
+            print("Using counts from structure")
+            counts = structure.counts
+        else:
+            local_num_nodes = total_num_nodes // self.size
+            counts = np.array([local_num_nodes] * self.size, dtype=np.int32)
+            for i in range(total_num_nodes % self.size):
+                counts[i] += 1
 
         displacements = np.zeros_like(counts)
         for i in range(1, len(counts)):
@@ -120,8 +125,8 @@ class Domain_Decomp():
 
         self.edge_split_type = "incoming"
         # NOTE: False is for benchmarking purposes
-        self.overlap = False
-        self.use_nccl = True
+        self.overlap = overlap
+        self.use_nccl = use_nccl
 
         # --> Split edges between ranks (naive split)
         if self.edge_split_type == "uniform":

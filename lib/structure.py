@@ -5,7 +5,7 @@
 
 from utils import orbital_type_dict
 import utils as utils
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, coo_matrix
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -22,11 +22,30 @@ from dscribe.descriptors import SOAP
 # Graph partitioning packages
 import networkx as nx
 from sklearn.cluster import KMeans
+from scipy.sparse.csgraph import reverse_cuthill_mckee
+import pymetis
+from mpi4py import MPI
+import warnings
 
 # A structure defines the atomic and electronic structure of collection of atoms
 class Structure:
-    def __init__(self, xyz_file, hamiltonian_file, overlap_file, pbc, orbital_basis, dataset='custom', database_props=None, self_interaction=True, bothways=False, make_soap=False, save_matrices=False, rcut=4.0):
-
+    def __init__(
+        self,
+        xyz_file,
+        hamiltonian_file,
+        overlap_file,
+        pbc,
+        orbital_basis,
+        dataset="custom",
+        database_props=None,
+        self_interaction=True,
+        bothways=False,
+        make_soap=False,
+        save_matrices=False,
+        rcut=4.0,
+        is_reorder=False,
+        reorder_method = 'METIS'
+    ):
         # input quantities
         self.xyz_file = xyz_file                            # XYZ file containing atomic positions              
         self.hamiltonian_file = hamiltonian_file            # File containing the Hamiltonian matrix
@@ -34,6 +53,7 @@ class Structure:
         self.database_props = database_props                # SchNet database
         self.periodic_cell = None                           # Periodic cell size
 
+        # Structure properties
         self.hamiltonian = None                             # Hamiltonian matrix
         self.overlap = None                                 # Overlap matrix
         self.neighbour_list = None                          # Neighbor list for atomic structure
@@ -44,6 +64,12 @@ class Structure:
         self.basis = orbital_basis                          # Orbital basis for electronic structure
         self.atomic_species = None                          # Atomic species in the structure
         self.atomic_numbers = None                          # Atomic numbers in the structure
+
+        # Reordering properties, if the structure gets reordered before use
+        self.is_reorder = is_reorder                        # Reorder the atomic structure
+        self.reorder_method = reorder_method                # Method to reorder the atomic structure
+        self.reorder_map = None                             # Reorder map for the atomic structure, maps old atom indices to new atom indices
+        self.counts = None                                  # Number of atoms in each partition
 
         # parameters:
         self.rcut = rcut                                    # cutoff radius for neighbor list
@@ -71,6 +97,11 @@ class Structure:
             # initialize electronic structure
             self.init_electronic_structure(self.hamiltonian_file, self.overlap_file, save_matrices)
 
+        # reorder the structure if specified
+        if is_reorder:
+            self.reorder(self.reorder_method)
+        else:
+            self.reorder_map = np.arange(len(self.atomic_numbers))
 
     def init_atomic_structure_schnet(self, database_props, pbc, self_interaction, bothways):
 
@@ -218,6 +249,78 @@ class Structure:
         unique_atomic_species = set(self.atomic_structure.get_chemical_symbols())
         self.num_unique_orbitals = np.sum([np.sum(2*np.array(orbital_type_dict[self.basis][species])+1) for species in unique_atomic_species])
 
+
+    def get_adjacentcy_matrix(self, edges):
+        """
+        Get the adjacency matrix from the edge matrix.
+        """
+
+        n_nodes = np.max(edges) + 1
+        # no self loops
+        n_edges = len(edges[0,:]) + n_nodes 
+        data = np.ones(n_edges)
+        rows = np.concatenate((edges[0,:], np.arange(n_nodes)))
+        cols = np.concatenate((edges[1,:], np.arange(n_nodes)))
+        return coo_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes)).tocsr()
+
+    def sparse_matrix_to_adjlist(self, matrix):
+        """
+        Transform a sparse matrix to an adjacency list.
+        """
+
+        if not isinstance(matrix, coo_matrix):
+            matrix = matrix.tocoo()
+
+        n_nodes = matrix.shape[0]
+        adjacency_list = [[] for _ in range(n_nodes)]
+
+        rows = matrix.row
+        cols = matrix.col
+
+        for i, j in zip(rows, cols):
+            if i != j:  # Exclude self-loops
+                adjacency_list[i].append(j)
+                adjacency_list[j].append(i)
+
+        # Remove duplicates and convert to set to ensure unique neighbors
+        adjacency_list = [list(set(neighbors)) for neighbors in adjacency_list]
+
+        return adjacency_list
+
+    def reorder(self, method):
+        """
+        Reorder the graph to create a mapping from the original atom indices to the new atom indices.
+        """
+        adj_matrix = self.get_adjacentcy_matrix(self.edge_matrix)
+
+        if method == 'RCM':
+            self.reorder_map = np.array(reverse_cuthill_mckee(adj_matrix), dtype=np.int64)
+        elif method == 'METIS':
+            G = self.sparse_matrix_to_adjlist(adj_matrix)
+            size = MPI.COMM_WORLD.Get_size()
+            (_, parts) = pymetis.part_graph(size, adjacency=G)
+            self.reorder_map = np.argsort(parts)
+            parts = np.array(parts)
+            self.counts = np.array([ np.sum(parts == k)  for k in range(size)])
+        else:
+            # Reorder is true, but no valid method is specified
+            warnings.warn("No valid method specified for reordering the graph. Using the original order.")
+            self.reorder_map = np.arange(len(self.atomic_numbers))
+
+        # reorder structure with new atom indices
+        self.atomic_structure = self.atomic_structure[self.reorder_map]
+        self.atomic_numbers = torch.tensor([self.atomic_numbers[i] for i in self.reorder_map])
+        self.atomic_species = [self.atomic_species[i] for i in self.reorder_map]
+        # NOTE: self.num_orbitals_per_atom always refers to the original order!
+
+        # Redo the neighbor list
+        array_rcut = np.ones(len(self.atomic_structure))*self.rcut
+        self.neighbour_list = NeighborList(array_rcut, skin=0, self_interaction=False, bothways=True)
+        self.neighbour_list.update(self.atomic_structure)
+        matrix = self.neighbour_list.get_connectivity_matrix(sparse=True)
+        matrix = matrix.tocoo()
+        edge_matrix_np = np.array([matrix.row, matrix.col], dtype=np.int64)
+        self.edge_matrix = edge_matrix_np
 
     def complex_to_real_SH(self, hamiltonian):
         """
@@ -436,7 +539,7 @@ class Structure:
         """
         Map the atom index to the starting orbital index and the number of orbitals
         """
-
+        atom_index = self.reorder_map[atom_index]                                   # convert the new atom index to the original atom index  
         starting_index = int(np.sum(self.num_orbitals_per_atom[:atom_index])+1)     # index where this atom's orbitals start in H and S
         num_orbitals = self.num_orbitals_per_atom[atom_index]                       # number of orbitals for this atom
 
@@ -459,20 +562,20 @@ class Structure:
                 # atom pair
                 atom_i_index = edge_idx[0][i]
                 atom_j_index = edge_idx[1][i]
-                key_str = (atom_i_index,atom_j_index)
+                key_str = (atom_i_index, atom_j_index)
 
                 # initialize size of the orbital block using the # orbitals of the two atoms
                 starting_i, num_orbitals_i = self.map_atom_to_orbital(atom_i_index)
                 starting_j, num_orbitals_j = self.map_atom_to_orbital(atom_j_index)
-                mat = np.zeros(shape=(num_orbitals_i,num_orbitals_j),dtype = float)
+                mat = np.zeros(shape=(num_orbitals_i, num_orbitals_j), dtype = float)
                 
                 # fill in the orbital block from the hamiltonian matrix
                 for alpha in range(num_orbitals_i):
                     for beta in range(num_orbitals_j):
 
                         # extract the hamiltonian value from the csr matrix if it exists (is nonzero)
-                        if(starting_i+alpha,starting_j+beta) in self.hamiltonian:
-                            mat[alpha,beta] = self.hamiltonian[(starting_i+alpha,starting_j+beta)]
+                        if(starting_i+alpha, starting_j+beta) in self.hamiltonian:
+                            mat[alpha,beta] = self.hamiltonian[(starting_i+alpha, starting_j+beta)]
 
                 orbital_blocks[key_str] = mat
 
@@ -487,6 +590,10 @@ class Structure:
 class Merged_Structure(Structure):
     def __init__(self, structures_to_merge, dataset='custom', self_interaction=False, bothways=False):
 
+        reorder_map = structures_to_merge[0].reorder_map
+
+        assert(not structures_to_merge[0].is_reorder)       # Do not merge reordered structures!!!
+
         # get basic properties from the first structure in the list to use for the Structure constructor
         super().__init__(
             xyz_file=structures_to_merge[0].xyz_file,
@@ -498,9 +605,11 @@ class Merged_Structure(Structure):
             database_props=structures_to_merge[0].database_props,
             self_interaction=self_interaction,
             bothways=bothways,
-            rcut=structures_to_merge[0].rcut
+            rcut=structures_to_merge[0].rcut,
+            is_reorder=False
         )
 
+        self.reorder_map = np.arange(np.sum(len(structure.reorder_map) for structure in structures_to_merge))
         self.structures_to_merge = structures_to_merge
         self.merge_structures(self_interaction, bothways)
 

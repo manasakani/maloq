@@ -51,10 +51,10 @@ def create_input_data_molecules(structure, partition, equivariant_blocks, out_sl
     
     start_node = partition.start_node
     end_node = partition.end_node
-    start_edge = partition.start_edge
-    end_edge = partition.end_edge
+    # start_edge = partition.start_edge
+    # end_edge = partition.end_edge
     local_edge_index = partition.local_edge_index
-    global_edge_index = partition.global_edge_index
+    # global_edge_index = partition.global_edge_index
 
     # Note: for SO2 network, edge_index has two-way edges, and does not include self-connections 
     global_atomic_numbers = torch.tensor([utils.periodic_table[i] for i in structure.atomic_species])
