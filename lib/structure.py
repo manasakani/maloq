@@ -44,7 +44,7 @@ class Structure:
         save_matrices=False,
         rcut=4.0,
         is_reorder=False,
-        reorder_method = 'METIS'
+        reorder_method = ''
     ):
         # input quantities
         self.xyz_file = xyz_file                            # XYZ file containing atomic positions              
@@ -287,25 +287,120 @@ class Structure:
 
         return adjacency_list
 
+    def get_block_atom_idx(self, sub_domain_size, origin, atom_pos):
+        """
+        Get the indices of atoms that are within a sub-domain defined by the origin and size.
+        """
+        return np.argwhere(  
+            (origin[0] <= atom_pos[:,0]) & (atom_pos[:,0] < origin[0] + sub_domain_size[0]) &
+            (origin[1] <= atom_pos[:,1]) & (atom_pos[:,1] < origin[1] + sub_domain_size[1]) &
+            (origin[2] <= atom_pos[:,2]) & (atom_pos[:,2] < origin[2] + sub_domain_size[2]) 
+        )
+
+    def cut_domain(self, sub_domain_size, n, atom_pos, order, origin=None):
+        """
+        Recursively cut a domain into sub-domains
+        and 
+        """
+        
+        if origin is None:
+            origin = np.zeros_like(sub_domain_size, dtype=float)
+
+        if n == 0:
+            order.append(self.get_block_atom_idx(sub_domain_size, origin, atom_pos))
+            return
+
+        # Find the largest dimension to cut
+        largest_dim = np.argmax(sub_domain_size)
+        
+        # Calculate the cut position in the current dimension
+        cut_position = origin[largest_dim] + sub_domain_size[largest_dim] / 2
+        
+        # Update the origin and size of the largest dimension for the next cut
+        sub_domain_size = sub_domain_size.copy()
+        sub_domain_size[largest_dim] = sub_domain_size[largest_dim] / 2
+        
+        # Recursively cut the domain
+        origin_left = origin.copy()
+        origin_right = origin.copy()
+        origin_right[largest_dim] = cut_position
+
+        self.cut_domain(sub_domain_size, n - 1, atom_pos, order, origin=origin_left)
+        self.cut_domain(sub_domain_size, n - 1, atom_pos, order, origin=origin_right)
+
     def reorder(self, method):
         """
         Reorder the graph to create a mapping from the original atom indices to the new atom indices.
         """
         adj_matrix = self.get_adjacentcy_matrix(self.edge_matrix)
+        size = MPI.COMM_WORLD.Get_size()
+        rank = MPI.COMM_WORLD.Get_rank()
+        atomic_positions = self.atomic_structure.get_positions()
+
+        print("Reordering the graph using method: ", method)
 
         if method == 'RCM':
             self.reorder_map = np.array(reverse_cuthill_mckee(adj_matrix), dtype=np.int64)
         elif method == 'METIS':
             G = self.sparse_matrix_to_adjlist(adj_matrix)
-            size = MPI.COMM_WORLD.Get_size()
             (_, parts) = pymetis.part_graph(size, adjacency=G)
             self.reorder_map = np.argsort(parts)
             parts = np.array(parts)
             self.counts = np.array([ np.sum(parts == k)  for k in range(size)])
+        elif method == 'CUSTOM':
+            # assert size power of 2
+            if size & (size - 1) != 0:
+                raise ValueError("Number of partitions must be a power of 2.")
+            n = np.log2(size)
+
+            # with padding
+            lx = np.max(atomic_positions[:,0]) - np.min(atomic_positions[:,0]) + 0.0001
+            ly = np.max(atomic_positions[:,1]) - np.min(atomic_positions[:,1]) + 0.0001
+            lz = np.max(atomic_positions[:,2]) - np.min(atomic_positions[:,2]) + 0.0001
+
+            sub_domain_size = np.array([lx, ly, lz])
+
+            # output in place
+            # list of arrays with atom indices
+            order = []
+            origin = np.array([np.min(atomic_positions[:,i]) for i in range(3)])
+            self.cut_domain(sub_domain_size, n, atomic_positions, order,origin=origin)
+            self.reorder_map = np.concatenate([o.reshape(-1) for o in order], axis=-1)
+            self.counts = np.array([len(o) for o in order])
+
         else:
             # Reorder is true, but no valid method is specified
             warnings.warn("No valid method specified for reordering the graph. Using the original order.")
             self.reorder_map = np.arange(len(self.atomic_numbers))
+            total_num_nodes = atomic_positions.shape[0]
+            local_num_nodes = total_num_nodes // size
+            self.counts = np.array([local_num_nodes] * size, dtype=np.int32)
+            for i in range(total_num_nodes % size):
+                self.counts[i] += 1
+
+
+        # # ### PLOTTING TEST
+        # if_plot = True
+        # if rank == 0 and if_plot:
+        #     parts_per_rank = [count for count in self.counts]
+
+        #     from ase.io import write
+        #     cmap = plt.cm.get_cmap('turbo')
+        #     points = np.linspace(0, 1, len(parts_per_rank))
+        #     discrete_colormap = [cmap(point) for point in points]
+        #     color_parts = []
+        #     for i, p in enumerate(parts_per_rank):
+        #         tmp = np.ones((p, 4))
+        #         tmp[:,:] *= discrete_colormap[i]    
+        #         color_parts.extend(tmp)
+
+        #     rotated_structure = self.atomic_structure[self.reorder_map].copy()
+        #     rotated_structure.rotate(10, 'x', center='COM')
+        #     rotated_structure.rotate(45, 'y', center='COM')
+        #     write('atomic_structure_' + method + '_size={}_.png'.format(size), rotated_structure, show_unit_cell=2, colors=color_parts)
+        # exit()
+        # # ### END PLOTTING TEST
+
 
         # reorder structure with new atom indices
         self.atomic_structure = self.atomic_structure[self.reorder_map]
