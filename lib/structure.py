@@ -67,7 +67,7 @@ class Structure:
 
         # Reordering properties, if the structure gets reordered before use
         self.is_reorder = is_reorder                        # Reorder the atomic structure
-        self.reorder_method = reorder_method                # Method to reorder the atomic structure
+        self.reorder_method = 'CUSTOM'                  # Method to reorder the atomic structure
         self.reorder_map = None                             # Reorder map for the atomic structure, maps old atom indices to new atom indices
         self.counts = None                                  # Number of atoms in each partition
 
@@ -287,46 +287,54 @@ class Structure:
 
         return adjacency_list
 
-    def get_block_atom_idx(self, sub_domain_size, origin, atom_pos):
-        """
-        Get the indices of atoms that are within a sub-domain defined by the origin and size.
-        """
-        return np.argwhere(  
-            (origin[0] <= atom_pos[:,0]) & (atom_pos[:,0] < origin[0] + sub_domain_size[0]) &
-            (origin[1] <= atom_pos[:,1]) & (atom_pos[:,1] < origin[1] + sub_domain_size[1]) &
-            (origin[2] <= atom_pos[:,2]) & (atom_pos[:,2] < origin[2] + sub_domain_size[2]) 
-        )
+    # def get_block_atom_idx(self, sub_domain_size, origin, atom_pos):
+    #     """
+    #     Get the indices of atoms that are within a sub-domain defined by the origin and size.
+    #     """
+    #     return np.argwhere(  
+    #         (origin[0] <= atom_pos[:,0]) & (atom_pos[:,0] < origin[0] + sub_domain_size[0]) &
+    #         (origin[1] <= atom_pos[:,1]) & (atom_pos[:,1] < origin[1] + sub_domain_size[1]) &
+    #         (origin[2] <= atom_pos[:,2]) & (atom_pos[:,2] < origin[2] + sub_domain_size[2]) 
+    #     )
 
-    def cut_domain(self, sub_domain_size, n, atom_pos, order, origin=None):
+    def cut_domain(self, sub_domain_size, n, atom_pos, order, atom_indices=None, origin=None):
         """
-        Recursively cut a domain into sub-domains
-        and 
+        Recursively cut a domain into sub-domains such that each sub-division has an equal-ish number of atoms.
         """
-        
         if origin is None:
             origin = np.zeros_like(sub_domain_size, dtype=float)
 
+        if atom_indices is None:
+            atom_indices = np.arange(len(atom_pos))
+
         if n == 0:
-            order.append(self.get_block_atom_idx(sub_domain_size, origin, atom_pos))
+            order.append(atom_indices)
             return
 
         # Find the largest dimension to cut
         largest_dim = np.argmax(sub_domain_size)
-        
-        # Calculate the cut position in the current dimension
-        cut_position = origin[largest_dim] + sub_domain_size[largest_dim] / 2
-        
-        # Update the origin and size of the largest dimension for the next cut
+
+        # Sort atoms along the largest dimension and find the median position
+        sorted_indices = atom_indices[np.argsort(atom_pos[atom_indices, largest_dim])]
+        median_idx = len(sorted_indices) // 2
+        median_value = atom_pos[sorted_indices[median_idx], largest_dim]
+
+        # Split atoms into left and right groups based on the median value
+        left_indices = sorted_indices[atom_pos[sorted_indices, largest_dim] < median_value]
+        right_indices = sorted_indices[atom_pos[sorted_indices, largest_dim] >= median_value]
+
+        # Update the sub-domain size for the next cut
         sub_domain_size = sub_domain_size.copy()
-        sub_domain_size[largest_dim] = sub_domain_size[largest_dim] / 2
-        
-        # Recursively cut the domain
+        sub_domain_size[largest_dim] /= 2
+
+        # Define origins for left and right sub-domains
         origin_left = origin.copy()
         origin_right = origin.copy()
-        origin_right[largest_dim] = cut_position
+        origin_right[largest_dim] = median_value
 
-        self.cut_domain(sub_domain_size, n - 1, atom_pos, order, origin=origin_left)
-        self.cut_domain(sub_domain_size, n - 1, atom_pos, order, origin=origin_right)
+        # Recursively cut the domain
+        self.cut_domain(sub_domain_size, n - 1, atom_pos, order, atom_indices=left_indices, origin=origin_left)
+        self.cut_domain(sub_domain_size, n - 1, atom_pos, order, atom_indices=right_indices, origin=origin_right)
 
     def reorder(self, method):
         """
