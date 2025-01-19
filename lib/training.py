@@ -59,9 +59,61 @@ def get_loss_full_batch(node_output, edge_output, batch, criterion):
     loss_edge = criterion(edge_output, batch.y)                 # y is the edge label
     output = torch.cat([node_output, edge_output], dim=0)
     labels = torch.cat([batch.node_y, batch.y], dim=0)
-    loss = criterion(output, labels)     
+    loss = criterion(output, labels)    
 
     return loss_node, loss_edge, loss
+
+# def get_loss_full_batch(node_output, edge_output, batch, criterion, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, partition):
+    
+#     """
+#     Process a batch of data (forward pass + loss) for labels and targets in the uncoupled basis
+#     """
+
+#     start_node = partition.start_node
+#     end_node = partition.end_node
+
+#     # arange_tensor = torch.arange(labelled_node_size).unsqueeze(0)
+#     arange_tensor = torch.arange(end_node - start_node).unsqueeze(0)
+#     onsite_edges = torch.cat((arange_tensor, arange_tensor), 0) # edge_index for self-loop (nodes)
+
+#     # Process node predictions
+#     # flattened_node_labels = construct_kernel.get_H(batch.node_y)
+#     flattened_node_labels = batch.node_y
+#     flattened_node_pred = construct_kernel.get_H(node_output)
+
+#     node_label = utils.unflatten(flattened_node_labels, batch.x, onsite_edges,
+#                                 equivariant_blocks, atom_orbitals, out_slices)
+    
+#     node_pred = utils.unflatten(flattened_node_pred, batch.x, onsite_edges,
+#                                 equivariant_blocks, atom_orbitals, out_slices)
+
+#     node_label_tensor = torch.cat([matrix.flatten() for matrix in node_label.values()])
+#     node_pred_tensor = torch.cat([matrix.flatten() for matrix in node_pred.values()])
+
+#     # Process edge predictions
+#     # flattened_edge_labels = construct_kernel.get_H(batch.y)
+#     flattened_edge_labels = batch.y
+#     flattened_edge_pred = construct_kernel.get_H(edge_output)
+
+#     edge_label = utils.unflatten(flattened_edge_labels, partition.global_atomic_numbers,
+#                                     batch.edge_index,
+#                                     equivariant_blocks, atom_orbitals, out_slices)
+    
+#     edge_pred = utils.unflatten(flattened_edge_pred, partition.global_atomic_numbers,
+#                                 batch.edge_index,
+#                                 equivariant_blocks, atom_orbitals, out_slices)
+
+#     edge_label_tensor = torch.cat([matrix.flatten() for matrix in edge_label.values()])
+#     edge_pred_tensor = torch.cat([matrix.flatten() for matrix in edge_pred.values()])
+
+#     # Compute the loss
+#     loss_node = criterion(node_pred_tensor, node_label_tensor)
+#     loss_edge = criterion(edge_pred_tensor, edge_label_tensor)
+#     pred_tensor = torch.cat([node_pred_tensor, edge_pred_tensor])
+#     label_tensor = torch.cat([node_label_tensor, edge_label_tensor])
+#     loss = criterion(pred_tensor, label_tensor)  
+
+#     return loss_node, loss_edge, loss
 
 def get_loss_flattened(node_output, edge_output, batch, criterion):
     """
@@ -156,8 +208,7 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
     
     if dist.is_available() and dist.is_initialized():
-        # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the one-way edges
-        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device)
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
     world_size = dist.get_world_size()
 
     track_loss_node = []
@@ -220,6 +271,7 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
 
             # _________________________________________________________
             # Loss computation
+            # loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, p_train)
             loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion)
 
             if DEBUG:
@@ -305,8 +357,9 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
                 node_output, edge_output = model(batch, p_val) 
 
                 # Loss computation
+                # loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, p_val)
                 loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion)
-                    
+
                 global_val_loss = local_loss.clone()
                 global_loss_node = loss_node.clone()
                 global_loss_edge = loss_edge.clone()
@@ -394,7 +447,7 @@ def evaluate_model(model, partition, data_loader, construct_kernel, equivariant_
             print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
             torch.cuda.synchronize()  
 
-            local_test_node = local_test_node.cpu()
+            local_test_node = local_test_node.cpu() # do this on the gpu!
             local_test_edge = local_test_edge.cpu()
 
             arange_tensor = torch.arange(end_node - start_node).unsqueeze(0)
@@ -403,6 +456,7 @@ def evaluate_model(model, partition, data_loader, construct_kernel, equivariant_
 
             # Process node predictions
             flattened_node_labels = construct_kernel.get_H(test_batch.node_y.cpu())
+            # flattened_node_labels = test_batch.node_y.cpu()
             flattened_node_pred = construct_kernel.get_H(local_test_node)
 
             node_label = utils.unflatten(flattened_node_labels, test_batch.x, #partition.global_atomic_numbers,
@@ -418,6 +472,7 @@ def evaluate_model(model, partition, data_loader, construct_kernel, equivariant_
 
             # Process edge predictions
             flattened_edge_labels = construct_kernel.get_H(test_batch.y.cpu())
+            # flattened_edge_labels = test_batch.y.cpu()
             flattened_edge_pred = construct_kernel.get_H(local_test_edge)
 
             edge_label = utils.unflatten(flattened_edge_labels, partition.global_atomic_numbers,
