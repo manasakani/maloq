@@ -23,7 +23,9 @@ from dscribe.descriptors import SOAP
 import networkx as nx
 from sklearn.cluster import KMeans
 from scipy.sparse.csgraph import reverse_cuthill_mckee
+from scipy.spatial import KDTree
 import pymetis
+
 from mpi4py import MPI
 import warnings
 
@@ -67,7 +69,7 @@ class Structure:
 
         # Reordering properties, if the structure gets reordered before use
         self.is_reorder = is_reorder                        # Reorder the atomic structure
-        self.reorder_method = 'CUSTOM'                  # Method to reorder the atomic structure
+        self.reorder_method = 'CUSTOM'                      # Method to reorder the atomic structure
         self.reorder_map = None                             # Reorder map for the atomic structure, maps old atom indices to new atom indices
         self.counts = None                                  # Number of atoms in each partition
 
@@ -287,19 +289,9 @@ class Structure:
 
         return adjacency_list
 
-    # def get_block_atom_idx(self, sub_domain_size, origin, atom_pos):
-    #     """
-    #     Get the indices of atoms that are within a sub-domain defined by the origin and size.
-    #     """
-    #     return np.argwhere(  
-    #         (origin[0] <= atom_pos[:,0]) & (atom_pos[:,0] < origin[0] + sub_domain_size[0]) &
-    #         (origin[1] <= atom_pos[:,1]) & (atom_pos[:,1] < origin[1] + sub_domain_size[1]) &
-    #         (origin[2] <= atom_pos[:,2]) & (atom_pos[:,2] < origin[2] + sub_domain_size[2]) 
-    #     )
-
-    def cut_domain(self, sub_domain_size, n, atom_pos, order, atom_indices=None, origin=None):
+    def cut_domain(self, sub_domain_size, n, atom_pos, atom_degree, order, dims=[0, 1, 2], atom_indices=None, origin=None):
         """
-        Recursively cut a domain into sub-domains such that each sub-division has an equal-ish number of atoms.
+        Recursively cut a domain into sub-domains such that each sub-division has an equal number of atoms.
         """
         if origin is None:
             origin = np.zeros_like(sub_domain_size, dtype=float)
@@ -312,16 +304,22 @@ class Structure:
             return
 
         # Find the largest dimension to cut
-        largest_dim = np.argmax(sub_domain_size)
+        largest_dim = np.argmax(sub_domain_size[dims])          # dims = which dimension(s) to consider for cutting
 
         # Sort atoms along the largest dimension and find the median position
         sorted_indices = atom_indices[np.argsort(atom_pos[atom_indices, largest_dim])]
-        median_idx = len(sorted_indices) // 2
-        median_value = atom_pos[sorted_indices[median_idx], largest_dim]
+        sorted_degrees = atom_degree[sorted_indices]
 
-        # Split atoms into left and right groups based on the median value
-        left_indices = sorted_indices[atom_pos[sorted_indices, largest_dim] < median_value]
-        right_indices = sorted_indices[atom_pos[sorted_indices, largest_dim] >= median_value]
+        # Calculate the cumulative sum of degrees
+        cumulative_edges = np.cumsum(sorted_degrees)
+        total_edges = cumulative_edges[-1]
+
+        # Find the split index where cumulative edges are approximately balanced
+        split_idx = np.searchsorted(cumulative_edges, total_edges / 2)
+
+        # Split atoms into left and right groups
+        left_indices = sorted_indices[:split_idx]
+        right_indices = sorted_indices[split_idx:]
 
         # Update the sub-domain size for the next cut
         sub_domain_size = sub_domain_size.copy()
@@ -330,11 +328,42 @@ class Structure:
         # Define origins for left and right sub-domains
         origin_left = origin.copy()
         origin_right = origin.copy()
-        origin_right[largest_dim] = median_value
+        origin_right[largest_dim] = origin[largest_dim] + sub_domain_size[largest_dim]
 
         # Recursively cut the domain
-        self.cut_domain(sub_domain_size, n - 1, atom_pos, order, atom_indices=left_indices, origin=origin_left)
-        self.cut_domain(sub_domain_size, n - 1, atom_pos, order, atom_indices=right_indices, origin=origin_right)
+        self.cut_domain(sub_domain_size, n - 1, atom_pos, atom_degree, order, dims, atom_indices=left_indices, origin=origin_left)
+        self.cut_domain(sub_domain_size, n - 1, atom_pos, atom_degree, order, dims, atom_indices=right_indices, origin=origin_right)
+
+    def get_degree(self):
+        """
+        Get the degree of each atom in the atomic structure (like the degree of each node in the graph)
+        """
+
+        num_atoms = len(self.atomic_structure)
+        degree = np.zeros(num_atoms)
+
+        modified_atomic_structure = self.atomic_structure.copy()
+        cell = modified_atomic_structure.get_cell()
+        modified_atomic_structure.wrap()
+
+        positions = modified_atomic_structure.get_positions()
+
+        # Use a KDTree for neighbor searching
+        tree = KDTree(positions, boxsize=cell.diagonal())  # Takes into account periodicity
+
+        # Query neighbors for all atoms
+        for i in range(num_atoms):
+            
+            # Find indices of neighbors within the cutoff radius
+            neighbors = tree.query_ball_point(positions[i], self.rcut)
+            
+            # Exclude self-interaction
+            neighbors = [j for j in neighbors if j != i]
+            
+            # Update degree
+            degree[i] = len(neighbors)
+
+        return degree
 
     def reorder(self, method):
         """
@@ -349,12 +378,14 @@ class Structure:
 
         if method == 'RCM':
             self.reorder_map = np.array(reverse_cuthill_mckee(adj_matrix), dtype=np.int64)
+
         elif method == 'METIS':
             G = self.sparse_matrix_to_adjlist(adj_matrix)
             (_, parts) = pymetis.part_graph(size, adjacency=G)
             self.reorder_map = np.argsort(parts)
             parts = np.array(parts)
             self.counts = np.array([ np.sum(parts == k)  for k in range(size)])
+
         elif method == 'CUSTOM':
             # assert size power of 2
             if size & (size - 1) != 0:
@@ -367,12 +398,14 @@ class Structure:
             lz = np.max(atomic_positions[:,2]) - np.min(atomic_positions[:,2]) + 0.0001
 
             sub_domain_size = np.array([lx, ly, lz])
+            dims = [0, 1, 2]    # which dimensions cutting is allowed
 
-            # output in place
             # list of arrays with atom indices
             order = []
             origin = np.array([np.min(atomic_positions[:,i]) for i in range(3)])
-            self.cut_domain(sub_domain_size, n, atomic_positions, order,origin=origin)
+            atomic_degree = self.get_degree()
+
+            self.cut_domain(sub_domain_size, n, atomic_positions, atomic_degree, order, dims, origin=origin)
             self.reorder_map = np.concatenate([o.reshape(-1) for o in order], axis=-1)
             self.counts = np.array([len(o) for o in order])
 
