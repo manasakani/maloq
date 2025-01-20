@@ -289,50 +289,121 @@ class Structure:
 
         return adjacency_list
 
-    def cut_domain(self, sub_domain_size, n, atom_pos, atom_degree, order, dims=[0, 1, 2], atom_indices=None, origin=None):
+    def get_block_atom_idx(self, sub_domain_size, origin, atom_pos, cell):
         """
-        Recursively cut a domain into sub-domains such that each sub-division has an equal number of atoms.
+        Get the indices of atoms that are within a sub-domain defined by the origin and size.
         """
-        if origin is None:
-            origin = np.zeros_like(sub_domain_size, dtype=float)
+
+        indices = []
+        for i, a in enumerate(atom_pos):
+            adjusted_a = a.copy()  
+            
+            # check if its in the subdomain
+            if adjusted_a[0] < origin[0]:
+                adjusted_a[0] += cell[0]
+
+            if adjusted_a[1] < origin[1]:
+                adjusted_a[1] += cell[1]
+                
+            if adjusted_a[2] < origin[2]:
+                adjusted_a[2] += cell[2] 
+
+            if (origin[0] <= adjusted_a[0]) & (adjusted_a[0] < origin[0] + sub_domain_size[0]) and \
+            (origin[1] <= adjusted_a[1]) & (adjusted_a[1] < origin[1] + sub_domain_size[1]) and \
+            (origin[2] <= adjusted_a[2]) & (adjusted_a[2] < origin[2] + sub_domain_size[2]):
+                indices.append([i])  
+
+        return np.array(indices)
+
+    def get_cut_position(self, atom_pos, atom_indices, largest_dim, origin, sub_domain_size, cell_size, is_periodic):
+
+        # Unwrap all the atoms in the largest dimension
+        temp_atom_pos = atom_pos.copy()
+        for p in temp_atom_pos:
+            if p[largest_dim] < origin[largest_dim]:
+                p[largest_dim] += cell_size[largest_dim]
+        
+        # atom indices is the local set of atom indices in the subdomain
+        sorted_indices = atom_indices[np.argsort(temp_atom_pos[atom_indices, largest_dim])]
+
+        # decide where to cut based on the median value
+        cut_position = temp_atom_pos[sorted_indices][len(temp_atom_pos[sorted_indices])//2, largest_dim]
+
+        # split atoms into left and right groups based on the median value
+        left_indices = sorted_indices[temp_atom_pos[sorted_indices, largest_dim] < cut_position]
+        right_indices = sorted_indices[temp_atom_pos[sorted_indices, largest_dim] >= cut_position]
+
+        wrapped_cut_position = cut_position
+        if cut_position > cell_size[largest_dim]:
+            wrapped_cut_position -= cell_size[largest_dim]
+
+        return wrapped_cut_position, left_indices, right_indices
+
+    def cut_domain(self, n, atom_pos, cell_size, order, rcut, is_periodic=[0, 0, 0], atom_indices=None, origin=None):
+        """
+        Recursively cut a domain into sub-domains, taking node degree and periodicity into account
+        """
 
         if atom_indices is None:
             atom_indices = np.arange(len(atom_pos))
+
+        if origin is None:
+            origin = np.zeros_like(sub_domain_size, dtype=float)
+
+        # --> Get the size of the subdomain
+        lx = np.max(atom_pos[atom_indices][:,0]) - np.min(atom_pos[atom_indices][:,0]) 
+        ly = np.max(atom_pos[atom_indices][:,1]) - np.min(atom_pos[atom_indices][:,1]) 
+        lz = np.max(atom_pos[atom_indices][:,2]) - np.min(atom_pos[atom_indices][:,2]) 
+        sub_domain_size = np.array([lx, ly, lz])
 
         if n == 0:
             order.append(atom_indices)
             return
 
-        # Find the largest dimension to cut
-        largest_dim = np.argmax(sub_domain_size[dims])          # dims = which dimension(s) to consider for cutting
+        # --> Find the largest dimension to cut
+        if sum(is_periodic) == 0:
+            largest_dim = np.argmax(sub_domain_size)
+        else:
+            num_dim_neighbors = np.zeros(3)             # the number of neighbors created if we split in this dimension
+            for i in range(3):
+                # if the dimension is still periodic, this does not matter
+                if is_periodic[i] == 1:
+                    num_dim_neighbors[i] = 1
+                else:
+                    # number of times this subdomain fits into rcut:
+                    num_dim_neighbors[i] = np.ceil( 2 * rcut / sub_domain_size[i] )
+                    
+            largest_dim = np.argmin(num_dim_neighbors)
 
-        # Sort atoms along the largest dimension and find the median position
-        sorted_indices = atom_indices[np.argsort(atom_pos[atom_indices, largest_dim])]
-        sorted_degrees = atom_degree[sorted_indices]
+        # --> Calculate the cut index in the current dimension
+        cut_position, left_indices, right_indices = self.get_cut_position(atom_pos, atom_indices, largest_dim, origin, sub_domain_size, cell_size, is_periodic)
 
-        # Calculate the cumulative sum of degrees
-        cumulative_edges = np.cumsum(sorted_degrees)
-        total_edges = cumulative_edges[-1]
+        if sum(is_periodic) < 2:
 
-        # Find the split index where cumulative edges are approximately balanced
-        split_idx = np.searchsorted(cumulative_edges, total_edges / 2)
+            # Update the origin 
+            origin = origin.copy()
+            origin[largest_dim] = cut_position
 
-        # Split atoms into left and right groups
-        left_indices = sorted_indices[:split_idx]
-        right_indices = sorted_indices[split_idx:]
+            # Cut periodicity from this dimension, so the next cut will make a new piece
+            is_periodic_now = is_periodic.copy()
+            is_periodic_now[largest_dim] += 1
 
-        # Update the sub-domain size for the next cut
-        sub_domain_size = sub_domain_size.copy()
-        sub_domain_size[largest_dim] /= 2
+            self.cut_domain(n, atom_pos, cell_size, order, rcut, is_periodic_now, atom_indices=atom_indices, origin=origin)
 
-        # Define origins for left and right sub-domains
-        origin_left = origin.copy()
-        origin_right = origin.copy()
-        origin_right[largest_dim] = origin[largest_dim] + sub_domain_size[largest_dim]
+        else:
+            
+            # Update the origin and size of the largest dimension for the next cut
+            sub_domain_size = sub_domain_size.copy()
+            sub_domain_size[largest_dim] = sub_domain_size[largest_dim] / 2
+            
+            # Recursively cut the domain
+            origin_left = origin.copy()
+            origin_right = origin.copy()
+            origin_right[largest_dim] = cut_position
 
-        # Recursively cut the domain
-        self.cut_domain(sub_domain_size, n - 1, atom_pos, atom_degree, order, dims, atom_indices=left_indices, origin=origin_left)
-        self.cut_domain(sub_domain_size, n - 1, atom_pos, atom_degree, order, dims, atom_indices=right_indices, origin=origin_right)
+            self.cut_domain(n - 1, atom_pos, cell_size, order, rcut, is_periodic, atom_indices=left_indices, origin=origin_left)
+            self.cut_domain(n - 1, atom_pos, cell_size, order, rcut, is_periodic, atom_indices=right_indices, origin=origin_right)
+
 
     def get_degree(self):
         """
@@ -393,19 +464,22 @@ class Structure:
             n = np.log2(size)
 
             # with padding
-            lx = np.max(atomic_positions[:,0]) - np.min(atomic_positions[:,0]) + 0.0001
-            ly = np.max(atomic_positions[:,1]) - np.min(atomic_positions[:,1]) + 0.0001
-            lz = np.max(atomic_positions[:,2]) - np.min(atomic_positions[:,2]) + 0.0001
+            lx = np.max(atomic_positions[:,0]) - np.min(atomic_positions[:,0])
+            ly = np.max(atomic_positions[:,1]) - np.min(atomic_positions[:,1]) 
+            lz = np.max(atomic_positions[:,2]) - np.min(atomic_positions[:,2]) 
+            l_sub = np.array([lx, ly, lz])
+            biggest_cell = l_sub.copy()
 
             sub_domain_size = np.array([lx, ly, lz])
-            dims = [0, 1, 2]    # which dimensions cutting is allowed
+            is_periodic=[0 if self.atomic_structure.get_pbc()[i] == True else 2 for i in range(3)]
 
             # list of arrays with atom indices
             order = []
             origin = np.array([np.min(atomic_positions[:,i]) for i in range(3)])
             atomic_degree = self.get_degree()
 
-            self.cut_domain(sub_domain_size, n, atomic_positions, atomic_degree, order, dims, origin=origin)
+            # Cut the domain, account for periodic boundaries when deciding the cut dimensions
+            self.cut_domain(n, atomic_positions, biggest_cell, order, self.rcut, is_periodic=is_periodic, origin=origin)
             self.reorder_map = np.concatenate([o.reshape(-1) for o in order], axis=-1)
             self.counts = np.array([len(o) for o in order])
 
