@@ -10,6 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 from ase.geometry import find_mic
 import torch.distributed as dist
 from mpi4py import MPI
+import time
 
 # Custom dataset class for the GNN
 class CustomDataset(Dataset):
@@ -87,50 +88,50 @@ def create_input_data_molecules(structure, partition, equivariant_blocks, out_sl
         H_blocks_node_object[i] = block
     H_blocks_node = H_blocks_node_object
 
+
+    flat_blocks = []
+    for index_target, equivariant_block in enumerate(equivariant_blocks):
+        for N_M_str, block_slice in equivariant_block.items():
+            condition_numbers = tuple(map(int, N_M_str.split()))
+            slice_row = slice(block_slice[0], block_slice[1])
+            slice_col = slice(block_slice[2], block_slice[3])
+            slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
+            flat_blocks.append((condition_numbers, slice_row, slice_col, slice_out))
+
     # Prepare the off-diagonal orbital blocks --> Edge labels
-    edge_labels = []
-    for i in range(len(local_edge_index[0])):
-        # print("Working on edge ", i, " of ", len(local_edge_index[0]))
-        label = np.zeros(out_slices[-1])
-        for index_target, equivariant_block in enumerate(equivariant_blocks):
-                for N_M_str, block_slice in equivariant_block.items():
-                    slice_row = slice(block_slice[0], block_slice[1])
-                    slice_col = slice(block_slice[2], block_slice[3])
+    edge_labels = np.zeros((len(local_edge_index[0]), out_slices[-1]))
+    atomic_numbers_i = global_atomic_numbers[local_edge_index[0]]
+    atomic_numbers_j = global_atomic_numbers[local_edge_index[1]]
+    for condition_numbers, slice_row, slice_col, slice_out in flat_blocks:
+        condition_i, condition_j = condition_numbers
 
-                    # len_row = block_slice[1] - block_slice[0]
-                    # len_col = block_slice[3] - block_slice[2]
-                    slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
-                    condition_number_i, condition_number_j = N_M_str.split()
+        # Create a mask for edges that match the condition numbers
+        mask = (atomic_numbers_i == condition_i) & (atomic_numbers_j == condition_j)
 
-                    if (global_atomic_numbers[local_edge_index[0][i]].item() == int(condition_number_i) 
-                        and global_atomic_numbers[local_edge_index[1][i]].item() == int(condition_number_j)):
+        # Use the mask to select the relevant edges and accumulate the corresponding slices
+        matching_indices = np.where(mask)[0]  # Indices of edges matching the condition
+        for edge_idx in matching_indices:
 
-                        label[slice_out] += np.squeeze(H_blocks_edge[i][slice_row, slice_col].reshape(1,-1))
-
-        edge_labels.append(label)
-
+            edge_labels[edge_idx, slice_out] += np.squeeze(
+                H_blocks_edge[edge_idx][slice_row, slice_col].reshape(1, -1)
+            )
 
     # Prepare the diagonal orbital blocks --> Node labels
-    node_labels = []
-    for i in range(len(local_onsite_edge_index[0])):
-        # print("Working on node ", i, " of ", len(local_onsite_edge_index[0]))
-        label = np.zeros(out_slices[-1])
-        for index_target, equivariant_block in enumerate(equivariant_blocks):
-                for N_M_str, block_slice in equivariant_block.items():
-                    slice_row = slice(block_slice[0], block_slice[1])
-                    slice_col = slice(block_slice[2], block_slice[3])
-                    # len_row = block_slice[1] - block_slice[0]
-                    # len_col = block_slice[3] - block_slice[2]
-                    slice_out = slice(out_slices[index_target], out_slices[index_target + 1])
-                    condition_number_i, condition_number_j = N_M_str.split()
+    node_labels = np.zeros((len(local_onsite_edge_index[0]), out_slices[-1]))
+    atomic_numbers_i = global_atomic_numbers[local_onsite_edge_index[0]]
+    atomic_numbers_j = global_atomic_numbers[local_onsite_edge_index[1]]
+    for condition_numbers, slice_row, slice_col, slice_out in flat_blocks:
+        condition_i, condition_j = condition_numbers
 
-                    if (global_atomic_numbers[local_onsite_edge_index[0][i]].item() == int(condition_number_i) 
-                        and global_atomic_numbers[local_onsite_edge_index[1][i]].item() == int(condition_number_j)):
+        # Create a mask for nodes that match the condition numbers
+        mask = (atomic_numbers_i == condition_i) & (atomic_numbers_j == condition_j)
 
-                        label[slice_out] += np.squeeze(H_blocks_node[i][slice_row, slice_col].reshape(1,-1))
-
-        node_labels.append(label)
-    dist.barrier()
+        # Use the mask to select the relevant nodes and accumulate the corresponding slices
+        matching_indices = np.where(mask)[0]  # Indices of nodes matching the condition
+        for node_idx in matching_indices:
+            node_labels[node_idx, slice_out] += np.squeeze(
+                H_blocks_node[node_idx][slice_row, slice_col].reshape(1, -1)
+            )
     
     # Edge distances --> edge features
     edge_fea = torch.empty((len(local_edge_index[0]),4))
@@ -569,10 +570,15 @@ def batch_data_molecules(structures, partition, device, num_graph=1, batch_size=
 
     data_list = []
 
+    start_time = time.time()
+
     for i in range(num_graph):
 
         data = create_input_data_molecules(structures[i], partition, equivariant_blocks, out_slices, construct_kernel, device, dtype=dtype)
         data_list.append(data)
+    
+    end_time = time.time()
+    print("Time to create data objects: ", end_time - start_time)
     
     dataset = CustomDataset(data_list)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=custom_collate_fn, num_workers=0)

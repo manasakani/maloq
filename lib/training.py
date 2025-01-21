@@ -430,7 +430,7 @@ def evaluate_model(model, partition, data_loader, construct_kernel, equivariant_
 
     if dist.is_available() and dist.is_initialized():
         # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
-        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=False)
         rank = dist.get_rank()
         size = dist.get_world_size()
         comm = MPI.COMM_WORLD
