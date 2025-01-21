@@ -55,13 +55,16 @@ warnings.filterwarnings("ignore", category=UserWarning, message=".*To copy const
 @click.option(
     "-is_reorder", type=int, required=True, help="If is_reorder"
 )
-def main(folder, rcut, nccl, overlap, hidden_dim, num_epochs, is_reorder):
+@click.option(
+    "-reorder_method", type=str, required=True, help="Which reoerder"
+)
+def main(folder, rcut, nccl, overlap, hidden_dim, num_epochs, is_reorder, reorder_method):
     nccl = bool(nccl)
     overlap = bool(overlap)
     is_reorder = bool(is_reorder)
     print(f"Folder: {folder}", flush=True)
     print(f"rcut: {rcut}, nccl: {nccl}, overlap: {overlap}, is_reorder: {is_reorder}", flush=True)
-
+    print(f"hidden_dim: {hidden_dim}, num_epochs: {num_epochs}, reorder_method: {reorder_method}", flush=True)
 
     # Set random seed for reproducibility
     torch.manual_seed(42)
@@ -140,7 +143,8 @@ def main(folder, rcut, nccl, overlap, hidden_dim, num_epochs, is_reorder):
                                     self_interaction=False,
                                     bothways=True, 
                                     rcut=rcut,
-                                    is_reorder=is_reorder)
+                                    is_reorder=is_reorder,
+                                    reorder_method=reorder_method)
     print("Training structure created", flush=True)
 
     a_HfO2_val = structure.Structure(os.path.join(val_data_folder, 'structure.xyz'),
@@ -151,7 +155,8 @@ def main(folder, rcut, nccl, overlap, hidden_dim, num_epochs, is_reorder):
                                         self_interaction=False,
                                         bothways=True, 
                                         rcut=rcut,
-                                        is_reorder=is_reorder)
+                                        is_reorder=is_reorder,
+                                        reorder_method=reorder_method)
     print("Validation structure created", flush=True)
 
     assert(num_train % batch_size == 0) # batch size should divide the number of training samples for current distribution

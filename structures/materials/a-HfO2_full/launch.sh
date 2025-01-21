@@ -14,21 +14,24 @@
 # reorders=(0 1)
 
 
-ranks=(32 64)
-rcuts=(6)
+ranks=(16 32 64 128)
+rcuts=(6.5)
 hidden_dimensions=(128)
-overlaps=(0 1)
+overlaps=(0)
 nccls=(1)
-reorders=(0)
+reorders=(0 1)
 
 
 overlaps_str=("no_overlap" "overlap")
 nccls_str=("mpi" "nccl")
+reorder_methods=("X" "CUSTOM")
+
 
 # # Loop through each main file
 # for main_file in "${main_files[@]}"; do
 #   # Loop through each rank configuration
 for reorder in "${reorders[@]}"; do
+    reorder_method=${reorder_methods[$reorder]}
     for hidden_dimension in "${hidden_dimensions[@]}"; do
         for overlap in "${overlaps[@]}"; do
             for nccl in "${nccls[@]}"; do
@@ -56,7 +59,7 @@ for reorder in "${reorders[@]}"; do
 #SBATCH --nodes=$nodes
 #SBATCH --ntasks-per-core=1
 #SBATCH --ntasks-per-node=$tasks_per_node
-#SBATCH --cpus-per-task=18
+#SBATCH --cpus-per-task=72
 #SBATCH --partition=normal
 #SBATCH --hint=nomultithread
 #SBATCH --hint=exclusive
@@ -69,7 +72,7 @@ export MASTER_PORT=29500
 
 conda activate ml
 
-# export NCCL_NET='AWS Libfabric'
+export NCCL_NET='AWS Libfabric'
 # export NCCL_CROSS_NIC=1
 # export NCCL_NET_GDR_LEVEL=SYS
 # export NCCL_SOCKET_IFNAME=hsn
@@ -83,8 +86,7 @@ conda activate ml
 
 
 srun --cpu-bind=socket bash -c 'export MPICH_GPU_SUPPORT_ENABLED=1; export CUDA_VISIBLE_DEVICES=\$SLURM_LOCALID;
-export DEBUG=1;
-nsys profile --force-overwrite true -o "${out_folder}/output_\${SLURM_PROCID}_\${SLURM_NTASKS}" python train.py -f /capstor/scratch/cscs/amaeder/ -rcut $rcut -nccl $nccl -overlap $overlap -hidden_dim $hidden_dimension -num_epochs 120 -is_reorder $reorder > ${out_folder}/output_\${SLURM_PROCID}_\${SLURM_NTASKS}.txt'
+python train.py -f /capstor/scratch/cscs/amaeder/ -rcut $rcut -nccl $nccl -overlap $overlap -hidden_dim $hidden_dimension -num_epochs 120 -is_reorder $reorder -reorder_method $reorder_method > ${out_folder}/output_\${SLURM_PROCID}_\${SLURM_NTASKS}.txt'
 EOL
 
                         # Submit the job
@@ -95,3 +97,6 @@ EOL
         done
     done
 done
+
+# export DEBUG=1;
+# nsys profile --force-overwrite true -o "${out_folder}/output_\${SLURM_PROCID}_\${SLURM_NTASKS}"
