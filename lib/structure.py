@@ -11,9 +11,10 @@ import numpy as np
 import torch
 import pickle
 import os
+import time
 
 # Atomic Simulation Environment (ASE) package   
-from ase.io import read
+from ase.io import read, write
 from ase import Atoms
 from ase.neighborlist import NeighborList
 from ase.geometry import find_mic
@@ -46,7 +47,8 @@ class Structure:
         save_matrices=False,
         rcut=4.0,
         is_reorder=False,
-        reorder_method = 'CUSTOM'
+        reorder_method = 'CUSTOM',
+        tile = np.ones(3, dtype=int)
     ):
         # input quantities
         self.xyz_file = xyz_file                            # XYZ file containing atomic positions              
@@ -69,9 +71,11 @@ class Structure:
 
         # Reordering properties, if the structure gets reordered before use
         self.is_reorder = is_reorder                        # Reorder the atomic structure
-        self.reorder_method = reorder_method                      # Method to reorder the atomic structure
-        self.reorder_map = None                             # Reorder map for the atomic structure, maps old atom indices to new atom indices
+        self.reorder_method = reorder_method                # Method to reorder the atomic structure
+        self.hamiltonian_index_map = None                             # Reorder map for the atomic structure, to index the electronic structure
         self.counts = None                                  # Number of atoms in each partition
+        self.tile = tile                                    # Tile the structure in 3D
+        self.og_positions = None                            # Original positions of the atoms
 
         # parameters:
         self.rcut = rcut                                    # cutoff radius for neighbor list
@@ -103,7 +107,7 @@ class Structure:
         if is_reorder:
             self.reorder(self.reorder_method)
         else:
-            self.reorder_map = np.arange(len(self.atomic_numbers))
+            self.hamiltonian_index_map = np.arange(len(self.atomic_numbers))
 
     def init_atomic_structure_schnet(self, database_props, pbc, self_interaction, bothways):
 
@@ -137,10 +141,6 @@ class Structure:
         # atomic positions
         self.atomic_structure = read(xyz_file)
 
-        # set the elements in the atomic structure:
-        self.atomic_species = self.atomic_structure.get_chemical_symbols()
-        self.atomic_numbers = torch.tensor([utils.periodic_table[i] for i in self.atomic_species])
-
         # lattice vectors (periodic box size)
         if pbc:
             print("Periodic boundary conditions are set.")
@@ -150,6 +150,18 @@ class Structure:
             self.atomic_structure.set_cell([a, b, c])
             self.atomic_structure.set_pbc([pbc, pbc, pbc])
             self.periodic_cell = np.array([a, b, c])
+
+        self.og_positions = self.atomic_structure.get_positions().copy()
+        self.atomic_structure = self.atomic_structure.repeat(self.tile)
+
+        # repeat indices:
+        num_atoms = self.og_positions.shape[0]
+        num_repeated_images = self.tile[0] * self.tile[1] * self.tile[2]
+        self.hamiltonian_index_map = np.tile(np.arange(num_atoms), num_repeated_images)
+
+        # set the elements in the atomic structure:
+        self.atomic_species = self.atomic_structure.get_chemical_symbols()
+        self.atomic_numbers = torch.tensor([utils.periodic_table[i] for i in self.atomic_species])
 
         # neighbor list
         array_rcut = np.ones(len(self.atomic_structure))*self.rcut
@@ -439,6 +451,36 @@ class Structure:
             degree[i] = len(neighbors)
 
         return degree
+    
+    def get_reorder_map(self, new_positions):
+        """
+        Get the reorder map from the new positions to the original positions.
+        """
+
+        og_positions = self.og_positions                        # original positions of the atoms before tiling or reordering
+        reorder_map = np.zeros(len(new_positions), dtype=int)
+
+        lx = np.max(og_positions[:,0]) - np.min(og_positions[:,0])
+        ly = np.max(og_positions[:,1]) - np.min(og_positions[:,1])
+        lz = np.max(og_positions[:,2]) - np.min(og_positions[:,2])
+
+        time_start = time.time()
+
+        wrapped_position = new_positions.copy()
+        for i, pos in enumerate(wrapped_position):
+            if pos[0] > lx:
+                pos[0] -= (pos[0] // lx) * lx
+            if pos[1] > ly:
+                pos[1] -= (pos[1] // ly) * ly
+            if pos[2] > lz:
+                pos[2] -= (pos[2] // lz) * lz
+
+        for i, pos in enumerate(wrapped_position):
+            dists = np.linalg.norm(og_positions - pos, axis=1)
+            reorder_map[i] = np.argmin(dists)
+
+        print("Time taken to reorder: ", time.time() - time_start)
+        return reorder_map
 
     def reorder(self, method):
         """
@@ -452,12 +494,12 @@ class Structure:
         print("Reordering the graph using method: ", method)
 
         if method == 'RCM':
-            self.reorder_map = np.array(reverse_cuthill_mckee(adj_matrix), dtype=np.int64)
+            atom_reorder_map = np.array(reverse_cuthill_mckee(adj_matrix), dtype=np.int64)
 
         elif method == 'METIS':
             G = self.sparse_matrix_to_adjlist(adj_matrix)
             (_, parts) = pymetis.part_graph(size, adjacency=G)
-            self.reorder_map = np.argsort(parts)
+            atom_reorder_map = np.argsort(parts)
             parts = np.array(parts)
             self.counts = np.array([ np.sum(parts == k)  for k in range(size)])
 
@@ -487,19 +529,18 @@ class Structure:
 
             # Cut the domain, account for periodic boundaries when deciding the cut dimensions
             self.cut_domain(n, atomic_positions, atomic_degree, biggest_cell, order, self.rcut, is_periodic=is_periodic, origin=origin)
-            self.reorder_map = np.concatenate([o.reshape(-1) for o in order], axis=-1)
+            atom_reorder_map = np.concatenate([o.reshape(-1) for o in order], axis=-1)
             self.counts = np.array([len(o) for o in order])
 
         else:
             # Reorder is true, but no valid method is specified
             warnings.warn("No valid method specified for reordering the graph. Using the original order.")
-            self.reorder_map = np.arange(len(self.atomic_numbers))
+            atom_reorder_map = np.arange(len(self.atomic_numbers))
             total_num_nodes = atomic_positions.shape[0]
             local_num_nodes = total_num_nodes // size
             self.counts = np.array([local_num_nodes] * size, dtype=np.int32)
             for i in range(total_num_nodes % size):
                 self.counts[i] += 1
-
 
         # # ### PLOTTING TEST
         # if_plot = True
@@ -525,9 +566,10 @@ class Structure:
 
 
         # reorder structure with new atom indices
-        self.atomic_structure = self.atomic_structure[self.reorder_map]
-        self.atomic_numbers = torch.tensor([self.atomic_numbers[i] for i in self.reorder_map])
-        self.atomic_species = [self.atomic_species[i] for i in self.reorder_map]
+        self.atomic_structure = self.atomic_structure[atom_reorder_map]
+        self.hamiltonian_index_map = self.hamiltonian_index_map[atom_reorder_map]
+        self.atomic_numbers = torch.tensor([self.atomic_numbers[i] for i in atom_reorder_map])
+        self.atomic_species = [self.atomic_species[i] for i in atom_reorder_map]
         # NOTE: self.num_orbitals_per_atom always refers to the original order!
 
         # Redo the neighbor list
@@ -756,7 +798,7 @@ class Structure:
         """
         Map the atom index to the starting orbital index and the number of orbitals
         """
-        atom_index = self.reorder_map[atom_index]                                   # convert the new atom index to the original atom index  
+        atom_index = self.hamiltonian_index_map[atom_index]                                   # convert the new atom index to the original atom index  
         starting_index = int(np.sum(self.num_orbitals_per_atom[:atom_index])+1)     # index where this atom's orbitals start in H and S
         num_orbitals = self.num_orbitals_per_atom[atom_index]                       # number of orbitals for this atom
 
@@ -826,7 +868,7 @@ class Merged_Structure(Structure):
             is_reorder=False
         )
 
-        self.reorder_map = np.arange(np.sum(len(structure.reorder_map) for structure in structures_to_merge))
+        self.hamiltonian_index_map = np.arange(np.sum(len(structure.reorder_map) for structure in structures_to_merge))
         self.structures_to_merge = structures_to_merge
         self.merge_structures(self_interaction, bothways)
 

@@ -58,14 +58,25 @@ warnings.filterwarnings("ignore", category=UserWarning, message=".*To copy const
 @click.option(
     "-reorder_method", type=str, required=True, help="Which reoerder"
 )
-def main(folder, rcut, nccl, overlap, hidden_dim, num_epochs, is_reorder, reorder_method):
+@click.option(
+    "-tile_x", type=int, default=1
+)
+@click.option(
+    "-tile_y", type=int, default=1
+)
+@click.option(
+    "-tile_z", type=int, default=1
+)
+def main(folder, rcut, nccl, overlap, hidden_dim, num_epochs, is_reorder, reorder_method,
+         tile_x, tile_y, tile_z):
     nccl = bool(nccl)
     overlap = bool(overlap)
     is_reorder = bool(is_reorder)
+    tile = np.array([tile_x, tile_y, tile_z], dtype=int)
     print(f"Folder: {folder}", flush=True)
     print(f"rcut: {rcut}, nccl: {nccl}, overlap: {overlap}, is_reorder: {is_reorder}", flush=True)
     print(f"hidden_dim: {hidden_dim}, num_epochs: {num_epochs}, reorder_method: {reorder_method}", flush=True)
-
+    print(f"tile: {tile}", flush=True)
     # Set random seed for reproducibility
     torch.manual_seed(42)
     np.random.seed(42)
@@ -144,7 +155,8 @@ def main(folder, rcut, nccl, overlap, hidden_dim, num_epochs, is_reorder, reorde
                                     bothways=True, 
                                     rcut=rcut,
                                     is_reorder=is_reorder,
-                                    reorder_method=reorder_method)
+                                    reorder_method=reorder_method,
+                                    tile=tile)
     print("Training structure created", flush=True)
 
     a_HfO2_val = structure.Structure(os.path.join(val_data_folder, 'structure.xyz'),
