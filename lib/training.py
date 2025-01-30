@@ -200,7 +200,7 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
                                       unflatten=False, construct_kernel=None, equivariant_blocks=None, atom_orbitals=None, out_slices=None):
     
     device = next(model.parameters()).device  
-    criterion = nn.MSELoss(reduction='mean')
+    criterion = nn.L1Loss(reduction='mean')
 
     p_train = partition['train']
     p_val = partition['validate']
