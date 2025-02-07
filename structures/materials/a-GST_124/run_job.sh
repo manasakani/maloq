@@ -1,15 +1,15 @@
 #!/bin/bash -l
 #SBATCH --job-name=gnn-GST
 #SBATCH --account=lp16
-#SBATCH --time=02:00:00
-#SBATCH --nodes=1
+#SBATCH --time=05:00:00
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-core=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=18
 #SBATCH --partition=normal
 #SBATCH --hint=nomultithread
 #SBATCH --hint=exclusive
-#SBATCH --output=out_sparse_small/output_%j.txt
+#SBATCH --output=outputs/output_%j.txt
 #SBATCH --error=error_file.err 
 
 uenv start --view=modules prgenv-gnu/24.11:v1 
@@ -22,6 +22,7 @@ module load nccl
 module load cray-mpich
 module load cmake
 module load openblas
+module load aws-ofi-nccl
 
 export NCCL_ROOT=/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/nccl-2.22.3-1-4j6h3ffzysukqpqbvriorrzk2lm762dd  # Replace with your NCCL installation path
 export NCCL_LIB_DIR=$NCCL_ROOT/lib
@@ -44,4 +45,4 @@ source /users/amaeder/miniconda3/etc/profile.d/conda.sh
 conda activate ml
 
 srun --cpu-bind=socket bash -c 'export MPICH_GPU_SUPPORT_ENABLED=1; export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID;
-python train.py -f /users/amaeder/amorphous_gnns/ > out_sparse_small/output_${SLURM_PROCID}_${SLURM_NTASKS}.txt'
+python train.py -f /users/amaeder/amorphous_gnns/ > outputs/output_${SLURM_PROCID}_${SLURM_NTASKS}.txt'
