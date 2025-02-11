@@ -17,7 +17,7 @@ periodic_table = {'Ac': 89, 'Ag': 47, 'Al': 13, 'Am': 95, 'Ar': 18, 'As': 33, 'A
                   'Sb': 51, 'Sc': 21, 'Se': 34, 'Si': 14, 'Sm': 62, 'Sn': 50, 'Sr': 38, 'Ta': 73, 'Tb': 65, 'Tc': 43,
                   'Te': 52, 'Th': 90, 'Ti': 22, 'Tl': 81, 'Tm': 69, 'U': 92, 'V': 23, 'W': 74, 'Xe': 54, 'Y': 39,
                   'Yb': 70, 'Zn': 30, 'Zr': 40, 'Rf': 104, 'Db': 105, 'Sg': 106, 'Bh': 107, 'Hs': 108, 'Mt': 109,
-                  'Ds': 110, 'Rg': 111, 'Cn': 112, 'Nh': 113, 'Fl': 114, 'Mc': 115, 'Lv': 116, 'Ts': 117, 'Og': 118}
+                  'Ds': 110, 'Rg': 111, 'Cn': 112, 'Nh': 113, 'Fl': 114, 'Mc': 115, 'Lv': 116, 'Ts': 117, 'Og': 118,'V': 0}
 
 # for DZVP
 orbital_type_dict_DZVP = {'H':[0,0,1],'O':[0,0,1,1,2], 'Ge':[0,0,1,1,2],'Sb':[0,0,1,1,2], 'Te':[0,0,1,1,2]} 
@@ -31,10 +31,10 @@ num_orbitals_per_atom_def2_SVP = {'H':5, 'O':14, 'N':14, 'C':14}
 
 
 # for SZVP 
-orbital_type_dict_SZV = {'H':[0],'O':[0,1],'Hf':[0,0,1,2], 'Cl': [0, 1], 'Na': [0, 0, 1], 'Ge': [0, 1], 'Sb': [0, 1], 'Te': [0 ,1]} #Hf includes 3s, 3p and 4d orbitals
+orbital_type_dict_SZV = {'H':[0],'O':[0,1],'Hf':[0,0,1,2], 'Cl': [0, 1], 'Na': [0, 0, 1], 'Ge': [0, 1], 'Sb': [0, 1], 'Te': [0 ,1], 'N': [0, 1], 'Ti': [0, 0, 1, 2], 'Pt':[0,0,1,2],'V': [0,1]} #Hf includes 3s, 3p and 4d orbitals
                          #s       s p        s s p d          s  p          s s p
 
-num_orbitals_per_atom_SZV = {'H':1, 'O':4, 'Hf':10, 'Cl':4, 'Na':5, 'Ge':4, 'Sb':4, 'Te':4}
+num_orbitals_per_atom_SZV = {'H':1, 'O':4, 'Hf':10, 'Cl':4, 'Na':5, 'Ge':4, 'Sb':4, 'Te':4, 'N':4, 'Ti':10, 'Pt':10, 'V':4}
 
 orbital_type_dict = {
     'DZVP': orbital_type_dict_DZVP,
