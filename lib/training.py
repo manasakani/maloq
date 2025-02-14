@@ -13,6 +13,8 @@ from mpi4py import MPI
 import numpy as np
 from torch import cuda
 import os
+from torch.cuda.amp import autocast, GradScaler
+
 DEBUG = os.environ.get("DEBUG", False)
 
 @env.only_rank_zero
@@ -194,13 +196,21 @@ def get_loss_unflattened(node_output, edge_output, batch, criterion, construct_k
 # Training the model
 ############################################################
 
+# Define the loss functions
+mse_loss = nn.MSELoss(reduction='mean')
+l1_loss = nn.L1Loss(reduction='mean')
+
+# Combine them in a custom way
+def combined_loss(output, target):
+    return mse_loss(output, target) + l1_loss(output, target)
+
 def train_and_validate_model_subgraph(model, optimizer, partition, training_loader, validation_loader, 
                                       num_epochs=5000, loss_tol=0.0001, patience=500, threshold=1e-3, min_lr=1e-5, 
                                       save_file='model.pth', schedule=False, dtype=torch.float32,
                                       unflatten=False, construct_kernel=None, equivariant_blocks=None, atom_orbitals=None, out_slices=None):
     
     device = next(model.parameters()).device  
-    criterion = nn.L1Loss(reduction='mean')
+    criterion = combined_loss
 
     p_train = partition['train']
     p_val = partition['validate']
@@ -208,8 +218,10 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
     
     if dist.is_available() and dist.is_initialized():
-        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=False)
     world_size = dist.get_world_size()
+
+    scaler = GradScaler()  # required for mixed precision training
 
     track_loss_node = []
     track_loss_edge = []
@@ -258,26 +270,29 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
             cuda.synchronize()
             dist.barrier()
             batch_start_time = time.time()
-            node_output, edge_output = model(batch, p_train)
-            cuda.synchronize()
-            forward_pass_time = time.time()
 
-            if DEBUG:
+            # Forward pass with autocast
+            with autocast():
+                node_output, edge_output = model(batch, p_train)
                 cuda.synchronize()
-                dist.barrier()
-                cuda.nvtx.range_pop()
-                cuda.nvtx.range_push("Loss computation")
+                forward_pass_time = time.time()
+
+                if DEBUG:
+                    cuda.synchronize()
+                    dist.barrier()
+                    cuda.nvtx.range_pop()
+                    cuda.nvtx.range_push("Loss computation")
 
 
-            # _________________________________________________________
-            # Loss computation
-            # loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, p_train)
-            loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion)
+                # _________________________________________________________
+                # Loss computation
+                # loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, p_train)
+                loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion)
 
-            if DEBUG:
-                cuda.synchronize()
-                cuda.nvtx.range_pop()
-                cuda.nvtx.range_push("Loss reduction")
+                if DEBUG:
+                    cuda.synchronize()
+                    cuda.nvtx.range_pop()
+                    cuda.nvtx.range_push("Loss reduction")
 
             global_loss = local_loss.clone()
             global_loss_node = loss_node.clone()
@@ -303,7 +318,7 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
             cuda.synchronize()
             dist.barrier()
             loss_time = time.time()            
-            global_loss.backward()
+            scaler.scale(global_loss).backward()
 
             if DEBUG: 
                 cuda.synchronize()
@@ -313,7 +328,8 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
                             
             # _________________________________________________________
             # Parameter update
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
 
             if DEBUG: 
                 cuda.synchronize()
@@ -354,11 +370,12 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
                 batch = batch.to(device)
 
                 # Forward pass
-                node_output, edge_output = model(batch, p_val) 
+                with autocast():
+                    node_output, edge_output = model(batch, p_val) 
 
-                # Loss computation
-                # loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, p_val)
-                loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion)
+                    # Loss computation
+                    # loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, p_val)
+                    loss_node, loss_edge, local_loss = get_loss_full_batch(node_output, edge_output, batch, criterion)
 
                 global_val_loss = local_loss.clone()
                 global_loss_node = loss_node.clone()
