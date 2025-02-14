@@ -628,6 +628,7 @@ def assemble_hamiltonian_matrix(model, test_batch, construct_kernel, equivariant
     torch.save(pred_orbital_dic, save_file+'pred_ham_dic.pt')
 
 
+
 def reconstruct_hamiltonian_dic(model, test_batch, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file='model_in_training.pth'):
     """
     Evaluate the model on the test set and return the mean absolute error for the node and edge predictions after reconstructing the Hamiltonian matrices from the predictions.
@@ -657,3 +658,294 @@ def reconstruct_hamiltonian_dic(model, test_batch, construct_kernel, equivariant
     pred_dic.update(pred_offsite_dic)
 
     return label_dic,pred_dic
+
+
+
+def compute_total_loss(model, partition, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file='./'):
+    model.eval() 
+    local_node_labels = []
+    local_node_preds = []
+    local_edge_labels = []
+    local_edge_preds = []
+
+    start_node = partition.start_node
+    end_node = partition.end_node
+
+    # currently only testing on a single rank with 1 batch, need to fix for multiple ranks and batches
+    # all examples are set up with 1 batch
+    assert len(data_loader) == 1
+
+    if dist.is_available() and dist.is_initialized():
+        # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+        rank = dist.get_rank()
+        size = dist.get_world_size()
+        comm = MPI.COMM_WORLD
+    
+    with torch.no_grad(): 
+        MAEloss_total = 0.0
+
+        for i, test_batch in enumerate(data_loader):
+            print(f"Loading batch {i}/{len(data_loader)}...")
+            test_batch = test_batch.to(device)
+
+            # Forward pass
+            local_test_node, local_test_edge = model(test_batch, partition)
+            print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+            torch.cuda.synchronize()  
+
+            local_test_node = local_test_node.cpu()
+            local_test_edge = local_test_edge.cpu()
+
+            arange_tensor = torch.arange(end_node - start_node).unsqueeze(0)
+            # arange_tensor = torch.arange(start_node, end_node).unsqueeze(0)
+            onsite_edges = torch.cat((arange_tensor, arange_tensor), 0)
+
+            # Process node predictions
+            flattened_node_labels = construct_kernel.get_H(test_batch.node_y.cpu())
+            flattened_node_pred = construct_kernel.get_H(local_test_node)
+
+            node_label = utils.unflatten(flattened_node_labels, test_batch.x, #partition.global_atomic_numbers,
+                                         onsite_edges, equivariant_blocks, atom_orbitals, out_slices)
+            
+            node_pred = utils.unflatten(flattened_node_pred, test_batch.x, #partition.global_atomic_numbers,
+                                        onsite_edges, equivariant_blocks, atom_orbitals, out_slices)
+                        
+            H_block_node_labels = [matrix.flatten() for matrix in node_label.values()]
+            node_label_tensor = torch.cat(H_block_node_labels)
+            H_block_node_pred = [matrix.flatten() for matrix in node_pred.values()]
+            node_pred_tensor = torch.cat(H_block_node_pred)
+
+            # Process edge predictions
+            flattened_edge_labels = construct_kernel.get_H(test_batch.y.cpu())
+            flattened_edge_pred = construct_kernel.get_H(local_test_edge)
+
+            edge_label = utils.unflatten(flattened_edge_labels, partition.global_atomic_numbers,
+                                         test_batch.edge_index,
+                                         equivariant_blocks, atom_orbitals, out_slices)
+            
+            edge_pred = utils.unflatten(flattened_edge_pred, partition.global_atomic_numbers,
+                                        test_batch.edge_index,
+                                        equivariant_blocks, atom_orbitals, out_slices)
+                    
+            H_block_edge_labels = [matrix.flatten() for matrix in edge_label.values()]
+            edge_label_tensor = torch.cat(H_block_edge_labels)
+            H_block_edge_pred = [matrix.flatten() for matrix in edge_pred.values()]
+            edge_pred_tensor = torch.cat(H_block_edge_pred)
+
+            # Compute the MAE
+            pred_tensor = torch.cat([node_pred_tensor, edge_pred_tensor])
+            label_tensor = torch.cat([node_label_tensor, edge_label_tensor])
+            MAEloss_total += torch.mean(torch.abs(pred_tensor - label_tensor))
+
+            hartree_to_eV = 27.21138602
+            print("Mean Absolute Node Error in mHartree: ", torch.mean(torch.abs(node_pred_tensor - node_label_tensor)) * 1e3)
+            print("Mean Absolute Edge Error in mHartree: ", torch.mean(torch.abs(edge_pred_tensor - edge_label_tensor)) * 1e3)
+            print("Mean Absolute Error in mHartree: ", MAEloss_total * 1e3)
+            print("Mean Absolute Error in meV: ", MAEloss_total * hartree_to_eV * 1e3)
+
+            # Collect results for plotting
+            local_node_labels.append(node_label_tensor)
+            local_node_preds.append(node_pred_tensor)
+            local_edge_labels.append(edge_label_tensor)
+            local_edge_preds.append(edge_pred_tensor)
+
+
+            local_rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+            with open(save_file + '_MAE_rank_' + str(local_rank) + '_batch_' + str(i) + '_size_' + str(len(data_loader)) + '.txt', 'w') as f:
+                f.write(f"Mean Absolute Node Error in mHartree: {torch.mean(torch.abs(node_pred_tensor - node_label_tensor)) * 1e3}\n")
+                f.write(f"Mean Absolute Edge Error in mHartree: {torch.mean(torch.abs(edge_pred_tensor - edge_label_tensor)) * 1e3}\n")
+                f.write(f"Mean Absolute Error in mHartree: {MAEloss_total * 1e3}\n")
+
+            # Clear cache after processing each batch
+            del local_test_node, local_test_edge, test_batch, node_label, node_pred, edge_label, edge_pred 
+            del flattened_node_labels, flattened_node_pred, flattened_edge_labels, flattened_edge_pred, H_block_node_labels, H_block_node_pred, H_block_edge_labels, H_block_edge_pred
+            del pred_tensor, label_tensor
+            torch.cuda.empty_cache()
+            gc.collect()  # Python garbage collection
+            torch.cuda.synchronize()  
+            print("--> Memory allocated (after gc): " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+
+        # average the loss over all batches
+        MAEloss_total = MAEloss_total / len(data_loader)
+
+    # Concatenate all results
+    local_node_labels = torch.cat(local_node_labels)
+    local_node_preds = torch.cat(local_node_preds)
+    local_edge_labels = torch.cat(local_edge_labels)
+    local_edge_preds = torch.cat(local_edge_preds)
+
+    print(local_node_labels)
+
+    all_node_labels = partition.comm.gather(local_node_labels, root=0)
+    all_node_preds = partition.comm.gather(local_node_preds, root=0)
+    all_edge_labels = partition.comm.gather(local_edge_labels, root=0)
+    all_edge_preds = partition.comm.gather(local_edge_preds, root=0)
+
+
+
+    @env.only_rank_zero
+    def print_results():
+
+        print(all_node_labels)
+        print(torch.cat(all_node_labels))
+        all_pred_tensor = torch.cat([torch.cat(all_node_preds), torch.cat(all_edge_preds)])
+        all_label_tensor = torch.cat([torch.cat(all_node_labels), torch.cat(all_edge_labels)])
+        print("Mean Absolute Node Error in mHartree: ", torch.mean(torch.abs(torch.cat(all_node_labels) - torch.cat(all_node_preds))) * 1e3)
+        print("Mean Absolute Edge Error in mHartree: ", torch.mean(torch.abs(torch.cat(all_edge_labels) - torch.cat(all_edge_preds))) * 1e3)
+        print("Mean Absolute Error in mHartree: ", torch.mean(torch.abs(all_label_tensor - all_pred_tensor)) * 1e3)
+
+    print_results()
+
+
+def reassemble_hamiltonian(model, partition, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file='./',upper_triangular = False):
+    model.eval() 
+    local_node_labels = []
+    local_node_preds = []
+    local_edge_labels = []
+    local_edge_preds = []
+
+    start_node = partition.start_node
+    end_node = partition.end_node
+
+    # currently only testing on a single rank with 1 batch, need to fix for multiple ranks and batches
+    # all examples are set up with 1 batch
+    assert len(data_loader) == 1
+
+    if dist.is_available() and dist.is_initialized():
+        # find_unused_parameters=True handles the cases where some parameters dont recieve gradients, such as the directed ones
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+        rank = dist.get_rank()
+        size = dist.get_world_size()
+        comm = MPI.COMM_WORLD
+    
+    with torch.no_grad(): 
+
+        pred_dic = {}
+        offsite_dic = {}
+
+        for i, test_batch in enumerate(data_loader):
+            print(f"Loading batch {i}/{len(data_loader)}...")
+            test_batch = test_batch.to(device)
+
+            # Forward pass
+            local_test_node, local_test_edge = model(test_batch, partition)
+            print("--> Memory allocated: " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+            torch.cuda.synchronize()  
+
+            local_test_node = local_test_node.cpu()
+            local_test_edge = local_test_edge.cpu()
+
+            # arange_tensor = torch.arange(end_node - start_node).unsqueeze(0)
+            # onsite_edges = torch.cat((arange_tensor, arange_tensor), 0)
+            arange_tensor = torch.arange(start_node, end_node).unsqueeze(0) #change to global index instead of local index 
+            onsite_edges = torch.cat((arange_tensor, arange_tensor), 0)
+
+            # Process node predictions
+            flattened_node_pred = construct_kernel.get_H(local_test_node)
+
+            node_pred = utils.unflatten(flattened_node_pred, partition.global_atomic_numbers, #partition.global_atomic_numbers,
+                                        onsite_edges, equivariant_blocks, atom_orbitals, out_slices)
+
+            
+            print(node_pred.keys())
+
+            # Process edge predictions
+            flattened_edge_pred = construct_kernel.get_H(local_test_edge)
+            
+            edge_pred = utils.unflatten(flattened_edge_pred, partition.global_atomic_numbers,
+                                        test_batch.edge_index,
+                                        equivariant_blocks, atom_orbitals, out_slices)
+
+            pred_dic.update(node_pred)
+            offsite_dic.update(edge_pred)
+                    
+            # Clear cache after processing each batch
+            torch.cuda.empty_cache()
+            gc.collect()  # Python garbage collection
+            torch.cuda.synchronize()  
+            print("--> Memory allocated (after gc): " + str(torch.cuda.memory_allocated(device)/1e9) + "GB")
+    
+    pred_dic.update(offsite_dic)
+
+    local_keys = pred_dic.keys()
+    filtered_local_keys =  []
+
+    if upper_triangular == True:
+        for key in local_keys:
+            if key[0] >= key[1]:
+                filtered_local_keys.append(tuple(key))
+
+    else:
+        for key in local_keys:
+            if key[0] <= key[1]: #remove all duplicate offsite blocks 
+                filtered_local_keys.append(tuple(key))
+        
+    # filtered_H_label = dict(sorted(filtered_H_label.items(), key=lambda item: item[0][0]))
+    
+    print('filtering done')  
+
+    # @env.only_rank_zero
+    def print_keys():
+        print(f"Keys assigned: {filtered_local_keys}")
+
+    print_keys()
+
+    # Local storage for positions and values
+    local_positions = []
+    local_values = []
+    
+    # Start timing
+    start_time = time.time()
+
+    for key in filtered_local_keys:
+        # key = tuple(key)
+        H_block = pred_dic[key]
+        atom_i_index = key[0]
+        atom_j_index = key[1]
+        starting_i, num_orbitals_i = utils.map_atom_to_orbital(atom_i_index, partition.global_atomic_numbers.tolist(), atom_orbitals)
+        starting_j, num_orbitals_j = utils.map_atom_to_orbital(atom_j_index, partition.global_atomic_numbers.tolist(), atom_orbitals)
+
+        for i in range(H_block.shape[0]):
+            for j in range(H_block.shape[1]):
+                if H_block[i, j] != 0:
+                    if (upper_triangular and starting_i + i >= starting_j + j) or \
+                       (not upper_triangular and starting_i + i <= starting_j + j):
+                        local_positions.append((starting_i + i, starting_j + j))
+                        local_values.append(H_block[i, j].item())
+
+    # Step 2: Gather results at the root rank
+    all_positions = partition.comm.gather(local_positions, root=0)
+    all_values = partition.comm.gather(local_values, root=0)
+
+    # Step 3: Root rank processes and writes
+    @env.only_rank_zero
+    def save_matrix():
+        # Combine results from all ranks
+        combined_positions = [pos for rank_pos in all_positions for pos in rank_pos]
+        combined_values = [val for rank_val in all_values for val in rank_val]
+
+        # Sort by positions
+        paired = zip(combined_positions, combined_values)
+        sorted_pairs = sorted(paired, key=lambda pair: pair[0][0])
+        positions_sorted, values_sorted = zip(*sorted_pairs)
+
+        # Write to the output file
+        with open(save_file, 'w') as file:
+            for (i, j), value in zip(positions_sorted, values_sorted):
+                file.write(f"       {i}        {j}  {value:.8e}\n")
+
+        print(f"Hamiltonian matrix written to {save_file}")
+    
+    save_matrix()
+
+    # End timing
+    end_time = time.time()
+
+    # Print total time taken
+    total_time = end_time - start_time
+    if rank == 0:
+        print(f"Total time taken: {total_time:.2f} seconds")
+
+
+
