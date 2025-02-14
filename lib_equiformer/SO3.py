@@ -307,95 +307,6 @@ class SO3_Embedding():
 
         return self.embedding[local_indices]
 
-    def _start_expand_edge_remote(self, expand_edge_dict):
-
-        remote_indices = expand_edge_dict['remote_indices']
-        # NOTE: is local has to be false for the first `len(local_indices)` elements
-        # and false for the next `len(remote_indices)` elements
-        # is_remote = expand_edge_dict['is_remote']
-
-        nodes_to_send = expand_edge_dict['nodes_to_send']
-        nodes_to_recv = expand_edge_dict['nodes_to_recv']
-        indices_to_send = expand_edge_dict['indices_to_send']
-        use_nccl = expand_edge_dict['use_nccl']
-
-        if use_nccl:
-            comm = comm_nccl.comm
-        else:
-            comm = MPI.COMM_WORLD
-        stream = comm_nccl.stream
-        rank = comm_nccl.rank
-
-
-        with torch.no_grad():
-            # --> Send/Receive embeddings
-            num_nodes_to_recv = len(remote_indices)
-
-            cupy_buffer_dtype = utils.dtype_converter(self.dtype, input_library='torch', output_library='cupy')
-            self.recv_bufs = cp.empty(
-                num_nodes_to_recv * self.num_coefficients * self.num_channels,
-                dtype=cupy_buffer_dtype
-            )
-
-            # Non-blocking sends
-            sendbufs = {}
-            for target_rank, nodes in nodes_to_send.items():
-                if nodes:
-                    sendbufs[target_rank] = self._flatten_embedding(self.embedding[indices_to_send[target_rank]])
-
-            cp.cuda.runtime.deviceSynchronize()
-
-            with stream: 
-                if use_nccl:
-                    nccl.groupStart()
-                else:
-                    self.recv_requests = []
-                    self.send_requests = []
-
-                for target_rank, nodes in nodes_to_send.items():
-                    if nodes:
-                        if use_nccl:
-                            comm.send(sendbufs[target_rank], target_rank, stream=stream)
-                        else:
-                            self.send_requests.append(comm.Isend(sendbufs[target_rank], dest=target_rank, tag=rank))
-
-                # Non-blocking recvs posts
-                recv_pointer = 0
-                for source_rank, nodes in nodes_to_recv.items():
-                    if nodes: 
-                        start_idx = recv_pointer
-                        end_idx = start_idx + len(nodes) * self.num_coefficients * self.num_channels
-                        if use_nccl:
-                            comm.recv(self.recv_bufs[start_idx:end_idx], source_rank, stream=stream)
-                        else:
-                            self.recv_requests.append(comm.Irecv(self.recv_bufs[start_idx:end_idx], source=source_rank, tag=source_rank))
-                        recv_pointer = end_idx
-
-                if use_nccl:
-                    nccl.groupEnd()
-
-    def _end_expand_edge_remote(self, expand_edge_dict):
-        remote_indices = expand_edge_dict['remote_indices']
-        # NOTE: is local has to be false for the first `len(local_indices)` elements
-        # and false for the next `len(remote_indices)` elements
-        # is_remote = expand_edge_dict['is_remote']
-
-        use_nccl = expand_edge_dict['use_nccl']
-
-        # synchronize communication stream
-        if use_nccl:
-            comm_nccl.stream.synchronize()
-        else:
-            MPI.Request.Waitall(self.recv_requests)
-            MPI.Request.Waitall(self.send_requests)
-
-        num_nodes_to_recv = len(remote_indices)
-        if num_nodes_to_recv:
-            with torch.no_grad():
-                received_embeddings = self.recv_bufs.reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
-                received_embeddings = torch.tensor(received_embeddings, device=self.device)
-
-            return received_embeddings[remote_indices]    # needs gradients
 
     # Expand the node embeddings to the number of edges - Distributed version
     def _expand_edge(self, edge_index, expand_edge_dict):
@@ -522,7 +433,8 @@ class SO3_Embedding():
             # --> Send/Receive embeddings
             num_msgs_to_recv = len(remote_indices)
             
-            cupy_buffer_dtype = utils.dtype_converter(self.dtype, input_library='torch', output_library='cupy')
+            print("Datatype being used for communication: ", self.embedding.dtype)
+            cupy_buffer_dtype = utils.dtype_converter(self.embedding.dtype, input_library='torch', output_library='cupy')
             recv_bufs = cp.empty(
                 num_msgs_to_recv * self.num_coefficients * self.num_channels,
                 dtype=cupy_buffer_dtype
