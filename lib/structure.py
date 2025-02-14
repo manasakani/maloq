@@ -12,6 +12,7 @@ import torch
 import pickle
 import os
 import time
+from ase.io import write
 
 # Atomic Simulation Environment (ASE) package   
 from ase.io import read, write
@@ -72,7 +73,7 @@ class Structure:
         # Reordering properties, if the structure gets reordered before use
         self.is_reorder = is_reorder                        # Reorder the atomic structure
         self.reorder_method = reorder_method                # Method to reorder the atomic structure
-        self.hamiltonian_index_map = None                             # Reorder map for the atomic structure, to index the electronic structure
+        self.hamiltonian_index_map = None                   # Reorder map for the atomic structure, to index the electronic structure
         self.counts = None                                  # Number of atoms in each partition
         self.tile = tile                                    # Tile the structure in 3D
         self.og_positions = None                            # Original positions of the atoms
@@ -534,35 +535,17 @@ class Structure:
 
         else:
             # Reorder is true, but no valid method is specified
-            warnings.warn("No valid method specified for reordering the graph. Using the original order.")
-            atom_reorder_map = np.arange(len(self.atomic_numbers))
+            warnings.warn("No valid method specified for reordering the graph. Using the X order.")
+
+            # get order after sorted atoms by x-position:
+            atom_reorder_map = np.argsort(atomic_positions[:,0])
+            # atom_reorder_map = np.arange(len(self.atomic_numbers))
+            
             total_num_nodes = atomic_positions.shape[0]
             local_num_nodes = total_num_nodes // size
             self.counts = np.array([local_num_nodes] * size, dtype=np.int32)
             for i in range(total_num_nodes % size):
                 self.counts[i] += 1
-
-        # # ### PLOTTING TEST
-        # if_plot = True
-        # if rank == 0 and if_plot:
-        #     parts_per_rank = [count for count in self.counts]
-
-        #     from ase.io import write
-        #     cmap = plt.cm.get_cmap('turbo')
-        #     points = np.linspace(0, 1, len(parts_per_rank))
-        #     discrete_colormap = [cmap(point) for point in points]
-        #     color_parts = []
-        #     for i, p in enumerate(parts_per_rank):
-        #         tmp = np.ones((p, 4))
-        #         tmp[:,:] *= discrete_colormap[i]    
-        #         color_parts.extend(tmp)
-
-        #     rotated_structure = self.atomic_structure[self.reorder_map].copy()
-        #     rotated_structure.rotate(10, 'x', center='COM')
-        #     rotated_structure.rotate(45, 'y', center='COM')
-        #     write('atomic_structure_' + method + '_size={}_.png'.format(size), rotated_structure, show_unit_cell=2, colors=color_parts)
-        # exit()
-        # # ### END PLOTTING TEST
 
 
         # reorder structure with new atom indices
@@ -571,6 +554,24 @@ class Structure:
         self.atomic_numbers = torch.tensor([self.atomic_numbers[i] for i in atom_reorder_map])
         self.atomic_species = [self.atomic_species[i] for i in atom_reorder_map]
         # NOTE: self.num_orbitals_per_atom always refers to the original order!
+
+        ### PLOTTING THE STRUCTURE
+        print("Writing atomic structure partition image.")
+        parts_per_rank = [count for count in self.counts]
+        cmap = plt.cm.get_cmap('turbo')
+        points = np.linspace(0, 1, len(parts_per_rank))
+        discrete_colormap = [cmap(point) for point in points]
+        np.random.shuffle(discrete_colormap)
+        color_parts = []
+        for i, p in enumerate(parts_per_rank):
+            tmp = np.ones((p, 4))
+            tmp[:,:] *= discrete_colormap[i]    
+            color_parts.extend(tmp)
+
+        rotated_structure = self.atomic_structure.copy()
+        rotated_structure.rotate(5, 'x', center='COM')
+        rotated_structure.rotate(20, 'y', center='COM')
+        write('atomic_structure_' + method + '_size={}.png'.format(size), rotated_structure, show_unit_cell=2, colors=color_parts)
 
         # Redo the neighbor list
         array_rcut = np.ones(len(self.atomic_structure))*self.rcut
