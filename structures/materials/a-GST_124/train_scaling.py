@@ -1,5 +1,6 @@
 import sys
 import os
+import click
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 lib_root = os.path.join(project_root, 'lib')
@@ -32,7 +33,52 @@ env.rank_zero_print(f"Added {lib_equiformer_root} to the path", flush=True)
 env.rank_zero_print("Imported libraries", flush=True)
 warnings.filterwarnings("ignore", category=UserWarning, message=".*To copy construct from a tensor.*")
 
-def main(folder):
+@click.command()
+@click.option(
+    "-f", "--folder", type=str, required=True, help="Folder of dataset"
+)
+@click.option(
+    "-rcut", type=float, required=True, help="Cutoff radius"
+)
+@click.option(
+    "-nccl", type=int, required=True, help="NCCL setting"
+)
+@click.option(
+    "-overlap", type=int, required=True, help="Overlap setting"
+)
+@click.option(
+    "-hidden_dim", type=int, required=True, help="Hidden dimension"
+)
+@click.option(
+    "-num_epochs", type=int, required=True, help="Number of epochs"
+)
+@click.option(
+    "-is_reorder", type=int, required=True, help="If is_reorder"
+)
+@click.option(
+    "-reorder_method", type=str, required=True, help="Which reoerder"
+)
+@click.option(
+    "-tile_x", type=int, default=1
+)
+@click.option(
+    "-tile_y", type=int, default=1
+)
+@click.option(
+    "-tile_z", type=int, default=1
+)
+
+def main(folder, rcut, nccl, overlap, hidden_dim, num_epochs, is_reorder, reorder_method,
+         tile_x, tile_y, tile_z):
+    nccl = bool(nccl)
+    overlap = bool(overlap)
+    is_reorder = bool(is_reorder)
+    # tile = np.array([tile_x, tile_y, tile_z], dtype=int)
+    tile = np.array([2, 2, 2], dtype=int)
+    print(f"Folder: {folder}", flush=True)
+    print(f"rcut: {rcut}, nccl: {nccl}, overlap: {overlap}, is_reorder: {is_reorder}", flush=True)
+    print(f"hidden_dim: {hidden_dim}, num_epochs: {num_epochs}, reorder_method: {reorder_method}", flush=True)
+    print(f"tile: {tile}", flush=True)
 
     # Set random seed for reproducibility
     torch.manual_seed(42)
@@ -74,8 +120,8 @@ def main(folder):
         save_file = comm.bcast(save_file, root=0)
 
     # Network training:
-    num_MP_layers = 2                                                               # Number of message passing layers 
-    num_epochs = 300                                                                # Number of epochs                                                
+    num_MP_layers = 1                                                               # Number of message passing layers 
+    num_epochs = num_epochs                                                              # Number of epochs                                                
     learning_rate = 1e-3                                                            # Initial Learning rate                 
     loss_tol = 2e-8                                                                    # Loss tolerance for early stopping
     patience = 500
@@ -86,14 +132,14 @@ def main(folder):
     # Material parameters:
     pbc = True
     orbital_basis = 'DZVP'
-    rcut = 6.5                                                                      # Interaction radius (1/2*rcut) in Angstroms
+    # rcut = 6.5                                                                      # Interaction radius (1/2*rcut) in Angstroms
     lmax = 4     
     mmax = 4
 
     # *** Initialize the hyperparameters of the SO2 model:
-    sphere_channels = 64
+    sphere_channels = hidden_dim
     num_heads = 2
-    attn_hidden_channels = 64 
+    attn_hidden_channels = hidden_dim 
     attn_alpha_channels = 32
     attn_value_channels = 32
     ffn_hidden_channels = 64
@@ -112,23 +158,24 @@ def main(folder):
                                           bothways=True, 
                                           rcut=rcut,
                                           is_reorder=True,
-                                          reorder_method='X')
+                                          reorder_method=reorder_method,
+                                          tile=tile)
     print("Training structure created", flush=True)
 
-    a_GST_124_val = structure.Structure(os.path.join(val_data_folder, 'structure.xyz'),
-                                        os.path.join(val_data_folder, 'H.csr'),
-                                        os.path.join(val_data_folder, 'S.csr'),
-                                        pbc, 
-                                        orbital_basis, 
-                                        self_interaction=False,
-                                        bothways=True, 
-                                        rcut = rcut)
-    print("Validation structure created", flush=True)
+    # a_GST_124_val = structure.Structure(os.path.join(val_data_folder, 'structure.xyz'),
+    #                                     os.path.join(val_data_folder, 'H.csr'),
+    #                                     os.path.join(val_data_folder, 'S.csr'),
+    #                                     pbc, 
+    #                                     orbital_basis, 
+    #                                     self_interaction=False,
+    #                                     bothways=True, 
+    #                                     rcut = rcut)
+    # print("Validation structure created", flush=True)
 
     assert(num_train % batch_size == 0) # batch size should divide the number of training samples for current distribution
     partition = {}
     partition['train'] = env.Domain_Decomp(a_GST_124_train, device)
-    partition['validate'] = env.Domain_Decomp(a_GST_124_val, device)
+    partition['validate'] = env.Domain_Decomp(a_GST_124_train, device)
     dist.barrier()
 
     partition['train'].print_info()
@@ -209,8 +256,8 @@ def main(folder):
     # *** Create the input dataloader: slice_length partitioning
     print("Creating training data loader...", flush=True)
     training_data_loader = data.batch_data_molecules([a_GST_124_train], partition['train'], device, num_train, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
-    print("Creating training data loader...", flush=True)
-    validation_data_loader = data.batch_data_molecules([a_GST_124_val], partition['validate'], device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
+    print("Creating validation data loader...", flush=True)
+    validation_data_loader = data.batch_data_molecules([a_GST_124_train], partition['validate'], device, num_validate, batch_size, equivariant_blocks, out_slices, construct_kernel, dtype)
     print("Data loaders created")
 
     print("Training model...", flush=True)
@@ -233,28 +280,28 @@ def main(folder):
                                                 out_slices=out_slices)
     print("Model trained")
 
-    # create new construct_kernel for the training, this time on the cpu
-    construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
-                                        out_js_list, 
-                                        default_dtype_torch=dtype, 
-                                        spinful=False,
-                                        no_parity=no_parity, 
-                                        if_sort=False, 
-                                        device_torch='cpu')
+    # # create new construct_kernel for the training, this time on the cpu
+    # construct_kernel = SO2.e3TensorDecomp(net_out_irreps, 
+    #                                     out_js_list, 
+    #                                     default_dtype_torch=dtype, 
+    #                                     spinful=False,
+    #                                     no_parity=no_parity, 
+    #                                     if_sort=False, 
+    #                                     device_torch='cpu')
 
-    if show_fit_for == "train":
-        print("Plotting fit to training data", flush=True)
-        training.evaluate_model(model, partition['train'], training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
-    else:
-        print("Plotting fit to validation data...", flush=True)
-        training.evaluate_model(model, partition['validate'], validation_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+    # if show_fit_for == "train":
+    #     print("Plotting fit to training data", flush=True)
+    #     training.evaluate_model(model, partition['train'], training_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
+    # else:
+    #     print("Plotting fit to validation data...", flush=True)
+    #     training.evaluate_model(model, partition['validate'], validation_data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file=save_file)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Amorphous GNNs --- GST_124")
-    parser.add_argument("-f", "--folder", default="", required=False)
-    args = parser.parse_args()
+    # parser = argparse.ArgumentParser(description="Amorphous GNNs --- GST_124")
+    # parser.add_argument("-f", "--folder", default="", required=False)
+    # args = parser.parse_args()
 
-    print(f"Starting main ... dataset folder is '{args.folder}'", flush=True)
+    # print(f"Starting main ... dataset folder is '{args.folder}'", flush=True)
 
-    main(args.folder)
+    main()
