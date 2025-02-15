@@ -30,6 +30,8 @@ import pymetis
 
 from mpi4py import MPI
 import warnings
+from reorder import parition_wrapper
+
 
 # A structure defines the atomic and electronic structure of collection of atoms
 class Structure:
@@ -48,7 +50,7 @@ class Structure:
         save_matrices=False,
         rcut=4.0,
         is_reorder=False,
-        reorder_method = 'CUSTOM',
+        reorder_method = 'approx_neighbors',
         tile = np.ones(3, dtype=int)
     ):
         # input quantities
@@ -278,262 +280,32 @@ class Structure:
         cols = np.array(edges[1,:])
         return coo_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes)).tocsr()
 
-    def sparse_matrix_to_adjlist(self, matrix):
-        """
-        Transform a sparse matrix to an adjacency list.
-        """
-
-        if not isinstance(matrix, coo_matrix):
-            matrix = matrix.tocoo()
-
-        n_nodes = matrix.shape[0]
-        adjacency_list = [[] for _ in range(n_nodes)]
-
-        rows = matrix.row
-        cols = matrix.col
-
-        for i, j in zip(rows, cols):
-            if i != j:  # Exclude self-loops
-                adjacency_list[i].append(j)
-                adjacency_list[j].append(i)
-
-        # Remove duplicates and convert to set to ensure unique neighbors
-        adjacency_list = [list(set(neighbors)) for neighbors in adjacency_list]
-
-        return adjacency_list
-
-    def get_block_atom_idx(self, sub_domain_size, origin, atom_pos, cell):
-        """
-        Get the indices of atoms that are within a sub-domain defined by the origin and size.
-        """
-
-        indices = []
-        for i, a in enumerate(atom_pos):
-            adjusted_a = a.copy()  
-            
-            # check if its in the subdomain
-            if adjusted_a[0] < origin[0]:
-                adjusted_a[0] += cell[0]
-
-            if adjusted_a[1] < origin[1]:
-                adjusted_a[1] += cell[1]
-                
-            if adjusted_a[2] < origin[2]:
-                adjusted_a[2] += cell[2] 
-
-            if (origin[0] <= adjusted_a[0]) & (adjusted_a[0] < origin[0] + sub_domain_size[0]) and \
-            (origin[1] <= adjusted_a[1]) & (adjusted_a[1] < origin[1] + sub_domain_size[1]) and \
-            (origin[2] <= adjusted_a[2]) & (adjusted_a[2] < origin[2] + sub_domain_size[2]):
-                indices.append([i])  
-
-        return np.array(indices)
-
-    def get_cut_position(self, atom_pos, degree, atom_indices, largest_dim, origin, cell_size):
-
-        # Unwrap all the atoms in the largest dimension
-        temp_atom_pos = atom_pos.copy()
-        for p in temp_atom_pos:
-            if p[largest_dim] < origin[largest_dim]:
-                p[largest_dim] += cell_size[largest_dim]
-        
-        # atom indices is the local set of atom indices in the subdomain
-        sorted_indices = atom_indices[np.argsort(temp_atom_pos[atom_indices, largest_dim])]
-
-        # decide where to cut based on the median value of the degree
-        sorted_degree = degree[sorted_indices]
-        degree_cumsum = np.cumsum(sorted_degree)
-        total_degree = degree_cumsum[-1]
-        split_idx = np.searchsorted(degree_cumsum, total_degree / 2)
-        cut_position = temp_atom_pos[sorted_indices][split_idx, largest_dim]
-
-        # split atoms into left and right groups based on the median value
-        left_indices = sorted_indices[temp_atom_pos[sorted_indices, largest_dim] < cut_position]
-        right_indices = sorted_indices[temp_atom_pos[sorted_indices, largest_dim] >= cut_position]
-
-        wrapped_cut_position = cut_position
-        if cut_position > cell_size[largest_dim]:
-            wrapped_cut_position -= cell_size[largest_dim]
-
-        return wrapped_cut_position, left_indices, right_indices
-
-    def cut_domain(self, n, atom_pos, degree, cell_size, order, rcut, is_periodic=[0, 0, 0], atom_indices=None, origin=None):
-        """
-        Recursively cut a domain into sub-domains, taking node degree and periodicity into account
-        """
-
-        if atom_indices is None:
-            atom_indices = np.arange(len(atom_pos))
-
-        if origin is None:
-            origin = np.zeros_like(sub_domain_size, dtype=float)
-
-        # --> Get the size of the subdomain
-        lx = np.max(atom_pos[atom_indices][:,0]) - np.min(atom_pos[atom_indices][:,0]) 
-        ly = np.max(atom_pos[atom_indices][:,1]) - np.min(atom_pos[atom_indices][:,1]) 
-        lz = np.max(atom_pos[atom_indices][:,2]) - np.min(atom_pos[atom_indices][:,2]) 
-        sub_domain_size = np.array([lx, ly, lz])
-
-        if n == 0:
-            order.append(atom_indices)
-            return
-
-        # --> Find the largest dimension to cut
-        if sum(is_periodic) == 0:
-            largest_dim = np.argmax(sub_domain_size)
-        else:
-            num_dim_neighbors = np.zeros(3)             # the number of neighbors created if we split in this dimension
-            for i in range(3):
-                # if the dimension is still periodic, this does not matter
-                if is_periodic[i] == 1:
-                    num_dim_neighbors[i] = 1
-                else:
-                    # number of times this subdomain fits into rcut:
-                    num_dim_neighbors[i] = 2 * np.ceil( rcut / sub_domain_size[i] )
-                    
-            largest_dim = np.argmin(num_dim_neighbors)
-
-        # --> Calculate the cut index in the current dimension
-        cut_position, left_indices, right_indices = self.get_cut_position(atom_pos, degree, atom_indices, largest_dim, origin, cell_size)
-
-        if sum(is_periodic) < 2:
-
-            # Update the origin 
-            origin = origin.copy()
-            origin[largest_dim] = cut_position
-
-            # Cut periodicity from this dimension, so the next cut will make a new piece
-            is_periodic_now = is_periodic.copy()
-            is_periodic_now[largest_dim] += 1
-
-            self.cut_domain(n, atom_pos, degree, cell_size, order, rcut, is_periodic_now, atom_indices=atom_indices, origin=origin)
-
-        else:
-            
-            # Update the origin and size of the largest dimension for the next cut
-            sub_domain_size = sub_domain_size.copy()
-            sub_domain_size[largest_dim] = sub_domain_size[largest_dim] / 2
-            
-            # Recursively cut the domain
-            origin_left = origin.copy()
-            origin_right = origin.copy()
-            origin_right[largest_dim] = cut_position
-
-            self.cut_domain(n - 1, atom_pos, degree, cell_size, order, rcut, is_periodic, atom_indices=left_indices, origin=origin_left)
-            self.cut_domain(n - 1, atom_pos, degree, cell_size, order, rcut, is_periodic, atom_indices=right_indices, origin=origin_right)
-
-
-    def get_degree(self):
-        """
-        Get the degree of each atom in the atomic structure (like the degree of each node in the graph)
-        """
-
-        num_atoms = len(self.atomic_structure)
-        degree = np.zeros(num_atoms)
-
-        modified_atomic_structure = self.atomic_structure.copy()
-        cell = modified_atomic_structure.get_cell()
-        modified_atomic_structure.wrap()
-
-        positions = modified_atomic_structure.get_positions()
-
-        # Use a KDTree for neighbor searching
-        tree = KDTree(positions, boxsize=cell.diagonal())  # Takes into account periodicity
-
-        # Query neighbors for all atoms
-        for i in range(num_atoms):
-            
-            # Find indices of neighbors within the cutoff radius
-            neighbors = tree.query_ball_point(positions[i], self.rcut)
-            
-            # Exclude self-interaction
-            neighbors = [j for j in neighbors if j != i]
-            
-            # Update degree
-            degree[i] = len(neighbors)
-
-        return degree
-    
-    def get_reorder_map(self, new_positions):
-        """
-        Get the reorder map from the new positions to the original positions.
-        """
-
-        og_positions = self.og_positions                        # original positions of the atoms before tiling or reordering
-        reorder_map = np.zeros(len(new_positions), dtype=int)
-
-        lx = np.max(og_positions[:,0]) - np.min(og_positions[:,0])
-        ly = np.max(og_positions[:,1]) - np.min(og_positions[:,1])
-        lz = np.max(og_positions[:,2]) - np.min(og_positions[:,2])
-
-        time_start = time.time()
-
-        wrapped_position = new_positions.copy()
-        for i, pos in enumerate(wrapped_position):
-            if pos[0] > lx:
-                pos[0] -= (pos[0] // lx) * lx
-            if pos[1] > ly:
-                pos[1] -= (pos[1] // ly) * ly
-            if pos[2] > lz:
-                pos[2] -= (pos[2] // lz) * lz
-
-        for i, pos in enumerate(wrapped_position):
-            dists = np.linalg.norm(og_positions - pos, axis=1)
-            reorder_map[i] = np.argmin(dists)
-
-        print("Time taken to reorder: ", time.time() - time_start)
-        return reorder_map
-
     def reorder(self, method):
         """
         Reorder the graph to create a mapping from the original atom indices to the new atom indices.
         """
         adj_matrix = self.get_adjacentcy_matrix(self.edge_matrix)
         size = MPI.COMM_WORLD.Get_size()
-        rank = MPI.COMM_WORLD.Get_rank()
         atomic_positions = self.atomic_structure.get_positions()
 
         print("Reordering the graph using method: ", method)
-
-        if method == 'RCM':
-            atom_reorder_map = np.array(reverse_cuthill_mckee(adj_matrix), dtype=np.int64)
-
-        elif method == 'METIS':
-            G = self.sparse_matrix_to_adjlist(adj_matrix)
-            (_, parts) = pymetis.part_graph(size, adjacency=G)
-            atom_reorder_map = np.argsort(parts)
-            parts = np.array(parts)
-            self.counts = np.array([ np.sum(parts == k)  for k in range(size)])
-
-        elif method == 'CUSTOM':
-
-            print("Reordering the graph using custom method.")
-
+        try:
             # assert size power of 2
             if size & (size - 1) != 0:
                 raise ValueError("Number of partitions must be a power of 2.")
-            n = int(np.log2(size))
-
-            # with padding
+            
             lx = np.max(atomic_positions[:,0]) - np.min(atomic_positions[:,0])
             ly = np.max(atomic_positions[:,1]) - np.min(atomic_positions[:,1]) 
             lz = np.max(atomic_positions[:,2]) - np.min(atomic_positions[:,2]) 
-            biggest_cell = np.array([lx, ly, lz])
+            cell_size = np.array([lx, ly, lz])
 
-            is_periodic=[0 if self.atomic_structure.get_pbc()[i] == True else 2 for i in range(3)]
-
-            # list of arrays with atom indices
-            order = []
-            origin = np.array([np.min(atomic_positions[:,i]) for i in range(3)])
-
-            # calculate the number of nnz per row of the adjacency matrix
-            atomic_degree = np.diff(adj_matrix.tocsr().indptr)
-
-            # Cut the domain, account for periodic boundaries when deciding the cut dimensions
-            self.cut_domain(n, atomic_positions, atomic_degree, biggest_cell, order, self.rcut, is_periodic=is_periodic, origin=origin)
+            levels = int(np.log2(size))
+            order = parition_wrapper(levels, atomic_positions, cell_size,
+                adj_matrix, self.rcut, method, 'num_neighbors')
             atom_reorder_map = np.concatenate([o.reshape(-1) for o in order], axis=-1)
             self.counts = np.array([len(o) for o in order])
 
-        else:
+        except:
             # Reorder is true, but no valid method is specified
             warnings.warn("No valid method specified for reordering the graph. Using the X order.")
 
