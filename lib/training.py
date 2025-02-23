@@ -442,7 +442,7 @@ def train_and_validate_model_subgraph(model, optimizer, partition, training_load
 # Evaluating/Testing the model
 ############################################################
 
-def evaluate_model(model, partition, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file='./',reconstruct_ham=False, compute_total_loss=True, plot=True, upper_triangular = False):
+def evaluate_model(model, partition, data_loader, construct_kernel, equivariant_blocks, atom_orbitals, out_slices, device, save_file='./',reconstruct_ham=False, compute_total_loss=True, plot=True, lower_triangular = False):
     model.eval() 
     local_node_labels = []
     local_node_preds = []
@@ -586,7 +586,7 @@ def evaluate_model(model, partition, data_loader, construct_kernel, equivariant_
         print("Reconstructing Hamiltonian matrix...")
         pred_dic = node_pred_dic.copy()
         pred_dic.update(edge_pred_dic)
-        reconstruct_hamiltonian(pred_dic, partition.global_atomic_numbers, partition.comm, local_rank, atom_orbitals, save_file=save_file, upper_triangular=upper_triangular)
+        reconstruct_hamiltonian(pred_dic, partition.global_atomic_numbers, partition.comm, local_rank, atom_orbitals, save_file=save_file, lower_triangular=lower_triangular)
     
     # Plotting
     @env.only_rank_zero
@@ -622,12 +622,12 @@ def reconstruct_hamiltonian(
     rank,
     atom_orbitals,
     save_file="model_in_training.pth",
-    upper_triangular=False,
+    lower_triangular=False,
 ):
     local_keys = local_pred_dic.keys()
     filtered_local_keys = []
 
-    if upper_triangular == True:
+    if lower_triangular == True:
         for key in local_keys:
             if key[0] >= key[1]:
                 filtered_local_keys.append(tuple(key))
@@ -685,7 +685,7 @@ def reconstruct_hamiltonian(
         global_j = s_j + col_idx
 
         # Apply triangular condition
-        if upper_triangular:
+        if lower_triangular:
             mask = global_i >= global_j
         else:
             mask = global_i <= global_j
