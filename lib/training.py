@@ -14,6 +14,8 @@ import numpy as np
 from torch import cuda
 import os
 from torch.cuda.amp import autocast, GradScaler
+import scipy
+import scipy.sparse as sp
 
 DEBUG = os.environ.get("DEBUG", False)
 
@@ -207,10 +209,19 @@ def combined_loss(output, target):
 def train_and_validate_model_subgraph(model, optimizer, partition, training_loader, validation_loader, 
                                       num_epochs=5000, loss_tol=0.0001, patience=500, threshold=1e-3, min_lr=1e-5, 
                                       save_file='model.pth', schedule=False, dtype=torch.float32,
-                                      unflatten=False, construct_kernel=None, equivariant_blocks=None, atom_orbitals=None, out_slices=None):
+                                      unflatten=False, construct_kernel=None, equivariant_blocks=None, atom_orbitals=None, out_slices=None, criterion='mse'):
     
     device = next(model.parameters()).device  
-    criterion = combined_loss
+    # criterion = combined_loss
+    if criterion == 'mse':
+        print("Using MSE loss...")
+        criterion = nn.MSELoss()
+    elif criterion == 'mae':
+        print("Using MAE loss...")
+        criterion = nn.L1Loss()
+    else:
+        print("Using combined loss...")
+        criterion = combined_loss
 
     p_train = partition['train']
     p_val = partition['validate']
@@ -720,3 +731,102 @@ def reconstruct_hamiltonian(
     # if rank == 0:
     print(f"Reconstruct_time: {reconstruct_time:.2f} seconds")
 
+
+@env.only_rank_zero
+def plot_eigenvalue_comparison(reference_path, test_path, save_file = "model"):
+
+    plt.rcParams.update({'font.size': 14})
+    w = np.load(test_path)
+
+    w_ref = np.load(reference_path)
+
+    print(np.linalg.norm(w - w_ref, ord=2) / np.linalg.norm(w_ref, ord=2))
+    print(np.linalg.norm(w - w_ref, ord=1) / np.linalg.norm(w_ref, ord=1))
+
+    plt.figure(figsize=(6, 4))
+    plt.scatter(np.arange(len(w)), w, s=1.2, alpha=0.2, c="tomato")  # make dot size smaller
+    plt.scatter(0, -10, s=10, c="tomato", label=r"$\mathbf{H}_{ij}^{pred}$") 
+    plt.scatter(np.arange(len(w_ref)), w_ref, s=1.2, alpha=0.2, c="mediumslateblue")  # make dot size smaller
+    plt.scatter(0, -10, s=10, c="mediumslateblue",  label=r"$\mathbf{H}_{ij}^{GT}$") 
+
+    # y Eigenvale
+    plt.xlabel("Index")
+    plt.ylabel("Eigenvalue ($\mathbf{H})\;[E_h]$")
+    plt.ylim(-2.1, 1.1)
+
+    plt.legend(frameon=False, loc='lower right', title=r"[$\alpha$=0.2]")
+    plt.savefig(save_file+"_comparison_eigenvalue"+"_zoom.png", dpi=700, bbox_inches='tight')
+    plt.close("all")
+
+@env.only_rank_zero
+def compute_eigenvalues(base_path_lower, S_path, base_path_upper = None, symmetrize=False, save_file = "model"):
+
+    # Load the data
+    S = np.loadtxt(S_path)
+
+    S_row_ind = S[:, 0].astype(np.int32) - 1
+    S_col_ind = S[:, 1].astype(np.int32) - 1
+    S_data = S[:, 2]
+
+    S_matrix = sp.coo_matrix((S_data, (S_row_ind, S_col_ind)))   
+
+    H_lower_diagonal_name = base_path_lower
+    
+    H = np.loadtxt(H_lower_diagonal_name)
+
+    H_row_ind = H[:, 0].astype(np.int32) - 1
+    H_col_ind = H[:, 1].astype(np.int32) - 1
+    H_data = H[:, 2]
+
+    H_matrix = sp.coo_matrix((H_data, (H_row_ind, H_col_ind)))
+    H_matrix = H_matrix.toarray()
+    tmp = H_matrix.conj().T.copy()
+    # set diagonal to zero
+    np.fill_diagonal(tmp, 0)
+    H_lower_matrix = H_matrix + tmp
+
+    assert np.allclose(H_lower_matrix, H_lower_matrix.conj().T)
+
+    if symmetrize:
+        assert base_path_upper is not None
+        H_upper_diagonal_name = base_path_upper
+
+        H = np.loadtxt(H_upper_diagonal_name)
+
+        H_row_ind = H[:, 0].astype(np.int32) - 1
+        H_col_ind = H[:, 1].astype(np.int32) - 1
+        H_data = H[:, 2]
+
+        H_matrix = sp.coo_matrix((H_data, (H_row_ind, H_col_ind)))
+        H_matrix = H_matrix.toarray()
+        tmp = H_matrix.conj().T.copy()
+        # set diagonal to zero
+        np.fill_diagonal(tmp, 0)
+        H_upper_matrix = H_matrix + tmp
+
+        assert np.allclose(H_upper_matrix, H_upper_matrix.conj().T)
+
+        H_full_matrix = (H_lower_matrix + H_upper_matrix)/2
+
+    else:
+        H_full_matrix = H_lower_matrix
+
+
+    S_matrix = S_matrix.toarray()
+    tmp = S_matrix.conj().T.copy()
+    # set diagonal to zero
+    np.fill_diagonal(tmp, 0)
+    S_matrix = S_matrix + tmp
+
+    assert np.allclose(H_full_matrix, H_full_matrix.conj().T)
+    assert np.allclose(S_matrix, S_matrix.conj().T)
+
+    start = time.time()
+    w, v = scipy.linalg.eigh(H_full_matrix, S_matrix, lower=True)
+    end = time.time()
+
+    print("Time: ", end - start)
+
+    # save the eigenvalues and eigenvectors
+    np.save(save_file+'eigenvalues.npy', w)
+    np.save(save_file+'eigenvectors.npy', v)
