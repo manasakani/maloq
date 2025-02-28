@@ -46,7 +46,7 @@ source /users/amaeder/miniconda3/etc/profile.d/conda.sh
 conda activate ml
 
 srun --cpu-bind=socket bash -c 'export MPICH_GPU_SUPPORT_ENABLED=1; export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID;
-python train_run.py -f /users/amaeder/amorphous_gnns/ > outputs/output_${SLURM_PROCID}_${SLURM_NTASKS}.txt'
+python train_run.py -f /capstor/scratch/cscs/amaeder/ > outputs/output_${SLURM_PROCID}_${SLURM_NTASKS}.txt'
 
 # srun --cpu-bind=socket bash -c 'export MPICH_GPU_SUPPORT_ENABLED=1; export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID; 
 # nsys profile python train_sparse_small.py -f../../.. > out_sparse_small/output_${SLURM_PROCID}_${SLURM_NTASKS}.txt'

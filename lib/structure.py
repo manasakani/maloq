@@ -622,8 +622,6 @@ class Structure:
 class Merged_Structure(Structure):
     def __init__(self, structures_to_merge, dataset='custom', self_interaction=False, bothways=False):
 
-        reorder_map = structures_to_merge[0].reorder_map
-
         assert(not structures_to_merge[0].is_reorder)       # Do not merge reordered structures!!!
 
         # get basic properties from the first structure in the list to use for the Structure constructor
@@ -641,7 +639,7 @@ class Merged_Structure(Structure):
             is_reorder=False
         )
 
-        self.hamiltonian_index_map = np.arange(np.sum(len(structure.reorder_map) for structure in structures_to_merge))
+        self.hamiltonian_index_map = np.arange(np.sum(len(structure.hamiltonian_index_map) for structure in structures_to_merge))
         self.structures_to_merge = structures_to_merge
         self.merge_structures(self_interaction, bothways)
 

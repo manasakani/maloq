@@ -537,8 +537,6 @@ def evaluate_model(model, partition, data_loader, construct_kernel, equivariant_
         label_tensor = torch.cat([node_label_tensor, edge_label_tensor])
         MAEloss_total = torch.mean(torch.abs(pred_tensor - label_tensor))
 
-        hartree_to_eV = 27.21138602
-
         local_node_labels.append(node_label_tensor)
         local_node_preds.append(node_pred_tensor)
         local_edge_labels.append(edge_label_tensor)
@@ -591,26 +589,73 @@ def evaluate_model(model, partition, data_loader, construct_kernel, equivariant_
     # Plotting
     @env.only_rank_zero
     def plot_results():
+        # Scatter plot
+        plt.figure(figsize=(8, 3))
+        plt.subplots_adjust(wspace=0.5)
 
-        # downsample = 1
-        # all_node_labels = all_node_labels[::downsample]
-        # all_node_preds = all_node_preds[::downsample]
-        # all_edge_labels = all_edge_labels[::downsample]
-        # all_edge_preds = all_edge_preds[::downsample]
-
-        print("Plotting")
-        plt.figure(figsize=(4, 3))
+        # Subplot 1: Scatter plot
+        plt.subplot(1, 2, 1)
         plt.scatter(torch.cat(all_edge_labels).detach().numpy(), torch.cat(all_edge_preds).detach().numpy(), s=1, alpha=0.5, edgecolor='none', color='crimson', label='Edge')
         plt.scatter(torch.cat(all_node_labels).detach().numpy(), torch.cat(all_node_preds).detach().numpy(), s=1, alpha=0.5, edgecolor='none', color='blue', label='Node')
         plt.plot(torch.cat(all_node_labels).detach().numpy(), torch.cat(all_node_labels).detach().numpy(), c='k', linestyle='dashed', linewidth=0.1, alpha=0.3)
-        plt.xlabel("Real $H_{ij}$")
-        plt.ylabel("Predicted  $H_{ij}$")
+        plt.xlabel("Real $H_{ij}$ ($E_h$)")
+        plt.ylabel("Predicted $H_{ij}$ ($E_h$)")
         plt.legend()
-        # plt.text(0.5, 0.1, 'Node loss = '+str(MAE_node.item())+', Edge loss = '+str(MAE_edge.item()), fontsize=5, transform=plt.gca().transAxes)
-        plt.savefig(save_file+'_prediction.png', dpi=300, bbox_inches='tight')
+
+        # Subplot 2: Violin plot
+        plt.subplot(1, 2, 2)
+        node_errors = (torch.cat(all_node_labels) - torch.cat(all_node_preds)).detach().numpy()
+        edge_errors = (torch.cat(all_edge_labels) - torch.cat(all_edge_preds)).detach().numpy()
+
+        data = [node_errors, edge_errors]
+        positions = [1, 2]
+        num_bins = 500  # adjust this number for more or less smoothness
+        violin_parts = plt.violinplot(data, positions, showmeans=True, showextrema=False, points=num_bins) #showmeans=True,
+
+        # set face colors for each part of the violin plot
+        for pc in violin_parts['bodies']:
+            for i, color in enumerate(pc.get_facecolor()):
+                if (color == 'blue').all():
+                    pc.set_facecolor('blue')
+                else:
+                    pc.set_facecolor('crimson')
+            pc.set_edgecolor('black')
+            pc.set_alpha(0.5)
+
+        # Set median line color to black
+        violin_parts['cmeans'].set_edgecolor('black')
+        violin_parts['cmeans'].set_linewidth(1)
+
+
+        plt.xticks(positions, ['Node Errors', 'Edge Errors'])
+        plt.ylabel("Error Distribution ($E_h$)")
+        
+        # Calculate 2.5th and 97.5th percentiles for y-axis limits
+        lower_percentile_node = np.percentile(node_errors, 2.5)
+        upper_percentile_node = np.percentile(node_errors, 97.5)
+        lower_percentile_edge = np.percentile(edge_errors, 2.5)
+        upper_percentile_edge = np.percentile(edge_errors, 97.5)
+        lower_percentile = min(lower_percentile_node, lower_percentile_edge)
+        upper_percentile = max(upper_percentile_node, upper_percentile_edge)
+        plt.ylim(lower_percentile, upper_percentile)
+        plt.text(1.5, 0.9*upper_percentile, f"95th percentiles", ha='center', va='top', fontsize=8)
+
+        plt.savefig(save_file + '_prediction_and_error_distribution.png', dpi=300, bbox_inches='tight')
         plt.close()
 
-    
+        # Save errors to a .txt file
+        error_file_path = save_file + '_errors.txt'
+        with open(error_file_path, 'w') as f:
+            f.write("Node Errors:\n")
+            for error in node_errors:
+                f.write(f"{error}\n")
+            f.write("\nEdge Errors:\n")
+            for error in edge_errors:
+                f.write(f"{error}\n")
+
+        print(f"Errors saved to {error_file_path}")
+
+
     if plot == True and compute_total_loss == True:
         plot_results()
 

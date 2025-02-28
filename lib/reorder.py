@@ -1199,6 +1199,25 @@ def parition_wrapper(
     partition : list
         Best partition based on the method
 
+    Methods
+    -------
+    'old_neighbors': copy of previous custom which was on the _nccl branch, divides based on approximate neighbors in each dimention (2*rcut/width)
+    'surface_volume': minimizes comm volume recursively. approximates it through the surface volume of the local cuboid.
+                    surfaces results in rcut*surfaceDim, edges result in parts of parts of the cylinder with rcut radius
+                    corners result in parts of the spheres with rcut radius
+                    cost only incurred if not periodic in that dimension
+    'approx_neighbors': a mixture between surface and 'old neighbors'. guesses neighbors by repeating own domain as surface. 
+                        surfaces cost: rcut/dim_normal
+                        edges: rcut/diagonal
+                        similar for corners
+                        cost only incurred if not periodic
+    'local_optimal': not recursive, goes down decision tree layer by layer.
+                    takes for each decision the local optimal one.
+                    can choose either to minimize comm volume or neighbors.
+                    computes it from adj. matrix.
+    'bruteforce': test either all trees or trees with the same decision per level
+                can choose either to minimize comm volume or neighbors
+                computes it from adj. matrix
     """
 
     is_periodic = [True, True, True]
