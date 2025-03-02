@@ -330,10 +330,11 @@ class Structure:
         ### PLOTTING THE STRUCTURE
         print("Writing atomic structure partition image.")
         parts_per_rank = [count for count in self.counts]
-        cmap = plt.cm.get_cmap('turbo')
-        points = np.linspace(0, 1, len(parts_per_rank))
-        discrete_colormap = [cmap(point) for point in points]
-        np.random.shuffle(discrete_colormap)
+        cmap = plt.cm.rainbow(np.linspace(0, 1, len(parts_per_rank)))
+        cmap = [(color[0], color[1], color[2], 0.5) for color in cmap]
+        points = np.arange(0, len(parts_per_rank))
+        np.random.shuffle(points)
+        discrete_colormap = [cmap[int(point)] for point in points]
         color_parts = []
         for i, p in enumerate(parts_per_rank):
             tmp = np.ones((p, 4))

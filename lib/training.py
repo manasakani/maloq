@@ -615,10 +615,7 @@ def evaluate_model(model, partition, data_loader, construct_kernel, equivariant_
         # set face colors for each part of the violin plot
         for pc in violin_parts['bodies']:
             for i, color in enumerate(pc.get_facecolor()):
-                if (color == 'blue').all():
-                    pc.set_facecolor('blue')
-                else:
-                    pc.set_facecolor('crimson')
+                pc.set_facecolor('blue')
             pc.set_edgecolor('black')
             pc.set_alpha(0.5)
 

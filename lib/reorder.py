@@ -476,7 +476,7 @@ def partition_old_neighbors(
     cell_size,
     output_partition,
     rcut,
-    is_periodic=[0, 0, 0],
+    cuts=[0, 0, 0],
     atom_indices=None,
     origin=None,
 ):
@@ -496,8 +496,8 @@ def partition_old_neighbors(
         Resulting output_partition
     rcut : float
         cutoff radius
-    is_periodic : list, optional
-        periodicity of the domain
+    cuts : list, optional
+        # cuts in this dimension of the domain (<2 = periodic)
     atom_indices : NDArray, optional
         indices of the atoms
     origin : NDArray, optional
@@ -510,7 +510,6 @@ def partition_old_neighbors(
     if origin is None:
         origin = np.zeros_like(sub_domain_size, dtype=float)
 
-    # --> Get the size of the subdomain
     # wrap around position for size
     temp_atom_pos = atom_positions.copy()
     for p in temp_atom_pos:
@@ -518,52 +517,36 @@ def partition_old_neighbors(
             if p[i] < origin[i]:
                 p[i] += cell_size[i]
 
-    lx = np.max(temp_atom_pos[atom_indices][:, 0]) - np.min(
-        temp_atom_pos[atom_indices][:, 0]
-    )
-    ly = np.max(temp_atom_pos[atom_indices][:, 1]) - np.min(
-        temp_atom_pos[atom_indices][:, 1]
-    )
-    lz = np.max(temp_atom_pos[atom_indices][:, 2]) - np.min(
-        temp_atom_pos[atom_indices][:, 2]
-    )
+    # --> Get the size of the subdomain
+    lx = np.max(temp_atom_pos[atom_indices][:, 0]) - np.min(temp_atom_pos[atom_indices][:, 0])
+    ly = np.max(temp_atom_pos[atom_indices][:, 1]) - np.min(temp_atom_pos[atom_indices][:, 1])
+    lz = np.max(temp_atom_pos[atom_indices][:, 2]) - np.min(temp_atom_pos[atom_indices][:, 2])
     sub_domain_size = np.array([lx, ly, lz])
 
     if levels == 0:
         output_partition.append(atom_indices)
         return
 
-    # --> Find the largest dimension to cut
-    if sum(is_periodic) == 0:
-        largest_dim = np.argmax(sub_domain_size)
-    else:
-        num_dim_neighbors = np.zeros(
-            3
-        )  # the number of neighbors created if we split in this dimension
-        for i in range(3):
-            # if the dimension is still periodic, this does not matter
-            if is_periodic[i] == 1:
-                num_dim_neighbors[i] = 1
-            else:
-                # number of times this subdomain fits into rcut:
-                num_dim_neighbors[i] = 2 * np.ceil(rcut / sub_domain_size[i])
 
-        largest_dim = np.argmin(num_dim_neighbors)
+    # --> This is the case where the domain has not yet been split due to pbc, we cut again
+    if any([p == 0 for p in cuts]):
+        smallest_indices = np.where([p == 0 for p in cuts])[0]
+        pick = np.argmax(sub_domain_size[smallest_indices])                     # break ties with the largest dimension
+        dim_to_cut = smallest_indices[pick]
 
-    # --> Calculate the cut index in the current dimension
-    cut_position, left_indices, right_indices = get_cut_position(
-        atom_positions, atom_degrees, atom_indices, largest_dim, origin, cell_size
-    )
+        # Calculate the cut index in the current dimension (left and right indices are not used because this is a periodic cut)
+        cut_position, left_indices, right_indices = get_cut_position(atom_positions, atom_degrees, atom_indices, dim_to_cut, sub_domain_size, origin=origin)
+        # if len(left_indices) == 0 or len(right_indices) == 0:
+        #     print("Warning: Empty partition detected! Stopping recursion.")
+        #     return
 
-    if sum(is_periodic) < 2:
-
-        # Update the origin
+        # Update the origin to the cut location
         origin = origin.copy()
-        origin[largest_dim] = cut_position
+        origin[dim_to_cut] = cut_position
 
         # Cut periodicity from this dimension, so the next cut will make a new piece
-        is_periodic_now = is_periodic.copy()
-        is_periodic_now[largest_dim] += 1
+        cuts_now = cuts.copy()
+        cuts_now[dim_to_cut] += 1
 
         partition_old_neighbors(
             levels,
@@ -572,21 +555,48 @@ def partition_old_neighbors(
             cell_size,
             output_partition,
             rcut,
-            is_periodic_now,
+            cuts_now,
             atom_indices=atom_indices,
             origin=origin,
         )
 
+    # the periodicity has been cut in all dimensions, we can now split the domain
     else:
+
+        num_dim_neighbors = np.zeros(3)             # the number of neighbors created if we split in this dimension
+        for i in range(3):
+            if cuts[i] == 1:                        # if the domain hasn't been split yet, splitting it creates 1 neighbor for each piece
+                num_dim_neighbors[i] = 1
+            else:
+                # num_dim_neighbors[i] = 2 * np.ceil( rcut / sub_domain_size[i] )
+                num_dim_neighbors[i] = np.ceil( rcut / sub_domain_size[i] )
+                    
+            smallest_indices = np.where(num_dim_neighbors == np.min(num_dim_neighbors))[0]
+            
+            if len(smallest_indices) == 1:
+                dim_to_cut = np.argmin(num_dim_neighbors) 
+            if len(smallest_indices) > 1:
+                pick = np.argmax(sub_domain_size[smallest_indices]) # break ties with the largest dimension
+                dim_to_cut = smallest_indices[pick]
+
+        # --> Calculate the cut index in the current dimension
+        cut_position, left_indices, right_indices = get_cut_position(atom_positions, atom_degrees, atom_indices, dim_to_cut, sub_domain_size, origin=origin)
+        # if len(left_indices) == 0 or len(right_indices) == 0:
+        #     print("Warning: Empty partition detected! Stopping recursion.")
+        #     return
 
         # Update the origin and size of the largest dimension for the next cut
         sub_domain_size = sub_domain_size.copy()
-        sub_domain_size[largest_dim] = sub_domain_size[largest_dim] / 2
+        sub_domain_size[dim_to_cut] = sub_domain_size[dim_to_cut] / 2
 
+        # update the cuts:
+        cuts_now = cuts.copy()
+        cuts_now[dim_to_cut] += 1
+        
         # Recursively cut the domain
         origin_left = origin.copy()
         origin_right = origin.copy()
-        origin_right[largest_dim] = cut_position
+        origin_right[dim_to_cut] = cut_position
 
         partition_old_neighbors(
             levels - 1,
@@ -595,7 +605,7 @@ def partition_old_neighbors(
             cell_size,
             output_partition,
             rcut,
-            is_periodic,
+            cuts_now,
             atom_indices=left_indices,
             origin=origin_left,
         )
@@ -606,7 +616,7 @@ def partition_old_neighbors(
             cell_size,
             output_partition,
             rcut,
-            is_periodic,
+            cuts_now,
             atom_indices=right_indices,
             origin=origin_right,
         )
@@ -1221,6 +1231,7 @@ def parition_wrapper(
     """
 
     is_periodic = [True, True, True]
+    cuts = [0, 0, 0]
     origin = np.array(
         [
             np.min(atom_positions[:, 0]),
@@ -1285,7 +1296,7 @@ def parition_wrapper(
             cell_size,
             partition,
             rcut,
-            is_periodic,
+            cuts,
             atom_indices,
             origin,
         )
