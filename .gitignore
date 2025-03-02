@@ -1,5 +1,6 @@
 *.out
 *.pkl
+*.err
 *.png
 *.txt
 *.pth
