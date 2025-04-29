@@ -33,7 +33,7 @@ class EdgeDegreeEmbedding(torch.nn.Module):
 
         mappingReduced (CoefficientMapping): Class to convert l and m indices once node embedding is rotated
         out_mask (torch.Tensor):    Mask to select the output irreps
-        use_envelope (bool):        Whether to use envelope function
+        # use_envelope (bool):        Whether to use envelope function
     """
 
     def __init__(
@@ -46,8 +46,6 @@ class EdgeDegreeEmbedding(torch.nn.Module):
         rescale_factor,
         cutoff,
         mappingReduced,
-        out_mask,
-        use_envelope,
     ):
         super().__init__()
         self.sphere_channels = sphere_channels
@@ -69,12 +67,7 @@ class EdgeDegreeEmbedding(torch.nn.Module):
 
         self.rescale_factor = rescale_factor
 
-        self.use_envelope = use_envelope
-        if self.use_envelope:
-            self.cutoff = cutoff
-            self.envelope = PolynomialEnvelope(exponent=5)
-
-        self.out_mask = out_mask
+        # self.out_mask = out_mask
 
     def forward(
         self,
@@ -83,7 +76,7 @@ class EdgeDegreeEmbedding(torch.nn.Module):
         edge_distance,
         edge_index,
         wigner_inv,
-        node_offset=0,
+        node_or_edge='node'
     ):
         x_edge_m_0 = self.rad_func(x_edge)
         x_edge_m_0 = x_edge_m_0.reshape(
@@ -106,17 +99,14 @@ class EdgeDegreeEmbedding(torch.nn.Module):
         )
 
         # Rotate back the irreps
-        x_edge_embedding = torch.bmm(wigner_inv[:, :, self.out_mask], x_edge_embedding)
+        x_edge_embedding = torch.bmm(wigner_inv, x_edge_embedding)
 
-        # envelope
-        if self.use_envelope:
-            dist_scaled = edge_distance / self.cutoff
-            env = self.envelope(dist_scaled)
-            x_edge_embedding = x_edge_embedding * env.view(-1, 1, 1)
+        x_edge_embedding = x_edge_embedding.to(x.dtype)
+
+        if node_or_edge == 'node':
+            x.index_add_(
+                0, edge_index[1], x_edge_embedding / self.rescale_factor
+            )
+            return x
         else:
-            x_edge_embedding = x_edge_embedding.to(x.dtype)
-
-        x.index_add_(
-            0, edge_index[1] - node_offset, x_edge_embedding / self.rescale_factor
-        )
-        return x
+            return x_edge_embedding

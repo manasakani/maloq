@@ -12,12 +12,11 @@ import copy
 import torch
 import torch.nn as nn
 
-from .nn.activation import GateActivation, SeparableS2Activation
+from .nn.activation import GateActivation, SeparableS2Activation, SmoothLeakyReLU
 from .nn.layer_norm import get_normalization_layer
 from .nn.radial import PolynomialEnvelope
 from .nn.so2_layers import SO2_Convolution
 from .nn.so3_layers import SO3_Linear
-
 
 class Edgewise(torch.nn.Module):
     def __init__(
@@ -28,10 +27,8 @@ class Edgewise(torch.nn.Module):
         mmax: int,
         edge_channels_list,
         mappingReduced,
-        SO3_grid,
         cutoff,
         act_type="gate",
-        use_envelope: bool = True,
     ):
         super().__init__()
 
@@ -41,7 +38,6 @@ class Edgewise(torch.nn.Module):
         self.mmax = mmax
 
         self.mappingReduced = mappingReduced
-        self.SO3_grid = SO3_grid
         self.edge_channels_list = copy.deepcopy(edge_channels_list)
         self.act_type = act_type
 
@@ -50,16 +46,11 @@ class Edgewise(torch.nn.Module):
                 lmax=self.lmax, mmax=self.mmax, num_channels=self.hidden_channels
             )
             extra_m0_output_channels = self.lmax * self.hidden_channels
-        elif self.act_type == "s2":
-            self.act = SeparableS2Activation(
-                lmax=self.lmax, mmax=self.mmax, SO3_grid=self.SO3_grid
-            )
-            extra_m0_output_channels = self.hidden_channels
         else:
             raise ValueError(f"Unknown activation type {self.act_type}")
 
         self.so2_conv_1 = SO2_Convolution(
-            2 * self.sphere_channels,
+            3 * self.sphere_channels,
             self.hidden_channels,
             self.lmax,
             self.mmax,
@@ -80,45 +71,98 @@ class Edgewise(torch.nn.Module):
             extra_m0_output_channels=None,
         )
 
-        self.use_envelope = use_envelope
-        if self.use_envelope:
-            self.cutoff = cutoff
-            self.envelope = PolynomialEnvelope(exponent=5)
-
-        self.out_mask = self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
-            self.lmax, self.mmax
-        )
-
+    
     def forward(
         self,
         x,
+        x_message_edge,
         x_edge,
         edge_distance,
         edge_index,
         wigner,
         wigner_inv,
-        node_offset: int = 0,
+        node_or_edge,
     ):
+        if node_or_edge == 'node':
+            return self.forward_node(x,
+                                    x_message_edge,
+                                    x_edge,
+                                    edge_distance,
+                                    edge_index,
+                                    wigner,
+                                    wigner_inv
+                                    )
+
+        if node_or_edge == 'edge':
+            return self.forward_edge(x,
+                                    x_message_edge,
+                                    x_edge,
+                                    edge_distance,
+                                    edge_index,
+                                    wigner,
+                                    wigner_inv
+                                    )
+
+    def forward_node(
+        self,
+        x,
+        x_message_edge,
+        x_edge,
+        edge_distance,
+        edge_index,
+        wigner,
+        wigner_inv
+    ):
+
+        self.num_heads = 2 ###
+        self.attn_alpha_channels = 16 ###
+        self.alpha_norm = torch.nn.LayerNorm(self.attn_alpha_channels) ###
+        self.alpha_act = SmoothLeakyReLU() ###
+
         x_source = x[edge_index[0]]
         x_target = x[edge_index[1]]
-        x_message = torch.cat((x_source, x_target), dim=2)
+        x_message = torch.cat((x_source, x_message_edge, x_target), dim=2)
 
         # Rotate the irreps to align with the edge
-        x_message = torch.bmm(wigner[:, self.out_mask, :], x_message)
+        x_message = torch.bmm(wigner, x_message)
 
         # SO2 convolution
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
+        #---
+        # x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
+        # x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
+        # x_0_gating = x_0_extra.narrow(1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels) # for activation
+        # x_0_alpha  = x_0_extra.narrow(1, 0, x_alpha_num_channels) # for attention weights, shape [E, num_heads * attn_alpha_channels]
+        # x_message = self.act(x_0_gating, x_message)
+        #---
+        
         x_message = self.act(x_0_gating, x_message)
         x_message = self.so2_conv_2(x_message, x_edge)
 
-        # envelope
-        if self.use_envelope:
-            dist_scaled = edge_distance / self.cutoff
-            env = self.envelope(dist_scaled)
-            x_message = x_message * env.view(-1, 1, 1)
+        #---
+        # # Attention weights
+        # start_attention = time.time()
+        # x_0_alpha = x_0_alpha.reshape(-1, self.num_heads, self.attn_alpha_channels) # shape of [E, num_heads, attn_alpha_channels]
+        # x_0_alpha = self.alpha_norm(x_0_alpha)
+        # x_0_alpha = self.alpha_act(x_0_alpha)
+        # alpha = torch.einsum('bik, ik -> bi', x_0_alpha, self.alpha_dot)
+
+        # # Compute the softmax over the incoming edges
+        # offset_local_dst_indices = partition.expand_edge_0["local_indices"]
+        # alpha = torch_geometric.utils.softmax(alpha, offset_local_dst_indices)      # softmax over the incoming edges
+        # alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)                 # shape of [E, 1, num_heads, 1]
+
+        # # Attention weights * non-linear messages (weight each message by the corresponding attention weight)
+        # attn = x_message                                                                      # shape of [E, (lmax+1)^2, # hidden channels]
+        # attn = attn.reshape(attn.shape[0], attn.shape[1], self.num_heads, self.attn_value_channels)     # shape of [E, #channels, num_heads, attn_value_channels]
+        # attn = attn * alpha
+        # attn = attn.reshape(attn.shape[0], attn.shape[1], self.num_heads * self.attn_value_channels)
+        # x_message = attn
+        # end_attention = time.time()
+        #---
 
         # Rotate back the irreps
-        x_message = torch.bmm(wigner_inv[:, :, self.out_mask], x_message)
+        x_message = torch.bmm(wigner_inv, x_message)
 
         # Compute the sum of the incoming neighboring messages for each target node
         new_embedding = torch.zeros(
@@ -128,12 +172,37 @@ class Edgewise(torch.nn.Module):
         )
 
         # aggregate messages
-        new_embedding.index_add_(0, edge_index[1] - node_offset, x_message)
-
-        # edges?:
-        # new_embedding = x_message
+        new_embedding.index_add_(0, edge_index[1], x_message)
 
         return new_embedding
+    
+    def forward_edge(
+        self,
+        x,
+        x_message_edge,
+        x_edge,
+        edge_distance,
+        edge_index,
+        wigner,
+        wigner_inv
+    ):
+        x_source = x[edge_index[0]]
+        x_target = x[edge_index[1]]
+        x_message = torch.cat((x_source, x_message_edge, x_target), dim=2)
+
+        # Rotate the irreps to align with the edge
+        x_message = torch.bmm(wigner, x_message)
+
+        # SO2 convolution
+        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
+        x_message = self.act(x_0_gating, x_message)
+        x_message = self.so2_conv_2(x_message, x_edge)
+
+        # Rotate back the irreps
+        x_message = torch.bmm(wigner_inv, x_message)
+
+        # return new_embedding
+        return x_message
 
 
 class SpectralAtomwise(torch.nn.Module):
@@ -143,14 +212,12 @@ class SpectralAtomwise(torch.nn.Module):
         hidden_channels: int,
         lmax: int,
         mmax: int,
-        SO3_grid,
     ):
         super().__init__()
         self.sphere_channels = sphere_channels
         self.hidden_channels = hidden_channels
         self.lmax = lmax
         self.mmax = mmax
-        self.SO3_grid = SO3_grid
 
         self.scalar_mlp = nn.Sequential(
             nn.Linear(
@@ -178,37 +245,37 @@ class SpectralAtomwise(torch.nn.Module):
         return self.so3_linear_2(x)
 
 
-class GridAtomwise(torch.nn.Module):
-    def __init__(
-        self,
-        sphere_channels: int,
-        hidden_channels: int,
-        lmax: int,
-        mmax: int,
-        SO3_grid,
-    ):
-        super().__init__()
-        self.sphere_channels = sphere_channels
-        self.hidden_channels = hidden_channels
-        self.lmax = lmax
-        self.mmax = mmax
-        self.SO3_grid = SO3_grid
+# class GridAtomwise(torch.nn.Module):
+#     def __init__(
+#         self,
+#         sphere_channels: int,
+#         hidden_channels: int,
+#         lmax: int,
+#         mmax: int,
+#         SO3_grid,
+#     ):
+#         super().__init__()
+#         self.sphere_channels = sphere_channels
+#         self.hidden_channels = hidden_channels
+#         self.lmax = lmax
+#         self.mmax = mmax
+#         self.SO3_grid = SO3_grid
 
-        self.grid_mlp = nn.Sequential(
-            nn.Linear(self.sphere_channels, self.hidden_channels, bias=False),
-            nn.SiLU(),
-            nn.Linear(self.hidden_channels, self.hidden_channels, bias=False),
-            nn.SiLU(),
-            nn.Linear(self.hidden_channels, self.sphere_channels, bias=False),
-        )
+#         self.grid_mlp = nn.Sequential(
+#             nn.Linear(self.sphere_channels, self.hidden_channels, bias=False),
+#             nn.SiLU(),
+#             nn.Linear(self.hidden_channels, self.hidden_channels, bias=False),
+#             nn.SiLU(),
+#             nn.Linear(self.hidden_channels, self.sphere_channels, bias=False),
+#         )
 
-    def forward(self, x):
-        # Project to grid
-        x_grid = self.SO3_grid["lmax_lmax"].to_grid(x, self.lmax, self.lmax)
-        # Perform point-wise operations
-        x_grid = self.grid_mlp(x_grid)
-        # Project back to spherical harmonic coefficients
-        return self.SO3_grid["lmax_lmax"].from_grid(x_grid, self.lmax, self.lmax)
+#     def forward(self, x):
+#         # Project to grid
+#         x_grid = self.SO3_grid["lmax_lmax"].to_grid(x, self.lmax, self.lmax)
+#         # Perform point-wise operations
+#         x_grid = self.grid_mlp(x_grid)
+#         # Project back to spherical harmonic coefficients
+#         return self.SO3_grid["lmax_lmax"].from_grid(x_grid, self.lmax, self.lmax)
 
 
 class eSEN_Block(torch.nn.Module):
@@ -219,13 +286,11 @@ class eSEN_Block(torch.nn.Module):
         lmax: int,
         mmax: int,
         mappingReduced,
-        SO3_grid,
         edge_channels_list: list[int],
         cutoff: float,
         norm_type: str,
         act_type: str,
         mlp_type: str,
-        use_envelope: bool,
     ) -> None:
         super().__init__()
         self.sphere_channels = sphere_channels
@@ -237,8 +302,6 @@ class eSEN_Block(torch.nn.Module):
             norm_type, lmax=self.lmax, num_channels=sphere_channels
         )
 
-        self.use_envelope = use_envelope
-
         self.edge_wise = Edgewise(
             sphere_channels=sphere_channels,
             hidden_channels=hidden_channels,
@@ -246,10 +309,8 @@ class eSEN_Block(torch.nn.Module):
             mmax=mmax,
             edge_channels_list=edge_channels_list,
             mappingReduced=mappingReduced,
-            SO3_grid=SO3_grid,
             cutoff=cutoff,
             act_type=act_type,
-            use_envelope=use_envelope,
         )
 
         self.norm_2 = get_normalization_layer(
@@ -262,46 +323,60 @@ class eSEN_Block(torch.nn.Module):
                 hidden_channels=hidden_channels,
                 lmax=lmax,
                 mmax=mmax,
-                SO3_grid=SO3_grid,
-            )
-        elif mlp_type == "grid":
-            self.atom_wise = GridAtomwise(
-                sphere_channels=sphere_channels,
-                hidden_channels=hidden_channels,
-                lmax=lmax,
-                mmax=mmax,
-                SO3_grid=SO3_grid,
             )
         else:
             raise ValueError(f"Unknown MLP type {mlp_type}")
 
     def forward(
         self,
-        x,
+        x_message_node,
+        x_message_edge,
         x_edge,
         edge_distance,
         edge_index,
         wigner,
         wigner_inv,
-        node_offset: int = 0,
+        node_or_edge,
     ):
-        x_res = x
-        x = self.norm_1(x)
 
-        x = self.edge_wise(
-            x,
-            x_edge,
-            edge_distance,
-            edge_index,
-            wigner,
-            wigner_inv,
-            node_offset,
-        )
+        if node_or_edge == 'node':
+            x_res = x_message_node
 
-        x = x + x_res
+            x_message_node = self.norm_1(x_message_node)
+            x_message_node = self.edge_wise(
+                x_message_node,
+                x_message_edge,
+                x_edge,
+                edge_distance,
+                edge_index,
+                wigner,
+                wigner_inv,
+                node_or_edge,
+            )
+            x_message_node = x_message_node + x_res
 
-        x_res = x
-        x = self.norm_2(x)
+            x_res = x_message_node
+            x_message_node = self.norm_2(x_message_node)
+            x_message_node = self.atom_wise(x_message_node)
+            return x_message_node + x_res
 
-        x = self.atom_wise(x)
-        return x + x_res
+        else:
+            x_res = x_message_edge
+
+            x_message_edge = self.norm_1(x_message_edge)
+            x_message_edge = self.edge_wise(
+                x_message_node,
+                x_message_edge,
+                x_edge,
+                edge_distance,
+                edge_index,
+                wigner,
+                wigner_inv,
+                node_or_edge,
+            )
+            x_message_edge = x_message_edge + x_res
+
+            x_res = x_message_edge
+            x_message_edge = self.norm_2(x_message_edge)
+            x_message_edge = self.atom_wise(x_message_edge)
+            return x_message_edge + x_res

@@ -24,8 +24,7 @@ from .common.rotation import (
     rotation_to_wigner,
 )
 from .common.so3 import (
-    CoefficientMapping,
-    SO3_Grid,
+    CoefficientMapping
 )
 from .esen_block import eSEN_Block
 from .nn.embedding import EdgeDegreeEmbedding
@@ -47,12 +46,10 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         sphere_channels: int = 128,
         lmax: int = 2,
         mmax: int = 2,
-        grid_resolution: int | None = None,
-        otf_graph: bool = False,
         max_neighbors: int = 300,
         use_pbc: bool = True,
         use_pbc_single: bool = False,
-        cutoff: float = 5.0,
+        cutoff: float = 10.0,
         edge_channels: int = 128,
         distance_function: str = "gaussian",
         num_distance_basis: int = 512,
@@ -63,10 +60,8 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         num_layers: int = 2,
         hidden_channels: int = 128,
         norm_type: str = "rms_norm_sh",
-        act_type: str = "s2",
-        mlp_type: str = "grid",
-        use_envelope: bool = False,
-        activation_checkpointing: bool = False,
+        act_type: str = "gate",
+        mlp_type: str = "spectral",
     ):
         super().__init__()
 
@@ -74,21 +69,11 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         self.lmax = lmax
         self.mmax = mmax
         self.sphere_channels = sphere_channels
-        self.grid_resolution = grid_resolution
 
         self.regress_forces = regress_forces
         self.direct_forces = direct_forces
         self.regress_stress = regress_stress
-
-        self.otf_graph = otf_graph
-        self.max_neighbors = max_neighbors
-        self.use_pbc = use_pbc
-        self.use_pbc_single = use_pbc_single
-        self.enforce_max_neighbors_strictly = False
-        self.activation_checkpointing = activation_checkpointing
-
         self.mlp_type = mlp_type
-        self.use_envelope = use_envelope
 
         # rotation utils
         Jd_list = torch.load(os.path.join(os.path.dirname(__file__), "Jd.pt"))
@@ -96,15 +81,6 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             self.register_buffer(f"Jd_{l}", Jd_list[l])
         self.sph_feature_size = int((self.lmax + 1) ** 2)
         self.mappingReduced = CoefficientMapping(self.lmax, self.mmax)
-
-        # lmax_lmax for node, lmax_mmax for edge
-        self.SO3_grid = nn.ModuleDict()
-        self.SO3_grid["lmax_lmax"] = SO3_Grid(
-            self.lmax, self.lmax, resolution=grid_resolution, rescale=True
-        )
-        self.SO3_grid["lmax_mmax"] = SO3_Grid(
-            self.lmax, self.mmax, resolution=grid_resolution, rescale=True
-        )
 
         # atom embedding
         self.sphere_embedding = nn.Embedding(
@@ -122,7 +98,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                 0.0,
                 self.cutoff,
                 self.num_distance_basis,
-                2.0,
+                1.0,
             )
         elif self.distance_function == "bessel":
             self.distance_expansion = EnvelopedBesselBasis(
@@ -154,11 +130,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             edge_channels_list=self.edge_channels_list,
             rescale_factor=5.0,
             cutoff=self.cutoff,
-            mappingReduced=self.mappingReduced,
-            out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
-                self.lmax, self.mmax
-            ),
-            use_envelope=use_envelope,
+            mappingReduced=self.mappingReduced
         )
 
         self.num_layers = num_layers
@@ -167,23 +139,36 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         self.act_type = act_type
 
         # Initialize the blocks for each layer
-        self.blocks = nn.ModuleList()
+        self.node_blocks = nn.ModuleList()
+        self.edge_blocks = nn.ModuleList()
+
         for _ in range(self.num_layers):
-            block = eSEN_Block(
+            node_block = eSEN_Block(
                 self.sphere_channels,
                 self.hidden_channels,
                 self.lmax,
                 self.mmax,
                 self.mappingReduced,
-                self.SO3_grid,
                 self.edge_channels_list,
                 self.cutoff,
                 self.norm_type,
                 self.act_type,
                 self.mlp_type,
-                self.use_envelope
             )
-            self.blocks.append(block)
+            self.node_blocks.append(node_block)
+            edge_block = eSEN_Block(
+                self.sphere_channels,
+                self.hidden_channels,
+                self.lmax,
+                self.mmax,
+                self.mappingReduced,
+                self.edge_channels_list,
+                self.cutoff,
+                self.norm_type,
+                self.act_type,
+                self.mlp_type,
+            )
+            self.edge_blocks.append(edge_block)
 
         self.norm = get_normalization_layer(
             self.norm_type,
@@ -197,6 +182,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             build_irreps.append((self.sphere_channels, (l, 1)))
         irreps_in = Irreps(build_irreps)
         self.map_irrep_layer = e3nn_Linear(irreps_in=irreps_in, irreps_out=irreps_out, biases=True)
+
 
     def get_rotmat_and_wigner(self, edge_distance_vecs):
         edge_rot_mat = init_edge_rot_mat(
@@ -228,7 +214,6 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             "cell_offsets": graph.cell_offsets,
             "offset_distances": None,
             "neighbors": None,
-            "node_offset": 0,
             "batch_full": graph.batch_full,
             "atomic_numbers_full": graph.atomic_numbers_full,
         }
@@ -245,7 +230,6 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             "edge_index": data_dict["edge_index"],
             "edge_distance": edge_distance,
             "edge_distance_vec": edge_distance_vec,
-            "node_offset": 0,
         }
 
         _, wigner, wigner_inv = self.get_rotmat_and_wigner(
@@ -253,11 +237,11 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         )
 
         ###############################################################
-        # Initialize node embeddings
+        # Initialize node and edge embeddings
         ###############################################################
 
         # x_message: [data_dict["pos"].shape[0] = #nodes, self.sph_feature_size = (l_max+1)**2, self.sphere_channels = E]
-        x_message = torch.zeros(
+        x_message_node = torch.zeros(
             data_dict["pos"].shape[0],
             self.sph_feature_size,
             self.sphere_channels,
@@ -265,56 +249,99 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             dtype=data_dict["pos"].dtype,
         )
         # set l = 0 components to the element embeddings:
-        x_message[:, 0, :] = self.sphere_embedding(data_dict["atomic_numbers"]) 
+        x_message_node[:, 0, :] = self.sphere_embedding(data_dict["atomic_numbers"]) 
+
+        # x_message_edge: [data_dict["nedges"] = #edges, self.sph_feature_size = (l_max+1)**2, self.sphere_channels = E]
+        x_message_edge = torch.zeros(
+            data_dict["nedges"],
+            self.sph_feature_size,
+            self.sphere_channels,
+            device=data_dict["pos"].device,
+            dtype=data_dict["pos"].dtype,
+        )
+        # set l = 0 components to the distance expansion
+        # x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"])
 
         # edge embedding: [num_edges, num gaussian basis functions]
+        # source_embedding, target_embedding: [num_edges, self.sphere_channels]
+        # x_edge: [num_edges, num gaussian basis functions + 2*self.sphere_channels]
+
         edge_distance_embedding = self.distance_expansion(graph_dict["edge_distance"])
 
-        # source_embedding, target_embedding: [num_edges, self.sphere_channels]
         source_embedding = self.source_embedding(
             data_dict["atomic_numbers"][graph_dict["edge_index"][0]]
         )
+
         target_embedding = self.target_embedding(
             data_dict["atomic_numbers"][graph_dict["edge_index"][1]]
         )
 
-        # source_embedding, target_embedding: [num_edges, num gaussian basis functions + 2*self.sphere_channels]
         x_edge = torch.cat(
             (edge_distance_embedding, source_embedding, target_embedding), dim=1
         )
-        
-        x_message = self.edge_degree_embedding(
-            x_message,
+        # x_edge is the un-expanded edge and node quantities.
+        # maybe we can reduce the Embedding dimension at the end of each mp layer?
+
+        # do edge degree embeddings for both nodes and edges:
+        # x_message_node = self.edge_degree_embedding(
+        #     x_message_node,
+        #     x_edge,
+        #     graph_dict["edge_distance"],
+        #     graph_dict["edge_index"],
+        #     wigner_inv,
+        #     node_or_edge='node'
+        # )
+
+        x_message_edge = self.edge_degree_embedding(
+            x_message_node,
             x_edge,
             graph_dict["edge_distance"],
             graph_dict["edge_index"],
             wigner_inv,
+            node_or_edge='edge'
         )
+        
+        # x_message_node shape:    # nodes, lmax, E
+        # x_message_edge shape:    # edges, lmax, E
 
         ###############################################################
         # Update spherical node embeddings
         ###############################################################
-        if graph_dict["edge_index"].shape[1] != 0:
-            for i in range(self.num_layers):
-                x_message = self.blocks[i](
-                    x_message,
-                    x_edge,
-                    graph_dict["edge_distance"],
-                    graph_dict["edge_index"],
-                    wigner,
-                    wigner_inv,
-                    node_offset=graph_dict["node_offset"],
-                )
+        for i in range(self.num_layers):
+            x_message_node = self.node_blocks[i](
+                x_message_node,
+                x_message_edge,
+                x_edge,
+                graph_dict["edge_distance"],
+                graph_dict["edge_index"],
+                wigner,
+                wigner_inv,
+                node_or_edge='node',
+            )
+
+            x_message_edge = self.edge_blocks[i](
+                x_message_node,
+                x_message_edge,
+                x_edge,
+                graph_dict["edge_distance"],
+                graph_dict["edge_index"],
+                wigner,
+                wigner_inv,
+                node_or_edge='edge',
+            )
 
         # Final layer norm
-        x_message = self.norm(x_message)
+        x_message_node = self.norm(x_message_node)
+        x_message_edge = self.norm(x_message_edge)
 
         # Convert to H block size
-        x_message = self.convert_to_fock_irreps(x_message, self.sphere_channels, self.lmax)
+        x_message_node = self.convert_to_fock_irreps(x_message_node, self.sphere_channels, self.lmax)
+        x_message_edge = self.convert_to_fock_irreps(x_message_edge, self.sphere_channels, self.lmax)
 
         # Return the output
         out = {
-            "node_embedding": x_message,
+            "node_embedding": x_message_node,
+            "edge_embedding": x_message_edge,
         }
         out.update(graph_dict)
 

@@ -1,41 +1,44 @@
+import time
+import_start = time.perf_counter()
 import os, sys
 import numpy as np
 import matplotlib.pyplot as plt
 from ase.io import read
+from ase import Atoms
+from ase.neighborlist import NeighborList
 import ase.db
+import utils_orca_out, fock_targets
 
 import torch
 import torch.nn as nn
 import torch.distributed as dist
-import time
 
-from ASEDataset import ASEDataset
+from ASEDataset import ASEDataset, ASEAtomsData, sampleDataset, sample_collate_fn
 from torch_geometric.loader import DataLoader
-import torch.distributed as dist
+from torch_geometric.data import Data as gnnData, Dataset, DataLoader
 
 from esen.esen import eSEN_Backbone
 from e3nn.o3 import Irreps
 import utils_training
+import_end = time.perf_counter()
+print("Time to do imports: ", import_end - import_start)
 
 # read orca output, ase gives you the energy and forces!
 
 # Fix this later:
 sys.path.append('/home/manasakani/fairchem/src/')
 
-# Settings (just dump everything here for now)
-# --------------------------------------------
-
-# -> Things to get from the database instead of doing this:
-# required_irreps = Irreps("62x0e+104x1e+100x2e+60x3e+24x4e+7x5e+1x6e")
-required_irreps = Irreps("1x0e+1x0e+1x0e+1x0e+1x0e+1x0e+1x1e+1x1e+1x1e+1x1e+1x2e+1x2e+1x2e+1x3e+1x0e+1x0e+1x0e+1x0e+1x0e+1x0e+1x1e+1x1e+1x1e+1x1e+1x2e+1x2e+1x2e+1x3e+1x0e+1x0e+1x0e+1x0e+1x0e+1x0e+1x1e+1x1e+1x1e+1x1e+1x2e+1x2e+1x2e+1x3e+1x0e+1x0e+1x0e+1x0e+1x0e+1x0e+1x1e+1x1e+1x1e+1x1e+1x2e+1x2e+1x2e+1x3e+1x0e+1x0e+1x0e+1x0e+1x0e+1x0e+1x1e+1x1e+1x1e+1x1e+1x2e+1x2e+1x2e+1x3e+1x0e+1x0e+1x0e+1x0e+1x0e+1x0e+1x1e+1x1e+1x1e+1x1e+1x2e+1x2e+1x2e+1x3e+1x1e+1x1e+1x1e+1x1e+1x1e+1x1e+1x0e+1x1e+1x2e+1x0e+1x1e+1x2e+1x0e+1x1e+1x2e+1x0e+1x1e+1x2e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x2e+1x3e+1x4e+1x1e+1x1e+1x1e+1x1e+1x1e+1x1e+1x0e+1x1e+1x2e+1x0e+1x1e+1x2e+1x0e+1x1e+1x2e+1x0e+1x1e+1x2e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x2e+1x3e+1x4e+1x1e+1x1e+1x1e+1x1e+1x1e+1x1e+1x0e+1x1e+1x2e+1x0e+1x1e+1x2e+1x0e+1x1e+1x2e+1x0e+1x1e+1x2e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x2e+1x3e+1x4e+1x1e+1x1e+1x1e+1x1e+1x1e+1x1e+1x0e+1x1e+1x2e+1x0e+1x1e+1x2e+1x0e+1x1e+1x2e+1x0e+1x1e+1x2e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x2e+1x3e+1x4e+1x2e+1x2e+1x2e+1x2e+1x2e+1x2e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x0e+1x1e+1x2e+1x3e+1x4e+1x0e+1x1e+1x2e+1x3e+1x4e+1x0e+1x1e+1x2e+1x3e+1x4e+1x1e+1x2e+1x3e+1x4e+1x5e+1x2e+1x2e+1x2e+1x2e+1x2e+1x2e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x0e+1x1e+1x2e+1x3e+1x4e+1x0e+1x1e+1x2e+1x3e+1x4e+1x0e+1x1e+1x2e+1x3e+1x4e+1x1e+1x2e+1x3e+1x4e+1x5e+1x2e+1x2e+1x2e+1x2e+1x2e+1x2e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x1e+1x2e+1x3e+1x0e+1x1e+1x2e+1x3e+1x4e+1x0e+1x1e+1x2e+1x3e+1x4e+1x0e+1x1e+1x2e+1x3e+1x4e+1x1e+1x2e+1x3e+1x4e+1x5e+1x3e+1x3e+1x3e+1x3e+1x3e+1x3e+1x2e+1x3e+1x4e+1x2e+1x3e+1x4e+1x2e+1x3e+1x4e+1x2e+1x3e+1x4e+1x1e+1x2e+1x3e+1x4e+1x5e+1x1e+1x2e+1x3e+1x4e+1x5e+1x1e+1x2e+1x3e+1x4e+1x5e+1x0e+1x1e+1x2e+1x3e+1x4e+1x5e+1x6e")
+# Settings (just dumping everything here for now)
+# -----------------------------------------------
+dbpath = 'schnorb_hamiltonian_water.db'
+database = ASEAtomsData(dbpath)
 
 # -> Model settings:
 dataset_folder = './fock_datasets/water_clusters_rcut_6.0_16x.db'
 l_embedding_dim = 32
 num_distance_basis = 32                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = 32
-lmax = required_irreps.lmax      
-cutoff = 6.0*2                          # Cutoff used for edge distance embedding
+cutoff = 6.0*2                         # Cutoff used for edge distance embedding
 is_pbc = False
 num_mp_layers = 2
 
@@ -43,7 +46,7 @@ num_mp_layers = 2
 num_epochs = 1000
 lr_init = 1e-3
 dtype = torch.float32
-num_val = 1  # Number of validation structures
+num_val = 10  # Number of validation structures
 
 # --> Compute env
 if torch.cuda.is_available():
@@ -53,22 +56,70 @@ else:
 world_size = int(os.environ['SLURM_NTASKS'])
 rank = int(os.environ['SLURM_PROCID'])
 dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
-torch.cuda.set_device(0) # visibility needs to be restricted to 0 in .sh file!
+torch.cuda.set_device(0) # visibility is restricted to 0 in .sh file
 
+output_folder = 'outputs'
+if not os.path.exists(output_folder):
+    os.makedirs(output_folder)
 
-# Prepare data and model
+# Prepare model
 # --------------------------------------------
 
 data_load_start = time.perf_counter()
-dataset = ASEDataset(dataset_folder, dtype=dtype)
-train_size = len(dataset) - num_val
-# train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, num_val])
+num_molecules = 2*num_val
+datalist = []
+atom_count = 0
 
-train_dataset = torch.utils.data.Subset(dataset, [0, 1, 2])
-val_dataset = torch.utils.data.Subset(dataset, [3])
+for i in range(num_molecules):
+    mol = database.__getitem__(i)
+    mol_atoms = Atoms(symbols=mol['_atomic_numbers'].numpy(), positions=mol['_positions'].numpy())
+    rcut = 6.0                                            # connectivity cutoff
+    num_atoms = len(mol['_positions'])
 
-train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=2)
-val_loader = DataLoader(val_dataset, batch_size=1, shuffle=True, num_workers=2)
+    # Connectivity list:
+    neighbours = NeighborList(np.ones(num_atoms)*rcut, skin=0, self_interaction=False, bothways=True)
+    neighbours.update(mol_atoms)
+    neighbour_list = neighbours.get_connectivity_matrix(sparse=True).tocoo()
+    neighbour_list = np.vstack([neighbour_list.row, neighbour_list.col])
+
+    # Electronic structure matrix:
+    hamiltonian = mol['hamiltonian'].numpy()                
+    orbital_basis = {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]}
+    atomic_numbers = mol['_atomic_numbers'].numpy()
+    hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)
+
+    time_start = time.perf_counter()
+    graph_targets = fock_targets.Fock_Targets(mol_atoms, neighbour_list, orbital_basis, hamiltonian)
+    time_end = time.perf_counter()
+    print("time to make targets: ", time_end - time_start)
+
+    # Create PyTorch Geometric Data object - Note that fock_matrix has shape [num_mol*N, N] insted of [num_mol, N, N]
+    data = gnnData(
+        pos=torch.tensor(graph_targets.atoms.positions, dtype=torch.float),
+        edge_index=neighbour_list,
+        x=graph_targets.node_labels.cpu(),
+        edge_attr=graph_targets.edge_labels.cpu(),
+        edge_dist=graph_targets.edge_dist.cpu(),
+        atomic_numbers=torch.tensor(graph_targets.atomic_numbers, dtype=torch.long).cpu(),  
+        nedges=len(graph_targets.neighbour_list[0]), 
+        natoms=len(atomic_numbers),  
+    )
+    
+    datalist.append(data)
+    atom_count += len(atomic_numbers)
+
+required_irreps = graph_targets.req_output_irreps
+lmax = required_irreps.lmax    
+print("required irreps: ", required_irreps)
+
+train_size = len(datalist) - num_val
+train_datalist, val_datalist = torch.utils.data.random_split(datalist, [train_size, num_val])
+train_dataset = sampleDataset(train_datalist)
+val_dataset = sampleDataset(val_datalist)
+
+# Do not use a batch size higher than 1!!
+train_loader = DataLoader(train_dataset, batch_size=1, collate_fn=sample_collate_fn, shuffle=False, num_workers=1)
+val_loader = DataLoader(val_dataset, batch_size=1, collate_fn=sample_collate_fn, shuffle=False, num_workers=1)
 data_load_end = time.perf_counter()
 
 print("Time to load dataset: ", data_load_end - data_load_start)
@@ -113,35 +164,40 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', fa
 for epoch in range(num_epochs):
     epoch_start = time.perf_counter()
 
+    loss = 0
+
     model.train()  
     for batch in train_loader:
 
         optimizer.zero_grad()
+
+        # print(torch.tensor(batch.edge_index, dtype=torch.long, device=device).squeeze(0).reshape(2, -1).shape)
+        # exit()
 
         # Forward pass
         batch = batch.to(device)
         data_dict = {
             "pos": batch.pos,
             "atomic_numbers": batch.atomic_numbers,
-            "edge_index": batch.edge_index,
+            "edge_index": torch.tensor(batch.edge_index, dtype=torch.long, device=device).squeeze(0).reshape(2, -1),
             "x": batch.x,
             "edge_attr": batch.edge_attr,
             "edge_dist": batch.edge_dist,
-            "fock_matrix": batch.fock_matrix,
             "atomic_numbers": batch.atomic_numbers,
-            "nedges": batch.nedges,
-            "natoms": batch.natoms,
+            "nedges": sum(batch.nedges),
+            "natoms": sum(batch.natoms),
         }
+ 
         output = model(data_dict) 
 
         # Loss
         loss_node = loss_fxn(output['node_embedding'], batch.x)
         loss_edge = loss_fxn(output['edge_embedding'], batch.edge_attr)
-        loss = loss_node # + loss_edge  # ONLY NODE LOSS
+        loss = loss_node + loss_edge
         
-        # Backwards
-        loss.backward()
-        optimizer.step()
+    # Backwards
+    loss.backward()
+    optimizer.step()
         
     track_loss_node.append(loss_node.cpu().detach().numpy() / len(batch))
     track_loss_edge.append(loss_edge.cpu().detach().numpy() / len(batch))
@@ -155,18 +211,17 @@ for epoch in range(num_epochs):
             data_dict = {
                 "pos": batch.pos,
                 "atomic_numbers": batch.atomic_numbers,
-                "edge_index": batch.edge_index,
+                "edge_index": torch.tensor(batch.edge_index, dtype=torch.long, device=device).squeeze(0),
                 "x": batch.x,
                 "edge_attr": batch.edge_attr,
                 "edge_dist": batch.edge_dist,
-                "fock_matrix": batch.fock_matrix,
-                "nedges": batch.nedges,
-                "natoms": batch.natoms,
+                "nedges": sum(batch.nedges),
+                "natoms": sum(batch.natoms),
             }
             output = model(data_dict)
             loss_node = loss_fxn(output['node_embedding'], batch.x)
             loss_edge = loss_fxn(output['edge_embedding'], batch.edge_attr)
-            loss = loss_node # + loss_edge  # ONLY NODE LOSS
+            loss = loss_node + loss_edge
             val_loss += loss.item()
 
     track_loss_node_val.append(loss_node.cpu().detach().numpy() / len(batch))
