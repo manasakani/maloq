@@ -3,6 +3,7 @@ import torch
 import utils_tensor_decomp
 import torch
 import time
+from ase.neighborlist import NeighborList
 
 class Fock_Targets:
     """
@@ -10,7 +11,7 @@ class Fock_Targets:
     Input target shape to standardize across molecules with different elements
     """
 
-    def __init__(self, atoms, neighbour_list, orbital_basis, fock_matrix, target_shape=0, dtype=torch.float32):
+    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix, target_shape=0, dtype=torch.float32):
         """
         atoms - ASE atoms object of the atomic structure
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]] 
@@ -24,10 +25,16 @@ class Fock_Targets:
             self.device = torch.device('cpu')
                 
         self.atoms = atoms                          
-        self.neighbour_list = neighbour_list        
         self.orbital_basis = orbital_basis          
         self.fock_matrix = torch.from_numpy(fock_matrix).to(self.device)
         self.dtype = dtype
+
+        # Connectivity list:
+        num_atoms = len(atoms)
+        neighbours = NeighborList(np.ones(num_atoms)*cutoff, skin=0, self_interaction=False, bothways=True)
+        neighbours.update(self.atoms)
+        neighbour_list = neighbours.get_connectivity_matrix(sparse=True).tocoo()
+        self.neighbour_list = np.vstack([neighbour_list.row, neighbour_list.col])
 
         self.NA = len(atoms)
         self.atomic_numbers = self.atoms.get_atomic_numbers()
@@ -44,7 +51,7 @@ class Fock_Targets:
                                                             if_sort=False,
                                                             device_torch=self.device)
         
-        # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
+        print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         # print(f'Simplified irreps: {self.simplified_out_irreps}')
 
         self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)])       # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
@@ -116,24 +123,73 @@ class Fock_Targets:
         time_label_end = time.perf_counter()
         print("time to make labels: ", time_label_end - time_label_start, flush=True)
 
+        # import matplotlib.pyplot as plt
+        # print("onsite orbital block: ", node_orbital_blocks)
+        # exit()
+        # plt.imshow(np.log(np.abs(node_orbital_blocks[0].reshape(14, 14).detach().cpu())))
+        # plt.savefig("node_orbital_blocks[0].png", dpi=300)
+        # plt.close()
+        # print("first label: ", self.node_labels[0])
+        # plt.imshow(np.log(np.abs(self.node_labels[0].reshape(14, 14).detach().cpu())))
+        # plt.savefig("self.node_labels[0].png", dpi=300, bbox_inches='tight')
+        # plt.close()
+
         # Basis transformation:
+        # ---------------------------------------------------------------------------------------------
         self.node_labels = self.basis_transformation.get_net_out(self.node_labels)
         self.edge_labels = self.basis_transformation.get_net_out(self.edge_labels)
 
-        # make edge distances
-        coordinates = self.atoms.get_positions()
-        self.edge_dist = torch.zeros(( len(self.neighbour_list[0]), 4 ), dtype=self.dtype)
-        for i in range(len( self.neighbour_list[0]) ):
-            self.edge_dist[i, 0:3] = torch.from_numpy(self.atoms.get_distance(self.neighbour_list[1][i], self.neighbour_list[0][i], vector=True))
-            self.edge_dist[i, 3] = self.atoms.get_distance(self.neighbour_list[1][i], self.neighbour_list[0][i], vector=False)
+        # print("after basis transform: ", self.node_labels[0])
+        # plt.imshow(np.log(np.abs(self.node_labels[0].reshape(14, 14).detach().cpu())))
+        # plt.savefig("self.node_labels_transformed[0].png", dpi=300, bbox_inches='tight')
+        # plt.close()
 
-        # // Create graph_targets objects: //
-        # self.data_labels = graph_targets(edge_index = self.neighbour_list,
-        #                                  node_elements=self.atomic_numbers, 
-        #                                  edge_dist_scalars=self.edge_dist_scalars, 
-        #                                  edge_dist_vectors=self.edge_dist_vectors, 
-        #                                  node_labels=self.node_labels,
-        #                                  edge_labels=self.edge_labels)
+        # self.node_labels = self.basis_transformation.get_H(self.node_labels)
+        # self.edge_labels = self.basis_transformation.get_H(self.edge_labels)
+
+        # print("first label_netout: ", self.node_labels[0])
+        # plt.imshow(np.log(np.abs(self.node_labels[0].reshape(14, 14).detach().cpu())))
+        # plt.savefig("self.node_labels_back[0].png", dpi=300, bbox_inches='tight')
+        # plt.close()
+        
+        # Apply Rotation to rotate (1) the structure and (2) every block of H from [xyz] to [yzx] order: - not needed, ORCA is already in yzx after permutation
+        # ---------------------------------------------------------------------------------------------
+        # R_cart, R_sphere = self.get_cartesian_and_spherical_rotations_to_yzx()
+
+        # # transpose each position into a [Nx1], multiply it by the rotation, and then transpose it back to [1xN]
+        # self.node_labels = torch.matmul(R_sphere, self.node_labels.permute(1, 0)).permute(1, 0)
+        # self.edge_labels = torch.matmul(R_sphere, self.edge_labels.permute(1, 0)).permute(1, 0)
+        # self.atoms.positions = torch.matmul(R_cart, torch.tensor(self.atoms.get_positions().transpose(), dtype=self.dtype)).numpy().transpose()
+
+        # Make edge vectors
+        # ---------------------------------------------------------------------------------------------
+        # self.edge_dist = torch.zeros(( len(self.neighbour_list[0]), 4 ), dtype=self.dtype)
+        # for i in range(len( self.neighbour_list[0]) ):
+        #     # self.edge_dist[i, 0:3] = torch.from_numpy(self.atoms.get_distance(self.neighbour_list[1][i], self.neighbour_list[0][i], vector=True)) # < -- this one is wrong
+        #     self.edge_dist[i, 1:4] = torch.from_numpy(self.atoms.get_distance(self.neighbour_list[0][i], self.neighbour_list[1][i], vector=True)) # < -- this one is correct
+        #     self.edge_dist[i, 0] = self.atoms.get_distance(self.neighbour_list[1][i], self.neighbour_list[0][i], vector=False)
+
+        # Get all pairs of atom indices from neighbor list
+        indices0 = self.neighbour_list[0]  # First atom indices
+        indices1 = self.neighbour_list[1]  # Second atom indices
+
+        self.edge_dist = torch.zeros((len(indices0), 4), dtype=self.dtype)
+        self.edge_dist[:, 1:4] = torch.from_numpy(self.atoms.get_distances(indices1, indices0, vector=True))    # Vector components
+        self.edge_dist[:, 0] = torch.linalg.norm(self.edge_dist[:, 1:4], dim=-1, keepdim=False)                 # Scalar distances
+
+    def get_cartesian_and_spherical_rotations_to_yzx(self):
+        """
+        Specifically gets the cartesian and spherical rotations for xyz -> yzx
+        """
+        
+        # R_cart = torch.tensor([[0.0,  1.0, 0.0],
+        #                        [ 0.0, 0.0, 1.0],
+        #                        [ 1.0, 0.0, 0.0]])
+        R_cart = torch.tensor([[0.0,  0.0, 1.0],
+                               [ 1.0, 0.0, 0.0],
+                               [ 0.0, 1.0, 0.0]])
+        R_sphere = self.req_output_irreps.D_from_matrix(R_cart).to(self.device)
+        return R_cart, R_sphere
 
     def get_target_len(self):
         """

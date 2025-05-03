@@ -7,6 +7,7 @@ LICENSE file in the root directory of this source tree.
 
 from __future__ import annotations
 
+import matplotlib.pyplot as plt # remove
 import os, sys
 import torch
 import torch.nn as nn
@@ -24,7 +25,8 @@ from .common.rotation import (
     rotation_to_wigner,
 )
 from .common.so3 import (
-    CoefficientMapping
+    CoefficientMapping,
+    SO3_Grid,
 )
 from .esen_block import eSEN_Block
 from .nn.embedding import EdgeDegreeEmbedding
@@ -46,6 +48,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         sphere_channels: int = 128,
         lmax: int = 2,
         mmax: int = 2,
+        grid_resolution: int | None = None,
         max_neighbors: int = 300,
         use_pbc: bool = True,
         use_pbc_single: bool = False,
@@ -81,6 +84,15 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             self.register_buffer(f"Jd_{l}", Jd_list[l])
         self.sph_feature_size = int((self.lmax + 1) ** 2)
         self.mappingReduced = CoefficientMapping(self.lmax, self.mmax)
+
+        # lmax_lmax for node, lmax_mmax for edge
+        self.SO3_grid = nn.ModuleDict()
+        self.SO3_grid["lmax_lmax"] = SO3_Grid(
+            self.lmax, self.lmax, resolution=grid_resolution, rescale=True
+        )
+        self.SO3_grid["lmax_mmax"] = SO3_Grid(
+            self.lmax, self.mmax, resolution=grid_resolution, rescale=True
+        )
 
         # atom embedding
         self.sphere_embedding = nn.Embedding(
@@ -130,7 +142,10 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             edge_channels_list=self.edge_channels_list,
             rescale_factor=5.0,
             cutoff=self.cutoff,
-            mappingReduced=self.mappingReduced
+            mappingReduced=self.mappingReduced,
+            out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
+                self.lmax, self.mmax
+            )
         )
 
         self.num_layers = num_layers
@@ -149,6 +164,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                 self.lmax,
                 self.mmax,
                 self.mappingReduced,
+                self.SO3_grid,
                 self.edge_channels_list,
                 self.cutoff,
                 self.norm_type,
@@ -162,6 +178,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                 self.lmax,
                 self.mmax,
                 self.mappingReduced,
+                self.SO3_grid,
                 self.edge_channels_list,
                 self.cutoff,
                 self.norm_type,
@@ -180,11 +197,14 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         build_irreps = []
         for l in range(self.lmax+1):
             build_irreps.append((self.sphere_channels, (l, 1)))
-        irreps_in = Irreps(build_irreps)
-        self.map_irrep_layer = e3nn_Linear(irreps_in=irreps_in, irreps_out=irreps_out, biases=True)
+        self.irreps_in = Irreps(build_irreps)
+        self.map_irrep_layer_node = e3nn_Linear(irreps_in=self.irreps_in, irreps_out=irreps_out, biases=True)
+        self.map_irrep_layer_edge = e3nn_Linear(irreps_in=self.irreps_in, irreps_out=irreps_out, biases=True)
+        self.irreps_out = irreps_out
 
 
     def get_rotmat_and_wigner(self, edge_distance_vecs):
+
         edge_rot_mat = init_edge_rot_mat(
             edge_distance_vecs, rot_clip=(not self.direct_forces)
         )
@@ -205,25 +225,33 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
 
         return edge_rot_mat, wigner, wigner_inv
 
-    def generate_graph(self, *args, **kwargs):
-        graph = super().generate_graph(*args, **kwargs)
-        return {
-            "edge_index": graph.edge_index,
-            "edge_distance": graph.edge_distance,
-            "edge_distance_vec": graph.edge_distance_vec,
-            "cell_offsets": graph.cell_offsets,
-            "offset_distances": None,
-            "neighbors": None,
-            "batch_full": graph.batch_full,
-            "atomic_numbers_full": graph.atomic_numbers_full,
-        }
+    # def generate_graph(self, *args, **kwargs):
+    #     graph = super().generate_graph(*args, **kwargs)
+    #     return {
+    #         "edge_index": graph.edge_index,
+    #         "edge_distance": graph.edge_distance,
+    #         "edge_distance_vec": graph.edge_distance_vec,
+    #         "cell_offsets": graph.cell_offsets,
+    #         "offset_distances": None,
+    #         "neighbors": None,
+    #         "batch_full": graph.batch_full,
+    #         "atomic_numbers_full": graph.atomic_numbers_full,
+    #     }
 
     @conditional_grad(torch.enable_grad())
     def forward(self, data_dict) -> dict[str, torch.Tensor]:
 
-        data_dict["atomic_numbers"] = data_dict["atomic_numbers"].long()
-        edge_distance_vec = data_dict["edge_dist"][:, 0:3]
+        # Added to input dict:
+        edge_distance_vec = data_dict["edge_dist"][:, [1, 2, 0]]    # need yzx to align the y axis
         edge_distance = data_dict["edge_dist"][:, 3]
+
+        # From original eSEN forward pass:
+        # edge_distance_vec = (
+        #     data_dict["pos"][data_dict["edge_index"][0]]
+        #     - data_dict["pos"][data_dict["edge_index"][1]]
+        # )
+        # # pylint: disable=E1102
+        # edge_distance = torch.linalg.norm(edge_distance_vec, dim=-1, keepdim=False)
 
         graph_dict = {
             "atomic_numbers_full": data_dict["atomic_numbers"],
@@ -232,7 +260,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             "edge_distance_vec": edge_distance_vec,
         }
 
-        _, wigner, wigner_inv = self.get_rotmat_and_wigner(
+        edge_rot_mat, wigner, wigner_inv = self.get_rotmat_and_wigner(
             graph_dict["edge_distance_vec"]
         )
 
@@ -255,12 +283,12 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         x_message_edge = torch.zeros(
             data_dict["nedges"],
             self.sph_feature_size,
-            self.sphere_channels,
+            self.num_distance_basis, #self.sphere_channels,
             device=data_dict["pos"].device,
             dtype=data_dict["pos"].dtype,
         )
         # set l = 0 components to the distance expansion
-        # x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"])
+        x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"])
 
         # edge embedding: [num_edges, num gaussian basis functions]
         # source_embedding, target_embedding: [num_edges, self.sphere_channels]
@@ -283,26 +311,50 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         # maybe we can reduce the Embedding dimension at the end of each mp layer?
 
         # do edge degree embeddings for both nodes and edges:
-        # x_message_node = self.edge_degree_embedding(
-        #     x_message_node,
-        #     x_edge,
-        #     graph_dict["edge_distance"],
-        #     graph_dict["edge_index"],
-        #     wigner_inv,
-        #     node_or_edge='node'
-        # )
-
-        x_message_edge = self.edge_degree_embedding(
+        x_message_node = self.edge_degree_embedding(
             x_message_node,
             x_edge,
             graph_dict["edge_distance"],
             graph_dict["edge_index"],
             wigner_inv,
-            node_or_edge='edge'
+            node_or_edge='node'
         )
+
+        # x_message_edge = self.edge_degree_embedding(
+        #     x_message_node,
+        #     x_edge,
+        #     graph_dict["edge_distance"],
+        #     graph_dict["edge_index"],
+        #     wigner_inv,
+        #     node_or_edge='edge'
+        # )
         
         # x_message_node shape:    # nodes, lmax, E
         # x_message_edge shape:    # edges, lmax, E
+
+        # #__ROTATION___
+        # # Cartesian Rotation for the mol:
+        # device=data_dict["pos"].device
+        # alpha=230.0
+        # beta=70.0
+        # gamma=180.0
+        # alpha_rad = torch.deg2rad(torch.tensor(alpha))
+        # beta_rad = torch.deg2rad(torch.tensor(beta))
+        # gamma_rad = torch.deg2rad(torch.tensor(gamma))
+        # Rx = torch.tensor([[1, 0, 0], [0, torch.cos(alpha_rad), -torch.sin(alpha_rad)], [0, torch.sin(alpha_rad), torch.cos(alpha_rad)]])
+        # Ry = torch.tensor([[torch.cos(beta_rad), 0, torch.sin(beta_rad)], [0, 1, 0], [-torch.sin(beta_rad), 0, torch.cos(beta_rad)]])
+        # Rz = torch.tensor([[torch.cos(gamma_rad), -torch.sin(gamma_rad), 0], [torch.sin(gamma_rad), torch.cos(gamma_rad), 0], [0, 0, 1]])
+        # R_cart = torch.matmul(Rz, torch.matmul(Ry, Rx)) 
+
+        # # Spherical Rotation for Irreps:
+        # internal_irreps = Irreps("1x0e+1x1e+1x2e+1x3e+1x4e")
+        # R_sphere_in = internal_irreps.D_from_matrix(R_cart).to(device)
+        # R_sphere_out = self.irreps_out.D_from_matrix(R_cart).to(device) # to use after e3nn Linear in rank-N head
+        # #____ROTATION___
+
+        # Rotate:
+        # x_message_node = torch.matmul(R_sphere_in, x_message_node) # <-- Rotate first // forward commutator
+        # x_message_edge = torch.matmul(R_sphere_in, x_message_edge) # <-- Rotate first // forward commutator
 
         ###############################################################
         # Update spherical node embeddings
@@ -318,7 +370,6 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                 wigner_inv,
                 node_or_edge='node',
             )
-
             x_message_edge = self.edge_blocks[i](
                 x_message_node,
                 x_message_edge,
@@ -329,14 +380,26 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                 wigner_inv,
                 node_or_edge='edge',
             )
+        
+        # x_message_node = torch.matmul(R_sphere_in, x_message_node) # <-- Rotate last // backward commutator
+        # x_message_edge = torch.matmul(R_sphere_in, x_message_edge) # <-- Rotate last // backward commutator
 
         # Final layer norm
         x_message_node = self.norm(x_message_node)
         x_message_edge = self.norm(x_message_edge)
 
-        # Convert to H block size
-        x_message_node = self.convert_to_fock_irreps(x_message_node, self.sphere_channels, self.lmax)
-        x_message_edge = self.convert_to_fock_irreps(x_message_edge, self.sphere_channels, self.lmax)
+        # Convert to H block size:
+        x_message_node = self.convert_to_fock_irreps(x_message_node, self.sphere_channels, self.lmax, 'node') 
+        x_message_edge = self.convert_to_fock_irreps(x_message_edge, self.sphere_channels, self.lmax, 'edge')
+
+        # x_message_node[2, :] = torch.matmul(R_sphere_out, x_message_node[2, :])
+
+        # print("output tensor: ", x_message_node[2, :])
+        # print("output tensor: ", x_message_edge[1, :])
+        # exit()
+
+        # plt.imshow(x_message_node[2, :].detach().cpu().reshape(14, 14))
+        # plt.savefig('forward_commutator.png', dpi=300, bbox_inches='tight')
 
         # Return the output
         out = {
@@ -347,24 +410,24 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
 
         return out
 
-    def convert_to_fock_irreps(self, input, output_channels, lmax):   
-        """
-        Converts the output irreps to the coupled space irrep representation needed to reconstruct the Hamiltonian using the linear layer from e3nn library 
-        e.g. map 64x0e+64x1e+64x2e+64x3e+64x4e to 1x0e+1x1e+1x1e+1x0e+1x1e+1x2e+..+1x1e+1x2e+1x3e+1x4e
+    def convert_to_fock_irreps(self, input, sphere_channels, lmax, node_or_edge):   
+        # input = [num_atoms/edges (batch_size), (lmax+1)**2, sphere_channels]
 
-        """
-        # prepare sorted_output:
-        
-        test_input = input.transpose(-1,-2) # rearrange dimensions from [l, E] to [E, l] so that e.g. 64 x 1e can be extracted correctly after flattening the columns belonging to l = 1
-        feature_size = test_input.shape[0]
-        sorted_output = torch.zeros(feature_size, output_channels*((lmax+1)**2), device=input.device)
+        test_input = input.transpose(-1,-2) # rearrange dimensions from [l, E] to [E, l] 
+        batch_size = test_input.shape[0]
+
+        # group all the different ls so l_sorted output looks like sphere_channels*0e + sphere_channels*1e + sphere_channels*2e ...
+        l_sorted_output = torch.zeros(batch_size, sphere_channels*((lmax+1)**2), device=input.device)
         for l in range(lmax+1):
-            start = l**2*output_channels
-            end = l**2*output_channels+output_channels*(2*l+1)
-            sorted_output[:,start:end] = torch.squeeze(test_input[:,:,l**2:l**2+(2*l+1)].reshape(feature_size, 1, -1))
+            start = (l**2)*sphere_channels
+            end = (l**2)*sphere_channels + sphere_channels*(2*l+1)
+            l_sorted_output[:,start:end] = torch.squeeze(test_input[:, :, (l**2):(l**2)+(2*l+1)].reshape(batch_size, 1, -1))
 
-        # convert:
-        test_output = self.map_irrep_layer(sorted_output)
+        # e3nn linear layer:
+        if node_or_edge == 'node':
+            test_output = self.map_irrep_layer_node(l_sorted_output)
+        else:
+            test_output = self.map_irrep_layer_edge(l_sorted_output)
         
         return test_output
 

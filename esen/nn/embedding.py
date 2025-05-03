@@ -46,6 +46,7 @@ class EdgeDegreeEmbedding(torch.nn.Module):
         rescale_factor,
         cutoff,
         mappingReduced,
+        out_mask,
     ):
         super().__init__()
         self.sphere_channels = sphere_channels
@@ -67,7 +68,7 @@ class EdgeDegreeEmbedding(torch.nn.Module):
 
         self.rescale_factor = rescale_factor
 
-        # self.out_mask = out_mask
+        self.out_mask = out_mask
 
     def forward(
         self,
@@ -99,7 +100,8 @@ class EdgeDegreeEmbedding(torch.nn.Module):
         )
 
         # Rotate back the irreps
-        x_edge_embedding = torch.bmm(wigner_inv, x_edge_embedding)
+        # x_edge_embedding = torch.bmm(wigner_inv, x_edge_embedding)
+        x_edge_embedding = torch.bmm(wigner_inv[:, :, self.out_mask], x_edge_embedding)
 
         x_edge_embedding = x_edge_embedding.to(x.dtype)
 

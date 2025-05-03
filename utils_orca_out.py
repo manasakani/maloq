@@ -1,5 +1,10 @@
 import numpy as np
 import re
+from cclib.parser.orcaparser import ORCA
+from cclib.parser.nboparser import NBO
+from typing import Any
+from pathlib import Path
+import logging
 
 ### Utility functions to extract information from the orca output files
 
@@ -15,6 +20,110 @@ periodic_table = {'Ac': 89, 'Ag': 47, 'Al': 13, 'Am': 95, 'Ar': 18, 'As': 33, 'A
                   'Te': 52, 'Th': 90, 'Ti': 22, 'Tl': 81, 'Tm': 69, 'U': 92, 'V': 23, 'W': 74, 'Xe': 54, 'Y': 39,
                   'Yb': 70, 'Zn': 30, 'Zr': 40, 'Rf': 104, 'Db': 105, 'Sg': 106, 'Bh': 107, 'Hs': 108, 'Mt': 109,
                   'Ds': 110, 'Rg': 111, 'Cn': 112, 'Nh': 113, 'Fl': 114, 'Mc': 115, 'Lv': 116, 'Ts': 117, 'Og': 118}
+
+# from https://github.com/facebookexternal/ocp-modeling-dev/blob/master/foundation_models/data/omol/process/orca_parsing.py#L295
+def parse_output(
+    orca_output_path: Path,
+    source: str,
+) -> dict[str, Any]:
+    """
+    Reads the Orca output file at the input path and returns a dictionary
+    of the important fields extracted from it.
+    """
+
+    print(orca_output_path)
+
+    # Try to parse the main properties. Raise if this fails because there
+    # isn't much to do without this data.
+    orca_props = ORCA(str(orca_output_path)).parse()
+    orca_props.listify()
+
+    # Try to parse NBO data. We can proceed if this fails for some reason.
+    # Just assume the data doesn't exist.
+    try:
+        nbo_props = NBO(str(orca_output_path)).parse()
+        nbo_props.listify()
+    except Exception:
+        logging.exception(f"Failed to parse nbo data from {source}")
+        nbo_props = None
+
+    # Extract important data into a dictionary
+    desired_data = {}
+    desired_data["source"] = source
+    desired_data["job_input"] = orca_props.metadata.get("input_file_contents")
+    desired_data["job_keywords"] = orca_props.metadata.get("keywords")
+    desired_data["atom_numbers"] = orca_props.atomnos
+    desired_data["coords [A]"] = orca_props.atomcoords
+    desired_data["total_charge"] = orca_props.charge
+    desired_data["total_spin"] = orca_props.mult
+    desired_data["n_cores"] = orca_props.metadata.get("num_cpu")
+    desired_data["n_atoms"] = orca_props.natom
+    desired_data["n_basis"] = orca_props.nbasis
+    desired_data["n_ecp_electrons"] = int(sum(orca_props.coreelectrons))
+    desired_data["n_electrons"] = (
+        int(orca_props.nelectrons) - desired_data["n_ecp_electrons"]
+    )
+    if (total_energy := orca_props.metadata.get("total_energy")) is not None:
+        total_energy = float(total_energy)
+    desired_data["total_energy [Eh]"] = total_energy
+    desired_data["gradient [Eh/bohr]"] = orca_props.grads[0]
+    desired_data["s_squared"] = getattr(orca_props, "s_squared", 0.0)
+    desired_data["s_squared_dev"] = getattr(orca_props, "s_squared_dev", 0.0)
+    desired_data["unrestricted"] = hasattr(orca_props, "s_squared")
+
+    charges = {}
+    charges["mulliken"] = orca_props.atomcharges.get("mulliken")
+    charges["lowdin"] = orca_props.atomcharges.get("lowdin")
+    if (atomcharges := getattr(nbo_props, "atomcharges", None)) is not None:
+        charges["nbo"] = atomcharges.get("nbo")
+    else:
+        charges["nbo"] = None
+    desired_data["charges"] = charges
+
+    if desired_data["unrestricted"]:
+        spins = {}
+        spins["mulliken"] = orca_props.atomspins.get("mulliken")
+        spins["lowdin"] = orca_props.atomspins["lowdin"]
+        if (atomspins := getattr(nbo_props, "atomspins", None)) is not None:
+            spins["nbo"] = atomspins.get("nbo")
+        else:
+            spins["nbo"] = None
+        desired_data["spins"] = spins
+    desired_data["n_scf_steps"] = len(orca_props.scfvalues[0]) - 1
+
+    if (core_hours := orca_props.metadata.get("cpu_time")) is not None:
+        core_hours = core_hours[0].total_seconds() / 3600
+    desired_data["core_hours"] = core_hours
+
+    if (wall_hours := orca_props.metadata.get("wall_time")) is not None:
+        wall_hours = wall_hours[0].total_seconds() / 3600
+    desired_data["wall_hours"] = wall_hours
+
+    desired_data["warnings"] = orca_props.metadata.get("warnings")
+    desired_data["integrated_densities"] = orca_props.metadata.get("integrated_density")
+    desired_data["nl_energy [Eh]"] = orca_props.metadata.get("nl_energy")
+    desired_data["orbital_energies [Eh]"] = orca_props.moenergies
+    desired_data["multipoles"] = orca_props.moments
+    homo_es, lumo_es = get_homo_lumo_energies(desired_data)
+    desired_data["homo_energy [Eh]"] = homo_es
+    desired_data["homo-lumo_gap [Eh]"] = [
+        lumo_e - homo_e for lumo_e, homo_e in zip(lumo_es, homo_es)
+    ]
+
+    return desired_data
+
+def get_homo_lumo_energies(data):
+    lumo = (data["n_electrons"] + data["total_spin"] - 1) // 2
+    mo_energies = data["orbital_energies [Eh]"][0]
+    lumo_e = [mo_energies[lumo]]
+    homo_e = [mo_energies[lumo - 1]]
+    if data["unrestricted"]:
+        lumo_beta = (data["n_electrons"] - data["total_spin"] + 1) // 2
+        mo_energies_beta = data["orbital_energies [Eh]"][1]
+        lumo_e.append(mo_energies_beta[lumo_beta])
+        homo_e.append(mo_energies_beta[lumo_beta - 1])
+
+    return homo_e, lumo_e
 
 def get_fock_size(elements, basis):
     """
@@ -65,7 +174,8 @@ def read_orca_out(orca_file):
             N = get_fock_size(elements, basis)
 
         # note: matrix cols are spread across multiple lines, we re-parse cols when new idx are found
-        if 'FOCK' in line:
+        # if 'FOCK' in line:
+        if line.strip() == 'FOCK':
             assert(N != 0)
             fock_matrix = np.zeros((N, N))
 
@@ -86,7 +196,7 @@ def read_orca_out(orca_file):
                 else:
                     row = int(line.split()[0])
                     vals = [float(x) for x in line.split()[1:]]
-                    fock_matrix[row, cols] = vals
+                    fock_matrix[row, cols] = vals               #CHECK IF NEED TO ADD 1! - no
 
     return fock_matrix, elements, coordinates, basis
 
@@ -94,7 +204,7 @@ def read_orca_out(orca_file):
 def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
     """
     Converts hamiltonian matrix m-components from ORCA order to the one 
-    expected by e3nn
+    expected by e3nn (m=0 is in the middle)
     
     l = 0: m = [0] -> [0]
     l = 1: m = [0 +1 -1] -> [-1 0 1]
@@ -102,7 +212,8 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
     """
 
     num_cols = hamiltonian.shape[0]
-    m_to_m_conversion = {0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}
+    m_to_m_conversion = {0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}   
+
     permutation = np.arange(0, num_cols)
 
     full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])

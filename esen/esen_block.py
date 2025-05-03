@@ -18,6 +18,11 @@ from .nn.radial import PolynomialEnvelope
 from .nn.so2_layers import SO2_Convolution
 from .nn.so3_layers import SO3_Linear
 
+# Test equivariance
+# import e3nn.o3
+# from e3nn.util.test import equivariance_error
+from e3nn.o3 import Irreps
+
 class Edgewise(torch.nn.Module):
     def __init__(
         self,
@@ -27,6 +32,7 @@ class Edgewise(torch.nn.Module):
         mmax: int,
         edge_channels_list,
         mappingReduced,
+        SO3_grid,
         cutoff,
         act_type="gate",
     ):
@@ -38,6 +44,7 @@ class Edgewise(torch.nn.Module):
         self.mmax = mmax
 
         self.mappingReduced = mappingReduced
+        self.SO3_grid = SO3_grid
         self.edge_channels_list = copy.deepcopy(edge_channels_list)
         self.act_type = act_type
 
@@ -50,7 +57,7 @@ class Edgewise(torch.nn.Module):
             raise ValueError(f"Unknown activation type {self.act_type}")
 
         self.so2_conv_1 = SO2_Convolution(
-            3 * self.sphere_channels,
+            3 * self.sphere_channels,  
             self.hidden_channels,
             self.lmax,
             self.mmax,
@@ -69,6 +76,10 @@ class Edgewise(torch.nn.Module):
             internal_weights=True,
             edge_channels_list=None,
             extra_m0_output_channels=None,
+        )
+
+        self.out_mask = self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
+            self.lmax, self.mmax
         )
 
     
@@ -114,52 +125,19 @@ class Edgewise(torch.nn.Module):
         wigner_inv
     ):
 
-        self.num_heads = 2 ###
-        self.attn_alpha_channels = 16 ###
-        self.alpha_norm = torch.nn.LayerNorm(self.attn_alpha_channels) ###
-        self.alpha_act = SmoothLeakyReLU() ###
-
         x_source = x[edge_index[0]]
         x_target = x[edge_index[1]]
         x_message = torch.cat((x_source, x_message_edge, x_target), dim=2)
+        # x_message = torch.cat((x_source, x_target), dim=2)
+        # x_message = x_source
 
         # Rotate the irreps to align with the edge
         x_message = torch.bmm(wigner, x_message)
 
         # SO2 convolution
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
-        #---
-        # x_message, x_0_extra = self.so2_conv_1(x_message, x_edge)
-        # x_alpha_num_channels = self.num_heads * self.attn_alpha_channels
-        # x_0_gating = x_0_extra.narrow(1, x_alpha_num_channels, x_0_extra.shape[1] - x_alpha_num_channels) # for activation
-        # x_0_alpha  = x_0_extra.narrow(1, 0, x_alpha_num_channels) # for attention weights, shape [E, num_heads * attn_alpha_channels]
-        # x_message = self.act(x_0_gating, x_message)
-        #---
-        
         x_message = self.act(x_0_gating, x_message)
         x_message = self.so2_conv_2(x_message, x_edge)
-
-        #---
-        # # Attention weights
-        # start_attention = time.time()
-        # x_0_alpha = x_0_alpha.reshape(-1, self.num_heads, self.attn_alpha_channels) # shape of [E, num_heads, attn_alpha_channels]
-        # x_0_alpha = self.alpha_norm(x_0_alpha)
-        # x_0_alpha = self.alpha_act(x_0_alpha)
-        # alpha = torch.einsum('bik, ik -> bi', x_0_alpha, self.alpha_dot)
-
-        # # Compute the softmax over the incoming edges
-        # offset_local_dst_indices = partition.expand_edge_0["local_indices"]
-        # alpha = torch_geometric.utils.softmax(alpha, offset_local_dst_indices)      # softmax over the incoming edges
-        # alpha = alpha.reshape(alpha.shape[0], 1, self.num_heads, 1)                 # shape of [E, 1, num_heads, 1]
-
-        # # Attention weights * non-linear messages (weight each message by the corresponding attention weight)
-        # attn = x_message                                                                      # shape of [E, (lmax+1)^2, # hidden channels]
-        # attn = attn.reshape(attn.shape[0], attn.shape[1], self.num_heads, self.attn_value_channels)     # shape of [E, #channels, num_heads, attn_value_channels]
-        # attn = attn * alpha
-        # attn = attn.reshape(attn.shape[0], attn.shape[1], self.num_heads * self.attn_value_channels)
-        # x_message = attn
-        # end_attention = time.time()
-        #---
 
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
@@ -245,39 +223,6 @@ class SpectralAtomwise(torch.nn.Module):
         return self.so3_linear_2(x)
 
 
-# class GridAtomwise(torch.nn.Module):
-#     def __init__(
-#         self,
-#         sphere_channels: int,
-#         hidden_channels: int,
-#         lmax: int,
-#         mmax: int,
-#         SO3_grid,
-#     ):
-#         super().__init__()
-#         self.sphere_channels = sphere_channels
-#         self.hidden_channels = hidden_channels
-#         self.lmax = lmax
-#         self.mmax = mmax
-#         self.SO3_grid = SO3_grid
-
-#         self.grid_mlp = nn.Sequential(
-#             nn.Linear(self.sphere_channels, self.hidden_channels, bias=False),
-#             nn.SiLU(),
-#             nn.Linear(self.hidden_channels, self.hidden_channels, bias=False),
-#             nn.SiLU(),
-#             nn.Linear(self.hidden_channels, self.sphere_channels, bias=False),
-#         )
-
-#     def forward(self, x):
-#         # Project to grid
-#         x_grid = self.SO3_grid["lmax_lmax"].to_grid(x, self.lmax, self.lmax)
-#         # Perform point-wise operations
-#         x_grid = self.grid_mlp(x_grid)
-#         # Project back to spherical harmonic coefficients
-#         return self.SO3_grid["lmax_lmax"].from_grid(x_grid, self.lmax, self.lmax)
-
-
 class eSEN_Block(torch.nn.Module):
     def __init__(
         self,
@@ -286,6 +231,7 @@ class eSEN_Block(torch.nn.Module):
         lmax: int,
         mmax: int,
         mappingReduced,
+        SO3_grid,
         edge_channels_list: list[int],
         cutoff: float,
         norm_type: str,
@@ -301,6 +247,7 @@ class eSEN_Block(torch.nn.Module):
         self.norm_1 = get_normalization_layer(
             norm_type, lmax=self.lmax, num_channels=sphere_channels
         )
+        
 
         self.edge_wise = Edgewise(
             sphere_channels=sphere_channels,
@@ -309,6 +256,7 @@ class eSEN_Block(torch.nn.Module):
             mmax=mmax,
             edge_channels_list=edge_channels_list,
             mappingReduced=mappingReduced,
+            SO3_grid=SO3_grid,
             cutoff=cutoff,
             act_type=act_type,
         )
@@ -340,43 +288,54 @@ class eSEN_Block(torch.nn.Module):
     ):
 
         if node_or_edge == 'node':
-            x_res = x_message_node
-
-            x_message_node = self.norm_1(x_message_node)
-            x_message_node = self.edge_wise(
-                x_message_node,
-                x_message_edge,
-                x_edge,
-                edge_distance,
-                edge_index,
-                wigner,
-                wigner_inv,
-                node_or_edge,
-            )
-            x_message_node = x_message_node + x_res
-
-            x_res = x_message_node
-            x_message_node = self.norm_2(x_message_node)
-            x_message_node = self.atom_wise(x_message_node)
-            return x_message_node + x_res
-
+            x = x_message_node
         else:
-            x_res = x_message_edge
+            x = x_message_edge
 
-            x_message_edge = self.norm_1(x_message_edge)
-            x_message_edge = self.edge_wise(
-                x_message_node,
-                x_message_edge,
-                x_edge,
-                edge_distance,
-                edge_index,
-                wigner,
-                wigner_inv,
-                node_or_edge,
-            )
-            x_message_edge = x_message_edge + x_res
+        x_res = x
 
-            x_res = x_message_edge
-            x_message_edge = self.norm_2(x_message_edge)
-            x_message_edge = self.atom_wise(x_message_edge)
-            return x_message_edge + x_res
+        # #__ROTATION___
+        # # Cartesian Rotation for the mol:
+        # device="cuda:0"
+        # alpha=230.0
+        # beta=70.0
+        # gamma=180.0
+        # alpha_rad = torch.deg2rad(torch.tensor(alpha))
+        # beta_rad = torch.deg2rad(torch.tensor(beta))
+        # gamma_rad = torch.deg2rad(torch.tensor(gamma))
+        # Rx = torch.tensor([[1, 0, 0], [0, torch.cos(alpha_rad), -torch.sin(alpha_rad)], [0, torch.sin(alpha_rad), torch.cos(alpha_rad)]])
+        # Ry = torch.tensor([[torch.cos(beta_rad), 0, torch.sin(beta_rad)], [0, 1, 0], [-torch.sin(beta_rad), 0, torch.cos(beta_rad)]])
+        # Rz = torch.tensor([[torch.cos(gamma_rad), -torch.sin(gamma_rad), 0], [torch.sin(gamma_rad), torch.cos(gamma_rad), 0], [0, 0, 1]])
+        # R_cart = torch.matmul(Rz, torch.matmul(Ry, Rx)) 
+
+        # # Spherical Rotation for Irreps:
+        # internal_irreps = Irreps("1x0e+1x1e+1x2e+1x3e+1x4e")
+        # R_sphere_in = internal_irreps.D_from_matrix(R_cart).to(device)
+        # #__ROTATION___
+
+        x = self.norm_1(x)
+
+        # x = torch.matmul(R_sphere_in, x) # <-- Rotate first // forward commutator
+
+        x = self.edge_wise(
+            x_message_node,
+            x_message_edge,
+            x_edge,
+            edge_distance,
+            edge_index,
+            wigner,
+            wigner_inv,
+            node_or_edge,
+        )
+
+        # x = torch.matmul(R_sphere_in, x) # <-- Rotate last // backward commutator
+        
+        print(x)
+        exit()
+
+        x = x + x_res
+        x_res = x
+
+        x = self.norm_2(x)
+        x = self.atom_wise(x)
+        return x + x_res

@@ -13,6 +13,7 @@ class ASEDataset(Dataset):
         return len(self.ids)
 
     def __getitem__(self, idx):
+
         # Get structure by id
         structure = self.db.get(self.ids[idx])
         
@@ -22,29 +23,40 @@ class ASEDataset(Dataset):
         atomic_numbers = atoms.numbers
         
         # Convert numpy arrays from structure.data to PyTorch tensors
-        neighbour_list = structure.data['neighbour_list']
+        neighbour_list = structure.data['edge_index']
         orbital_basis = structure.data['orbital_basis']
-        fock_matrix = torch.tensor(structure.data['fock_matrix'], dtype=self.dtype)
-        node_labels = torch.tensor(structure.data['node_labels'], dtype=self.dtype)
-        edge_labels = torch.tensor(structure.data['edge_labels'], dtype=self.dtype)
         edge_dist = torch.tensor(structure.data['edge_dist'], dtype=self.dtype)
         edge_index = torch.tensor(neighbour_list, dtype=torch.long)
+
+        # Targets
+        # fock_matrix = torch.tensor(structure.data['fock_matrix'], dtype=self.dtype) # not saving the fock matrix
+        node_labels = torch.tensor(structure.data['node_labels'], dtype=self.dtype)
+        edge_labels = torch.tensor(structure.data['edge_labels'], dtype=self.dtype)
+        energies = torch.tensor(structure.data['total_energy [Eh]'])
+        forces = torch.tensor(structure.data['gradient [Eh/bohr]'])
+        dipole = torch.tensor(structure.data['multipoles'][1])  # XX, YY, ZZ components
+        quadrupole = torch.tensor(structure.data['multipoles'][2])  # XY, XZ, YZ components        
             
         # Create PyTorch Geometric Data object
         data = Data(
             pos=torch.tensor(positions, dtype=torch.float),
+            x=torch.tensor(atomic_numbers),
             edge_index=edge_index,
-            x=node_labels,
-            edge_attr=edge_labels,
-            edge_dist=edge_dist,
-            fock_matrix=fock_matrix,
+            edge_attr=edge_dist,
+            y=edge_labels,
+            node_y=node_labels,
             atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),  
             nedges=len(edge_index[0]), 
-            natoms=len(atomic_numbers),  
+            natoms=len(atomic_numbers), 
+            energies=energies,
+            forces=forces,
+            dipole=dipole,
+            quadrupole=quadrupole
         )
-        
+
         # Store orbital basis (dictionary)
         data.orbital_basis = orbital_basis
+        data.required_irreps = structure.data["required_irreps"]
         
         return data
 
