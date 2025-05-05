@@ -5,6 +5,7 @@ from cclib.parser.nboparser import NBO
 from typing import Any
 from pathlib import Path
 import logging
+from e3nn.o3 import Irreps
 
 ### Utility functions to extract information from the orca output files
 
@@ -30,8 +31,6 @@ def parse_output(
     Reads the Orca output file at the input path and returns a dictionary
     of the important fields extracted from it.
     """
-
-    print(orca_output_path)
 
     # Try to parse the main properties. Raise if this fails because there
     # isn't much to do without this data.
@@ -196,7 +195,7 @@ def read_orca_out(orca_file):
                 else:
                     row = int(line.split()[0])
                     vals = [float(x) for x in line.split()[1:]]
-                    fock_matrix[row, cols] = vals               #CHECK IF NEED TO ADD 1! - no
+                    fock_matrix[row, cols] = vals              
 
     return fock_matrix, elements, coordinates, basis
 

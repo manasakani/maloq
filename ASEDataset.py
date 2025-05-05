@@ -35,7 +35,7 @@ class ASEDataset(Dataset):
         energies = torch.tensor(structure.data['total_energy [Eh]'])
         forces = torch.tensor(structure.data['gradient [Eh/bohr]'])
         dipole = torch.tensor(structure.data['multipoles'][1])  # XX, YY, ZZ components
-        quadrupole = torch.tensor(structure.data['multipoles'][2])  # XY, XZ, YZ components        
+        quadrupole = torch.tensor(structure.data['multipoles'][2])  # XY, XZ, YZ components     
             
         # Create PyTorch Geometric Data object
         data = Data(
@@ -53,6 +53,8 @@ class ASEDataset(Dataset):
             dipole=dipole,
             quadrupole=quadrupole
         )
+
+        # print(data.keys())
 
         # Store orbital basis (dictionary)
         data.orbital_basis = orbital_basis

@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 
 from ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
+from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
 import random
@@ -46,22 +47,22 @@ l_embedding_dim = 128                   # sphere channels
 num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = 128
 cutoff = 6.0*2                          # Cutoff used for edge distance embedding
-num_mp_layers = 2
+num_mp_layers = 3
 model_name = 'esen'
 restart = False
 output_folder = 'outputs_QM7'
 
 # -> Training settings:
+num_val = 1                           # Number of validation structures
+num_train = 1
 num_epochs = 20000
-lr_init = 1e-4
+lr_init = 5e-5
 dtype = torch.float32
-num_val = 500                           # Number of validation structures
-num_molecules = num_val + 500
-batch_size = 100
+batch_size = 10
 loss_target = 'fock_matrix'
-patience = 100                          # for scheduler
+patience = 200                          # for scheduler
 threshold = 1e-4                        # for scheduler
-loss_fxn = utils_training.unpadded_loss
+loss_fxn = utils_training.l1_padded_loss
 
 # --> Compute env
 device = torch.device('cuda')         
@@ -77,11 +78,12 @@ if not os.path.exists(output_folder):
 # --------------------------------------------
 data_load_start = time.perf_counter()
 max_mol = 5000 
+num_molecules = num_val + num_train
 random_indices = random.sample(range(num_molecules), min(max_mol, num_molecules))
 
-# for i in range(num_molecules):
 datalist = []
-for i in random_indices:
+for i in range(num_molecules):  # deterministic
+# for i in random_indices:
     mol = database.__getitem__(i)
 
     mol_atoms = Atoms(symbols=mol['_atomic_numbers'].numpy(), positions=mol['_positions'].numpy())
@@ -92,7 +94,7 @@ for i in random_indices:
 
     # Electronic structure matrix:
     hamiltonian = mol['hamiltonian'].numpy()   
-    orbital_basis = {1: [0, 0, 1], 8: [0, 0, 0, 1, 1, 2]}
+    orbital_basis = {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]}
     atomic_numbers = mol['_atomic_numbers'].numpy()
     hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)  
 
@@ -123,8 +125,11 @@ train_dataset = sampleDataset(train_datalist)
 val_dataset = sampleDataset(val_datalist)
 
 # Check use of batch size higher than 1!!
-train_loader = DataLoader(train_dataset, batch_size=batch_size, collate_fn=custom_collate_fn, shuffle=False, num_workers=0)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, collate_fn=custom_collate_fn, shuffle=False, num_workers=0)
+train_sampler = DistributedSampler(train_dataset)
+val_sampler = DistributedSampler(val_dataset)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=val_sampler)
+
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
 
@@ -178,7 +183,7 @@ model_setup_end = time.perf_counter()
 print("Time to setup model: ", model_setup_end - model_setup_start)
 
 if restart:
-    restart_file = outputs_folder + "/model.pt.pt"
+    restart_file = output_folder + "/model.pt.pt"
     checkpoint = torch.load(restart_file)
     state_dict = checkpoint['model_state_dict']
     model.load_state_dict(state_dict)

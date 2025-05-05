@@ -6,13 +6,12 @@ import ase.db
 
 import torch
 import torch.nn as nn
-import torch.distributed as dist
 import time
 
 from ASEDataset import ASEDataset
 from torch_geometric.loader import DataLoader
 import torch.distributed as dist
-from torch.profiler import profile, ProfilerActivity
+from torch.utils.data.distributed import DistributedSampler
 
 from equiformer.network import SO2Net
 from equiformer.SO3 import CoefficientMappingModule
@@ -30,26 +29,30 @@ random.seed(42)
 # --------------------------------------------
 
 # -> Model settings:
-dataset_folder = './fock_datasets/water_clusters_small_flexible_x8.db'
-l_embedding_dim = 64
-num_distance_basis = 64                # number of gaussian basis functions used to expand the edge distance
-hidden_dim = 64
-cutoff = 6.0*2                         # Cutoff used for edge distance embedding
+# dataset_folder = './fock_datasets/water_clusters_small_flexible_x80.db'
+# dataset_folder = './fock_datasets/omol_water_molecule_1x.db'
+dataset_folder = 'omol_water_molecule_1x.db' # trying stuff
+
+l_embedding_dim = 128
+num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
+hidden_dim = 128
+cutoff = 5.0*2                         # Cutoff used for edge distance embedding
 num_mp_layers = 2
-model_name = "esen"
+model_name = "equiformer"
 output_folder = 'outputs_omol'
+restart = False
 
 # -> Training settings:
-num_epochs = 5
+num_epochs = 300
 lr_init = 1e-3
 dtype = torch.float32
-num_train = 7                           # Number of training structures
+num_train = 1                           # Number of training structures
 num_val = 1                             # Number of validation structures
 batch_size = 1
-loss_target = 'energy'
-patience = 100                          # for scheduler
+loss_target = 'fock_matrix'
+patience = 200                          # for scheduler
 threshold = 1e-4                        # for scheduler
-loss_fxn = utils_training.unpadded_loss
+loss_fxn = utils_training.mse_unpadded_loss
 
 # --> Compute env
 device = torch.device('cuda')         
@@ -68,24 +71,27 @@ data_load_start = time.perf_counter()
 dataset = ASEDataset(dataset_folder, dtype=dtype)
 required_irreps = Irreps(dataset[0].required_irreps)
 
-assert len(dataset) >= num_train+num_val
-subset_indices = np.random.choice(len(dataset), size=num_train+num_val, replace=False)
+# assert len(dataset) >= num_train+num_val
+# subset_indices = np.random.choice(len(dataset), size=num_train+num_val, replace=False)
+subset_indices = [0,  0]
 subset_dataset = torch.utils.data.Subset(dataset, subset_indices)
 train_dataset, val_dataset = torch.utils.data.random_split(subset_dataset, [num_train, num_val])
 
-train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True, num_workers=0)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
 data_load_end = time.perf_counter()
 
 print("Time to load dataset: ", data_load_end - data_load_start)
+lmax = required_irreps.lmax
+print("Using lmax of : ", lmax)
 
 # Prepare model
 # --------------------------------------------
 
 model_setup_start = time.perf_counter()
 if model_name == 'equiformer':
-    irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)])
-    mappingReduced = CoefficientMappingModule(required_irreps.lmax, required_irreps.lmax)
+    irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(lmax + 1)])
+    mappingReduced = CoefficientMappingModule(lmax, lmax)
     edge_channels_list = [l_embedding_dim, l_embedding_dim, l_embedding_dim]
 
     attn_hidden_channels = 128 
@@ -95,8 +101,8 @@ if model_name == 'equiformer':
     num_heads=2
 
     model = SO2Net(num_mp_layers, 
-                    required_irreps.lmax, 
-                    required_irreps.lmax, 
+                    lmax, 
+                    lmax, 
                     mappingReduced, 
                     l_embedding_dim, 
                     edge_channels_list, 
@@ -113,8 +119,8 @@ elif model_name == 'esen':
                     required_irreps,
                     sphere_channels=l_embedding_dim,
                     hidden_channels=hidden_dim,
-                    lmax=required_irreps.lmax,
-                    mmax=required_irreps.lmax,
+                    lmax=lmax,
+                    mmax=lmax,
                     use_pbc=False,
                     cutoff=cutoff,
                     edge_channels=l_embedding_dim,
@@ -128,6 +134,12 @@ optimizer = torch.optim.Adam(model.parameters(), lr=lr_init)
 print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
 model_setup_end = time.perf_counter()
 print("Time to setup model: ", model_setup_end - model_setup_start)
+
+if restart:
+    restart_file = output_folder + "/model.pt.pt"
+    checkpoint = torch.load(restart_file)
+    state_dict = checkpoint['model_state_dict']
+    model.load_state_dict(state_dict)
 
 # Training
 # --------------------------------------------

@@ -1,8 +1,7 @@
 import os
 import numpy as np
-import matplotlib.pyplot as plt
-
-from ase.visualize import view
+# import matplotlib.pyplot as plt
+# from ase.visualize import view
 from ase import Atoms
 from ase.db import connect
 from pathlib import Path
@@ -21,12 +20,12 @@ parser.add_argument('-m', '--max-structures', type=str, default=100000, help='Ma
 args = parser.parse_args()
 
 # --> get all non-empty folders inside structures_dir
-structures_dir = args.structures_dir #'/home/manasakani/water_clusters'
+structures_dir = args.structures_dir 
 structure_folders = [f for f in os.listdir(structures_dir) 
                     if len(os.listdir(os.path.join(structures_dir, f))) > 0 and 
                     os.path.isdir(os.path.join(structures_dir, f)) ]
 orca_file = 'orca.out'
-cutoff = 6.0            
+cutoff = 5.0            
 num_local_structures = int(args.max_structures) # use to impose only making a subset
 
 # --> initialize compute setup
@@ -72,7 +71,12 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
     # Atomic structure
     read_time_start = time.perf_counter()
     fock_matrix, elements, coordinates, basis = utils_orca_out.read_orca_out(orca_output_filepath)
-    fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, elements)
+
+    # print(elements)
+    # print(np.array(elements))
+    # exit()
+
+    fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, np.array(elements))
     structure = Atoms(elements, positions=coordinates)  
     read_time_end = time.perf_counter()
     print("Time to make atoms and get matrix: ", read_time_end - read_time_start, flush=True)
@@ -90,9 +94,9 @@ big_time_end = time.perf_counter()
 print(f"Time to make {local_num_folders} targets: {big_time_end - big_time_start}", flush=True)
 
 # --> make an ASE DB:
-with connect(args.output_db_name) as structure_db:
-    for current_rank in range(world_size):
-        if rank == current_rank:
+for current_rank in range(world_size):
+    if rank == current_rank:
+        with connect(args.output_db_name) as structure_db:
             print("rank ", rank, "is writing stuff")
             for i, (orca_output_dict, structure) in enumerate(zip(orca_output_list, structures)):
                 print(f"Writing structure {i}")
@@ -117,6 +121,8 @@ with connect(args.output_db_name) as structure_db:
                     "required_irreps": str(structure.req_output_irreps)
                 }
                 structure_db.write(atoms, data=data)
+    dist.barrier()
+    
 print("done")
 
 # visualization:

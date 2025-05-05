@@ -2,6 +2,7 @@ import torch
 from torch.profiler import profile, ProfilerActivity
 import torch.nn as nn
 import matplotlib.pyplot as plt
+import torch.distributed as dist
 import time
 
 def profile_code(profile_flag, output_file="trace.json"):
@@ -17,13 +18,52 @@ def profile_code(profile_flag, output_file="trace.json"):
         return wrapper
     return decorator
 
-# compute the unpadded loss:
-mse_loss = nn.MSELoss(reduction='none') 
-l1_loss = nn.L1Loss(reduction='none')
-def unpadded_loss(output, target):
+# Loss function options
+# ----------------------
+def mse_padded_loss(output, target):
+    mse_loss_type = nn.MSELoss(reduction='mean') 
+    return mse_loss_type(output, target)
+
+def l1_padded_loss(output, target):
+    l1_loss_type = nn.L1Loss(reduction='mean') 
+    return l1_loss_type(output, target)
+
+def combined_padded_loss(output, target):
+
+    mse_loss = nn.MSELoss(reduction='mean') 
+    l1_loss = nn.L1Loss(reduction='mean')
+    mse = mse_loss(output, target)
+    l1 = l1_loss(output, target)
+
+    return mse + l1
+
+def mse_unpadded_loss(output, target):
 
     mask = (target != 0).float()
 
+    mse_loss = nn.MSELoss(reduction='none') 
+    mse = mse_loss(output, target)
+    mse_masked = (mse * mask).sum() / mask.sum()
+
+    return mse_masked
+
+def l1_unpadded_loss(output, target):
+
+    mask = (target != 0).float()
+
+    l1_loss = nn.L1Loss(reduction='none')
+    l1 = l1_loss(output, target)
+    l1_masked = (l1 * mask).sum() / mask.sum()
+
+    return l1_masked
+
+# compute the unpadded loss:
+def combined_unpadded_loss(output, target):
+
+    mask = (target != 0).float()
+
+    mse_loss = nn.MSELoss(reduction='none') 
+    l1_loss = nn.L1Loss(reduction='none')
     mse = mse_loss(output, target)
     l1 = l1_loss(output, target)
 
@@ -33,8 +73,17 @@ def unpadded_loss(output, target):
 
     return mse_masked + l1_masked
 
+# Model training loop
+# ----------------------
 @profile_code(profile_flag=False)
 def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loader, val_loader, scheduler, device, output_folder):
+
+    # if dist.is_available() and dist.is_initialized():
+    #     # find_unused_parameters is true because there are multiple target types
+    #     model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
+    #     rank = dist.get_rank() 
+    # else:
+    #     rank = 0
 
     track_loss_node = []
     track_loss_edge = []
@@ -42,7 +91,7 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
     track_loss_edge_val = []
     for epoch in range(num_epochs):
         epoch_start = time.perf_counter()
-
+        
         model.train()  
         for batch in train_loader:
 
@@ -51,6 +100,7 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
             # -- Forward -- 
             batch = batch.to(device)
             out = model(batch) 
+            dist.barrier()
 
             # -- Loss -- 
             if loss_target == 'fock_matrix':
@@ -59,6 +109,11 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                 loss_node = loss_fxn(out["node_rankN"], batch.node_y)
                 loss_edge = loss_fxn(out["edge_rankN"], batch.y) 
                 loss = loss_fxn(output, labels)
+                # output = output = torch.cat([out["node_rankN"][2], out["node_rankN"][2], out["edge_rankN"][5]], dim=0)
+                # labels = torch.cat([batch.node_y[1], batch.node_y[2], batch.y[5]], dim=0)
+                # loss_node = loss_fxn(out["node_rankN"][1:], batch.node_y[1:])
+                # loss_edge = loss_fxn(out["edge_rankN"], batch.y) 
+                # loss = loss_fxn(output, labels)
 
             elif loss_target == 'forces':
                 loss = loss_fxn(out["node_rank1"], batch.forces)  
@@ -74,10 +129,10 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
             optimizer.step()
             
         if loss_target == 'fock_matrix':
-            track_loss_node.append(loss_node.cpu().detach().numpy() / len(batch))
-            track_loss_edge.append(loss_edge.cpu().detach().numpy() / len(batch))
+            track_loss_node.append(loss_node.cpu().detach().numpy() / train_loader.batch_size)
+            track_loss_edge.append(loss_edge.cpu().detach().numpy() / train_loader.batch_size)
         else:
-            track_loss_node.append(loss.cpu().detach().numpy() / len(batch))
+            track_loss_node.append(loss.cpu().detach().numpy() / train_loader.batch_size)
         
         # Validation step
         model.eval()
@@ -91,8 +146,13 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                 
                 # -- Loss --
                 if loss_target == 'fock_matrix':
-                    output = torch.cat([out["node_rankN"], out["edge_rankN"]], dim=0)
-                    labels = torch.cat([batch.node_y, batch.y], dim=0)
+                    # output = torch.cat([out["node_rankN"], out["edge_rankN"]], dim=0)
+                    # labels = torch.cat([batch.node_y, batch.y], dim=0)
+                    # loss_node = loss_fxn(out["node_rankN"], batch.node_y)
+                    # loss_edge = loss_fxn(out["edge_rankN"], batch.y) 
+                    # loss = loss_fxn(output, labels)
+                    output = out["node_rankN"][0]
+                    labels = batch.node_y[0]
                     loss_node = loss_fxn(out["node_rankN"], batch.node_y)
                     loss_edge = loss_fxn(out["edge_rankN"], batch.y) 
                     loss = loss_fxn(output, labels)
@@ -104,15 +164,16 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                     loss = loss_fxn(out["node_rank0"], batch.energies)  
 
                 else: 
-                    print("unknown loss!")
+                    print("unknown target!")
                         
                 val_loss += loss.item()
 
+        # dist.barrier()
         if loss_target == 'fock_matrix':
-            track_loss_node_val.append(loss_node.cpu().detach().numpy() / len(batch))
-            track_loss_edge_val.append(loss_edge.cpu().detach().numpy() / len(batch))
+            track_loss_node_val.append(loss_node.cpu().detach().numpy() / val_loader.batch_size)
+            track_loss_edge_val.append(loss_edge.cpu().detach().numpy() / val_loader.batch_size)
         else:
-            track_loss_node_val.append(loss.cpu().detach().numpy() / len(batch))
+            track_loss_node_val.append(loss.cpu().detach().numpy() / val_loader.batch_size)
         
         scheduler.step(loss)
         current_lr = optimizer.param_groups[0]['lr']
@@ -124,12 +185,13 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
         print("Time per epoch: ", epoch_end - epoch_start)
         
         # save state
+        # if rank == 0:
         if (epoch + 1) % 20 == 0:
             if loss_target == 'fock_matrix':
                 save_training_state(model, optimizer, track_loss_node, track_loss_node_val, 'model.pt', output_folder, track_loss_edge, track_loss_edge_val)
             else:
                 save_training_state(model, optimizer, track_loss_node, track_loss_node_val, 'model.pt', output_folder)
-
+    
 
 def save_training_state(model, optimizer, track_loss_node, track_validation_node, save_file, output_folder, track_loss_edge=None, track_validation_edge=None):
     """
