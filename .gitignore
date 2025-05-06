@@ -3,3 +3,5 @@
 *.txt
 *.png
 *.out
+
+./test_scripts/*
