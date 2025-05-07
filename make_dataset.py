@@ -28,7 +28,9 @@ orca_file = 'orca.out'
 cutoff = 5.0            
 num_local_structures = int(args.max_structures) # use to impose only making a subset
 
-# --> initialize compute setup
+# ----------------------------
+# --> Initialize compute setup
+# ----------------------------
 gpu_id = 0
 world_size = int(os.environ['SLURM_NTASKS'])
 rank = int(os.environ['SLURM_PROCID'])
@@ -51,7 +53,9 @@ folder_end_idx = displacements[rank] + counts[rank]
 local_num_folders = counts[rank]
 print(f"Processing {total_num_folders} structures between {world_size} GPUs")
 
+# ----------------------------
 # --> Make the structures
+# ----------------------------
 structures = []
 orca_output_list = []
 big_time_start = time.perf_counter()
@@ -68,15 +72,11 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
     parsed_orca_output = utils_orca_out.parse_output(Path(orca_output_filepath), source='manasakani')
     orca_output_list.append(parsed_orca_output)
 
-    # Atomic structure
+    # Atomic and electronic structure:
     read_time_start = time.perf_counter()
     fock_matrix, elements, coordinates, basis = utils_orca_out.read_orca_out(orca_output_filepath)
-
-    # print(elements)
-    # print(np.array(elements))
-    # exit()
-
     fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, np.array(elements))
+
     structure = Atoms(elements, positions=coordinates)  
     read_time_end = time.perf_counter()
     print("Time to make atoms and get matrix: ", read_time_end - read_time_start, flush=True)
@@ -93,7 +93,9 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
 big_time_end = time.perf_counter()
 print(f"Time to make {local_num_folders} targets: {big_time_end - big_time_start}", flush=True)
 
+# ----------------------------
 # --> make an ASE DB:
+# ----------------------------
 for current_rank in range(world_size):
     if rank == current_rank:
         with connect(args.output_db_name) as structure_db:

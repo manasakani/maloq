@@ -22,6 +22,11 @@ from .nn.so3_layers import SO3_Linear
 # import e3nn.o3
 # from e3nn.util.test import equivariance_error
 from e3nn.o3 import Irreps
+from .common.rotation import (
+    init_edge_rot_mat,
+    rotation_to_wigner,
+)
+
 
 class Edgewise(torch.nn.Module):
     def __init__(
@@ -88,7 +93,6 @@ class Edgewise(torch.nn.Module):
         x,
         x_message_edge,
         x_edge,
-        edge_distance,
         edge_index,
         wigner,
         wigner_inv,
@@ -98,7 +102,6 @@ class Edgewise(torch.nn.Module):
             return self.forward_node(x,
                                     x_message_edge,
                                     x_edge,
-                                    edge_distance,
                                     edge_index,
                                     wigner,
                                     wigner_inv
@@ -108,7 +111,6 @@ class Edgewise(torch.nn.Module):
             return self.forward_edge(x,
                                     x_message_edge,
                                     x_edge,
-                                    edge_distance,
                                     edge_index,
                                     wigner,
                                     wigner_inv
@@ -119,7 +121,6 @@ class Edgewise(torch.nn.Module):
         x,
         x_message_edge,
         x_edge,
-        edge_distance,
         edge_index,
         wigner,
         wigner_inv
@@ -159,7 +160,6 @@ class Edgewise(torch.nn.Module):
         x,
         x_message_edge,
         x_edge,
-        edge_distance,
         edge_index,
         wigner,
         wigner_inv
@@ -288,54 +288,45 @@ class eSEN_Block(torch.nn.Module):
     ):
 
         if node_or_edge == 'node':
-            x = x_message_node
+            x_res = x_message_node
+
+            x_message_node = self.norm_1(x_message_node)
+
+            x_message_node = self.edge_wise(
+                x_message_node,
+                x_message_edge,
+                x_edge,
+                edge_index,
+                wigner,
+                wigner_inv,
+                node_or_edge,
+            )
+
+            x_message_node = x_message_node + x_res
+            x_res = x_message_node
+
+            x_message_node = self.norm_2(x_message_node)
+            x_message_node = self.atom_wise(x_message_node)
+            return x_message_node + x_res
+            
         else:
-            x = x_message_edge
+            x_res = x_message_edge
+            x_message_edge = self.norm_1(x_message_edge)
 
-        x_res = x
+            x_message_edge = self.edge_wise(
+                x_message_node,
+                x_message_edge,
+                x_edge,
+                edge_index,
+                wigner,
+                wigner_inv,
+                node_or_edge,
+            )
 
-        # #__ROTATION___
-        # # Cartesian Rotation for the mol:
-        # device="cuda:0"
-        # alpha=230.0
-        # beta=70.0
-        # gamma=180.0
-        # alpha_rad = torch.deg2rad(torch.tensor(alpha))
-        # beta_rad = torch.deg2rad(torch.tensor(beta))
-        # gamma_rad = torch.deg2rad(torch.tensor(gamma))
-        # Rx = torch.tensor([[1, 0, 0], [0, torch.cos(alpha_rad), -torch.sin(alpha_rad)], [0, torch.sin(alpha_rad), torch.cos(alpha_rad)]])
-        # Ry = torch.tensor([[torch.cos(beta_rad), 0, torch.sin(beta_rad)], [0, 1, 0], [-torch.sin(beta_rad), 0, torch.cos(beta_rad)]])
-        # Rz = torch.tensor([[torch.cos(gamma_rad), -torch.sin(gamma_rad), 0], [torch.sin(gamma_rad), torch.cos(gamma_rad), 0], [0, 0, 1]])
-        # R_cart = torch.matmul(Rz, torch.matmul(Ry, Rx)) 
+            x_message_edge = x_message_edge + x_res
 
-        # # Spherical Rotation for Irreps:
-        # internal_irreps = Irreps("1x0e+1x1e+1x2e+1x3e+1x4e")
-        # R_sphere_in = internal_irreps.D_from_matrix(R_cart).to(device)
-        # #__ROTATION___
+            x_res = x_message_edge
+            x_message_edge = self.norm_2(x_message_edge)
 
-        x = self.norm_1(x)
-
-        # x = torch.matmul(R_sphere_in, x) # <-- Rotate first // forward commutator
-
-        x = self.edge_wise(
-            x_message_node,
-            x_message_edge,
-            x_edge,
-            edge_distance,
-            edge_index,
-            wigner,
-            wigner_inv,
-            node_or_edge,
-        )
-
-        # x = torch.matmul(R_sphere_in, x) # <-- Rotate last // backward commutator
-        
-        print(x)
-        exit()
-
-        x = x + x_res
-        x_res = x
-
-        x = self.norm_2(x)
-        x = self.atom_wise(x)
-        return x + x_res
+            x_message_edge = self.atom_wise(x_message_edge)
+            return x_message_edge + x_res

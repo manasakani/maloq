@@ -51,7 +51,11 @@ class Fock_Targets:
                                                             if_sort=False,
                                                             device_torch=self.device)
         
-        print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
+        # import matplotlib.pyplot as plt
+        # plt.imshow(np.log(np.abs(fock_matrix)))
+        # plt.savefig("fock_matrix.png", dpi=300, bbox_inches='tight')
+        # plt.close()  
+        # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         # print(f'Simplified irreps: {self.simplified_out_irreps}')
 
         self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)])       # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
@@ -69,8 +73,8 @@ class Fock_Targets:
         self.target_len = self.get_target_len()                                 # each target should fit in a NxN matrix (to be flattened)
 
         # initialize torch tensors of size N for nodes and edges
-        self.node_labels = torch.zeros(( len(self.atoms), self.target_len ), dtype=self.dtype, device=self.device)
-        self.edge_labels = torch.zeros(( len(self.neighbour_list[0]), self.target_len ), dtype=self.dtype, device=self.device)
+        node_labels = torch.zeros(( len(self.atoms), self.target_len ), dtype=self.dtype, device=self.device)
+        edge_labels = torch.zeros(( len(self.neighbour_list[0]), self.target_len ), dtype=self.dtype, device=self.device)
 
         # Extract blocks from fock matrix:
         self_edges = [list(range(self.NA)), list(range(self.NA))]
@@ -103,7 +107,7 @@ class Fock_Targets:
             matching_indices = np.where(mask)[0]  
             for edge_idx in matching_indices:
 
-                self.edge_labels[edge_idx, slice_out] += torch.squeeze(
+                edge_labels[edge_idx, slice_out] += torch.squeeze(
                     edge_orbital_blocks[edge_idx][slice_row, slice_col].reshape(1, -1)
                 )
 
@@ -117,30 +121,33 @@ class Fock_Targets:
             # select relevant nodes and accumulate the corresponding slices
             matching_indices = np.where(mask)[0]  
             for node_idx in matching_indices:
-                self.node_labels[node_idx, slice_out] += torch.squeeze(
+                node_labels[node_idx, slice_out] += torch.squeeze(
                     node_orbital_blocks[node_idx][slice_row, slice_col].reshape(1, -1)
                 )
         time_label_end = time.perf_counter()
         print("time to make labels: ", time_label_end - time_label_start, flush=True)
 
         # import matplotlib.pyplot as plt
-        # print("onsite orbital block: ", node_orbital_blocks)
-        # exit()
-        # plt.imshow(np.log(np.abs(node_orbital_blocks[0].reshape(14, 14).detach().cpu())))
-        # plt.savefig("node_orbital_blocks[0].png", dpi=300)
+        # # print("onsite orbital block: ", node_orbital_blocks)
+        # H_size = 40
+        # print("first block: ", node_orbital_blocks[0])
+        # plt.imshow(np.log(np.abs(node_orbital_blocks[0].reshape(H_size, H_size).detach().cpu())))
+        # plt.savefig("node_orbital_blocks[0].png", dpi=300, bbox_inches='tight')
         # plt.close()
         # print("first label: ", self.node_labels[0])
-        # plt.imshow(np.log(np.abs(self.node_labels[0].reshape(14, 14).detach().cpu())))
+        # plt.imshow(np.log(np.abs(self.node_labels[0].reshape(H_size, H_size).detach().cpu())))
         # plt.savefig("self.node_labels[0].png", dpi=300, bbox_inches='tight')
         # plt.close()
 
         # Basis transformation:
         # ---------------------------------------------------------------------------------------------
-        self.node_labels = self.basis_transformation.get_net_out(self.node_labels)
-        self.edge_labels = self.basis_transformation.get_net_out(self.edge_labels)
+        self.node_labels = self.basis_transformation.get_net_out(node_labels)
+        self.edge_labels = self.basis_transformation.get_net_out(edge_labels)
+        # ---------------------------------------------------------------------------------------------
 
+        # # for debug:
         # print("after basis transform: ", self.node_labels[0])
-        # plt.imshow(np.log(np.abs(self.node_labels[0].reshape(14, 14).detach().cpu())))
+        # plt.imshow(np.log(np.abs(self.node_labels[0].reshape(H_size, H_size).detach().cpu())))
         # plt.savefig("self.node_labels_transformed[0].png", dpi=300, bbox_inches='tight')
         # plt.close()
 
@@ -148,15 +155,18 @@ class Fock_Targets:
         # self.edge_labels = self.basis_transformation.get_H(self.edge_labels)
 
         # print("first label_netout: ", self.node_labels[0])
-        # plt.imshow(np.log(np.abs(self.node_labels[0].reshape(14, 14).detach().cpu())))
+        # plt.imshow(np.log(np.abs(self.node_labels[0].reshape(H_size, H_size).detach().cpu())))
         # plt.savefig("self.node_labels_back[0].png", dpi=300, bbox_inches='tight')
         # plt.close()
+        # print("self.neighbour_list: ", self.neighbour_list)
+        # exit()
         
-        # Apply Rotation to rotate (1) the structure and (2) every block of H from [xyz] to [yzx] order: - not needed, ORCA is already in yzx after permutation
+        # Apply Rotation to rotate (1) the structure and (2) every block of H from [xyz] to [yzx] order: 
+        # - not needed, ORCA is already in yzx after permutation
         # ---------------------------------------------------------------------------------------------
         # R_cart, R_sphere = self.get_cartesian_and_spherical_rotations_to_yzx()
 
-        # # transpose each position into a [Nx1], multiply it by the rotation, and then transpose it back to [1xN]
+        # transpose each position into a [Nx1], multiply it by the rotation, and then transpose it back to [1xN]
         # self.node_labels = torch.matmul(R_sphere, self.node_labels.permute(1, 0)).permute(1, 0)
         # self.edge_labels = torch.matmul(R_sphere, self.edge_labels.permute(1, 0)).permute(1, 0)
         # self.atoms.positions = torch.matmul(R_cart, torch.tensor(self.atoms.get_positions().transpose(), dtype=self.dtype)).numpy().transpose()

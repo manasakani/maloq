@@ -49,7 +49,7 @@ hidden_dim = 128
 cutoff = 6.0*2                          # Cutoff used for edge distance embedding
 num_mp_layers = 1
 model_name = 'esen'
-restart = False
+restart = True
 output_folder = 'outputs_QM7'
 loss_fxn = utils_training.mse_padded_loss
 
@@ -57,7 +57,6 @@ loss_fxn = utils_training.mse_padded_loss
 num_val = 1                           # Number of validation structures
 num_train = 1
 dtype = torch.float32
-batch_size = 100
 
 # --> Compute env
 device = torch.device('cuda')         
@@ -295,32 +294,44 @@ for batch in val_loader:
     print("Loss between unrotated molecule and unrotated H blocks: ", unrotated_loss)
     print("Loss between rotated molecule and rotated H blocks: ", rotated_loss)
 
-    plt.imshow(np.log(np.abs(unrotated_node_output[0].detach().cpu().numpy().reshape(14, 14))), vmin=-5, vmax=5)
+    node_label_num = 0
+
+    plt.imshow(np.log(np.abs(unrotated_node_output[node_label_num].detach().cpu().numpy().reshape(14, 14))), vmin=-5, vmax=5)
     plt.colorbar()
-    plt.savefig("equivariance_test_results/unrotated_node_output[0].png", dpi=300, bbox_inches='tight')
+    plt.savefig("equivariance_test_results/unrotated_node_output["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
     plt.close()
 
-    plt.imshow(np.log(np.abs(unrotated_node_labels[0].detach().cpu().numpy().reshape(14, 14))), vmin=-5, vmax=5)
+    plt.imshow(np.log(np.abs(unrotated_node_labels[node_label_num].detach().cpu().numpy().reshape(14, 14))), vmin=-5, vmax=5)
     plt.colorbar()
-    plt.savefig("equivariance_test_results/unrotated_node_labels[0].png", dpi=300, bbox_inches='tight')
+    plt.savefig("equivariance_test_results/unrotated_node_labels["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
     plt.close()
 
-    plt.imshow(np.log(np.abs(rotated_node_output[0].detach().cpu().numpy().reshape(14, 14))), vmin=-5, vmax=5)
+    plt.imshow(np.log(np.abs(rotated_node_output[node_label_num].detach().cpu().numpy().reshape(14, 14))), vmin=-5, vmax=5)
     plt.colorbar()
-    plt.savefig("equivariance_test_results/rotated_node_output[0].png", dpi=300, bbox_inches='tight')
+    plt.savefig("equivariance_test_results/rotated_node_output["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
     plt.close()
 
-    plt.imshow(np.log(np.abs(rotated_node_labels[0].detach().cpu().numpy().reshape(14, 14))), vmin=-5, vmax=5)
+    plt.imshow(np.log(np.abs(rotated_node_labels[node_label_num].detach().cpu().numpy().reshape(14, 14))), vmin=-5, vmax=5)
     plt.colorbar()
-    plt.savefig("equivariance_test_results/rotated_node_labels[0].png", dpi=300, bbox_inches='tight')
+    plt.savefig("equivariance_test_results/rotated_node_labels["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
     plt.close()
 
-    # plt.imshow(np.abs( (rotated_node_labels[0].detach().cpu().numpy().reshape(14, 14) 
-    #                          - rotated_node_output[0].detach().cpu().numpy().reshape(14, 14))) / rotated_node_output[0].detach().cpu().numpy().reshape(14, 14), vmin=0, vmax=1)
-    plt.imshow(np.abs( (rotated_node_labels[0].detach().cpu().numpy().reshape(14, 14) 
-                             - rotated_node_output[0].detach().cpu().numpy().reshape(14, 14))), vmin=0, vmax=0.01)
+    plt.imshow(np.abs( (unrotated_node_labels[node_label_num].detach().cpu().numpy().reshape(14, 14) 
+                             - unrotated_node_output[node_label_num].detach().cpu().numpy().reshape(14, 14))), vmin=0, vmax=1e-6)
+    plt.colorbar()
+    plt.savefig("equivariance_test_results/unrotated_percent_err["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
+    plt.close()
+
+    plt.imshow(np.abs( (rotated_node_labels[node_label_num].detach().cpu().numpy().reshape(14, 14) 
+                             - rotated_node_output[node_label_num].detach().cpu().numpy().reshape(14, 14))), vmin=0, vmax=1e-6)
+    plt.colorbar()
+    plt.savefig("equivariance_test_results/rotated_percent_err["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
+    plt.close()
+
+    plt.imshow(np.abs( (rotated_node_labels[node_label_num].detach().cpu().numpy().reshape(14, 14) 
+                             - unrotated_node_labels[node_label_num].detach().cpu().numpy().reshape(14, 14))), vmin=0, vmax=0.0001)
     
     plt.colorbar()
-    plt.savefig("equivariance_test_results/rotated_percent_err[0].png", dpi=300, bbox_inches='tight')
+    plt.savefig("equivariance_test_results/diff_between_GT_rotations["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
     plt.close()
              
