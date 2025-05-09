@@ -78,7 +78,6 @@ def combined_unpadded_loss(output, target):
 @profile_code(profile_flag=False)
 def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loader, val_loader, scheduler, device, output_folder):
 
-    print("loss target: ", loss_target)
     # if dist.is_available() and dist.is_initialized():
     #     # find_unused_parameters is true because there are multiple target types
     #     model = nn.parallel.DistributedDataParallel(model, device_ids=[device], output_device=device, find_unused_parameters=True)
@@ -101,7 +100,7 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
             # -- Forward -- 
             batch = batch.to(device)
             out = model(batch) 
-            dist.barrier()
+            # dist.barrier()
 
             # -- Loss -- 
             if loss_target == 'fock_matrix':
@@ -118,7 +117,7 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                 # loss = loss_fxn(output, labels)
 
             elif loss_target == 'forces':
-                loss = loss_fxn(out["node_rank1"], batch.forces)  
+                loss = loss_fxn(out["node_rank1"], batch.forces[:, [1, 2, 0]])  
 
             elif loss_target == 'energy':
                 print("Fix the batch dimension!")
@@ -167,7 +166,8 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                     # loss = loss_fxn(output, labels)
 
                 elif loss_target == 'forces':
-                    loss = loss_fxn(out["node_rank1"], batch.forces)  
+                    # loss = loss_fxn(out["node_rank1"], batch.forces)  
+                    loss = loss_fxn(out["node_rank1"], batch.forces[:, [1, 2, 0]])  
 
                 elif loss_target == 'energy':
                     print("Fix the batch dimension!")

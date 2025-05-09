@@ -29,27 +29,27 @@ random.seed(42)
 # --------------------------------------------
 
 # -> Model settings:
-# dataset_folder = './fock_datasets/water_clusters_small_flexible_x80.db'
+dataset_folder = './fock_datasets/water_clusters_small_flexible_x800.db'
 # dataset_folder = './fock_datasets/omol_water_molecule_1x.db'
-dataset_folder = 'omol_water_molecule_1x.db' # trying stuff
+# dataset_folder = 'omol_water_molecule_1x.db' # trying stuff
 
 l_embedding_dim = 128
 num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = 128
 cutoff = 5.0*2                         # Cutoff used for edge distance embedding
-num_mp_layers = 2
-model_name = "equiformer"
+num_mp_layers = 1
+model_name = "esen"
 output_folder = 'outputs_omol'
 restart = False
 
 # -> Training settings:
-num_epochs = 300
-lr_init = 1e-3
+num_epochs = 10000
+lr_init = 1e-5
 dtype = torch.float32
-num_train = 1                           # Number of training structures
-num_val = 1                             # Number of validation structures
+num_train = 500                          # Number of training structures
+num_val = 2                             # Number of validation structures
 batch_size = 1
-loss_target = 'fock_matrix'
+loss_target = 'forces'
 patience = 200                          # for scheduler
 threshold = 1e-4                        # for scheduler
 loss_fxn = utils_training.mse_unpadded_loss
@@ -71,9 +71,8 @@ data_load_start = time.perf_counter()
 dataset = ASEDataset(dataset_folder, dtype=dtype)
 required_irreps = Irreps(dataset[0].required_irreps)
 
-# assert len(dataset) >= num_train+num_val
-# subset_indices = np.random.choice(len(dataset), size=num_train+num_val, replace=False)
-subset_indices = [0,  0]
+assert len(dataset) >= num_train+num_val
+subset_indices = np.random.choice(len(dataset), size=num_train+num_val, replace=False)
 subset_dataset = torch.utils.data.Subset(dataset, subset_indices)
 train_dataset, val_dataset = torch.utils.data.random_split(subset_dataset, [num_train, num_val])
 

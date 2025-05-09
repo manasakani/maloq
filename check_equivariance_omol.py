@@ -1,5 +1,4 @@
 import time
-import_start = time.perf_counter()
 import os, sys
 import numpy as np
 from ase import Atoms
@@ -22,8 +21,6 @@ from equiformer.SO3 import CoefficientMappingModule
 from esen.esen import eSEN_Backbone
 from e3nn.o3 import Irreps, rand_matrix
 import utils_training
-import_end = time.perf_counter()
-print("Time to do imports: ", import_end - import_start)
 
 def custom_collate_fn(batch):
     return Batch.from_data_list(batch)
@@ -43,17 +40,20 @@ sys.path.append('/home/manasakani/fairchem/src/')
 # -----------------------------------------------
 
 # -> Model settings:
-# dataset_folder = './fock_datasets/water_clusters_small_flexible_x80.db'
-dataset_folder = 'omol_water_molecule_1x.db' 
+# dataset_folder = 'omol_water_molecule_1x.db' 
+# dataset_folder = 'omol_h2o_mol_dzvp.db'
+dataset_folder = 'test_f_permutation.db'
+
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = 128
 cutoff = 5.0*2                          # Cutoff used for edge distance embedding
-num_mp_layers = 1
+num_mp_layers = 3
 model_name = 'esen'
-restart = True
+restart = False
 output_folder = 'outputs_omol_debug'
 loss_fxn = utils_training.mse_padded_loss
+fock_size = 40
 
 # -> Training settings:
 num_val = 1                           # Number of validation structures
@@ -64,9 +64,9 @@ batch_size = 100
 # --> Compute env
 device = torch.device('cuda')         
 world_size = int(os.environ['SLURM_NTASKS'])
-rank = int(os.environ['SLURM_PROCID'])
-dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
-torch.cuda.set_device(0) # visibility is restricted to 0 in .sh file
+# rank = int(os.environ['SLURM_PROCID'])
+# dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
+# torch.cuda.set_device(0) # visibility is restricted to 0 in .sh file
 
 if not os.path.exists(output_folder):
     os.makedirs(output_folder)
@@ -77,11 +77,10 @@ if not os.path.exists(output_folder):
 data_load_start = time.perf_counter()
 dataset = ASEDataset(dataset_folder, dtype=dtype)
 required_irreps = Irreps(dataset[0].required_irreps)
-lmax = 6 #required_irreps.lmax
-print("Using lmax of ", lmax)
+lmax = required_irreps.lmax
 
 # subset_indices = np.random.choice(len(dataset), size=num_train+num_val, replace=False)
-subset_indices = [0, 0]
+subset_indices = [0, 0] # get the molecule I overfit on
 subset_dataset = torch.utils.data.Subset(dataset, subset_indices)
 train_dataset, val_dataset = torch.utils.data.random_split(subset_dataset, [num_train, num_val])
 
@@ -135,7 +134,6 @@ elif model_name == 'esen':
                 )
 
 model = model.to(device)
-print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
 model_setup_end = time.perf_counter()
 print("Time to setup model: ", model_setup_end - model_setup_start)
 
@@ -154,6 +152,7 @@ cartesian_rot_mat = cartesian_rot_mat.to(device)
 if not os.path.exists("equivariance_test_results"):
             os.makedirs("equivariance_test_results")
 
+
 # Check equivariance of the network itself:
 # -----------------------------------------
 if numerical_err_check: 
@@ -165,15 +164,13 @@ if numerical_err_check:
         rotated_output = deepcopy(batch)
 
         # --> 1. Rotate the input of the "rotated input" batch - f(R(x)):
-        rotated_input.pos = (cartesian_rot_mat @ rotated_input.pos.T).T                 # this doesnt actually do anything though
+        rotated_input.pos = (cartesian_rot_mat @ rotated_input.pos.T).T                 # this doesnt actually do anything though, just for completeness
         
-        print("initial rotated_input.edge_attr:", rotated_input.edge_attr)
         rotated_input_edge_dist = rotated_input.edge_attr                               # this is what the network will see
         rotated_input_edge_vec = rotated_input_edge_dist[:, [2, 3, 1]]                  # xyz -> yzx
         rotated_input_edge_vec = (cartesian_rot_mat @ rotated_input_edge_vec.T).T       
         rotated_input_edge_vec = rotated_input_edge_vec[:, [2, 0, 1]]                   # yzx -> xyz because the network will re-permute           
         rotated_input.edge_attr[:, 1:4] = rotated_input_edge_vec
-        print("final rotated_input.edge_attr: ", rotated_input.edge_attr)
 
         # with torch.no_grad():
         rotated_input = model(rotated_input) 
@@ -193,8 +190,8 @@ if numerical_err_check:
             print("Checking node " + str(n) + "...")
             if not torch.allclose(rotated_input_nodes[n], rotated_output_nodes[n]):
                 print(f"Error: Node {n} input and output are not allclose")
-            plt.imshow(rotated_input_nodes[n].detach().cpu().numpy().reshape(40, 40) 
-                    - rotated_output_nodes[n].detach().cpu().numpy().reshape(40, 40), vmin=0, vmax=1e-6)
+            plt.imshow(rotated_input_nodes[n].detach().cpu().numpy().reshape(fock_size, fock_size) 
+                    - rotated_output_nodes[n].detach().cpu().numpy().reshape(fock_size, fock_size), vmin=0, vmax=1e-6)
             plt.colorbar()
             plt.savefig("equivariance_test_results/numerical_equivariance_err_node" + str(n) + ".png", dpi=300, bbox_inches='tight')
             plt.close()
@@ -203,13 +200,14 @@ if numerical_err_check:
             print("Checking edge " + str(e) + "...")
             if not torch.allclose(rotated_input_edges[e], rotated_output_edges[e]):
                 print(f"Error: Edge {e} input and output are not allclose")
-            plt.imshow(rotated_input_edges[e].detach().cpu().numpy().reshape(40, 40) 
-                    - rotated_output_edges[e].detach().cpu().numpy().reshape(40, 40), vmin=0, vmax=1e-6)
+            plt.imshow(rotated_input_edges[e].detach().cpu().numpy().reshape(fock_size, fock_size) 
+                    - rotated_output_edges[e].detach().cpu().numpy().reshape(fock_size, fock_size), vmin=0, vmax=1e-6)
             plt.colorbar()
             plt.savefig("equivariance_test_results/numerical_equivariance_err_edge" + str(e) + ".png", dpi=300, bbox_inches='tight')
             plt.close()
 
-        print("Finished numerical equivariance check, now doing model equivariance check")
+        print("Finished numerical equivariance check, now doing data equivariance check")
+
 
 # Check equivariance of the data pipeline
 # -----------------------------------------
@@ -222,7 +220,7 @@ if data_err_check:
         rotated_input = deepcopy(unrotated_input)
 
         # --> 1. Rotate the input of the "rotated input" batch - f(R(x)):
-        rotated_input.pos = (cartesian_rot_mat @ rotated_input.pos.T).T                 # this doesnt actually do anything though
+        rotated_input.pos = (cartesian_rot_mat @ rotated_input.pos.T).T                 # this doesnt actually do anything though, just for completeness
         rotated_input_edge_dist = rotated_input.edge_attr                               # this is what the network will see
         rotated_input_edge_vec = rotated_input_edge_dist[:, [2, 3, 1]]                  # xyz -> yzx
         rotated_input_edge_vec = (cartesian_rot_mat @ rotated_input_edge_vec.T).T       
@@ -245,10 +243,10 @@ if data_err_check:
         rotated_edge_labels = (spherical_rot_mat @ unrotated_edge_labels.T).T
 
         # --> 3. Check the loss between the rotated and unrotated cases
-        print("unrotated model node 0 output: ", unrotated_node_output[0][0:6])
-        print("unrotated model node 0 label: ", unrotated_node_labels[0][0:6])
-        print("rotated model node 0 output: ", rotated_node_output[0][0:6])
-        print("rotated label node 0 label: ", rotated_node_labels[0][0:6])
+        # print("unrotated model node 0 output: ", unrotated_node_output[0][0:6])
+        # print("unrotated model node 0 label: ", unrotated_node_labels[0][0:6])
+        # print("rotated model node 0 output: ", rotated_node_output[0][0:6])
+        # print("rotated label node 0 label: ", rotated_node_labels[0][0:6])
 
         unrotated_output = torch.cat([unrotated_node_output, unrotated_edge_output], dim=0)
         unrotated_labels = torch.cat([unrotated_node_labels, unrotated_edge_labels], dim=0)
@@ -261,37 +259,43 @@ if data_err_check:
         print("Loss between unrotated molecule and unrotated H blocks: ", unrotated_loss)
         print("Loss between rotated molecule and rotated H blocks: ", rotated_loss)
 
-        plt.imshow(np.log(np.abs(unrotated_node_output[0].detach().cpu().numpy().reshape(40, 40) - unrotated_node_labels[0].detach().cpu().numpy().reshape(40, 40))), vmin=-5, vmax=5)
+        node_label_num = 0
+
+        plt.imshow(np.log(np.abs(unrotated_node_output[node_label_num].detach().cpu().numpy().reshape(fock_size, fock_size) - unrotated_node_labels[0].detach().cpu().numpy().reshape(fock_size, fock_size))), vmin=-5, vmax=5)
         plt.colorbar()
         plt.savefig("equivariance_test_results/fitting_err[0].png", dpi=300, bbox_inches='tight')
         plt.close()
 
-        plt.imshow(np.log(np.abs(unrotated_node_output[0].detach().cpu().numpy().reshape(40, 40))), vmin=-5, vmax=5)
+        plt.imshow(np.log(np.abs(unrotated_node_output[node_label_num].detach().cpu().numpy().reshape(fock_size, fock_size))), vmin=-5, vmax=5)
         plt.colorbar()
-        plt.savefig("equivariance_test_results/unrotated_node_output[0].png", dpi=300, bbox_inches='tight')
+        plt.savefig("equivariance_test_results/unrotated_node_output["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
         plt.close()
 
-        plt.imshow(np.log(np.abs(unrotated_node_labels[0].detach().cpu().numpy().reshape(40, 40))), vmin=-5, vmax=5)
+        plt.imshow(np.log(np.abs(unrotated_node_labels[node_label_num].detach().cpu().numpy().reshape(fock_size, fock_size))), vmin=-5, vmax=5)
         plt.colorbar()
-        plt.savefig("equivariance_test_results/unrotated_node_labels[0].png", dpi=300, bbox_inches='tight')
+        plt.savefig("equivariance_test_results/unrotated_node_labels["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
         plt.close()
 
-        plt.imshow(np.log(np.abs(rotated_node_output[0].detach().cpu().numpy().reshape(40, 40))), vmin=-5, vmax=5)
+        plt.imshow(np.log(np.abs(rotated_node_output[node_label_num].detach().cpu().numpy().reshape(fock_size, fock_size))), vmin=-5, vmax=5)
         plt.colorbar()
-        plt.savefig("equivariance_test_results/rotated_node_output[0].png", dpi=300, bbox_inches='tight')
+        plt.savefig("equivariance_test_results/rotated_node_output["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
         plt.close()
 
-        plt.imshow(np.log(np.abs(rotated_node_labels[0].detach().cpu().numpy().reshape(40, 40))), vmin=-5, vmax=5)
+        plt.imshow(np.log(np.abs(rotated_node_labels[node_label_num].detach().cpu().numpy().reshape(fock_size, fock_size))), vmin=-5, vmax=5)
         plt.colorbar()
-        plt.savefig("equivariance_test_results/rotated_node_labels[0].png", dpi=300, bbox_inches='tight')
+        plt.savefig("equivariance_test_results/rotated_node_labels["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
         plt.close()
 
-        # plt.imshow(np.abs( (rotated_node_labels[0].detach().cpu().numpy().reshape(40, 40) 
-        #                          - rotated_node_output[0].detach().cpu().numpy().reshape(40, 40))) / rotated_node_output[0].detach().cpu().numpy().reshape(14, 14), vmin=0, vmax=1)
-        plt.imshow(np.abs( (rotated_node_labels[0].detach().cpu().numpy().reshape(40, 40) 
-                                - rotated_node_output[0].detach().cpu().numpy().reshape(40, 40))), vmin=0, vmax=0.01)
+        plt.imshow(np.abs( (unrotated_node_labels[node_label_num].detach().cpu().numpy().reshape(fock_size, fock_size) 
+                             - unrotated_node_output[node_label_num].detach().cpu().numpy().reshape(fock_size, fock_size))), vmin=0, vmax=1e-4)
+        plt.colorbar()
+        plt.savefig("equivariance_test_results/unrotated_percent_err["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
+        plt.close()
+
+        plt.imshow(np.abs( (rotated_node_labels[node_label_num].detach().cpu().numpy().reshape(fock_size, fock_size) 
+                                - rotated_node_output[node_label_num].detach().cpu().numpy().reshape(fock_size, fock_size))), vmin=0, vmax=1e-4)
         
         plt.colorbar()
-        plt.savefig("equivariance_test_results/rotated_percent_err[0].png", dpi=300, bbox_inches='tight')
+        plt.savefig("equivariance_test_results/rotated_percent_err["+str(node_label_num)+"].png", dpi=300, bbox_inches='tight')
         plt.close()
                 

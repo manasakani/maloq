@@ -47,22 +47,23 @@ l_embedding_dim = 128                   # sphere channels
 num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = 128
 cutoff = 6.0*2                          # Cutoff used for edge distance embedding
-num_mp_layers = 3
+num_mp_layers = 1
 model_name = 'esen'
 restart = False
 output_folder = 'outputs_QM7'
 
 # -> Training settings:
-num_val = 1                           # Number of validation structures
-num_train = 1
-num_epochs = 20000
-lr_init = 5e-5
+num_val = 100                           # Number of validation structures
+num_train = 100
+num_epochs = 300
+lr_init = 1e-4
 dtype = torch.float32
 batch_size = 10
-loss_target = 'fock_matrix'
-patience = 200                          # for scheduler
-threshold = 1e-4                        # for scheduler
-loss_fxn = utils_training.l1_padded_loss
+loss_target = 'forces'
+patience = 100                          # for scheduler
+threshold = 1e-7                        # for scheduler
+# loss_fxn = utils_training.l1_unpadded_loss
+loss_fxn = utils_training.mse_padded_loss
 
 # --> Compute env
 device = torch.device('cuda')         
@@ -80,10 +81,11 @@ data_load_start = time.perf_counter()
 max_mol = 5000 
 num_molecules = num_val + num_train
 random_indices = random.sample(range(num_molecules), min(max_mol, num_molecules))
+# random_indices = [0, 0]
 
 datalist = []
-for i in range(num_molecules):  # deterministic
-# for i in random_indices:
+# for i in range(num_molecules):  # deterministic
+for i in random_indices:
     mol = database.__getitem__(i)
 
     mol_atoms = Atoms(symbols=mol['_atomic_numbers'].numpy(), positions=mol['_positions'].numpy())
@@ -96,7 +98,7 @@ for i in range(num_molecules):  # deterministic
     hamiltonian = mol['hamiltonian'].numpy()   
     orbital_basis = {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]}
     atomic_numbers = mol['_atomic_numbers'].numpy()
-    hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)  
+    hamiltonian = utils_orca_out.sort_by_m_QM7(hamiltonian, orbital_basis, atomic_numbers)  
 
     time_start = time.perf_counter()
     graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian)
@@ -112,7 +114,7 @@ for i in range(num_molecules):  # deterministic
                     node_y=graph_targets.node_labels,
                     atomic_numbers=torch.tensor(graph_targets.atomic_numbers, dtype=torch.long).cpu(),  
                     energies=torch.tensor(energy, dtype=dtype),
-                    forces=torch.tensor(forces, dtype=dtype),
+                    forces=torch.tensor(forces, dtype=dtype),                                      # Hartree/Angstrom
                 )
     datalist.append(data)
 
