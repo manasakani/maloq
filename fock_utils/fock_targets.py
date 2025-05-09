@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-import utils_tensor_decomp
+from . import utils_tensor_decomp
 import torch
 import time
 from ase.neighborlist import NeighborList
@@ -11,7 +11,7 @@ class Fock_Targets:
     Input target shape to standardize across molecules with different elements
     """
 
-    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix, target_shape=0, dtype=torch.float32):
+    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix, target_len=0, dtype=torch.float32):
         """
         atoms - ASE atoms object of the atomic structure
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]] 
@@ -59,7 +59,7 @@ class Fock_Targets:
         # print(f'Simplified irreps: {self.simplified_out_irreps}')
 
         self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)])       # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
-        self.target_len = target_shape**2 if target_shape != 0 else None                   
+        self.target_len = target_len if target_len != 0 else None                   
 
         self.node_labels = None
         self.edge_labels = None

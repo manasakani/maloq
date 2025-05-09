@@ -4,8 +4,8 @@ import os, sys
 import numpy as np
 from ase import Atoms
 from ase.neighborlist import NeighborList
-from fock_utils import utils_orca_out, fock_targets, utils_training
-
+import utils_orca_out, fock_targets
+import matplotlib.pyplot as plt 
 import torch
 import torch.distributed as dist
 
@@ -20,6 +20,9 @@ from equiformer.SO3 import CoefficientMappingModule
 
 from esen.esen import eSEN_Backbone
 from e3nn.o3 import Irreps
+import utils_training
+
+from QH9_dataset_utils import QH9Stable
 
 import_end = time.perf_counter()
 print("Time to do imports: ", import_end - import_start)
@@ -37,32 +40,68 @@ sys.path.append('/home/manasakani/fairchem/src/')
 
 # Settings (just dumping everything here for now)
 # -----------------------------------------------
-dbpath = 'fock_datasets/schnorb_hamiltonian_water.db'
-database = ASEAtomsData(dbpath)
-print("Targets available: ", database.available_properties)
+
+# https://github.com/divelab/AIRS/tree/main/OpenDFT/QHBench/QH9:
+root_path = "./"
+print("Reading dataset from ", os.path.join(root_path, 'fock_datasets/'))
+dataset = QH9Stable(os.path.join(root_path, 'fock_datasets/'), split='random')   # QH9-stable-id
+# dataset = QH9Stable(split='size_ood')  # QH9-stable-ood
+
+### Get the training/validation/testing subsets
+train_dataset = dataset[dataset.train_mask]
+valid_dataset = dataset[dataset.val_mask]
+test_dataset = dataset[dataset.test_mask]
+
+### Get the dataloders
+# train_data_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+# valid_data_loader = DataLoader(valid_dataset, batch_size=1, shuffle=False)
+# test_data_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+
+# for batch in train_data_loader:
+#     print(batch.keys())
+#     print(batch.atoms)                          # atomic numbers?
+#     print("batch.pos: ", batch.pos)
+#     print("batch.diagonal_hamiltonian: ", batch.diagonal_hamiltonian)           # shape (13, 14, 14) - node orbital blocks
+#     print("batch.non_diagonal_hamiltonian: ", batch.non_diagonal_hamiltonian)       # shape (13, 14, 14) - edge orbital blocks (padded)
+#     print("batch.edge_index_full: ", batch.edge_index_full)
+
+#     print([x.shape for x in batch.diagonal_hamiltonian])
+#     print("----")
+#     print([x.shape for x in batch.non_diagonal_hamiltonian])
+
+#     plt.imshow(np.log(np.abs(batch.diagonal_hamiltonian[0])))
+#     plt.savefig("diagonal_H.png", bbox_inches='tight')
+#     plt.close()
+
+#     plt.imshow(np.log(np.abs(batch.non_diagonal_hamiltonian[9])))
+#     plt.savefig("non_diagonal_hamiltonian.png", bbox_inches='tight')
+#     exit()
+
+# print("train_dataset keys: ", train_dataset.__dict__.keys())
+# print("valid_dataset keys: ", valid_dataset.__dict__.keys())
+
 
 # -> Model settings:
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = 128
 cutoff = 6.0*2                          # Cutoff used for edge distance embedding
-num_mp_layers = 3
+num_mp_layers = 1
 model_name = 'esen'
 restart = False
 output_folder = 'outputs_QM7'
 
 # -> Training settings:
-num_val = 500                           # Number of validation structures
-num_train = 500
-num_epochs = 20000
+num_val = 100                           # Number of validation structures
+num_train = 5
+num_epochs = 300
 lr_init = 1e-4
 dtype = torch.float32
 batch_size = 10
 loss_target = 'fock_matrix'
 patience = 100                          # for scheduler
-threshold = 1e-5                        # for scheduler
+threshold = 1e-7                        # for scheduler
 loss_fxn = utils_training.l1_unpadded_loss
-# loss_fxn = utils_training.mse_padded_loss
 
 # --> Compute env
 device = torch.device('cuda')         
@@ -77,10 +116,24 @@ if not os.path.exists(output_folder):
 # Prepare data
 # --------------------------------------------
 data_load_start = time.perf_counter()
-max_mol = 5000 
-num_molecules = num_val + num_train
-random_indices = random.sample(range(num_molecules), min(max_mol, num_molecules))
-# random_indices = [0, 0]
+# num_molecules = num_val + num_train
+# random_indices = random.sample(range(num_molecules), min(max_mol, num_molecules))
+
+# get training dataset:
+for i in range(num_train):
+    mol = train_dataset[i]
+
+    mol_atoms = Atoms(symbols=mol.atoms, positions=mol.pos)
+    rcut = 100.0                                            # connectivity cutoff
+    num_atoms = len(mol.pos)
+    # energy = mol['energy']
+    # forces = mol['forces']
+
+    node_orbital_blocks = mol.diagonal_hamiltonian
+    edge_orbital_blocks = mol.non_diagonal_hamiltonian
+    orbital_basis = {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]}
+
+
 
 datalist = []
 # for i in range(num_molecules):  # deterministic
@@ -113,7 +166,7 @@ for i in random_indices:
                     node_y=graph_targets.node_labels,
                     atomic_numbers=torch.tensor(graph_targets.atomic_numbers, dtype=torch.long).cpu(),  
                     energies=torch.tensor(energy, dtype=dtype),
-                    forces=torch.tensor(forces, dtype=dtype),                                      # Hartree/Angstrom
+                    forces=torch.tensor(forces, dtype=dtype),
                 )
     datalist.append(data)
 

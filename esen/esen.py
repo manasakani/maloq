@@ -10,9 +10,12 @@ from __future__ import annotations
 import matplotlib.pyplot as plt # remove
 import os, sys
 import torch
+import math
 import torch.nn as nn
-from e3nn.o3 import Irreps
+from e3nn.o3 import Irreps 
 from e3nn.o3 import Linear as e3nn_Linear
+from e3nn.nn import Gate
+from torch.nn import Linear
 
 # Fix this later!:
 sys.path.append('/home/manasakani/fairchem/src/')
@@ -56,7 +59,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         edge_channels: int = 128,
         distance_function: str = "gaussian",
         num_distance_basis: int = 512,
-        direct_forces: bool = True,
+        direct_forces: bool = False,
         regress_forces: bool = True,
         regress_stress: bool = False,
         # escnmd specific
@@ -193,15 +196,34 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             num_channels=self.sphere_channels,
         )
 
-        # Expand output to full set of Irreps
+        # Rank 0, 1, N output heads:
         build_irreps = []
         for l in range(self.lmax+1):
             build_irreps.append((self.sphere_channels, (l, 1)))
         self.irreps_in = Irreps(build_irreps)
-        self.map_irrep_layer_node = e3nn_Linear(irreps_in=self.irreps_in, irreps_out=irreps_out, biases=True)
-        self.map_irrep_layer_edge = e3nn_Linear(irreps_in=self.irreps_in, irreps_out=irreps_out, biases=True)
         self.irreps_out = irreps_out
 
+        simplified_output_irreps = self.irreps_out.sort()[0].simplify()
+
+        self.map_node_to_rank_0 = e3nn_Linear(irreps_in=self.irreps_in, irreps_out='1x0e', biases=True)
+        self.map_node_to_rank_1 = e3nn_Linear(irreps_in=self.irreps_in, irreps_out='1x1e', biases=True)
+
+        # self.map_node_to_rank_N = e3nn_Linear(irreps_in=self.irreps_in, irreps_out=irreps_out, biases=True)
+        # self.map_edge_to_rank_N = e3nn_Linear(irreps_in=self.irreps_in, irreps_out=irreps_out, biases=True)
+        
+        # self.map_irrep_layer_node = torch.nn.Sequential(e3nn_Linear(irreps_in=self.irreps_in, irreps_out=simplified_output_irreps, biases=False),
+        #                                                 e3nn_Linear(irreps_in=simplified_output_irreps, irreps_out=simplified_output_irreps, biases=False),
+        #                                                 e3nn_Linear(irreps_in=simplified_output_irreps, irreps_out=irreps_out, biases=False))
+        # self.map_irrep_layer_edge = torch.nn.Sequential(e3nn_Linear(irreps_in=self.irreps_in, irreps_out=simplified_output_irreps, biases=False),
+        #                                                 e3nn_Linear(irreps_in=simplified_output_irreps, irreps_out=simplified_output_irreps, biases=False),
+        #                                                 e3nn_Linear(irreps_in=simplified_output_irreps, irreps_out=irreps_out, biases=False))
+        
+ 
+        # self.map_node_to_rank_N = Seperable_Linear_Fock_Head(self.sphere_channels, self.irreps_in, self.irreps_out, self.mappingReduced)
+        # self.map_edge_to_rank_N = Seperable_Linear_Fock_Head(self.sphere_channels, self.irreps_in, self.irreps_out, self.mappingReduced)
+
+        self.map_node_to_rank_N = Eq_Nonlinear_conversion(irreps_in=self.irreps_in, irreps_out=self.irreps_out, lmax=self.lmax, sphere_channels=self.sphere_channels)
+        self.map_edge_to_rank_N = Eq_Nonlinear_conversion(irreps_in=self.irreps_in, irreps_out=self.irreps_out, lmax=self.lmax, sphere_channels=self.sphere_channels)
 
     def get_rotmat_and_wigner(self, edge_distance_vecs):
 
@@ -225,36 +247,36 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
 
         return edge_rot_mat, wigner, wigner_inv
 
-    # def generate_graph(self, *args, **kwargs):
-    #     graph = super().generate_graph(*args, **kwargs)
-    #     return {
-    #         "edge_index": graph.edge_index,
-    #         "edge_distance": graph.edge_distance,
-    #         "edge_distance_vec": graph.edge_distance_vec,
-    #         "cell_offsets": graph.cell_offsets,
-    #         "offset_distances": None,
-    #         "neighbors": None,
-    #         "batch_full": graph.batch_full,
-    #         "atomic_numbers_full": graph.atomic_numbers_full,
-    #     }
 
     @conditional_grad(torch.enable_grad())
-    def forward(self, data_dict) -> dict[str, torch.Tensor]:
+    def forward(self, batch) -> dict[str, torch.Tensor]:
 
-        # Added to input dict:
-        edge_distance_vec = data_dict["edge_dist"][:, [1, 2, 0]]    # need yzx to align the y axis
-        edge_distance = data_dict["edge_dist"][:, 3]
+        data_dict = {
+            "pos": batch.pos,
+            "edge_index": torch.tensor(batch.edge_index, dtype=torch.long).squeeze(0).reshape(2, -1),
+            # "edge_index": batch.edge_index.squeeze(0).reshape(2, -1),
+            "edge_dist": batch.edge_attr,
+            "nedges": len(batch.edge_index[0]),
+            "natoms": len(batch.pos),
+            "atomic_numbers": batch.atomic_numbers
+        }
 
-        # From original eSEN forward pass:
+        # The input edges are in xyz coordinates, we need to rotate them to the yzx coordinates expected by e3nn
+        # edge_distance_vec = data_dict["edge_dist"][:, 0:3]  # assuming the edge distances are already in the form of yzx
+        edge_distance_vec = data_dict["edge_dist"][:, [2, 3, 1]] 
+        edge_distance = data_dict["edge_dist"][:, 0] 
+
+
+        # # From original eSEN forward pass:
         # edge_distance_vec = (
         #     data_dict["pos"][data_dict["edge_index"][0]]
         #     - data_dict["pos"][data_dict["edge_index"][1]]
         # )
         # # pylint: disable=E1102
+        # edge_distance_vec = edge_distance_vec[:, [1, 2, 0]] # rotate to yzx coordinates so the correct rotation is found
         # edge_distance = torch.linalg.norm(edge_distance_vec, dim=-1, keepdim=False)
 
         graph_dict = {
-            "atomic_numbers_full": data_dict["atomic_numbers"],
             "edge_index": data_dict["edge_index"],
             "edge_distance": edge_distance,
             "edge_distance_vec": edge_distance_vec,
@@ -263,6 +285,9 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         edge_rot_mat, wigner, wigner_inv = self.get_rotmat_and_wigner(
             graph_dict["edge_distance_vec"]
         )
+
+        # check rotation matrix:
+        # rotated_edges_to_z_axis = torch.bmm(edge_rot_mat, graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
 
         ###############################################################
         # Initialize node and edge embeddings
@@ -320,41 +345,17 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             node_or_edge='node'
         )
 
-        # x_message_edge = self.edge_degree_embedding(
-        #     x_message_node,
-        #     x_edge,
-        #     graph_dict["edge_distance"],
-        #     graph_dict["edge_index"],
-        #     wigner_inv,
-        #     node_or_edge='edge'
-        # )
+        x_message_edge = self.edge_degree_embedding(
+            x_message_node,
+            x_edge,
+            graph_dict["edge_distance"],
+            graph_dict["edge_index"],
+            wigner_inv,
+            node_or_edge='edge'
+        )
         
         # x_message_node shape:    # nodes, lmax, E
         # x_message_edge shape:    # edges, lmax, E
-
-        # #__ROTATION___
-        # # Cartesian Rotation for the mol:
-        # device=data_dict["pos"].device
-        # alpha=230.0
-        # beta=70.0
-        # gamma=180.0
-        # alpha_rad = torch.deg2rad(torch.tensor(alpha))
-        # beta_rad = torch.deg2rad(torch.tensor(beta))
-        # gamma_rad = torch.deg2rad(torch.tensor(gamma))
-        # Rx = torch.tensor([[1, 0, 0], [0, torch.cos(alpha_rad), -torch.sin(alpha_rad)], [0, torch.sin(alpha_rad), torch.cos(alpha_rad)]])
-        # Ry = torch.tensor([[torch.cos(beta_rad), 0, torch.sin(beta_rad)], [0, 1, 0], [-torch.sin(beta_rad), 0, torch.cos(beta_rad)]])
-        # Rz = torch.tensor([[torch.cos(gamma_rad), -torch.sin(gamma_rad), 0], [torch.sin(gamma_rad), torch.cos(gamma_rad), 0], [0, 0, 1]])
-        # R_cart = torch.matmul(Rz, torch.matmul(Ry, Rx)) 
-
-        # # Spherical Rotation for Irreps:
-        # internal_irreps = Irreps("1x0e+1x1e+1x2e+1x3e+1x4e")
-        # R_sphere_in = internal_irreps.D_from_matrix(R_cart).to(device)
-        # R_sphere_out = self.irreps_out.D_from_matrix(R_cart).to(device) # to use after e3nn Linear in rank-N head
-        # #____ROTATION___
-
-        # Rotate:
-        # x_message_node = torch.matmul(R_sphere_in, x_message_node) # <-- Rotate first // forward commutator
-        # x_message_edge = torch.matmul(R_sphere_in, x_message_edge) # <-- Rotate first // forward commutator
 
         ###############################################################
         # Update spherical node embeddings
@@ -381,55 +382,64 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                 node_or_edge='edge',
             )
         
-        # x_message_node = torch.matmul(R_sphere_in, x_message_node) # <-- Rotate last // backward commutator
-        # x_message_edge = torch.matmul(R_sphere_in, x_message_edge) # <-- Rotate last // backward commutator
-
         # Final layer norm
         x_message_node = self.norm(x_message_node)
         x_message_edge = self.norm(x_message_edge)
 
-        # Convert to H block size:
-        x_message_node = self.convert_to_fock_irreps(x_message_node, self.sphere_channels, self.lmax, 'node') 
-        x_message_edge = self.convert_to_fock_irreps(x_message_edge, self.sphere_channels, self.lmax, 'edge')
-
-        # x_message_node[2, :] = torch.matmul(R_sphere_out, x_message_node[2, :])
-
-        # print("output tensor: ", x_message_node[2, :])
-        # print("output tensor: ", x_message_edge[1, :])
-        # exit()
-
-        # plt.imshow(x_message_node[2, :].detach().cpu().reshape(14, 14))
-        # plt.savefig('forward_commutator.png', dpi=300, bbox_inches='tight')
+        # Prepare rank-N outputs:
+        node_rank0 = self.convert_to_output_irreps(x_message_node, x_edge, self.sphere_channels, self.lmax, rank='0')
+        node_rank1 = self.convert_to_output_irreps(x_message_node, x_edge, self.sphere_channels, self.lmax, rank='1')
+        node_rankN = self.convert_to_output_irreps(x_message_node, x_edge, self.sphere_channels, self.lmax, rank='N', edge_index=graph_dict["edge_index"], node_or_edge='node') 
+        edge_rankN = self.convert_to_output_irreps(x_message_edge, x_edge, self.sphere_channels, self.lmax, rank='N', edge_index=graph_dict["edge_index"], node_or_edge='edge')
 
         # Return the output
         out = {
-            "node_embedding": x_message_node,
-            "edge_embedding": x_message_edge,
+            "node_rank0": node_rank0,
+            "node_rank1": node_rank1,
+            "node_rankN": node_rankN,
+            "edge_rankN": edge_rankN,
         }
         out.update(graph_dict)
-
         return out
 
-    def convert_to_fock_irreps(self, input, sphere_channels, lmax, node_or_edge):   
-        # input = [num_atoms/edges (batch_size), (lmax+1)**2, sphere_channels]
+    def convert_to_output_irreps(self, x_message, x_edge, sphere_channels, lmax, rank, edge_index=None, node_or_edge='node'):   
+        # input = x_message = [num_atoms/edges (batch_size), (lmax+1)**2, sphere_channels]
 
-        test_input = input.transpose(-1,-2) # rearrange dimensions from [l, E] to [E, l] 
-        batch_size = test_input.shape[0]
+        x_message_T = x_message.transpose(-1,-2) # rearrange dimensions from [l, E] to [E, l] 
+        batch_size = x_message_T.shape[0]
 
         # group all the different ls so l_sorted output looks like sphere_channels*0e + sphere_channels*1e + sphere_channels*2e ...
-        l_sorted_output = torch.zeros(batch_size, sphere_channels*((lmax+1)**2), device=input.device)
+        l_sorted_output = torch.zeros(batch_size, sphere_channels*((lmax+1)**2), device=x_message.device)
         for l in range(lmax+1):
             start = (l**2)*sphere_channels
             end = (l**2)*sphere_channels + sphere_channels*(2*l+1)
-            l_sorted_output[:,start:end] = torch.squeeze(test_input[:, :, (l**2):(l**2)+(2*l+1)].reshape(batch_size, 1, -1))
+            l_sorted_output[:,start:end] = torch.squeeze(x_message_T[:, :, (l**2):(l**2)+(2*l+1)].reshape(batch_size, 1, -1))
 
-        # e3nn linear layer:
-        if node_or_edge == 'node':
-            test_output = self.map_irrep_layer_node(l_sorted_output)
+        # irreps_in -> irreps_out
+        if rank == 'N': 
+            if node_or_edge == 'node':
+                rank_N_output = self.map_node_to_rank_N(l_sorted_output, x_edge, edge_index)
+            else:
+                rank_N_output = self.map_edge_to_rank_N(l_sorted_output, x_edge, edge_index)
+            return rank_N_output
+
+        # irreps_in -> 1x0e
+        elif rank == '0': 
+            # print("DONT RUN THIS UNTIL NUM ATOMS IS FIXED")
+            per_atom_energies = self.map_node_to_rank_0(l_sorted_output)
+            natoms = 3 # PASS THIS INFO IN THROUGH DATA_DICT
+            # print(per_atom_energies)
+            rank_0_output = torch.stack([per_atom_energies[i:i+natoms].sum() for i in range(0, len(per_atom_energies), natoms)])
+            return rank_0_output
+
+        # irreps_in -> 1x1e
+        elif rank == '1':
+            rank_1_output = self.map_node_to_rank_1(l_sorted_output)
+            return rank_1_output
+
+        # Add rank 2 for the multipole thing
         else:
-            test_output = self.map_irrep_layer_edge(l_sorted_output)
-        
-        return test_output
+            print("Err: Did not make this output rank!")
 
     @property
     def num_params(self):
@@ -463,6 +473,303 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
 
         return set(no_wd_list)
 
+@registry.register_model("eq_nonlinear_conversion")
+class Eq_Nonlinear_conversion(nn.Module):
+    """
+    Takes an input irrep like 64x0e+64x1e+64x2e ... and nonlinearly maps it to the output irreps of arbitrary size and l-multiplicity
+    """
+    def __init__(self, irreps_in, irreps_out, lmax, sphere_channels):
+        super().__init__()
+
+        self.sphere_channels = sphere_channels
+        irreps_scalars, irreps_gated = self.split_irreps(irreps_in)
+        irreps_gates = Irreps(f"{irreps_gated.num_irreps}x0e")
+
+        # 1. Apply a linear layer to convert the number of input scalars to the number of required gating scalars
+        # the number of input scalars is equal to sphere_channels
+        # the output 'irreps_gates' are the gating scalars
+
+        # --> gate with the l=0 components:
+        # input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
+        # self.lin_scalars = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=irreps_gates)
+
+        # --> gate with x_edge
+        input_scalars_irreps = Irreps(f"{3*self.sphere_channels}x0e")
+        self.lin_scalars_x_edge = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=irreps_gates)
+
+        # this returns the irreps_gates
+
+        # self.gate = Gate(irreps_scalars=irreps_scalars,
+        #                     act_scalars=[torch.tanh] * len(irreps_scalars),
+        #                     irreps_gates=irreps_gates,
+        #                     act_gates=[torch.tanh] * len(irreps_gates),
+        #                     irreps_gated=irreps_gated
+        #                 )
+
+        # 2. Apply the gating to the other ls (need to pass in a stack of [l=0, l~=0])
+        self.gate = Gate(irreps_scalars=Irreps(),
+                            act_scalars=[],
+                            irreps_gates=irreps_gates,
+                            act_gates=[torch.sigmoid] * len(irreps_gates),
+                            irreps_gated=irreps_gated
+                        )
+        # print("gate irreps out (simplified): ", self.gate.irreps_out.sort()[0].simplify() ) 
+        # print("irreps out (simplified): ", irreps_out.sort()[0].simplify() ) 
+
+        # now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
+        self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=False) 
+
+        # if self.gate.irreps_out.sort()[0].simplify() != irreps_out.sort()[0].simplify():
+        #     raise ValueError("Mismatch between gate output irreps and target output irreps")
+
+    
+    def do_nothing(self, x):
+        return x
+
+    def split_irreps(self, irreps):
+        scalars = []
+        gated = []
+        for mul, ir in irreps:
+            if ir.l == 0:
+                scalars.append((mul, ir))
+            else:
+                gated.append((mul, ir))
+        return Irreps(scalars), Irreps(gated)
+
+    def forward(self, x, x_edge, edge_index):
+
+        x_for_gating = torch.zeros(
+            (x.shape[0],) + x_edge.shape[1:],
+            dtype=x.dtype,
+            device=x.device,
+        )
+
+        # in case this is a node-block (x_edge is initially the edges, so it needs to be reduced from # edges to # nodes)
+        if x_edge.shape[0] != x.shape[0]:
+            x_for_gating.index_add_(0, edge_index[1], x_edge)
+        else:
+            x_for_gating = x_edge
+
+        # extract the scalar components, which are the first # sphere_channels elements of this tensor
+        x_scalars = x[:, :self.sphere_channels]
+        x_nonscalars = x[:, self.sphere_channels:]
+
+        # gating_scalars = self.lin_scalars(x_scalars)              # gate with the l=0 components:
+        gating_scalars = self.lin_scalars_x_edge(x_for_gating)      # gate with x_edge
+
+        x_gated = self.gate(torch.cat([gating_scalars, x_nonscalars], dim=1))
+
+        # plug the l=0 components back into x_gated (currently they are zeros):
+        x_gated = torch.cat([x_scalars, x_gated], dim=1)
+        x_out = self.lin_out(x_gated)
+
+        return x_out
+
+# @registry.register_model("esen_nonlinear_fock_head")
+# class Nonlinear_Fock_Head(nn.Module):
+#         """
+#         Nonlinear mapping from irreps of type Ex0e + Ex1e + Ex2e... (where E = sphere_channels) 
+#         to rank_N output of arbitrary stack irreps_out?
+#         """
+#         def __init__(self, sphere_channels, irreps_in, irreps_out, mappingReduced):
+#             super().__init__()
+#             self.irreps_in = irreps_in
+#             self.irreps_out = irreps_out
+#             self.mappingReduced = mappingReduced
+#             self.lmax = irreps_in.lmax
+#             self.mmax = irreps_in.lmax
+
+#             # group the ls for now, and they can be ungrouped later with an e3nn linear layer.
+#             simplified_output_irreps = irreps_out.sort()[0].simplify()          
+            
+#             # get the multiplicities of different ls in the output tensor
+#             output_multiplicities = [int(str(ir).split('x')[0]) for ir in simplified_output_irreps]
+#             print("multiplicities in output Irreps: ", output_multiplicities)
+
+#             # Linear layers to handle the mappings for each m-component
+#             # mul is the l-multiplicity! need to change to the m multiplicity
+#             self.m_wise_linear_layers = nn.ModuleList()
+#             for m, mul in enumerate(output_multiplicities):
+#                 if m == 0: 
+#                     self.m_wise_linear_layers.append(torch.nn.Linear(self.mappingReduced.m_size[m]*sphere_channels, mul))
+#                     # print("added matrix of shape ", torch.nn.Linear(self.mappingReduced.m_size[i]*sphere_channels, mul).weight.shape)
+#                 else:
+#                     self.m_wise_linear_layers.append(
+#                     SO2_m_Conv_output(
+#                         m,
+#                         sphere_channels,
+#                         mul,
+#                         self.lmax,
+#                         self.mmax,
+#                     )
+#                 )
+
+#             # ----------------------
+#             # ADD NONLINEARITY HERE?
+#             # ----------------------
+
+#             # -------------------------------------
+#             # Permute output irreps back to l-major
+#             # -------------------------------------
+
+#             # final linear layer to make output irrep order:
+#             # linear_to_output_irreps = e3nn_Linear(irreps_in=[current irreps], irreps_out=self.irreps_out, biases=True)
+
+
+#         def forward(self, x): 
+
+#             # move _to_m:
+#             x = torch.einsum("nac,ba->nbc", x, self.mappingReduced.to_m) # now the first ones are m=0, the second are m=-1, etc
+#             feature_dim = x.shape[0]
+#             print("x shape ", x.shape)
+
+#             print("size of ms: ", self.mappingReduced.m_size)
+
+#             out = []
+
+#             # Do m = 0 part:
+#             x_0 = x.narrow(1, 0, self.mappingReduced.m_size[0])
+#             print("x_0 size: ", x_0.shape)
+#             x_0 = x_0.reshape(feature_dim, -1)
+#             print("x_0 size: ", x_0.shape)
+#             x_0 = self.m_wise_linear_layers[0](x_0)
+#             print("x_0 size: ", x_0.shape)
+#             x_0 = x_0.unsqueeze(1)
+#             out.append(x_0)
+
+#             # Do nonzero-m part:
+#             offset = self.mappingReduced.m_size[0]
+#             for m in range(1, self.mmax + 1):
+#                 # Get the m order coefficients
+#                 x_m = x.narrow(1, offset, 2 * self.mappingReduced.m_size[m])
+#                 print("x_m size: ", x_m.shape)
+#                 x_m = x_m.reshape(feature_dim, 2, -1)
+#                 print("x_m size: ", x_m.shape)
+
+#                 # Perform SO(2) convolution
+#                 x_m = self.m_wise_linear_layers[m](x_m)
+#                 print("x_m size: ", x_m.shape)
+#                 print("----------")
+#                 # x_m = x_m.view(num_edges, -1, self.m_output_channels)
+#                 out.append(x_m)
+#                 offset = offset + 2 * self.mappingReduced.m_size[m]
+
+#             print([o.shape for o in out])
+#             # out = torch.cat(out, dim=1)
+#             out = torch.cat([o for o in out], dim=1)
+#             print("shape of out: ", out.shape)
+
+#             # now the tensors have size [num_nodes, +/-m, num_ms]
+#             # now the first ones are m=0, the second are m=-1, the third are m = -1
+
+#             # apply non-linearity
+
+#             # rearrange the output back to l-major
+
+#             print("exiting")
+#             exit()
+
+#             # re-arrange the output back into unsorted output irreps with an e3nn linear layer
+
+
+@registry.register_model("esen_linear_fock_head")
+class Seperable_Linear_Fock_Head(nn.Module):
+        """
+        Linear mapping from irreps of type Ex0e + Ex1e + Ex2e... (where E = sphere_channels) 
+        to outputs like:
+
+        layer 1: Ex0e + Ex1e + Ex2e ... -> Nsx0e (where Ns is the s-multiplicity of the output irreps) 
+        layer 2: Ex0e + Ex1e + Ex2e ... -> Npx1e (where Np is the p-multiplicity of the output irreps)
+        layer 3: Ex0e + Ex1e + Ex2e ... -> Ndx1e (where Nd is the d-multiplicity of the output irreps)
+        ... 
+
+        The output has the form Nsx0e+Npx1e+Ndx2e ... and then there is a final linear layer:
+        --> e3nn_Linear(irreps_in="Nsx0e+Npx1e+Ndx2e", irreps_out=self.irreps_out, biases=False)
+        """
+        def __init__(self, sphere_channels, irreps_in, irreps_out, mappingReduced):
+            super().__init__()
+            self.irreps_in = irreps_in
+            self.irreps_out = irreps_out
+            self.mappingReduced = mappingReduced
+            self.lmax = irreps_in.lmax
+            self.mmax = irreps_in.lmax
+
+            # groups the irreps of the same l in the output
+            simplified_output_irreps = irreps_out.sort()[0].simplify()
+            
+            # Multiplicity of different ls in the output tensor (Ns, Np, Nd...)
+            output_multiplicities = [int(str(ir).split('x')[0]) for ir in simplified_output_irreps]
+
+            # Linear layers to handle the mappings for each l-component
+            self.l_wise_linear_layers = nn.ModuleList()
+            for l, mul in enumerate(output_multiplicities):
+                l_output_irreps = Irreps(str(mul)+"x"+str(l)+"e")
+                self.l_wise_linear_layers.append(e3nn_Linear(irreps_in, l_output_irreps, biases=True))
+
+            # final linear layer to make output irrep order:
+            self.convert_to_output_irreps = e3nn_Linear(irreps_in=simplified_output_irreps, irreps_out=self.irreps_out, biases=True)
+
+        def forward(self, x):
+            out = []
+            for l_wise_linear_layer in self.l_wise_linear_layers:
+                x_l = l_wise_linear_layer(x)
+                out.append(x_l)
+            out = torch.cat(out, dim=1)
+            
+            # convert from simplified to full output irreps        
+            return self.convert_to_output_irreps(out)
+
+
+# class SO2_m_Conv_output(torch.nn.Module):
+#     """
+#     SO(2) Conv: Perform an SO(2) convolution on features corresponding to +- m
+
+#     Args:
+#         m (int):                    Order of the spherical harmonic coefficients
+#         sphere_channels (int):      Number of spherical channels
+#         m_output_channels (int):    Number of output channels used during the SO(2) conv
+#         lmax (int):                 degrees (l)
+#         mmax (int):                 orders (m)
+#     """
+
+#     def __init__(
+#         self,
+#         m: int,
+#         sphere_channels: int,
+#         m_multiplicity: int,
+#         lmax: int,
+#         mmax: int,
+#     ) -> None:
+#         super().__init__()
+
+#         self.m = m
+#         self.sphere_channels = sphere_channels
+#         # self.m_output_channels = m_output_channels
+#         self.lmax = lmax
+#         self.mmax = mmax
+
+#         assert self.mmax >= m
+#         num_coefficents = self.lmax - m + 1
+#         num_channels = num_coefficents * self.sphere_channels
+
+#         self.out_channels_half = m_multiplicity
+#         # self.m_output_channels * (
+#         #     num_channels // self.sphere_channels
+#         # )
+#         self.fc = Linear(
+#             num_channels,
+#             2 * self.out_channels_half,
+#             bias=False,
+#         )
+#         self.fc.weight.data.mul_(1 / math.sqrt(2))
+
+#     def forward(self, x_m):
+#         x_m = self.fc(x_m)
+#         x_r = x_m.narrow(2, 0, self.out_channels_half)
+#         x_i = x_m.narrow(2, self.out_channels_half, self.out_channels_half)
+#         x_m_r = x_r.narrow(1, 0, 1) - x_i.narrow(1, 1, 1)  # x_r[:, 0] - x_i[:, 1]
+#         x_m_i = x_r.narrow(1, 1, 1) + x_i.narrow(1, 0, 1)  # x_r[:, 1] + x_i[:, 0]
+#         return torch.cat((x_m_r, x_m_i), dim=1)
 
 @registry.register_model("esen_mlp_efs_head")
 class MLP_EFS_Head(nn.Module, HeadInterface):

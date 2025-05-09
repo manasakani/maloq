@@ -91,6 +91,7 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
     track_loss_edge_val = []
     for epoch in range(num_epochs):
         epoch_start = time.perf_counter()
+        print("size of train_loader: ", len(train_loader))
         
         model.train()  
         for batch in train_loader:
@@ -134,10 +135,10 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
             
         # -- Output dump -- 
         if loss_target == 'fock_matrix':
-            track_loss_node.append(loss_node.cpu().detach().numpy() / train_loader.batch_size)
-            track_loss_edge.append(loss_edge.cpu().detach().numpy() / train_loader.batch_size)
+            track_loss_node.append(loss_node.cpu().detach().numpy() / len(train_loader))
+            track_loss_edge.append(loss_edge.cpu().detach().numpy() / len(train_loader))
         else:
-            track_loss_node.append(loss.cpu().detach().numpy() / train_loader.batch_size)
+            track_loss_node.append(loss.cpu().detach().numpy() / len(train_loader))
         print(f"Epoch {epoch+1}, Train Loss: {track_loss_node[-1]}")        
 
         # Validation step
@@ -180,10 +181,10 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
 
         # -- Output dump -- 
         if loss_target == 'fock_matrix':
-            track_loss_node_val.append(loss_node.cpu().detach().numpy() / val_loader.batch_size)
-            track_loss_edge_val.append(loss_edge.cpu().detach().numpy() / val_loader.batch_size)
+            track_loss_node_val.append(loss_node.cpu().detach().numpy() / len(val_loader))
+            track_loss_edge_val.append(loss_edge.cpu().detach().numpy() / len(val_loader))
         else:
-            track_loss_node_val.append(loss.cpu().detach().numpy() / val_loader.batch_size)
+            track_loss_node_val.append(loss.cpu().detach().numpy() / len(val_loader))
         print(f"Epoch {epoch+1}, Val Loss: {track_loss_node_val[-1]}")
         
         scheduler.step(loss)
@@ -230,16 +231,16 @@ def save_training_state(model, optimizer, track_loss_node, track_validation_node
 
 
     plt.figure(figsize=(4, 3))
-    plt.plot(track_loss_node, label='node')
+    plt.plot(track_loss_node, , 'o-', c='blue', label='node')
 
     if track_loss_edge:
-        plt.plot(track_loss_edge, label='edge')
+        plt.plot(track_loss_edge, 'o-', c='red', label='edge')
 
-    plt.plot(track_validation_node, label='validation node')
+    plt.plot(track_validation_node, , 's--', c='blue', label='validation node')
     if track_loss_edge:
-        plt.plot(track_validation_edge, label='validation edge')
+        plt.plot(track_validation_edge,  's--', c='red', label='validation edge')
         
-    plt.xlabel('Step')
+    plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.yscale('log')
     plt.legend(frameon=False)

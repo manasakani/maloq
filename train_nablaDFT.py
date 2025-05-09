@@ -2,18 +2,19 @@ import time
 import_start = time.perf_counter()
 import os, sys
 import numpy as np
+import random
+
 from ase import Atoms
 from ase.neighborlist import NeighborList
 from fock_utils import utils_orca_out, fock_targets, utils_training
 
 import torch
 import torch.distributed as dist
-
 from ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
 from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
-import random
+from nablaDFT_dataset_utils import HamiltonianDatabase, transform
 
 from equiformer.network import SO2Net
 from equiformer.SO3 import CoefficientMappingModule
@@ -35,43 +36,47 @@ random.seed(42)
 # Fix this later:
 sys.path.append('/home/manasakani/fairchem/src/')
 
-# Settings (just dumping everything here for now)
-# -----------------------------------------------
-dbpath = 'fock_datasets/schnorb_hamiltonian_water.db'
-database = ASEAtomsData(dbpath)
-print("Targets available: ", database.available_properties)
+# -------------------------------------------
+# --> Settings (dump everything here for now)
+# -------------------------------------------
+database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
 
 # -> Model settings:
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = 128
 cutoff = 6.0*2                          # Cutoff used for edge distance embedding
-num_mp_layers = 3
+num_mp_layers = 2
 model_name = 'esen'
 restart = False
-output_folder = 'outputs_QM7'
+output_folder = 'outputs_nablaDFT'
 
 # -> Training settings:
-num_val = 500                           # Number of validation structures
-num_train = 500
-num_epochs = 20000
-lr_init = 1e-4
+num_val = 50                           # Number of validation structures
+num_train = 200
+num_epochs = 1000
+lr_init = 1e-3
 dtype = torch.float32
-batch_size = 10
+batch_size = 10 
 loss_target = 'fock_matrix'
 patience = 100                          # for scheduler
-threshold = 1e-5                        # for scheduler
+threshold = 1e-7                        # for scheduler
 loss_fxn = utils_training.l1_unpadded_loss
 # loss_fxn = utils_training.mse_padded_loss
 
-# --> Compute env
+# ----------------------------
+# --> Initialize compute setup
+# ----------------------------
 device = torch.device('cuda')         
 world_size = int(os.environ['SLURM_NTASKS'])
 rank = int(os.environ['SLURM_PROCID'])
+local_rank = int(os.environ['SLURM_LOCALID'])
 dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
-torch.cuda.set_device(0) # visibility is restricted to 0 in .sh file
+# gpu_id = 0                              # visibility is restricted to 0 in .sh file
+gpu_id = rank                           # visibility is not restricted (running in interactive)
+torch.cuda.set_device(gpu_id)
 
-if not os.path.exists(output_folder):
+if rank == 0 and not os.path.exists(output_folder):
     os.makedirs(output_folder)
 
 # Prepare data
@@ -80,27 +85,45 @@ data_load_start = time.perf_counter()
 max_mol = 5000 
 num_molecules = num_val + num_train
 random_indices = random.sample(range(num_molecules), min(max_mol, num_molecules))
-# random_indices = [0, 0]
+
+orbital_basis = {35: [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2], 
+                 17: [0, 0, 0, 0, 1, 1, 1, 2], 
+                 16: [0, 0, 0, 0, 1, 1, 1, 2], 
+                 9: [0, 0, 0, 1, 1, 2], 
+                 8: [0, 0, 0, 1, 1, 2], 
+                 7: [0, 0, 0, 1, 1, 2], 
+                 6: [0, 0, 0, 1, 1, 2], 
+                 1: [0, 0, 1]}
+# print([database.get_orbitals(x) for x in orbital_basis.keys()])
+
+# check if this is needed (i think can remove)
+target_len = 0
+for l in range(5):
+    max_l_multiplicity = np.max([orbital_basis[el].count(l) for el in orbital_basis])
+    target_len += (2*l + 1) * max_l_multiplicity
 
 datalist = []
-# for i in range(num_molecules):  # deterministic
+required_irreps = []
 for i in random_indices:
-    mol = database.__getitem__(i)
+    # atoms numbers, atoms positions, energy, forces, core hamiltonian, overlap matrix, coefficients matrix,
+    # moses_id, conformation_id
+    Z, R, E, F, H, S, C, moses_id, conformation_id = database[i]
 
-    mol_atoms = Atoms(symbols=mol['_atomic_numbers'].numpy(), positions=mol['_positions'].numpy())
-    rcut = 100.0                                            # connectivity cutoff
-    num_atoms = len(mol['_positions'])
-    energy = mol['energy']
-    forces = mol['forces']
+    mol_atoms = Atoms(symbols=Z, positions=R)
+    rcut = 5.0                                            # connectivity cutoff
+    num_atoms = len(Z)
+    energy = E
+    forces = F
+    print("Num atoms in molecule: ", num_atoms)
 
     # Electronic structure matrix:
-    hamiltonian = mol['hamiltonian'].numpy()   
-    orbital_basis = {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]}
-    atomic_numbers = mol['_atomic_numbers'].numpy()
-    hamiltonian = utils_orca_out.sort_by_m_QM7(hamiltonian, orbital_basis, atomic_numbers)  
+    hamiltonian = H                                       # note that this Hamiltonian is already rotated into the complex spherical harmonic basis
+    atomic_numbers = Z
+    element_strings = mol_atoms.get_chemical_symbols()
+    # hamiltonian = transform(hamiltonian_og, element_strings, convention="psi4")
 
     time_start = time.perf_counter()
-    graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian)
+    graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, target_len=target_len)
     time_end = time.perf_counter()
     print("time to make targets: ", time_end - time_start)
 
@@ -117,7 +140,7 @@ for i in random_indices:
                 )
     datalist.append(data)
 
-required_irreps = graph_targets.req_output_irreps
+required_irreps = graph_targets.req_output_irreps                                                   # all the graphs have the same required Irreps
 print("required irreps: ", required_irreps)
 
 train_size = len(datalist) - num_val
@@ -126,10 +149,10 @@ train_dataset = sampleDataset(train_datalist)
 val_dataset = sampleDataset(val_datalist)
 
 # Check use of batch size higher than 1!!
-train_sampler = DistributedSampler(train_dataset)
-val_sampler = DistributedSampler(val_dataset)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=val_sampler)
+# train_sampler = DistributedSampler(train_dataset)
+# val_sampler = DistributedSampler(val_dataset)
+train_loader = DataLoader(train_dataset, batch_size=batch_size)#, sampler=train_sampler)
+val_loader = DataLoader(val_dataset, batch_size=batch_size)#, sampler=val_sampler)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)

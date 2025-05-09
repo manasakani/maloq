@@ -79,6 +79,8 @@ class EdgeDegreeEmbedding(torch.nn.Module):
         wigner_inv,
         node_or_edge='node'
     ):
+        # adds stuff to all the m=0s in all the ls
+
         x_edge_m_0 = self.rad_func(x_edge)
         x_edge_m_0 = x_edge_m_0.reshape(
             -1, self.m_0_num_coefficients, self.sphere_channels
@@ -101,7 +103,7 @@ class EdgeDegreeEmbedding(torch.nn.Module):
 
         # Rotate back the irreps
         # x_edge_embedding = torch.bmm(wigner_inv, x_edge_embedding)
-        x_edge_embedding = torch.bmm(wigner_inv[:, :, self.out_mask], x_edge_embedding)
+        x_edge_embedding = torch.bmm(wigner_inv[:, :, self.out_mask], x_edge_embedding) # this rotation seems to be important, but why
 
         x_edge_embedding = x_edge_embedding.to(x.dtype)
 

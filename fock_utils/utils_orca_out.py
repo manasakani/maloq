@@ -200,6 +200,65 @@ def read_orca_out(orca_file):
     return fock_matrix, elements, coordinates, basis
 
 
+# def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
+#     """
+#     Converts hamiltonian matrix m-components from ORCA order to the one 
+#     expected by e3nn (m=0 is in the middle)
+    
+#     l = 0: m = [0] -> [0]
+#     l = 1: m = [0 +1 -1] -> [-1 0 1]
+#     ...
+#     """
+
+#     num_cols = hamiltonian.shape[0]
+    
+#     # m_to_m_conversion = []
+#     # m_to_m_conversion.append({0: [0], 1: [1, 0, 2], 2: [0, 1, 3, 2, 4], 3: [1, 0, 2, 4, 3, 5, 6]})  
+#     # m_to_m_conversion.append({0: [0], 1: [1, 0, 2], 2: [0, 1, 3, 2, 4]})  
+#     # m_to_m_conversion.append({0: [0], 1: [1, 0, 2], 2: [0, 2, 1, 3, 4]}) 
+#     # m_to_m_conversion.append({0: [0], 1: [1, 0, 2]})  
+#     # m_to_m_conversion.append({0: [0]}) 
+#     # m_to_m_conversion.append({0: [0]})  
+   
+#     m_to_m_conversion = []
+#     m_to_m_conversion.append({0: [0], 1: [1, 0, 2], 2: [4, 2, 1, 3, 0], 3: [6, 4, 2, 3, 1, 0, 5]})  
+#     m_to_m_conversion.append({0: [0], 1: [1, 0, 2], 2: [4, 2, 1, 3, 0]})  
+#     m_to_m_conversion.append({0: [0], 1: [1, 0, 2], 2: [4, 2, 1, 3, 0]}) 
+#     m_to_m_conversion.append({0: [0], 1: [1, 0, 2]})  
+#     m_to_m_conversion.append({0: [0]}) 
+#     m_to_m_conversion.append({0: [0]})  
+   
+#     permutation = np.arange(0, num_cols)
+
+#     full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
+
+#     # Create permutation list, one block at a time
+#     l_prev = 0
+#     principle_quantum_number = 0
+#     block_start = 0
+#     for l in full_orb_list:
+
+#         if l != l_prev:
+#             principle_quantum_number = 0
+#         # print("principle_quantum_number: ", principle_quantum_number)
+
+#         numel = 2*l + 1
+#         block_end = block_start + numel
+
+#         this_m_to_m_conversion = m_to_m_conversion[principle_quantum_number]
+
+#         orbital_perm = this_m_to_m_conversion[l]
+#         permutation[block_start:block_end] = [x+block_start for x in orbital_perm]
+#         block_start += numel
+        
+#         principle_quantum_number += 1
+#         l_prev = l
+
+#     permuted_hamiltonian = hamiltonian[permutation, :]
+#     permuted_hamiltonian = permuted_hamiltonian[:, permutation]
+#     return permuted_hamiltonian
+
+
 def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
     """
     Converts hamiltonian matrix m-components from ORCA order to the one 
@@ -211,7 +270,92 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
     """
 
     num_cols = hamiltonian.shape[0]
+    # QM7:
+    # m_to_m_conversion = {0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]} 
+    # reflection = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [1, 1, 1, 1, 1, 1, 1]}   
+
+    m_to_m_conversion = {0: [0], 1: [2, 0, 1], 2: [4, 2, 1, 3, 0], 3: [5, 4, 3, 2, 0, 1, 6], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}   
+    reflection = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [1, 1, 1, 1, 1, 1, 1]}   
+
+    # f: lokcked 2, 0, 5
+
+    permutation = np.arange(0, num_cols)
+    full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
+    permuted_hamiltonian = hamiltonian.copy()
+
+    # Create permutation list, one block at a time
+    block_start = 0
+    for l in full_orb_list:
+        numel = 2*l + 1
+        block_end = block_start + numel
+        orbital_perm = m_to_m_conversion[l]
+        refl = reflection[l]
+        
+        P = np.zeros((numel, numel))
+        for i, j in enumerate(orbital_perm):
+            P[i, j] = 1
+        
+        R = np.diag(refl)
+
+        block = permuted_hamiltonian[block_start:block_end, :]
+        block = R @ P @ block
+        permuted_hamiltonian[block_start:block_end, :] = block
+        block = permuted_hamiltonian[:, block_start:block_end]
+        block = block @ (R @ P).T
+        permuted_hamiltonian[:, block_start:block_end] = block
+        block_start += numel
+
+    # permuted_hamiltonian = hamiltonian[permutation, :]
+    # permuted_hamiltonian = permuted_hamiltonian[:, permutation]
+    return permuted_hamiltonian
+
+
+# ADAPT THIS ONE
+def sort_by_m_QM7(hamiltonian, orbital_basis, atomic_numbers):
+    """
+    Converts hamiltonian matrix m-components from ORCA order to the one 
+    expected by e3nn (m=0 is in the middle)
+    
+    l = 0: m = [0] -> [0]
+    l = 1: m = [0 +1 -1] -> [-1 0 1]
+    ...
+    """
+
+    num_cols = hamiltonian.shape[0]
     m_to_m_conversion = {0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}   
+
+    # 4 2 3 1 6 5 7
+    # 3 1 2 0 5 4 6
+    # x, 4, x, 0, x, 3, x
+    permutation = np.arange(0, num_cols)
+
+    full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
+
+    # Create permutation list, one block at a time
+    block_start = 0
+    for l in full_orb_list:
+        numel = 2*l + 1
+        block_end = block_start + numel
+        orbital_perm = m_to_m_conversion[l]
+        permutation[block_start:block_end] = [x+block_start for x in orbital_perm]
+        block_start += numel
+
+    permuted_hamiltonian = hamiltonian[permutation, :]
+    permuted_hamiltonian = permuted_hamiltonian[:, permutation]
+    return permuted_hamiltonian
+
+def sort_by_m_nablaDFT(hamiltonian, orbital_basis, atomic_numbers):
+    """
+    Converts hamiltonian matrix m-components from ORCA order to the one 
+    expected by e3nn (m=0 is in the middle)
+    
+    l = 0: m = [0] -> [0]
+    l = 1: m = [0 +1 -1] -> [-1 0 1]
+    ...
+    """
+
+    num_cols = hamiltonian.shape[0] #???????
+    m_to_m_conversion = {0: [0], 1: [0, 1, 2], 2: [0, 1, 2, 3, 4]} #, 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}   
 
     permutation = np.arange(0, num_cols)
 
@@ -229,3 +373,19 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
     permuted_hamiltonian = hamiltonian[permutation, :]
     permuted_hamiltonian = permuted_hamiltonian[:, permutation]
     return permuted_hamiltonian
+
+
+def delete_rows_and_columns(matrix, indices):
+    """
+    Delete specified rows and columns from a matrix.
+    Parameters:
+    - matrix: The input matrix (2D NumPy array).
+    - indices: A list of row/column indices to delete.
+    Returns:
+    - A new matrix with the specified rows and columns removed.
+    """
+    # Convert the list of indices to a NumPy array
+    indices = np.array(indices)
+    matrix_reduced = np.delete(matrix, indices, axis=0)
+    matrix_reduced = np.delete(matrix_reduced, indices, axis=1)
+    return matrix_reduced

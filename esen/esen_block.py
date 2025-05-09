@@ -12,7 +12,7 @@ import copy
 import torch
 import torch.nn as nn
 
-from .nn.activation import GateActivation, SeparableS2Activation, SmoothLeakyReLU
+from .nn.activation import GateActivation, SeparableS2Activation#, SmoothLeakyReLU
 from .nn.layer_norm import get_normalization_layer
 from .nn.radial import PolynomialEnvelope
 from .nn.so2_layers import SO2_Convolution
