@@ -31,7 +31,7 @@ from .common.so3 import (
     CoefficientMapping,
     SO3_Grid,
 )
-from .esen_block import eSEN_Block
+from .esen_block_noedges import eSEN_Block
 from .nn.embedding import EdgeDegreeEmbedding
 from .nn.layer_norm import (
     EquivariantLayerNormArray,
@@ -363,16 +363,16 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                 wigner_inv,
                 node_or_edge='node',
             )
-            x_message_edge = self.edge_blocks[i](
-                x_message_node,
-                x_message_edge,
-                x_edge,
-                graph_dict["edge_distance"],
-                graph_dict["edge_index"],
-                wigner,
-                wigner_inv,
-                node_or_edge='edge',
-            )
+            # x_message_edge = self.edge_blocks[i](
+            #     x_message_node,
+            #     x_message_edge,
+            #     x_edge,
+            #     graph_dict["edge_distance"],
+            #     graph_dict["edge_index"],
+            #     wigner,
+            #     wigner_inv,
+            #     node_or_edge='edge',
+            # )
         
         # Final layer norm
         x_message_node = self.norm(x_message_node)

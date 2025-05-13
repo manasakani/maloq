@@ -17,7 +17,7 @@ from equiformer.network import SO2Net
 from equiformer.SO3 import CoefficientMappingModule
 from esen.esen import eSEN_Backbone
 from e3nn.o3 import Irreps
-import utils_training
+from fock_utils import utils_training
 
 # --> Script to over-fit a debug molecule for equivariance testing!
 
@@ -31,7 +31,21 @@ random.seed(42)
 # --------------------------------------------
 
 # -> Model settings:
-dataset_folder = 'omol_water_molecule_1x.db' 
+# dataset_folder = 'omol_water_molecule_1x.db'          # tzvp basis
+# dataset_folder = 'omol_h2o_mol_dzvp.db'                 # dzvp basis
+# dataset_folder = 'unsorted_big_water.db'                # dzvp hamiltonian in wrong coordinate system
+# dataset_folder = 'fake_big_water.db'                    # tzvp fock matrix with random values
+# dataset_folder = 'fake_reduced_basis_water.db'          # tzvp basis with duplicate l>0 orbitals deleted
+
+# dataset_folder = 'fake_no_f_water.db'                   # tzvp basis without the f-orbital
+# dataset_folder = 'fake_no_multiplicity_water.db'          # tzvp basis with all duplicate orbitals deleted
+# dataset_folder = 'fake_no_multiplicity_water_dzvp.db'     # random dzvp
+# dataset_folder = 'fake_other_f_permutation.db'             # permuted the f orbitals the other way [5, 3, 1, 0, 2, 4, 6]
+# dataset_folder = 'test_f_permutation.db'
+
+dataset_folder = 'water_tzvp.db'
+# dataset_folder = 'fock_datasets/omol_h2o_mol_dzvp.db'
+
 # dataset_folder = 'fock_datasets/water_clusters_small_flexible_x8.db' 
 
 l_embedding_dim = 128
@@ -70,9 +84,15 @@ if not os.path.exists(output_folder):
 
 data_load_start = time.perf_counter()
 dataset = ASEDataset(dataset_folder, dtype=dtype)
-required_irreps = Irreps(dataset[0].required_irreps)
 
-subset_indices = [0,  0] # only using 1 molecule!
+assert(len(dataset) == 2)       #for debugging
+
+required_irreps = Irreps(dataset[0].required_irreps)
+print("Orbital basis: ", dataset[0].orbital_basis)
+
+# subset_indices = [0,  0] # only using 1 molecule!
+subset_indices = [0, 1] # 1 is a random rotation of 0
+
 subset_dataset = torch.utils.data.Subset(dataset, subset_indices)
 train_dataset, val_dataset = torch.utils.data.random_split(subset_dataset, [num_train, num_val])
 
@@ -81,8 +101,20 @@ val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_wo
 data_load_end = time.perf_counter()
 
 print("Time to load dataset: ", data_load_end - data_load_start)
-lmax = 6 #required_irreps.lmax
+lmax = required_irreps.lmax
 print("Using lmax of : ", lmax)
+
+# for batch in train_loader:
+#     print(batch.pos)
+#     print('------------')
+#     print(batch.node_y[0])
+
+# for batch in val_loader:
+#     print(batch.pos)
+#     print('------------')
+#     print(batch.node_y[0])
+
+# exit()
 
 # Prepare model
 # --------------------------------------------

@@ -82,7 +82,7 @@ class Fock_Targets:
         node_orbital_blocks = self.get_orbital_blocks(self_edges)
         edge_orbital_blocks = self.get_orbital_blocks(self.neighbour_list)
         time_block_end = time.perf_counter()
-        print("time to get orbital blocks: ", time_block_end - time_block_start, flush=True)
+        # print("time to get orbital blocks: ", time_block_end - time_block_start, flush=True)
 
         # // !!! do garbage cleanup for the fock matrix here !!! //
         
@@ -127,23 +127,26 @@ class Fock_Targets:
         time_label_end = time.perf_counter()
         print("time to make labels: ", time_label_end - time_label_start, flush=True)
 
-        # import matplotlib.pyplot as plt
-        # # print("onsite orbital block: ", node_orbital_blocks)
-        # H_size = 40
-        # print("first block: ", node_orbital_blocks[0])
-        # plt.imshow(np.log(np.abs(node_orbital_blocks[0].reshape(H_size, H_size).detach().cpu())))
-        # plt.savefig("node_orbital_blocks[0].png", dpi=300, bbox_inches='tight')
-        # plt.close()
-        # print("first label: ", self.node_labels[0])
-        # plt.imshow(np.log(np.abs(self.node_labels[0].reshape(H_size, H_size).detach().cpu())))
-        # plt.savefig("self.node_labels[0].png", dpi=300, bbox_inches='tight')
-        # plt.close()
-
         # Basis transformation:
         # ---------------------------------------------------------------------------------------------
         self.node_labels = self.basis_transformation.get_net_out(node_labels)
         self.edge_labels = self.basis_transformation.get_net_out(edge_labels)
         # ---------------------------------------------------------------------------------------------
+
+        # dump the targets:
+        # import os
+        # output_dir = './fock_tensors_dumped'
+        # file_path = os.path.join(output_dir, f'molecule_{0}.txt')
+        # with open(file_path, 'w') as f:
+
+        #     f.write("node_labels\n")
+        #     f.write(f"{self.node_labels.shape}\n")
+        #     f.write(' '.join(map(str, self.node_labels.flatten().tolist())) + "\n")
+            
+        #     f.write("edge_labels\n")
+        #     f.write(f"{self.edge_labels.shape}\n")
+        #     f.write(' '.join(map(str, self.edge_labels.flatten().tolist())) + "\n")
+        # exit()
 
         # # for debug:
         # print("after basis transform: ", self.node_labels[0])

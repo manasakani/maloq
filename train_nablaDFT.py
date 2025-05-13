@@ -48,43 +48,75 @@ hidden_dim = 128
 cutoff = 6.0*2                          # Cutoff used for edge distance embedding
 num_mp_layers = 2
 model_name = 'esen'
-restart = False
+restart = True
 output_folder = 'outputs_nablaDFT'
+model_filename = 'model.pt.pt'
+
+rcut = 5.0                                            # connectivity cutoff
 
 # -> Training settings:
-num_val = 50                           # Number of validation structures
-num_train = 200
-num_epochs = 1000
-lr_init = 1e-3
+train_or_eval = "eval"
+num_val = 1#0                           # Number of validation structures per GPU
+num_train = 1000                       # Number of training structures per GPU
+num_epochs = 10000
+lr_init = 5e-4
 dtype = torch.float32
-batch_size = 10 
+batch_size = 1#50 
 loss_target = 'fock_matrix'
 patience = 100                          # for scheduler
-threshold = 1e-7                        # for scheduler
-loss_fxn = utils_training.l1_unpadded_loss
+threshold = 1e-5                        # for scheduler
+loss_fxn = utils_training.l1_padded_loss
 # loss_fxn = utils_training.mse_padded_loss
 
 # ----------------------------
 # --> Initialize compute setup
 # ----------------------------
-device = torch.device('cuda')         
-world_size = int(os.environ['SLURM_NTASKS'])
-rank = int(os.environ['SLURM_PROCID'])
-local_rank = int(os.environ['SLURM_LOCALID'])
-dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
-# gpu_id = 0                              # visibility is restricted to 0 in .sh file
-gpu_id = rank                           # visibility is not restricted (running in interactive)
-torch.cuda.set_device(gpu_id)
+if 'SLURM_JOB_ID' in os.environ:
+    print("Initializing with slurm...")
+    device = torch.device('cuda')         
+    world_size = int(os.environ['SLURM_NTASKS'])
+    rank = int(os.environ['SLURM_PROCID'])
+    local_rank = int(os.environ['SLURM_LOCALID'])
+    dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
+    gpu_id = 0                              # visibility is restricted to 0 in .sh file
+    torch.cuda.set_device(gpu_id)
+
 
 if rank == 0 and not os.path.exists(output_folder):
     os.makedirs(output_folder)
 
-# Prepare data
+# ----------------------------
+# --> Prepare data
 # --------------------------------------------
-data_load_start = time.perf_counter()
-max_mol = 5000 
-num_molecules = num_val + num_train
-random_indices = random.sample(range(num_molecules), min(max_mol, num_molecules))
+max_mol = 500000    # maximum number of molecules in the dataset (change this later)
+
+# sample randomly from the dataset:
+total_num_molecules = (num_val + num_train)*world_size
+
+if rank == 0:
+    random_indices = random.sample(range(total_num_molecules), min(max_mol, total_num_molecules))
+    random_indices_tensor = torch.tensor(random_indices, dtype=torch.long)
+else:
+    random_indices_tensor = torch.empty(min(max_mol, total_num_molecules), dtype=torch.long)
+dist.broadcast(random_indices_tensor, src=0)
+random_indices = random_indices_tensor.tolist()
+
+print("random_indices: ", random_indices)
+
+local_num_molecules = total_num_molecules//world_size
+counts = np.array([local_num_molecules]*world_size, dtype=np.int32)
+for i in range(total_num_molecules % world_size):
+    counts[i] += 1
+
+displacements = np.zeros_like(counts)
+for i in range(1, len(counts)):
+    displacements[i] = displacements[i-1] + counts[i-1]
+
+molecule_start_idx = displacements[rank]
+molecule_end_idx = displacements[rank] + counts[rank]
+local_num_molecules = counts[rank]
+print(f"Processing {total_num_molecules} structures between {world_size} GPUs")
+print(f"Rank {rank} does indicies {molecule_start_idx} to {molecule_end_idx}")
 
 orbital_basis = {35: [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2], 
                  17: [0, 0, 0, 0, 1, 1, 1, 2], 
@@ -102,19 +134,20 @@ for l in range(5):
     max_l_multiplicity = np.max([orbital_basis[el].count(l) for el in orbital_basis])
     target_len += (2*l + 1) * max_l_multiplicity
 
+data_load_start = time.perf_counter()
 datalist = []
-required_irreps = []
-for i in random_indices:
+for i in random_indices[molecule_start_idx:molecule_end_idx]:
+
+    print(f"Rank {rank} of {world_size} is working on molecule {i}", flush=True)
+
     # atoms numbers, atoms positions, energy, forces, core hamiltonian, overlap matrix, coefficients matrix,
     # moses_id, conformation_id
     Z, R, E, F, H, S, C, moses_id, conformation_id = database[i]
 
     mol_atoms = Atoms(symbols=Z, positions=R)
-    rcut = 5.0                                            # connectivity cutoff
     num_atoms = len(Z)
     energy = E
     forces = F
-    print("Num atoms in molecule: ", num_atoms)
 
     # Electronic structure matrix:
     hamiltonian = H                                       # note that this Hamiltonian is already rotated into the complex spherical harmonic basis
@@ -143,19 +176,18 @@ for i in random_indices:
 required_irreps = graph_targets.req_output_irreps                                                   # all the graphs have the same required Irreps
 print("required irreps: ", required_irreps)
 
-train_size = len(datalist) - num_val
-train_datalist, val_datalist = torch.utils.data.random_split(datalist, [train_size, num_val])
+# train_size = len(datalist) - num_val
+print("Rank ", rank, "datalist size ", len(datalist))
+train_datalist, val_datalist = torch.utils.data.random_split(datalist, [num_train, num_val])
+
 train_dataset = sampleDataset(train_datalist)
 val_dataset = sampleDataset(val_datalist)
 
-# Check use of batch size higher than 1!!
-# train_sampler = DistributedSampler(train_dataset)
-# val_sampler = DistributedSampler(val_dataset)
-train_loader = DataLoader(train_dataset, batch_size=batch_size)#, sampler=train_sampler)
-val_loader = DataLoader(val_dataset, batch_size=batch_size)#, sampler=val_sampler)
+train_loader = DataLoader(train_dataset, batch_size=batch_size)
+val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
 data_load_end = time.perf_counter()
-print("Time to load dataset: ", data_load_end - data_load_start)
+print("Total time to load dataset: ", data_load_end - data_load_start)
 
 # Prepare model
 # --------------------------------------------
@@ -207,22 +239,44 @@ model_setup_end = time.perf_counter()
 print("Time to setup model: ", model_setup_end - model_setup_start)
 
 if restart:
-    restart_file = output_folder + "/model.pt.pt"
+    restart_file = output_folder + '/' + model_filename
+    print("Restarting model from :", restart_file)
     checkpoint = torch.load(restart_file)
     state_dict = checkpoint['model_state_dict']
-    model.load_state_dict(state_dict)
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        new_key = key.replace('module.', '')  # DDP saves it with a module prefix
+        new_state_dict[new_key] = value
+    model.load_state_dict(new_state_dict)
 
 
-# Training
+# Training or Evaluation
 # --------------------------------------------
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
-utils_training.train_model(model, 
-                           optimizer, 
-                           loss_fxn, 
-                           loss_target, 
-                           num_epochs, 
-                           train_loader, 
-                           val_loader, 
-                           scheduler, 
-                           device, 
-                           output_folder)
+
+if train_or_eval == "train":
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+    utils_training.train_model(model, 
+                            optimizer, 
+                            loss_fxn, 
+                            loss_target, 
+                            num_epochs, 
+                            train_loader, 
+                            val_loader, 
+                            scheduler, 
+                            device, 
+                            output_folder)
+if train_or_eval == "eval":
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+    utils_training.eval_model(model, 
+                            optimizer, 
+                            loss_fxn, 
+                            loss_target, 
+                            num_epochs, 
+                            train_loader, 
+                            val_loader, 
+                            scheduler, 
+                            device, 
+                            output_folder)
+
+
+dist.destroy_process_group()

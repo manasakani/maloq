@@ -18,11 +18,26 @@ import random
 from equiformer.network import SO2Net
 from equiformer.SO3 import CoefficientMappingModule
 
-from esen.esen import eSEN_Backbone     # NO EDGES OPTION: .esen_noedges
+from esen.esen import eSEN_Backbone    
 from e3nn.o3 import Irreps
 
 import_end = time.perf_counter()
 print("Time to do imports: ", import_end - import_start)
+
+def delete_rows_and_columns(matrix, indices):
+    """
+    Delete specified rows and columns from a matrix.
+    Parameters:
+    - matrix: The input matrix (2D NumPy array).
+    - indices: A list of row/column indices to delete.
+    Returns:
+    - A new matrix with the specified rows and columns removed.
+    """
+    # Convert the list of indices to a NumPy array
+    indices = np.array(indices)
+    matrix_reduced = np.delete(matrix, indices, axis=0)
+    matrix_reduced = np.delete(matrix_reduced, indices, axis=1)
+    return matrix_reduced
 
 # def custom_collate_fn(batch):
 #     return Batch.from_data_list(batch)
@@ -46,20 +61,20 @@ l_embedding_dim = 128                   # sphere channels
 num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = 128
 cutoff = 6.0*2                          # Cutoff used for edge distance embedding
-num_mp_layers = 2 
+num_mp_layers = 1 
 model_name = 'esen'
 restart = False
-output_folder = 'outputs_QM7_fock_2MP'
+output_folder = 'outputs_QM7_debug'
 model_filename = 'model.pt.pt'
 
 # -> Training settings:
 train_or_eval = "train"
-num_val = 500                           # Number of validation structures
-num_train = 500
+num_val = 1                           # Number of validation structures
+num_train = 1
 num_epochs = 5000
-lr_init = 1e-5
+lr_init = 1e-3
 dtype = torch.float32
-batch_size = 10         # 1 for eval, 10 for train
+batch_size = 1         # 1 for eval, 10 for train
 loss_target = 'fock_matrix'
 patience = 100                          # for scheduler
 threshold = 1e-5                        # for scheduler
@@ -81,7 +96,8 @@ if not os.path.exists(output_folder):
 data_load_start = time.perf_counter()
 max_mol = 5000 
 num_molecules = num_val + num_train
-random_indices = random.sample(range(num_molecules), min(max_mol, num_molecules))
+# random_indices = random.sample(range(num_molecules), min(max_mol, num_molecules))
+random_indices = [0, 0] 
 
 datalist = []
 for i in random_indices:
@@ -97,7 +113,36 @@ for i in random_indices:
     hamiltonian = mol['hamiltonian'].numpy()   
     orbital_basis = {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]}
     atomic_numbers = mol['_atomic_numbers'].numpy()
-    hamiltonian = utils_orca_out.sort_by_m_QM7(hamiltonian, orbital_basis, atomic_numbers)  
+    hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)  
+
+    ###
+    # --> delete duplicate orbitals for l > 0:
+    # full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
+    # orbital_starts = np.hstack([0, np.cumsum([2*l + 1 for l in full_orb_list])[:-1]])
+    # indices_to_delete = (   list(range(9, 14)) #+         # oxygen d orbitals
+    #                         # list(range(9, 18)) +       # oxygen p orbitals
+    #                         # list(range(23, 33)) +      # oxygen d orbitals
+    #                         # list(range(46, 49)) +      # hydrogen p orbital
+    #                         # list(range(55, 58)) +       # hydrogen p orbital
+    #                         # list(range(41, 43)) +
+    #                         # list(range(50, 52))
+    #                     )
+    # hamiltonian = delete_rows_and_columns(hamiltonian, indices_to_delete)
+
+    # # basis = {8: [0, 0, 0, 0, 0, 0, 1, 2, 3], 1: [0, 0, 0, 1]}
+    # orbital_basis = {8: [0, 0, 0, 1, 1], 1: [0, 0, 1]}
+
+    # full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
+    # expected_matrix_size = sum([2*l + 1 for l in full_orb_list])
+    # orbital_starts = np.hstack([0, np.cumsum([2*l + 1 for l in full_orb_list])[:-1]])
+
+    import matplotlib.pyplot as plt
+    plt.imshow(hamiltonian)
+    plt.colorbar()
+    plt.savefig("qm7_fock.png", dpi=300, bbox_inches='tight')
+    exit()
+    # --------------------------------------------------------------------------------------
+    ###
 
     time_start = time.perf_counter()
     graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian)
@@ -185,14 +230,10 @@ print("Time to setup model: ", model_setup_end - model_setup_start)
 
 if restart:
     restart_file = output_folder + '/' + model_filename
-    print("Restarting model from :", restart_file)
     checkpoint = torch.load(restart_file)
     state_dict = checkpoint['model_state_dict']
-    new_state_dict = {}
-    for key, value in state_dict.items():
-        new_key = key.replace('module.', '')  # DDP saves it with a module prefix
-        new_state_dict[new_key] = value
-    model.load_state_dict(new_state_dict)
+    model.load_state_dict(state_dict, strict=False) # 'strict' should take care of the module prefix, but watch out
+
 
 # Training or Evaluation
 # --------------------------------------------
