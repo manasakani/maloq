@@ -1,45 +1,34 @@
 import time
 import_start = time.perf_counter()
-import os, sys
+import os, sys, random
 import numpy as np
-from ase import Atoms
-from ase.neighborlist import NeighborList
-from fock_utils import utils_orca_out, fock_targets, utils_training
-
 import torch
-import torch.distributed as dist
 
-from ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
-from torch.utils.data.distributed import DistributedSampler
-from torch_geometric.loader import DataLoader
-from torch_geometric.data import Data as gnnData, Dataset
-import random
+from fock_utils import utils_orca_out, fock_targets
+from train_utils import utils_training, utils_compute
+from dataset_utils import get_loader
+from dataset_utils.ASEDataset import ASEAtomsData
 
+# Models
 from equiformer.network import SO2Net
 from equiformer.SO3 import CoefficientMappingModule
-
-from esen.esen import eSEN_Backbone     # NO EDGES OPTION: .esen_noedges
+from esen.esen import eSEN_Backbone                         # NO EDGES OPTION: .esen_noedges
 from e3nn.o3 import Irreps
 
 import_end = time.perf_counter()
 print("Time to do imports: ", import_end - import_start)
 
-# def custom_collate_fn(batch):
-#     return Batch.from_data_list(batch)
-
-# Set random seeds for reproducibility
+# Fix random seeds for testing
 torch.manual_seed(42)
 np.random.seed(42)
 random.seed(42)
 
-# Fix this later:
-sys.path.append('/home/manasakani/fairchem/src/')
-
+# -----------------------------------------------
 # Settings (just dumping everything here for now)
 # -----------------------------------------------
 dbpath = 'fock_datasets/schnorb_hamiltonian_water.db'
 database = ASEAtomsData(dbpath)
-print("Targets available: ", database.available_properties)
+dataset_name = 'QM7'
 
 # -> Model settings:
 l_embedding_dim = 128                   # sphere channels
@@ -49,94 +38,58 @@ cutoff = 6.0*2                          # Cutoff used for edge distance embeddin
 num_mp_layers = 2 
 model_name = 'esen'
 restart = False
-output_folder = 'outputs_QM7_fock_2MP'
+output_folder = 'outputs_QM7'
 model_filename = 'model.pt.pt'
 
 # -> Training settings:
 train_or_eval = "train"
-num_val = 500                           # Number of validation structures
-num_train = 500
+num_val = 10 #500                       # Number of validation structures
+num_train = 10 #500
 num_epochs = 5000
-lr_init = 1e-5
+batch_size = 10                         # 1 for eval, 10 for train
+rcut = 5.0                              # connectivity cutoff (=2xrcut)
+
 dtype = torch.float32
-batch_size = 10         # 1 for eval, 10 for train
-loss_target = 'fock_matrix'
+lr_init = 1e-4
 patience = 100                          # for scheduler
 threshold = 1e-5                        # for scheduler
-# loss_fxn = utils_training.l1_unpadded_loss
+
+loss_target = 'fock_matrix'
 loss_fxn = utils_training.mse_padded_loss
 
-# --> Compute env
-device = torch.device('cuda')         
-world_size = int(os.environ['SLURM_NTASKS'])
+# --------------------------------------------
+# Initialize compute environment 
+# --------------------------------------------
+
 rank = int(os.environ['SLURM_PROCID'])
-dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
-torch.cuda.set_device(0) # visibility is restricted to 0 in .sh file
+world_size = int(os.environ['SLURM_NTASKS'])
+
+print("I'm rank ", rank, "of ", world_size)
+device = utils_compute.setup_env(rank, world_size)
 
 if not os.path.exists(output_folder):
     os.makedirs(output_folder)
 
+# --------------------------------------------
 # Prepare data
 # --------------------------------------------
 data_load_start = time.perf_counter()
-max_mol = 5000 
-num_molecules = num_val + num_train
-random_indices = random.sample(range(num_molecules), min(max_mol, num_molecules))
 
-datalist = []
-for i in random_indices:
-    mol = database.__getitem__(i)
+train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
+val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
 
-    mol_atoms = Atoms(symbols=mol['_atomic_numbers'].numpy(), positions=mol['_positions'].numpy())
-    rcut = 100.0                                            # connectivity cutoff
-    num_atoms = len(mol['_positions'])
-    energy = mol['energy']
-    forces = mol['forces']
+val_start_mol += num_train  # the validation molecules start after training ones
+val_end_mol += num_train
 
-    # Electronic structure matrix:
-    hamiltonian = mol['hamiltonian'].numpy()   
-    orbital_basis = {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]}
-    atomic_numbers = mol['_atomic_numbers'].numpy()
-    hamiltonian = utils_orca_out.sort_by_m_QM7(hamiltonian, orbital_basis, atomic_numbers)  
-
-    time_start = time.perf_counter()
-    graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian)
-    time_end = time.perf_counter()
-    print("time to make targets: ", time_end - time_start)
-
-    data = gnnData(
-                    pos=torch.tensor(graph_targets.atoms.positions, dtype=torch.float),
-                    x=torch.tensor(graph_targets.atomic_numbers, dtype=torch.long), 
-                    edge_index=torch.tensor(graph_targets.neighbour_list).to(device),
-                    edge_attr=graph_targets.edge_dist.to(device),
-                    y=graph_targets.edge_labels,
-                    node_y=graph_targets.node_labels,
-                    atomic_numbers=torch.tensor(graph_targets.atomic_numbers, dtype=torch.long).cpu(),  
-                    energies=torch.tensor(energy, dtype=dtype),
-                    forces=torch.tensor(forces, dtype=dtype),                                      # Hartree/Angstrom
-                )
-    datalist.append(data)
-
-required_irreps = graph_targets.req_output_irreps
-print("required irreps: ", required_irreps)
-
-train_size = len(datalist) - num_val
-train_datalist, val_datalist = torch.utils.data.random_split(datalist, [train_size, num_val])
-train_dataset = sampleDataset(train_datalist)
-val_dataset = sampleDataset(val_datalist)
-
-# Check use of batch size higher than 1!!
-train_sampler = DistributedSampler(train_dataset)
-val_sampler = DistributedSampler(val_dataset)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, sampler=val_sampler)
+train_loader, required_irreps = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut, batch_size)
+val_loader, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut, batch_size)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
 
-# Prepare model
 # --------------------------------------------
-model_setup_start = time.perf_counter()
+# Get model
+# --------------------------------------------
 if model_name == 'equiformer':
     irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
     mappingReduced = CoefficientMappingModule(required_irreps.lmax, required_irreps.lmax)
@@ -161,6 +114,7 @@ if model_name == 'equiformer':
                     ffn_hidden_channels, 
                     irreps_in, 
                     required_irreps)
+
 elif model_name == 'esen':
     model = eSEN_Backbone(
                     required_irreps,
@@ -180,8 +134,6 @@ elif model_name == 'esen':
 model = model.to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=lr_init)
 print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
-model_setup_end = time.perf_counter()
-print("Time to setup model: ", model_setup_end - model_setup_start)
 
 if restart:
     restart_file = output_folder + '/' + model_filename
@@ -194,7 +146,8 @@ if restart:
         new_state_dict[new_key] = value
     model.load_state_dict(new_state_dict)
 
-# Training or Evaluation
+# --------------------------------------------
+# Run Training or Evaluation
 # --------------------------------------------
 
 if train_or_eval == "train":

@@ -3,6 +3,14 @@ from torch_geometric.data import Data, Dataset, DataLoader
 import torch
 import numpy as np
 
+from typing import Optional, List, Dict, Any, Iterable, Union, Tuple
+from abc import ABC, abstractmethod
+import torch.nn as nn
+from ase import Atoms
+import os
+from ase.db import connect
+from . import schnetpack_properties as structure
+
 class ASEDataset(Dataset):
     def __init__(self, db_path, dtype=torch.float32):
         self.db = ase.db.connect(db_path)
@@ -54,8 +62,6 @@ class ASEDataset(Dataset):
             quadrupole=quadrupole
         )
 
-        # print(data.keys())
-
         # Store orbital basis (dictionary)
         data.orbital_basis = orbital_basis
         data.required_irreps = structure.data["required_irreps"]
@@ -83,14 +89,6 @@ def sample_collate_fn(batch):
 #     pass
 
 # extension_map = {AtomsDataFormat.ASE: ".db"}
-
-from typing import Optional, List, Dict, Any, Iterable, Union, Tuple
-from abc import ABC, abstractmethod
-import torch.nn as nn
-from ase import Atoms
-import os
-from ase.db import connect
-import schnetpack_properties as structure
 
 class Transform(nn.Module):
     """

@@ -6,7 +6,8 @@ import random
 
 from ase import Atoms
 from ase.neighborlist import NeighborList
-from fock_utils import utils_orca_out, fock_targets, utils_training
+from fock_utils import utils_orca_out, fock_targets
+from train_utils import utils_training
 
 import torch
 import torch.distributed as dist
@@ -127,6 +128,7 @@ orbital_basis = {35: [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2],
                  6: [0, 0, 0, 1, 1, 2], 
                  1: [0, 0, 1]}
 # print([database.get_orbitals(x) for x in orbital_basis.keys()])
+# exit()
 
 # check if this is needed (i think can remove)
 target_len = 0
