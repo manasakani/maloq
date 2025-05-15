@@ -7,6 +7,7 @@ from ase import Atoms
 
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
+import torch.distributed as dist
 
 orbital_basis_def2_svp = {35: [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2], 
                           17: [0, 0, 0, 0, 1, 1, 1, 2], 
@@ -21,11 +22,12 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     """
     Make dataloader with the given indices of the mocules in the input database
     """
+    rank = dist.get_rank()
 
     datalist = []
     for i in range(start_idx, end_idx):
         mol = database[i]
-        print(f"Making molecule {i}")
+        # print(f"Rank {rank} making molecule {i}")
 
         if dataset_name == "QM7":
             energy = mol['energy']
@@ -45,13 +47,13 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         # 1. Make the atomic structure
         mol_atoms = Atoms(symbols=atomic_numbers, positions=positions)
 
-        # 2. Prepare the Fock matrix targets:
+        # 2. Set up the Fock matrix targets:
         if dataset_name == "QM7":                 
-            hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA 
+            hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate 
             
         graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian)
 
-        # 3. Prepare data object
+        # 3. Make the data object
         data = gnnData(
                     pos=torch.tensor(graph_targets.atoms.positions, dtype=torch.float),
                     x=torch.tensor(graph_targets.atomic_numbers, dtype=torch.long), 
@@ -62,9 +64,10 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
                     atomic_numbers=torch.tensor(graph_targets.atomic_numbers, dtype=torch.long).cpu(),  
                     energies=torch.tensor(energy, dtype=dtype),
                     forces=torch.tensor(forces, dtype=dtype),                                      # Hartree/Angstrom
+                    num_atoms=len(graph_targets.atomic_numbers)
                 )
+        datalist.append(data)
 
-    datalist.append(data)
     required_irreps = graph_targets.req_output_irreps
     print("required irreps: ", required_irreps)
 

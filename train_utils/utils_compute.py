@@ -5,18 +5,21 @@ import numpy as np
 
 def setup_env(rank, world_size):
 
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    device = torch.device('cuda')  
+    # os.environ['MASTER_ADDR'] = 'localhost'
+    # os.environ['MASTER_PORT'] = '12355'
+    # device = torch.device('cuda')  
+    # print(f"rank {rank} sees {os.environ['CUDA_VISIBLE_DEVICES']}")
 
     print("Initializing distributed process group... ")     
     dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
 
     # visibility is restricted to 0 in .sh file
     if len(os.environ['CUDA_VISIBLE_DEVICES']) == 1:
-        torch.cuda.set_device(0) 
-        device = torch.device('cuda:0')
+        gpu_id = 0
+        torch.cuda.set_device(gpu_id) 
+        device = torch.device('cuda:'+ str(gpu_id))
     else:
+        print("len(os.environ['CUDA_VISIBLE_DEVICES']) ~= 1", flush=True)
         torch.cuda.set_device(rank) 
         device = torch.device(f'cuda:{rank}')
 

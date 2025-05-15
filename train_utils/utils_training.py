@@ -81,19 +81,33 @@ def combined_unpadded_loss(output, target):
 
     return mse_masked + l1_masked
 
+def adjust_learning_rate(optimizer, epoch, warmup_epochs, initial_lr, final_lr):
+    """Adjusts the learning rate linearly during the warmup phase."""
+    if epoch < warmup_epochs:
+        lr = initial_lr + (final_lr - initial_lr) * (epoch / warmup_epochs)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+        print(f"Warmup epoch {epoch+1}: setting learning rate to {lr}")
+
 # Model training loop
 # ----------------------
 @profile_code(profile_flag=False)
 def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loader, val_loader, scheduler, device, output_folder):
 
+    # need find_unused_parameters for now because there are multiple target types and might only fit one
     if dist.is_available() and dist.is_initialized():
-        # need find_unused_parameters for now because there are multiple target types and might only fit one
         rank = dist.get_rank() 
         model = nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
     else:
         rank = 0
 
     print("Loss Target: ", loss_target)
+
+    num_train_batches = len(train_loader)
+    num_val_batches = len(val_loader)
+
+    warmup_epochs = 20
+    initial_lr = optimizer.param_groups[0]['lr']
 
     track_loss_node = []
     track_loss_edge = []
@@ -102,8 +116,13 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
 
     for epoch in range(num_epochs):
         epoch_start = time.perf_counter()
+
+        # warmup epochs
+        adjust_learning_rate(optimizer, epoch, warmup_epochs, initial_lr, initial_lr*10)
         
         model.train()  
+        train_loss_node = 0.0
+        train_loss_edge = 0.0
         for batch in train_loader:
 
             optimizer.zero_grad()
@@ -121,17 +140,23 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                 loss_edge = loss_fxn(out["edge_rankN"], batch.y) 
                 loss = loss_fxn(output, labels)
 
+                train_loss_node += loss_node.cpu().detach().numpy()
+                train_loss_edge += loss_edge.cpu().detach().numpy()
+
             elif loss_target == 'forces':
                 loss = loss_fxn(out["node_rank1"], batch.forces[:, [1, 2, 0]])  
+                train_loss_node += loss_node.cpu().detach().numpy()
 
             elif loss_target == 'energy':
-                # print("Fix the batch dimension!")
-                # print('out["node_rank0"] ',  out["node_rank0"])
-                # print('batch.energies ', batch.energies)
+                print("Fix the batch dimension!")
                 loss = loss_fxn(out["node_rank0"], batch.energies)  
 
             else: 
                 print("unknown loss!") 
+            
+            # Aggregate loss across all processes
+            dist.all_reduce(loss, op=dist.ReduceOp.SUM)
+            loss /= dist.get_world_size()
             
             # -- Backwards -- 
             loss.backward()
@@ -139,18 +164,21 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
             
         # -- Output dump -- 
         if loss_target == 'fock_matrix':
-            # track_loss_node.append(loss_node.cpu().detach().numpy() / len(train_loader.batch_size))
-            # track_loss_edge.append(loss_edge.cpu().detach().numpy() / len(train_loader.batch_size))
-            track_loss_node.append(loss_node.cpu().detach().numpy()) # just the last one
-            track_loss_edge.append(loss_edge.cpu().detach().numpy())
+            track_loss_node.append(train_loss_node/num_train_batches) 
+            track_loss_edge.append(train_loss_edge/num_train_batches)
         else:
-            # track_loss_node.append(loss.cpu().detach().numpy() / train_loader.batch_size)
-            track_loss_node.append(loss.cpu().detach().numpy())
-        print(f"Epoch {epoch+1}, Train Loss: {track_loss_node[-1]}")        
+            track_loss_node.append(train_loss_node/num_train_batches) 
+
+        if rank == 0:
+            print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]} [edge] {track_loss_edge[-1]}", flush=True)    
+
+        dist.barrier()
 
         # Validation step
         model.eval()
-        val_loss = 0
+        val_loss = 0.0
+        val_loss_node = 0.0
+        val_loss_edge = 0.0
         with torch.no_grad():
             for batch in val_loader:
                 batch = batch.to(device)
@@ -166,43 +194,52 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                     loss_edge = loss_fxn(out["edge_rankN"], batch.y) 
                     loss = loss_fxn(output, labels)
 
+                    val_loss_node += loss_node.cpu().detach().numpy()
+                    val_loss_edge += loss_edge.cpu().detach().numpy()
+
                 elif loss_target == 'forces':
-                    # loss = loss_fxn(out["node_rank1"], batch.forces)  
                     loss = loss_fxn(out["node_rank1"], batch.forces[:, [1, 2, 0]])  
 
                 elif loss_target == 'energy':
-                    # print("Fix the batch dimension!")
                     loss = loss_fxn(out["node_rank0"], batch.energies)  
 
                 else: 
                     print("unknown target!")
                         
                 val_loss += loss.item()
+        
+        val_loss_tensor = torch.tensor(val_loss, device=device)
+        dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.SUM)
+        val_loss = val_loss_tensor.item() / dist.get_world_size()
 
         # -- Output dump -- 
         if loss_target == 'fock_matrix':
-            track_loss_node_val.append(loss_node.cpu().detach().numpy())
-            track_loss_edge_val.append(loss_edge.cpu().detach().numpy())
+            track_loss_node_val.append(val_loss_node/num_val_batches) 
+            track_loss_edge_val.append(val_loss_edge/num_val_batches)
         else:
-            track_loss_node_val.append(loss.cpu().detach().numpy())     # just the last one
-        print(f"Epoch {epoch+1}, Val Loss: {track_loss_node_val[-1]}")
+            track_loss_node_val.append(val_loss_node/num_val_batches) 
+
+        if rank == 0:
+            print(f"Epoch {epoch+1}, Val Loss  : [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)
         
+        # -- Scheduler -- 
         scheduler.step(val_loss)
         current_lr = optimizer.param_groups[0]['lr']
-        print("current Lr: ", current_lr)
+        if rank == 0:
+            print("Current learning rate: ", current_lr)
         
         epoch_end = time.perf_counter()
-        print("Time per epoch: ", epoch_end - epoch_start)
+        if rank == 0:
+            print("Time per epoch: ", epoch_end - epoch_start)
         
         # save state
         if rank == 0:
-            if (epoch + 1) % 20 == 0:
+            if (epoch + 1) % 100 == 0:
                 if loss_target == 'fock_matrix':
-                    save_training_state(model, optimizer, track_loss_node, track_loss_node_val, 'model.pt', output_folder, track_loss_edge, track_loss_edge_val)
+                    save_training_state(model, optimizer, track_loss_node, track_loss_node_val, 'model', output_folder, track_loss_edge, track_loss_edge_val)
                 else:
-                    save_training_state(model, optimizer, track_loss_node, track_loss_node_val, 'model.pt', output_folder)
+                    save_training_state(model, optimizer, track_loss_node, track_loss_node_val, 'model', output_folder)
     
-
 
 # Model training loop
 # ----------------------
@@ -224,7 +261,7 @@ def eval_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loader
         loss_edge = []
     
     # -- Evaluate everything in the train_loader -- 
-    with torch.no_grad():  # Disable gradient calculation
+    with torch.no_grad():  
         for index, batch in enumerate(train_loader):
 
             print("index: ", index)
