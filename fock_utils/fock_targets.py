@@ -42,8 +42,15 @@ class Fock_Targets:
                                          for l in orbital_basis[atom_number]]) 
                                          for atom_number in self.atomic_numbers ])
         
+        ### Using a different target shape per molecule ###
+        # molecule_orbital_basis = {atom_number: self.orbital_basis[atom_number] for atom_number in self.atomic_numbers}
+        # print("Orbital basis used: ", molecule_orbital_basis)
+        ### Using a different target shape per molecule ###
+        # exit()
+        
         # Analyze structure of orbital interactions
         targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions
+        # targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(molecule_orbital_basis)     # list of all possible irreps required to capture the orbital interactions
         equivariant_blocks, out_js_list, orbital_starts = utils_tensor_decomp.process_targets(self.orbital_basis, targets)
         self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
                                                             out_js_list,
@@ -51,12 +58,8 @@ class Fock_Targets:
                                                             if_sort=False,
                                                             device_torch=self.device)
         
-        # import matplotlib.pyplot as plt
-        # plt.imshow(np.log(np.abs(fock_matrix)))
-        # plt.savefig("fock_matrix.png", dpi=300, bbox_inches='tight')
-        # plt.close()  
-        # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
-        # print(f'Simplified irreps: {self.simplified_out_irreps}')
+        print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
+        print(f'Simplified irreps: {self.simplified_out_irreps}')
 
         self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)])       # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
         self.target_len = target_len if target_len != 0 else None                   
@@ -78,11 +81,8 @@ class Fock_Targets:
 
         # Extract blocks from fock matrix:
         self_edges = [list(range(self.NA)), list(range(self.NA))]
-        time_block_start = time.perf_counter()
         node_orbital_blocks = self.get_orbital_blocks(self_edges)
         edge_orbital_blocks = self.get_orbital_blocks(self.neighbour_list)
-        time_block_end = time.perf_counter()
-        # print("time to get orbital blocks: ", time_block_end - time_block_start, flush=True)
 
         # // !!! do garbage cleanup for the fock matrix here !!! //
         
@@ -125,7 +125,7 @@ class Fock_Targets:
                     node_orbital_blocks[node_idx][slice_row, slice_col].reshape(1, -1)
                 )
         time_label_end = time.perf_counter()
-        print("time to make labels: ", time_label_end - time_label_start, flush=True)
+        # print("time to make labels: ", time_label_end - time_label_start, flush=True)
 
         # Basis transformation:
         # ---------------------------------------------------------------------------------------------

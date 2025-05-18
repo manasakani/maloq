@@ -130,7 +130,6 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
             # -- Forward -- 
             batch = batch.to(device)
             out = model(batch) 
-            # dist.barrier()
 
             # -- Loss -- 
             if loss_target == 'fock_matrix':
@@ -145,7 +144,8 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
 
             elif loss_target == 'forces':
                 loss = loss_fxn(out["node_rank1"], batch.forces[:, [1, 2, 0]])  
-                train_loss_node += loss_node.cpu().detach().numpy()
+
+                train_loss_node += loss.cpu().detach().numpy()
 
             elif loss_target == 'energy':
                 print("Fix the batch dimension!")
@@ -170,9 +170,10 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
             track_loss_node.append(train_loss_node/num_train_batches) 
 
         if rank == 0:
-            print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]} [edge] {track_loss_edge[-1]}", flush=True)    
-
-        dist.barrier()
+            if loss_target == 'fock_matrix':
+                print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]} [edge] {track_loss_edge[-1]}", flush=True) 
+            else:
+                print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]}", flush=True) 
 
         # Validation step
         model.eval()
@@ -185,6 +186,7 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                 
                 # -- Forward --
                 out = model(batch)
+                dist.barrier()
                 
                 # -- Loss --
                 if loss_target == 'fock_matrix':
@@ -200,8 +202,12 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                 elif loss_target == 'forces':
                     loss = loss_fxn(out["node_rank1"], batch.forces[:, [1, 2, 0]])  
 
+                    val_loss_node += loss.cpu().detach().numpy()
+
                 elif loss_target == 'energy':
                     loss = loss_fxn(out["node_rank0"], batch.energies)  
+
+                    val_loss_node += loss.cpu().detach().numpy()
 
                 else: 
                     print("unknown target!")
@@ -220,7 +226,10 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
             track_loss_node_val.append(val_loss_node/num_val_batches) 
 
         if rank == 0:
-            print(f"Epoch {epoch+1}, Val Loss  : [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)
+            if loss_target == 'fock_matrix':
+                print(f"Epoch {epoch+1}, Val Loss  : [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)
+            else:
+                print(f"Epoch {epoch+1}, Val Loss  : [node] {track_loss_node_val[-1]}", flush=True)
         
         # -- Scheduler -- 
         scheduler.step(val_loss)
@@ -244,7 +253,7 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
 # Model training loop
 # ----------------------
 @profile_code(profile_flag=False)
-def eval_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loader, val_loader, scheduler, device, output_folder):
+def eval_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loader, val_loader, scheduler, device, output_folder, basis_transform):
 
     if dist.is_available() and dist.is_initialized():
         # find_unused_parameters is true because there are multiple target types
@@ -256,6 +265,7 @@ def eval_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loader
     print("Eval Target: ", loss_target)
     model.eval()
 
+    total_loss = []
     loss_node = []
     if loss_target == "fock_matrix":
         loss_edge = []
@@ -271,10 +281,18 @@ def eval_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loader
 
             # -- Loss -- 
             if loss_target == 'fock_matrix':
-                output = torch.cat([out["node_rankN"], out["edge_rankN"]], dim=0)
-                labels = torch.cat([batch.node_y, batch.y], dim=0)
-                loss_node.append(loss_fxn(out["node_rankN"], batch.node_y))
-                loss_edge.append(loss_fxn(out["edge_rankN"], batch.y))
+
+                # Transform back to uncoupled basis:
+                uncoupled_node_outputs = basis_transform.get_H(out["node_rankN"])
+                uncoupled_edge_outputs = basis_transform.get_H(out["edge_rankN"])
+                uncoupled_node_labels = basis_transform.get_H(batch.node_y)
+                uncoupled_edge_labels = basis_transform.get_H(batch.y)
+
+                output = torch.cat([uncoupled_node_outputs, uncoupled_edge_outputs], dim=0)
+                labels = torch.cat([uncoupled_node_labels, uncoupled_edge_labels], dim=0)
+                loss_node.append(loss_fxn(uncoupled_node_outputs, uncoupled_node_labels))
+                loss_edge.append(loss_fxn(uncoupled_edge_outputs, uncoupled_edge_labels))
+                total_loss.append(loss_fxn(output, labels))
                 
             elif loss_target == 'forces':
                 loss_node.append(loss_fxn(out["node_rank1"], batch.forces[:, [1, 2, 0]]))
@@ -293,8 +311,8 @@ def eval_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loader
         # -- Output dump -- 
         if loss_target == 'fock_matrix':
             with open(output_folder + "/" + 'model' + '_eval.txt', 'w') as f:
-                    for edge, node in zip(loss_edge, loss_node):
-                        f.write(f"{edge:.8f}\t{node:.8f}\n")
+                    for edge, node, total in zip(loss_edge, loss_node, total_loss):
+                        f.write(f"{edge:.8f}\t{node:.8f}\t{total:.8f}\n")
         else:
             with open(output_folder + "/" + 'model' + '_eval.txt', 'w') as f:
                     for node in loss_node:

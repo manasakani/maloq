@@ -14,14 +14,14 @@ def setup_env(rank, world_size):
     dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
 
     # visibility is restricted to 0 in .sh file
-    if len(os.environ['CUDA_VISIBLE_DEVICES']) == 1:
-        gpu_id = 0
-        torch.cuda.set_device(gpu_id) 
-        device = torch.device('cuda:'+ str(gpu_id))
-    else:
-        print("len(os.environ['CUDA_VISIBLE_DEVICES']) ~= 1", flush=True)
-        torch.cuda.set_device(rank) 
-        device = torch.device(f'cuda:{rank}')
+    # if len(os.environ['CUDA_VISIBLE_DEVICES']) == 1:
+    gpu_id = 0
+    torch.cuda.set_device(gpu_id) 
+    device = torch.device('cuda:'+ str(gpu_id))
+    # else:
+    #     print("len(os.environ['CUDA_VISIBLE_DEVICES']) ~= 1", flush=True)
+    #     torch.cuda.set_device(rank) 
+    #     device = torch.device(f'cuda:{rank}')
 
     print("Finished setting up compute environment.")
     return device
