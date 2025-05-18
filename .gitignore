@@ -4,4 +4,6 @@
 *.png
 *.out
 
-./test_scripts/*
+data_runs/*
+outputs_*
+fock_datasets/*
