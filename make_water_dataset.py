@@ -1,6 +1,6 @@
 import os
 import numpy as np
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 # from ase.visualize import view
 from ase import Atoms
 from ase.db import connect
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-import utils_orca_out, utils_tensor_decomp, fock_targets
+from fock_utils import utils_orca_out, utils_tensor_decomp, fock_targets
 import time
 import argparse
 
@@ -25,8 +25,10 @@ structure_folders = [f for f in os.listdir(structures_dir)
                     if len(os.listdir(os.path.join(structures_dir, f))) > 0 and 
                     os.path.isdir(os.path.join(structures_dir, f)) ]
 orca_file = 'orca.out'
-cutoff = 5.0            
+cutoff = 4.0            
 num_local_structures = int(args.max_structures) # use to impose only making a subset
+
+print(structure_folders)
 
 # ----------------------------
 # --> Initialize compute setup
@@ -75,41 +77,12 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
     # Atomic and electronic structure:
     read_time_start = time.perf_counter()
     fock_matrix, elements, coordinates, basis = utils_orca_out.read_orca_out(orca_output_filepath)
+
+    # --------------------------------------------------------------------------------------
+    basis = {8: [0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 0, 1, 2], 1: [0, 0, 0, 1, 1]}
+    # --------------------------------------------------------------------------------------
+
     fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, np.array(elements))
-
-    # --> Replace fock matrix with a random matrix:
-    # matrix_size = fock_matrix.shape[0]
-    # random_matrix = np.random.rand(matrix_size, matrix_size)
-    # symmetric_matrix = (random_matrix + random_matrix.T) / 2
-    # fock_matrix = symmetric_matrix
-    # --------------------------------------------------------------------------------------
-
-    # --> delete duplicate orbitals for l > 0:
-    # full_orb_list = np.hstack([basis[elements[i]] for i in range(len(elements))])
-    # orbital_starts = np.hstack([0, np.cumsum([2*l + 1 for l in full_orb_list])[:-1]])
-    # indices_to_delete = (   list(range(1, 6)) +         # oxygen s orbitals
-    #                         list(range(9, 18)) +       # oxygen p orbitals
-    #                         list(range(23, 33)) +      # oxygen d orbitals
-    #                         list(range(46, 49)) +      # hydrogen p orbital
-    #                         list(range(55, 58)) +       # hydrogen p orbital
-    #                         list(range(41, 43)) +
-    #                         list(range(50, 52))
-    #                     )
-    # fock_matrix = utils_orca_out.delete_rows_and_columns(fock_matrix, indices_to_delete)
-    # # basis = {8: [0, 0, 0, 0, 0, 0, 1, 2, 3], 1: [0, 0, 0, 1]}
-    # basis = {8: [0, 1, 2, 3], 1: [0, 1]}
-    # full_orb_list = np.hstack([basis[elements[i]] for i in range(len(elements))])
-    # expected_matrix_size = sum([2*l + 1 for l in full_orb_list])
-    # orbital_starts = np.hstack([0, np.cumsum([2*l + 1 for l in full_orb_list])[:-1]])
-    # --------------------------------------------------------------------------------------
-
-    # --> delete the f orbital (l = 3):
-    full_orb_list = np.hstack([basis[elements[i]] for i in range(len(elements))])
-    orbital_starts = np.hstack([0, np.cumsum([2*l + 1 for l in full_orb_list])[:-1]])
-    indices_to_delete = (list(range(33, 40)))       # oxygen f orbitals
-    fock_matrix = utils_orca_out.delete_rows_and_columns(fock_matrix, indices_to_delete)
-    basis = {8: [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2], 1: [0, 0, 0, 1, 1]}
-    # --------------------------------------------------------------------------------------
 
     structure = Atoms(elements, positions=coordinates)  
     read_time_end = time.perf_counter()

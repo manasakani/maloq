@@ -1,34 +1,36 @@
 import torch
 import torch.nn as nn
 import torch.distributed as dist
-from e3nn.o3 import Irreps
+from torch.cuda.amp import autocast, GradScaler
 import time
 import matplotlib.pyplot as plt
+import numpy as np
+from e3nn.o3 import Irreps
 
 class SplitTrainer():
 
-    def __init__(self, backbone, head, head_irreps):
+    def __init__(self, backbone, head, head_irreps, save_frequency=100):
 
-        self.backbone = backbone      # takes atom graph, outputs internal embeddings after message passing
+        self.backbone = backbone      # takes atom graph, outputs internal embeddings
         self.head = head              # takes internal embeddings, outputs fixed irrep size
         self.head_irreps = head_irreps
+        self.save_frequency = save_frequency
 
-    def train_backbone(self, 
-                       num_epochs, 
-                       loss_fxn, 
-                       optimizer, 
-                       scheduler, 
-                       device, 
-                       train_loader, 
-                       loss_target_string, 
-                       node_target_name, 
-                       val_loader=None, 
-                       edge_target_name=None, 
-                       output_folder='outputs',
-                       num_warmup_epochs=20):
-        """
-        Train both the backbone and the output head
-        """
+    def train(self, 
+            num_epochs, 
+            loss_fxn, 
+            optimizer, 
+            scheduler, 
+            device, 
+            train_loader, 
+            loss_target_string, 
+            node_target_name, 
+            val_loader=None, 
+            edge_target_name=None, 
+            output_folder='outputs',
+            num_warmup_epochs=20,
+            train_backbone=True,
+            train_head=True):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
 
@@ -41,11 +43,16 @@ class SplitTrainer():
 
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank() 
-            self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, find_unused_parameters=False)
-            self.head = nn.parallel.DistributedDataParallel(self.head, device_ids=[0], output_device=0, find_unused_parameters=False)
+            if train_backbone:
+                self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, find_unused_parameters=False)
+            if train_head:
+                self.head = nn.parallel.DistributedDataParallel(self.head, device_ids=[0], output_device=0, find_unused_parameters=False)
         else:
             rank = 0
+        
+        scaler = GradScaler()  # required for mixed precision training
 
+        include_edges = False
         if edge_target_name:
             include_edges = True
         
@@ -63,8 +70,11 @@ class SplitTrainer():
 
             self.adjust_learning_rate(optimizer, epoch, warmup_epochs, initial_lr, initial_lr*10)
             
-            self.backbone.train()  
-            self.head.train()
+            if train_backbone:
+                self.backbone.train() 
+                
+            if train_head: 
+                self.head.train()
 
             train_loss_node = 0.0
             train_loss_edge = 0.0
@@ -74,44 +84,50 @@ class SplitTrainer():
 
                 # -- Forward -- 
                 batch = batch.to(device)
-                backbone_out = self.backbone(batch) 
-                node_output, edge_output = self.head(backbone_out["node_embeddings"], backbone_out["edge_embeddings"])
+                with autocast():
+                    backbone_out = self.backbone(batch) 
 
-                # -- Loss -- 
-                if include_edges:
-                    this_node_target = getattr(batch, node_target_name)
-                    this_edge_target = getattr(batch, edge_target_name)
-                    output = torch.cat([node_output, edge_output], dim=0)
-                    labels = torch.cat([this_node_target, this_edge_target], dim=0)
-                    loss_node = loss_fxn(node_output, this_node_target)
-                    loss_edge = loss_fxn(edge_output, this_edge_target) 
-                    loss = loss_fxn(output, labels)
+                    if include_edges:
+                        node_output, edge_output = self.head(backbone_out, batch)
 
-                    train_loss_node += loss_node
-                    train_loss_edge += loss_edge
+                        this_node_target = getattr(batch, node_target_name)
+                        this_edge_target = getattr(batch, edge_target_name)
+                        output = torch.cat([node_output, edge_output], dim=0)
+                        labels = torch.cat([this_node_target, this_edge_target], dim=0)
+                        loss_node = loss_fxn(node_output, this_node_target)
+                        loss_edge = loss_fxn(edge_output, this_edge_target) 
+                        loss = loss_fxn(output, labels)
 
-                else:
-                    this_node_target = getattr(batch, node_target_name)
+                        train_loss_node += loss_node
+                        train_loss_edge += loss_edge
 
-                    if self.head_irreps == '1x1e':             # permute force vectors to match edge permutations
-                        this_node_target = this_node_target[:, [1, 2, 0]]
+                    else:
+                        node_output = self.head(backbone_out, batch)
+                        this_node_target = getattr(batch, node_target_name)
 
-                    loss = loss_fxn(node_output, this_node_target)  
-                    train_loss_node += loss
-                
-                # Aggregate loss 
-                dist.all_reduce(loss, op=dist.ReduceOp.SUM)
-                dist.all_reduce(train_loss_node, op=dist.ReduceOp.SUM)
-                loss /= dist.get_world_size()
-                train_loss_node /= dist.get_world_size()
+                        if self.head_irreps == '1x1e':             
+                            this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
+                            loss = loss_fxn(node_output['forces'], this_node_target) 
+                        else:
+                            print("To be implemented!") 
 
-                if include_edges:
-                    dist.all_reduce(train_loss_edge, op=dist.ReduceOp.SUM)
-                    train_loss_edge /= dist.get_world_size()
-                
+                        train_loss_node += loss
+                    
+                    # Aggregate loss 
+                    # dist.all_reduce(loss, op=dist.ReduceOp.SUM)
+                    # dist.all_reduce(train_loss_node, op=dist.ReduceOp.SUM)
+                    # loss /= dist.get_world_size()
+                    # train_loss_node /= dist.get_world_size()
+                    # if include_edges:
+                    #     dist.all_reduce(train_loss_edge, op=dist.ReduceOp.SUM)
+                    #     train_loss_edge /= dist.get_world_size()
+                    
                 # -- Backwards -- 
-                loss.backward()
-                optimizer.step()
+                # loss.backward()
+                # optimizer.step()
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
                 
             # -- Output dump -- 
             if include_edges:
@@ -121,7 +137,10 @@ class SplitTrainer():
                 track_loss_node.append(train_loss_node.cpu().detach().numpy()/num_train_batches) 
 
             if rank == 0:
-                print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]} [edge] {track_loss_edge[-1]}", flush=True)    
+                if include_edges:
+                    print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]} [edge] {track_loss_edge[-1]}", flush=True)    
+                else:
+                    print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]}", flush=True)    
 
             dist.barrier()
 
@@ -136,46 +155,53 @@ class SplitTrainer():
                     
                     # -- Forward --
                     batch = batch.to(device)
-                    backbone_out = self.backbone(batch) 
-                    node_output, edge_output = self.head(backbone_out["node_embeddings"], backbone_out["edge_embeddings"])
-                    
-                    # -- Loss --
-                    if include_edges:
-                        this_node_target = getattr(batch, node_target_name)
-                        this_edge_target = getattr(batch, edge_target_name)
-                        output = torch.cat([node_output, edge_output], dim=0)
-                        labels = torch.cat([this_node_target, this_edge_target], dim=0)
-                        loss_node = loss_fxn(node_output, this_node_target)
-                        loss_edge = loss_fxn(edge_output, this_edge_target) 
-                        loss = loss_fxn(output, labels)
+                    with autocast():
+                        backbone_out = self.backbone(batch) 
+                        
+                        # -- Loss --
+                        if include_edges:
+                            node_output, edge_output = self.head(backbone_out, batch)
+                            this_node_target = getattr(batch, node_target_name)
+                            this_edge_target = getattr(batch, edge_target_name)
+                            output = torch.cat([node_output, edge_output], dim=0)
+                            labels = torch.cat([this_node_target, this_edge_target], dim=0)
+                            loss_node = loss_fxn(node_output, this_node_target)
+                            loss_edge = loss_fxn(edge_output, this_edge_target) 
+                            loss = loss_fxn(output, labels)
 
-                        val_loss_node += loss_node
-                        val_loss_edge += loss_edge
+                            val_loss_node += loss_node
+                            val_loss_edge += loss_edge
 
-                    else:
-                        this_node_target = getattr(batch, node_target_name)
+                        else:
+                            node_output = self.head(backbone_out, batch)
+                            this_node_target = getattr(batch, node_target_name)
 
-                        if self.head_irreps == '1x1e':             # permute force vectors to match edge permutations
-                            this_node_target = this_node_target[:, [1, 2, 0]]
+                            if self.head_irreps == '1x1e':             # permute force vectors to match edge permutations
+                                this_node_target = this_node_target[:, [1, 2, 0]]
+                                loss = loss_fxn(node_output['forces'], this_node_target) 
+                            else:
+                                print("To be implemented!")  
 
-                        loss = loss_fxn(node_output, this_node_target)  
-                        val_loss_node += loss
-                            
-                    val_loss += loss.item()
+                            val_loss_node += loss
+                                
+                        val_loss += loss.item()
             
-            val_loss_tensor = torch.tensor(val_loss, device=device)
-            dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.SUM)
-            val_loss = val_loss_tensor.item() / dist.get_world_size()
+            # val_loss_tensor = torch.tensor(val_loss, device=device)
+            # dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.SUM)
+            # val_loss = val_loss_tensor.item() / dist.get_world_size()
 
             # -- Output dump -- 
             if include_edges:
-                track_loss_node_val.append(val_loss_node.cpu().detach().numpy()/num_train_batches) 
-                track_loss_edge_val.append(val_loss_edge.cpu().detach().numpy()/num_train_batches)
+                track_loss_node_val.append(val_loss_node.cpu().detach().numpy()/num_val_batches) 
+                track_loss_edge_val.append(val_loss_edge.cpu().detach().numpy()/num_val_batches)
             else:
-                track_loss_node_val.append(val_loss_node/num_train_batches) 
+                track_loss_node_val.append(val_loss_node.cpu().detach().numpy()/num_val_batches) 
 
             if rank == 0:
-                print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)    
+                if include_edges:
+                    print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)    
+                else:
+                    print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]}", flush=True)    
 
             # -- Scheduler -- 
             scheduler.step(val_loss)
@@ -189,7 +215,7 @@ class SplitTrainer():
             
             # save state
             if rank == 0:
-                if (epoch + 1) % 100 == 0:
+                if (epoch + 1) % self.save_frequency == 0:
                     if include_edges:
                         self.save_training_state(self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
                         self.save_training_state(self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)     
@@ -204,6 +230,119 @@ class SplitTrainer():
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
             print(f"Warmup epoch {epoch+1}: setting learning rate to {lr}")
+    
+    def evaluate(self, 
+                loss_fxn, 
+                device, 
+                eval_loader, 
+                loss_target_string, 
+                node_target_name, 
+                edge_target_name=None, 
+                basis_transform=None,
+                output_folder='outputs'):
+        
+        print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
+        self.backbone.eval() 
+        self.head.eval() 
+
+        num_eval_batches = len(eval_loader)
+
+        include_edges = False
+        if edge_target_name:
+            include_edges = True
+
+        track_loss = []
+        track_loss_node = []
+        if include_edges:
+            track_loss_edge = []
+        
+        # -- Evaluate everything in the train_loader -- 
+        with torch.no_grad():  
+            train_loss_node = 0.0
+            train_loss_edge = 0.0
+            train_loss = 0.0
+
+            for index, batch in enumerate(eval_loader):
+
+                batch = batch.to(device)
+                backbone_out = self.backbone(batch) 
+
+                # check
+                self.visualize_embeddings(backbone_out["node_embeddings"][0:2], output_folder, keyword='node')
+                self.visualize_embeddings(backbone_out["edge_embeddings"][0:2], output_folder, keyword='edge')
+
+                if include_edges:
+                    node_output, edge_output = self.head(backbone_out, batch)
+
+                    this_node_target = getattr(batch, node_target_name)
+                    this_edge_target = getattr(batch, edge_target_name)
+
+                    # Transform back to uncoupled basis:
+                    uncoupled_node_outputs = basis_transform.get_H(node_output)
+                    uncoupled_edge_outputs = basis_transform.get_H(edge_output)
+                    uncoupled_node_labels = basis_transform.get_H(this_node_target)
+                    uncoupled_edge_labels = basis_transform.get_H(this_edge_target)
+
+                    output = torch.cat([uncoupled_node_outputs, uncoupled_edge_outputs], dim=0)
+                    labels = torch.cat([uncoupled_node_labels, uncoupled_edge_labels], dim=0)
+                    loss_node = loss_fxn(uncoupled_node_outputs, uncoupled_node_labels)
+                    loss_edge = loss_fxn(uncoupled_edge_outputs, uncoupled_edge_labels) 
+                    loss = loss_fxn(output, labels)
+
+                    train_loss_node += loss_node
+                    train_loss_edge += loss_edge
+                    train_loss += loss
+
+                else:
+                    node_output = self.head(backbone_out, batch)
+                    this_node_target = getattr(batch, node_target_name)
+
+                    if self.head_irreps == '1x1e':             
+                        this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
+                        loss = loss_fxn(node_output['forces'], this_node_target) 
+                    else:
+                        print("To be implemented!") 
+
+                    train_loss += loss
+                
+                # Aggregate loss 
+                # dist.all_reduce(train_loss, op=dist.ReduceOp.SUM)
+                # train_loss /= dist.get_world_size()
+                # if include_edges:
+                #     dist.all_reduce(train_loss_node, op=dist.ReduceOp.SUM)
+                #     train_loss_node /= dist.get_world_size()
+                #     dist.all_reduce(train_loss_edge, op=dist.ReduceOp.SUM)
+                #     train_loss_edge /= dist.get_world_size()
+                
+                # -- Track -- 
+                if include_edges:
+                    track_loss_node.append(train_loss_node.cpu().detach().numpy()/num_eval_batches) 
+                    track_loss_edge.append(train_loss_edge.cpu().detach().numpy()/num_eval_batches)
+                else:
+                    track_loss.append(train_loss.cpu().detach().numpy()/num_eval_batches) 
+
+                # remove from gpu
+                del batch, node_output
+                if include_edges:
+                    del edge_output
+                torch.cuda.empty_cache()
+
+        # -- Output dump -- 
+        if include_edges:
+            with open(output_folder + "/" + 'model' + '_eval.txt', 'w') as f:
+                    for edge, node, total in zip(track_loss_edge, track_loss_node, track_loss):
+                        f.write(f"{edge:.10f}\t{node:.10f}\t{total:.10f}\n")
+        else:
+            with open(output_folder + "/" + 'model' + '_eval.txt', 'w') as f:
+                    for node in track_loss:
+                        f.write(f"{node:.10f}\n")
+                
+    def visualize_embeddings(self, embs, output_folder, keyword):
+
+        for i, emb in enumerate(embs):
+            plt.imshow(emb.cpu().detach().numpy(), cmap='RdBu', vmin=-1.0, vmax=1.0)
+            plt.savefig(output_folder+"/" + keyword + "_emb_"+str(i)+".png", dpi=300, bbox_inches='tight')
+            plt.close()
 
     def save_training_state(self, model, optimizer, track_loss_node, track_validation_node, save_file, output_folder, track_loss_edge=None, track_validation_edge=None):
         """
@@ -217,19 +356,19 @@ class SplitTrainer():
         if track_loss_edge:
             with open(output_folder + "/" + save_file + '_training_loss.txt', 'w') as f:
                 for edge, node in zip(track_loss_edge, track_loss_node):
-                    f.write(f"{edge:.8f}\t{node:.8f}\n")
+                    f.write(f"{edge:.10f}\t{node:.10f}\n")
 
             with open(output_folder + "/" + save_file + '_validation_loss.txt', 'w') as f:
                 for edge, node in zip(track_validation_edge, track_validation_node):
-                    f.write(f"{edge:.8f}\t{node:.8f}\n")
+                    f.write(f"{edge:.10f}\t{node:.10f}\n")
         else:
             with open(output_folder + "/" + save_file + '_training_loss.txt', 'w') as f:
                 for node in track_loss_node:
-                    f.write(f"{node:.8f}\n")
+                    f.write(f"{node:.10f}\n")
 
             with open(output_folder + "/" + save_file + '_validation_loss.txt', 'w') as f:
                 for node in track_validation_node:
-                    f.write(f"{node:.8f}\n")
+                    f.write(f"{node:.10f}\n")
 
         plt.figure(figsize=(4, 3))
         plt.plot(track_loss_node, '-', c='blue', label='node')

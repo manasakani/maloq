@@ -12,10 +12,30 @@ from ase.db import connect
 from . import schnetpack_properties as structure
 
 class ASEDataset(Dataset):
-    def __init__(self, db_path, dtype=torch.float32):
+    def __init__(self, db_path, num_structures=None, dtype=torch.float32):
+        print("Connecting to database...")
         self.db = ase.db.connect(db_path)
-        self.ids = [row.id for row in self.db.select()]
+        print("connected.")
+        total_rows = self.db.count()
+        print(f"Total rows in database: {total_rows}")
+
+        if num_structures:
+            self.ids = [row.id for row in self.db.select(limit=num_structures)] # distribute this later
+        else:
+            self.ids = [row.id for row in self.db.select()]
+            
+        # self.ids = self._get_ids()
         self.dtype = dtype
+    
+    def _get_ids(self):
+        ids = []
+        for row in self.db.select():
+            print("Getting row..", flush=True)
+            ids.append(row.id)
+            # limit number to read
+            # if len(ids) > limit:
+            #     break
+        return ids
 
     def __len__(self):
         return len(self.ids)
@@ -47,7 +67,7 @@ class ASEDataset(Dataset):
             
         # Create PyTorch Geometric Data object
         data = Data(
-            pos=torch.tensor(positions, dtype=torch.float),
+            pos=torch.tensor(positions, dtype=self.dtype),
             x=torch.tensor(atomic_numbers),
             edge_index=edge_index,
             edge_attr=edge_dist,

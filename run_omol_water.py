@@ -7,13 +7,14 @@ import torch
 from fock_utils import utils_orca_out, fock_targets
 from train_utils import utils_training, utils_compute, splittrainer
 from dataset_utils import get_loader
-from dataset_utils.ASEDataset import ASEAtomsData
+from dataset_utils.ASEDataset import ASEAtomsData, ASEDataset
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
+from torch_geometric.loader import DataLoader
 
 # Models
 from equiformer.network import SO2Net
 from equiformer.SO3 import CoefficientMappingModule
-from esen.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Convolution_Force_Head, Gated_Force_Head     # NO EDGES: .esen_noedges
+from esen.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head     # NO EDGES: .esen_noedges
 from e3nn.o3 import Irreps
 
 import_end = time.perf_counter()
@@ -29,10 +30,10 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> QM7
-dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_water.db'
-database = ASEAtomsData(dbpath)
-dataset_name = 'QM7'
-output_folder = 'outputs_QM7_test'
+# dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_water.db'
+# database = ASEAtomsData(dbpath)
+# dataset_name = 'QM7'
+# output_folder = 'outputs_QM7_water_fock'
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
@@ -40,23 +41,32 @@ output_folder = 'outputs_QM7_test'
 # dataset_name = 'nablaDFT'
 # output_folder = 'outputs_nablaDFT'
 # ---------------------------
+# ---------------------------
+# --> OMOL 
+dataset_folder = 'fock_datasets/omol/water_clusters_6.0_x64.db'
+dtype = torch.float32
+database = ASEDataset(dataset_folder, num_structures=24, dtype=dtype)
+output_folder = 'outputs_omol_water_fock'
+dataset_name = 'omol'
+# ---------------------------
+assert not len(database) == 0
 
 # --> Model settings:
-l_embedding_dim = 64 #128                   # sphere channels
+l_embedding_dim = 128                   # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 1 
+num_mp_layers = 2 
 model_name = 'esen'
-restart_backbone = False
-restart_head = False
+restart_backbone = True
+restart_head = True
 restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 1#00                           # Number of validation structures
-num_train = 1#00 
-num_epochs = 10000
-batch_size = 1#0                         # 1 for eval, 10 for train
+num_val = 8                             # Number of validation structures
+num_train = 8 
+num_epochs = 50000
+batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = 10.0                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -64,11 +74,10 @@ gaussian_width = 1.0                    # width of gaussians used to expand edge
 train_backbone = True
 train_head = True
 
-dtype = torch.float64
 torch.set_default_dtype(dtype)
 lr_init = 1e-4
 patience = 500                          # for scheduler
-threshold = 1e-6                        # for scheduler
+threshold = 1e-8                        # for scheduler
 
 loss_target = 'fock_matrix'
 loss_fxn = utils_training.mse_padded_loss
@@ -121,8 +130,13 @@ val_end_mol += num_train
 # val_end_mol = 1
 ### DEBUG ###
 
-train_loader, required_irreps, basis_transformation = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype)
-val_loader, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype)
+train_loader = DataLoader([database[x] for x in range(train_start_mol, train_end_mol)], batch_size=batch_size, num_workers=0)
+val_loader = DataLoader([database[x] for x in range(val_start_mol, val_end_mol)], batch_size=batch_size, num_workers=0)
+required_irreps = Irreps(database[0].required_irreps)
+basis_transformation = None
+
+# train_loader, required_irreps, basis_transformation = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype)
+# val_loader, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
@@ -197,9 +211,7 @@ elif model_name == 'esen':
                                 lmax=required_irreps.lmax, 
                                 sphere_channels=l_embedding_dim)
     elif loss_target == "forces":
-        # head = Linear_Force_Head(backbone)
-        # head = Convolution_Force_Head(backbone)
-        head = Gated_Force_Head(backbone, irreps_in)
+        head = Linear_Force_Head(backbone)
 
     elif loss_target == "energy":
         print("To be implemented!")

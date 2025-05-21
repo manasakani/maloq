@@ -43,14 +43,13 @@ class Fock_Targets:
                                          for atom_number in self.atomic_numbers ])
         
         ### Using a different target shape per molecule ###
-        # molecule_orbital_basis = {atom_number: self.orbital_basis[atom_number] for atom_number in self.atomic_numbers}
-        # print("Orbital basis used: ", molecule_orbital_basis)
+        molecule_orbital_basis = {atom_number: self.orbital_basis[atom_number] for atom_number in self.atomic_numbers}
+        print("Using a molecule-specific basis! only one atom type")
         ### Using a different target shape per molecule ###
-        # exit()
         
         # Analyze structure of orbital interactions
-        targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions
-        # targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(molecule_orbital_basis)     # list of all possible irreps required to capture the orbital interactions
+        # targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions
+        targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(molecule_orbital_basis)     # list of all possible irreps required to capture the orbital interactions
         equivariant_blocks, out_js_list, orbital_starts = utils_tensor_decomp.process_targets(self.orbital_basis, targets)
         self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
                                                             out_js_list,

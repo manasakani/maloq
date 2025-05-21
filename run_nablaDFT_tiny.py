@@ -13,7 +13,7 @@ from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 # Models
 from equiformer.network import SO2Net
 from equiformer.SO3 import CoefficientMappingModule
-from esen.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Convolution_Force_Head, Gated_Force_Head     # NO EDGES: .esen_noedges
+from esen.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head     # NO EDGES: .esen_noedges
 from e3nn.o3 import Irreps
 
 import_end = time.perf_counter()
@@ -29,23 +29,23 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> QM7
-dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_water.db'
-database = ASEAtomsData(dbpath)
-dataset_name = 'QM7'
-output_folder = 'outputs_QM7_test'
+# dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_water.db'
+# database = ASEAtomsData(dbpath)
+# dataset_name = 'QM7'
+# output_folder = 'outputs_QM7_water_forces'
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
-# original_database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
-# dataset_name = 'nablaDFT'
-# output_folder = 'outputs_nablaDFT'
+database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
+dataset_name = 'nablaDFT'
+output_folder = 'outputs_nablaDFT_gated'
 # ---------------------------
 
 # --> Model settings:
-l_embedding_dim = 64 #128                   # sphere channels
+l_embedding_dim = 128                   # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 1 
+num_mp_layers = 2 
 model_name = 'esen'
 restart_backbone = False
 restart_head = False
@@ -53,10 +53,10 @@ restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 1#00                           # Number of validation structures
-num_train = 1#00 
+num_val = 1                             # Number of validation structures
+num_train = 1 
 num_epochs = 10000
-batch_size = 1#0                         # 1 for eval, 10 for train
+batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = 10.0                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -64,13 +64,14 @@ gaussian_width = 1.0                    # width of gaussians used to expand edge
 train_backbone = True
 train_head = True
 
-dtype = torch.float64
+dtype = torch.float32
 torch.set_default_dtype(dtype)
-lr_init = 1e-4
+lr_init = 1e-5
 patience = 500                          # for scheduler
-threshold = 1e-6                        # for scheduler
+threshold = 1e-5                        # for scheduler
 
 loss_target = 'fock_matrix'
+head_type = 'gated'                    # linear or gated
 loss_fxn = utils_training.mse_padded_loss
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
@@ -108,17 +109,17 @@ if rank == 0 and not os.path.exists(output_folder):
 
 data_load_start = time.perf_counter()
 
-train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
-val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
+# train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
+# val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
 
-val_start_mol += num_train  # the validation molecules start after training ones
-val_end_mol += num_train
+# val_start_mol += num_train  # the validation molecules start after training ones
+# val_end_mol += num_train
 
-### DEBUG ###
-# train_start_mol = 0
-# train_end_mol = 1
-# val_start_mol = 0
-# val_end_mol = 1
+### DEBUG ### - 22 is the first molecule with a Br atom
+train_start_mol = 22 
+train_end_mol = 23 
+val_start_mol = 22
+val_end_mol = 23
 ### DEBUG ###
 
 train_loader, required_irreps, basis_transformation = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype)
@@ -133,11 +134,11 @@ print("Size of val loader: ", len(val_loader))
 irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
 
 # determine output irreps from target type:
-if loss_target == 'fock_matrix':
+if loss_target == "fock_matrix":
     output_irreps = required_irreps
     node_target = 'node_y'
     edge_target = 'y'
-elif loss_target == 'forces':
+elif loss_target == "forces":
     output_irreps = '1x1e'
     node_target = 'forces'
     edge_target = None
@@ -195,11 +196,11 @@ elif model_name == 'esen':
         head = Fock_Irreps_Head(irreps_in=irreps_in, 
                                 irreps_out=output_irreps, 
                                 lmax=required_irreps.lmax, 
-                                sphere_channels=l_embedding_dim)
+                                sphere_channels=l_embedding_dim,
+                                head_type=head_type)
+
     elif loss_target == "forces":
-        # head = Linear_Force_Head(backbone)
-        # head = Convolution_Force_Head(backbone)
-        head = Gated_Force_Head(backbone, irreps_in)
+        head = Linear_Force_Head(backbone)
 
     elif loss_target == "energy":
         print("To be implemented!")
@@ -211,18 +212,18 @@ head = head.to(device)
 if train_backbone and train_head:
     optimizer = torch.optim.Adam(list(backbone.parameters()) + list(head.parameters()), lr=lr_init)
 
-elif train_head:                            # freeze backbone model
-    for param in backbone.parameters(): 
+elif train_head:
+    for param in backbone.parameters(): # freeze backbone model
         param.requires_grad = False
     optimizer = torch.optim.Adam(head.parameters(), lr=lr_init)
 
-elif train_backbone:                        # freeze output head
-    for param in head.parameters():     
+elif train_backbone:
+    for param in head.parameters():     # freeze output head
         param.requires_grad = False
     optimizer = torch.optim.Adam(backbone.parameters(), lr=lr_init)
 
 else:
-    print("Running evaluation")
+    print("Check train recipe (backbone/head)")
 
 print("Number of parameters in backbone: ", sum(p.numel() for p in backbone.parameters()))
 print("Number of parameters in output head: ", sum(p.numel() for p in head.parameters()))
@@ -266,28 +267,16 @@ trainer = splittrainer.SplitTrainer(backbone=backbone,
                                     head=head,
                                     head_irreps=output_irreps)
 
-if train_or_eval == "train":
-    trainer.train(num_epochs, 
-                    loss_fxn, 
-                    optimizer,
-                    scheduler, 
-                    device,
-                    train_loader=train_loader,
-                    loss_target_string=loss_target,
-                    node_target_name=node_target, 
-                    edge_target_name=edge_target,
-                    output_folder=output_folder,
-                    val_loader=val_loader,
-                    train_backbone=train_backbone,
-                    train_head=train_head)
-else:
-    trainer.evaluate(loss_fxn,
-                    device,
-                    val_loader,
-                    loss_target_string=loss_target,
-                    node_target_name=node_target,
-                    edge_target_name=edge_target, 
-                    basis_transform=basis_transformation,
-                    output_folder=output_folder,
-                    )
-        
+trainer.train(num_epochs, 
+                loss_fxn, 
+                optimizer,
+                scheduler, 
+                device,
+                train_loader=train_loader,
+                loss_target_string=loss_target,
+                node_target_name=node_target, 
+                edge_target_name=edge_target,
+                output_folder=output_folder,
+                val_loader=val_loader,
+                train_backbone=train_backbone,
+                train_head=train_head)

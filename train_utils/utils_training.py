@@ -155,8 +155,8 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                 print("unknown loss!") 
             
             # Aggregate loss across all processes
-            dist.all_reduce(loss, op=dist.ReduceOp.SUM)
-            loss /= dist.get_world_size()
+            # dist.all_reduce(loss, op=dist.ReduceOp.SUM)
+            # loss /= dist.get_world_size()
             
             # -- Backwards -- 
             loss.backward()
@@ -174,6 +174,11 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                 print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]} [edge] {track_loss_edge[-1]}", flush=True) 
             else:
                 print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]}", flush=True) 
+
+        # for debugging:
+        if math.isnan(track_loss_node_val[-1]):
+            print("Error! Found a nan in the loss!")
+            break
 
         # Validation step
         model.eval()
@@ -214,9 +219,9 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                         
                 val_loss += loss.item()
         
-        val_loss_tensor = torch.tensor(val_loss, device=device)
-        dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.SUM)
-        val_loss = val_loss_tensor.item() / dist.get_world_size()
+        # val_loss_tensor = torch.tensor(val_loss, device=device)
+        # dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.SUM)
+        # val_loss = val_loss_tensor.item() / dist.get_world_size()
 
         # -- Output dump -- 
         if loss_target == 'fock_matrix':
@@ -230,7 +235,7 @@ def train_model(model, optimizer, loss_fxn, loss_target, num_epochs, train_loade
                 print(f"Epoch {epoch+1}, Val Loss  : [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)
             else:
                 print(f"Epoch {epoch+1}, Val Loss  : [node] {track_loss_node_val[-1]}", flush=True)
-        
+            
         # -- Scheduler -- 
         scheduler.step(val_loss)
         current_lr = optimizer.param_groups[0]['lr']

@@ -198,20 +198,11 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             num_channels=self.sphere_channels,
         )
 
-        # # Rank 0, 1, N output heads:
+        # # Irreps of the internal embeddings
         # build_irreps = []
         # for l in range(self.lmax+1):
         #     build_irreps.append((self.sphere_channels, (l, 1)))
         # self.irreps_in = Irreps(build_irreps)
-        # self.irreps_out = irreps_out
-
-        # simplified_output_irreps = self.irreps_out.sort()[0].simplify()
-
-        # self.map_node_to_rank_0 = e3nn_Linear(irreps_in=self.irreps_in, irreps_out='1x0e', biases=True)
-        # self.map_node_to_rank_1 = e3nn_Linear(irreps_in=self.irreps_in, irreps_out='1x1e', biases=True)
-
-        # self.map_node_to_rank_N = Eq_Nonlinear_conversion(irreps_in=self.irreps_in, irreps_out=self.irreps_out, lmax=self.lmax, sphere_channels=self.sphere_channels)
-        # self.map_edge_to_rank_N = Eq_Nonlinear_conversion(irreps_in=self.irreps_in, irreps_out=self.irreps_out, lmax=self.lmax, sphere_channels=self.sphere_channels)
 
     def get_rotmat_and_wigner(self, edge_distance_vecs):
 
@@ -241,8 +232,8 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
 
         data_dict = {
             "pos": batch.pos,
-            "edge_index": torch.tensor(batch.edge_index, dtype=torch.long).squeeze(0).reshape(2, -1),
-            # "edge_index": batch.edge_index.squeeze(0).reshape(2, -1),
+            # "edge_index": torch.tensor(batch.edge_index, dtype=torch.long).squeeze(0).reshape(2, -1),
+            "edge_index": batch.edge_index.squeeze(0).reshape(2, -1),
             "edge_dist": batch.edge_attr,
             "nedges": len(batch.edge_index[0]),
             "natoms": len(batch.pos),
@@ -319,8 +310,6 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         x_edge = torch.cat(
             (edge_distance_embedding, source_embedding, target_embedding), dim=1
         )
-        # x_edge is the un-expanded edge and node quantities.
-        # maybe we can reduce the Embedding dimension at the end of each mp layer?
 
         # do edge degree embeddings for both nodes and edges:
         x_message_node = self.edge_degree_embedding(
@@ -397,49 +386,13 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         # Return the output
         out = {
                 "node_embeddings": x_message_node,
-                "edge_embeddings": x_message_edge
+                "edge_embeddings": x_message_edge,
+                "x_edge": x_edge,
+                "wigner": wigner,
+                "wigner_inv": wigner_inv
               }
         out.update(graph_dict)
         return out
-
-    def convert_to_output_irreps(self, x_message, x_edge, sphere_channels, lmax, rank, edge_index=None, node_or_edge='node'):   
-        # input = x_message = [num_atoms/edges (batch_size), (lmax+1)**2, sphere_channels]
-
-        x_message_T = x_message.transpose(-1,-2) # rearrange dimensions from [l, E] to [E, l] 
-        batch_size = x_message_T.shape[0]
-
-        # group all the different ls so l_sorted output looks like sphere_channels*0e + sphere_channels*1e + sphere_channels*2e ...
-        l_sorted_output = torch.zeros(batch_size, sphere_channels*((lmax+1)**2), device=x_message.device)
-        for l in range(lmax+1):
-            start = (l**2)*sphere_channels
-            end = (l**2)*sphere_channels + sphere_channels*(2*l+1)
-            l_sorted_output[:,start:end] = torch.squeeze(x_message_T[:, :, (l**2):(l**2)+(2*l+1)].reshape(batch_size, 1, -1))
-
-        # irreps_in -> irreps_out
-        if rank == 'N': 
-            if node_or_edge == 'node':
-                rank_N_output = self.map_node_to_rank_N(l_sorted_output, x_edge, edge_index)
-            else:
-                rank_N_output = self.map_edge_to_rank_N(l_sorted_output, x_edge, edge_index)
-            return rank_N_output
-
-        # irreps_in -> 1x0e
-        elif rank == '0': 
-            # print("DONT RUN THIS UNTIL NUM ATOMS IS FIXED")
-            per_atom_energies = self.map_node_to_rank_0(l_sorted_output)
-            natoms = 3 # PASS THIS INFO IN THROUGH DATA_DICT
-            # print(per_atom_energies)
-            rank_0_output = torch.stack([per_atom_energies[i:i+natoms].sum() for i in range(0, len(per_atom_energies), natoms)])
-            return rank_0_output
-
-        # irreps_in -> 1x1e
-        elif rank == '1':
-            rank_1_output = self.map_node_to_rank_1(l_sorted_output)
-            return rank_1_output
-
-        # Add rank 2 for the multipole thing
-        else:
-            print("Err: Did not make this output rank!")
 
     @property
     def num_params(self):
@@ -473,60 +426,69 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
 
         return set(no_wd_list)
 
+
 @registry.register_model("fock_irreps_head")
 class Fock_Irreps_Head(nn.Module):
     """
     Takes an input irrep like 64x0e+64x1e+64x2e ... and nonlinearly maps it to the output irreps of arbitrary size and l-multiplicity
     """
-    def __init__(self, irreps_in, irreps_out, lmax, sphere_channels):
+    def __init__(self, irreps_in, irreps_out, lmax, sphere_channels, head_type='gated'):
         super().__init__()
 
+        self.head_type = head_type
         self.sphere_channels = sphere_channels
         self.lmax = lmax
-        irreps_scalars, irreps_gated = self.split_irreps(irreps_in)
-        irreps_gates = Irreps(f"{irreps_gated.num_irreps}x0e")
 
-        # 1. Apply a linear layer to convert the number of input scalars to the number of required gating scalars
-        # the number of input scalars is equal to sphere_channels
-        # the output 'irreps_gates' are the gating scalars
+        if self.head_type == 'linear':
+            self.map_node_to_rank_N = e3nn_Linear(irreps_in=irreps_in, irreps_out=irreps_out, biases=True)
+            self.map_edge_to_rank_N = e3nn_Linear(irreps_in=irreps_in, irreps_out=irreps_out, biases=True)
 
-        # --> gate with the l=0 components:
-        input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
-        self.lin_scalars = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=irreps_gates)
+        elif self.head_type == 'gated':
 
-        # --> gate with x_edge
-        # input_scalars_irreps = Irreps(f"{3*self.sphere_channels}x0e")
-        # self.lin_scalars_x_edge = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=irreps_gates)
+            irreps_scalars, irreps_gated = self.split_irreps(irreps_in)
+            irreps_gates = Irreps(f"{irreps_gated.num_irreps}x0e")
 
-        # this returns the irreps_gates
+            # 1. Apply a linear layer to convert the number of input scalars to the number of required gating scalars
+            # the number of input scalars is equal to sphere_channels
+            # the output 'irreps_gates' are the gating scalars
 
-        # self.gate = Gate(irreps_scalars=irreps_scalars,
-        #                     act_scalars=[torch.tanh] * len(irreps_scalars),
-        #                     irreps_gates=irreps_gates,
-        #                     act_gates=[torch.tanh] * len(irreps_gates),
-        #                     irreps_gated=irreps_gated
-        #                 )
+            # --> gate with the l=0 components:
+            # input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
+            # self.lin_scalars = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=irreps_gates)
 
-        # 2. Apply the gating to the other ls (need to pass in a stack of [l=0, l~=0])
-        self.gate = Gate(irreps_scalars=Irreps(),
-                            act_scalars=[],
-                            irreps_gates=irreps_gates,
-                            act_gates=[torch.sigmoid] * len(irreps_gates),
-                            irreps_gated=irreps_gated
-                        )
-        # print("gate irreps out (simplified): ", self.gate.irreps_out.sort()[0].simplify() ) 
-        # print("irreps out (simplified): ", irreps_out.sort()[0].simplify() ) 
+            # --> gate with x_edge:
+            # input_scalars_irreps = Irreps(f"{3*self.sphere_channels}x0e")
+            # self.lin_scalars_x_edge = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=irreps_gates)
+            # self.act_input_scalars = torch.nn.Sigmoid() 
 
-        # now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
-        self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=False) 
+            # --> gate with learnable parameters by outputting more random scalars:
+            input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
+            combined_output_scalars = Irreps(f"{irreps_scalars.num_irreps + irreps_gated.num_irreps}x0e")
+            self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars)
 
-        # if self.gate.irreps_out.sort()[0].simplify() != irreps_out.sort()[0].simplify():
-        #     raise ValueError("Mismatch between gate output irreps and target output irreps")
+            # this returns the irreps_gates
+
+            # self.gate = Gate(irreps_scalars=irreps_scalars,
+            #                     act_scalars=[torch.tanh] * len(irreps_scalars),
+            #                     irreps_gates=irreps_gates,
+            #                     act_gates=[torch.tanh] * len(irreps_gates),
+            #                     irreps_gated=irreps_gated
+            #                 )
+
+            # 2. Apply the gating to the other ls (need to pass in a stack of [l=0, l~=0])
+            self.gate = Gate(irreps_scalars=Irreps(),
+                                act_scalars=[],
+                                irreps_gates=irreps_gates,
+                                act_gates=[torch.sigmoid] * len(irreps_gates),
+                                irreps_gated=irreps_gated
+                            )
+            # print("gate irreps out (simplified): ", self.gate.irreps_out.sort()[0].simplify() ) 
+            # print("irreps out (simplified): ", irreps_out.sort()[0].simplify() ) 
+
+            # now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
+            self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=False) 
 
     
-    def do_nothing(self, x):
-        return x
-
     def split_irreps(self, irreps):
         scalars = []
         gated = []
@@ -537,13 +499,27 @@ class Fock_Irreps_Head(nn.Module):
                 gated.append((mul, ir))
         return Irreps(scalars), Irreps(gated)
 
-    def forward(self, node_embeddings, edge_embeddings):
+    def forward(self, emb, batch):
 
-        node_embeddings = self.stack_irreps(node_embeddings)
-        edge_embeddings = self.stack_irreps(edge_embeddings)
+        node_embeddings = emb["node_embeddings"]
+        edge_embeddings = emb["edge_embeddings"]
+        x_edge = emb["x_edge"]
+        edge_index = torch.tensor(batch.edge_index, dtype=torch.long).squeeze(0).reshape(2, -1)
 
-        node_output = self.process(node_embeddings)
-        edge_output = self.process(edge_embeddings)
+        if self.head_type == 'linear':
+            node_embeddings = self.stack_irreps(node_embeddings)
+            edge_embeddings = self.stack_irreps(edge_embeddings)
+            node_output = self.map_node_to_rank_N(node_embeddings)
+            edge_output = self.map_edge_to_rank_N(edge_embeddings)
+
+        elif self.head_type == 'gated':
+            node_embeddings = self.stack_irreps(node_embeddings)
+            edge_embeddings = self.stack_irreps(edge_embeddings)
+            node_output = self.process(node_embeddings, x_edge, edge_index)
+            edge_output = self.process(edge_embeddings, x_edge, edge_index)
+        
+        else:
+            print("Error! Mispelt head type")
 
         return node_output, edge_output
 
@@ -562,7 +538,13 @@ class Fock_Irreps_Head(nn.Module):
 
         return l_sorted_output
 
-    def process(self, x):
+    def process(self, x, x_edge, edge_index):
+
+        # 1. Extract the scalar components, which are the first # sphere_channels elements of this tensor
+        x_scalars = x[:, :self.sphere_channels]
+        x_nonscalars = x[:, self.sphere_channels:]
+
+        # 2. Prepare some scalars for gating
 
         # x_for_gating = torch.zeros(
         #     (x.shape[0],) + x_edge.shape[1:],
@@ -570,23 +552,26 @@ class Fock_Irreps_Head(nn.Module):
         #     device=x.device,
         # )
 
-        # in case this is a node-block (x_edge is initially the edges, so it needs to be reduced from # edges to # nodes)
+        # # in case this is a node-block (x_edge is initially the edges, so it needs to be reduced from # edges to # nodes)
         # if x_edge.shape[0] != x.shape[0]:
         #     x_for_gating.index_add_(0, edge_index[1], x_edge)
         # else:
         #     x_for_gating = x_edge
 
-        # extract the scalar components, which are the first # sphere_channels elements of this tensor
-        x_scalars = x[:, :self.sphere_channels]
-        x_nonscalars = x[:, self.sphere_channels:]
+        # gating_scalars = self.lin_scalars(x_scalars)                  # gate with the l=0 components
+        # gating_scalars = self.lin_scalars_x_edge(x_for_gating)        # gate with x_edge
 
-        gating_scalars = self.lin_scalars(x_scalars)              # gate with the l=0 components:
-        # gating_scalars = self.lin_scalars_x_edge(x_for_gating)      # gate with x_edge
+        # gate with learnable scalars: the first 'sphere_channels' scalars are the l=0, and others are used for gating
+        all_scalars = self.lin_scalars_learnable(x_scalars) 
+        transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
+        gating_scalars = all_scalars[:, self.sphere_channels:]
 
+        # 3. Gate the l>0 irreps:
         x_gated = self.gate(torch.cat([gating_scalars, x_nonscalars], dim=1))
 
         # plug the l=0 components back into x_gated (currently they are zeros):
-        x_gated = torch.cat([x_scalars, x_gated], dim=1)
+        # x_gated = torch.cat([x_scalars, x_gated], dim=1)              # original scalars get plugged back in
+        x_gated = torch.cat([transformed_l0_scalars, x_gated], dim=1)   # use the transformed scalars
         x_out = self.lin_out(x_gated)
 
         return x_out
@@ -903,10 +888,168 @@ class MLP_Energy_Head(nn.Module, HeadInterface):
 class Linear_Force_Head(nn.Module, HeadInterface):
     def __init__(self, backbone):
         super().__init__()
-        self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
+        # self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
+        self.linear = SO3_Linear(2*backbone.sphere_channels, 1, lmax=1)
 
-    def forward(self, data_dict, emb: dict[str, torch.Tensor]):
-        forces = self.linear(emb["node_embedding"].narrow(1, 0, 4))
+    def forward(self, emb: dict[str, torch.Tensor], batch):
+
+        edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
+        
+        aggregated_emb = torch.zeros_like(emb["node_embeddings"])
+        aggregated_emb.index_add_(0, edge_index[1], emb["edge_embeddings"])
+        node_plus_edges = torch.cat((emb["node_embeddings"], aggregated_emb), 2)            # concatenate the node with its aggregated edges:
+        forces = self.linear(node_plus_edges.narrow(1, 0, 4))
+
+        # forces = self.linear(emb["node_embeddings"].narrow(1, 0, 4))
         forces = forces.narrow(1, 1, 3)
         forces = forces.view(-1, 3).contiguous()
         return {"forces": forces}
+    
+class Convolution_Force_Head(nn.Module, HeadInterface):
+    def __init__(self, backbone):
+        super().__init__()
+        
+        self.output_node_block = eSEN_Block(
+                                            backbone.sphere_channels,
+                                            backbone.hidden_channels,
+                                            backbone.lmax,
+                                            backbone.mmax,
+                                            backbone.mappingReduced,
+                                            backbone.SO3_grid,
+                                            backbone.edge_channels_list,
+                                            backbone.cutoff,
+                                            backbone.norm_type,
+                                            backbone.act_type,
+                                            backbone.mlp_type,
+                                        )
+        self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
+
+    def forward(self, emb: dict[str, torch.Tensor], batch):
+
+        edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
+        edge_distance = batch.edge_attr
+
+        aggregated_node_output = self.output_node_block(
+                emb["node_embeddings"],
+                emb["edge_embeddings"],
+                emb["x_edge"],
+                edge_distance,
+                edge_index,
+                emb["wigner"],
+                emb["wigner_inv"],
+                node_or_edge='node',
+            )
+        
+        # plt.imshow(aggregated_node_output[1].cpu().detach().numpy(), cmap='RdBu', vmin=-1.0, vmax=1.0)
+        # plt.savefig("internal_emb.png", dpi=300, bbox_inches='tight')
+        # plt.close()
+        # exit()
+
+        forces = self.linear(aggregated_node_output.narrow(1, 0, 4))
+        forces = forces.narrow(1, 1, 3)
+        forces = forces.view(-1, 3).contiguous()
+        return {"forces": forces}
+
+
+
+@registry.register_model("gated_force_head")
+class Gated_Force_Head(nn.Module):
+
+    def __init__(self, backbone, irreps_in):
+        super().__init__()
+
+        self.sphere_channels = 2*backbone.sphere_channels
+        self.lmax = backbone.lmax
+        irreps_out = '1x1e'
+
+        irreps_scalars, irreps_gated = self.split_irreps(irreps_in)
+        irreps_gates = Irreps(f"{irreps_gated.num_irreps}x0e")
+        print("num ofirreps_gates: ", irreps_gates.num_irreps)
+
+        # 1. Apply a linear layer to convert the number of input scalars to the number of required gating scalars
+        # the number of input scalars is equal to sphere_channels
+        # the output 'irreps_gates' are the gating scalars
+        # --> gate with learnable parameters by outputting more random scalars:
+        input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
+        combined_output_scalars = Irreps(f"{irreps_scalars.num_irreps + irreps_gated.num_irreps}x0e")
+        self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars)
+        # this returns the irreps_gates
+
+        # 2. Apply the gating to the other ls (need to pass in a stack of [l=0, l~=0])
+        self.gate = Gate(irreps_scalars=Irreps(),
+                            act_scalars=[],
+                            irreps_gates=irreps_gates,
+                            act_gates=[torch.sigmoid] * len(irreps_gates),
+                            irreps_gated=irreps_gated
+                        )
+
+        # 3. Now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
+        self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=False) 
+
+    
+    def split_irreps(self, irreps):
+        scalars = []
+        gated = []
+        for mul, ir in irreps:
+            if ir.l == 0:
+                scalars.append((mul, ir))
+            else:
+                gated.append((mul, ir))
+        return Irreps(scalars), Irreps(gated)
+
+    def forward(self, emb, batch):
+
+        x_edge = emb["x_edge"]
+        edge_index = torch.tensor(batch.edge_index, dtype=torch.long).squeeze(0).reshape(2, -1)
+
+        aggregated_emb = torch.zeros_like(emb["node_embeddings"])
+        aggregated_emb.index_add_(0, edge_index[1], emb["edge_embeddings"])
+        node_plus_edges = torch.cat((emb["node_embeddings"], aggregated_emb), 2)       
+
+        node_embeddings = self.stack_irreps(node_plus_edges)
+        node_output = self.process(node_embeddings, x_edge, edge_index)
+
+        return node_output, edge_output
+
+    def stack_irreps(self, x_message):   
+        # input = x_message = [num_atoms/edges (batch_size), (lmax+1)**2, sphere_channels]
+
+        x_message_T = x_message.transpose(-1,-2) # rearrange dimensions from [l, E] to [E, l] 
+        batch_size = x_message_T.shape[0]
+
+        # group all the different ls so l_sorted output looks like sphere_channels*0e + sphere_channels*1e + sphere_channels*2e ...
+        l_sorted_output = torch.zeros(batch_size, self.sphere_channels*((self.lmax+1)**2), device=x_message.device)
+        for l in range(self.lmax+1):
+            start = (l**2)*self.sphere_channels
+            end = (l**2)*self.sphere_channels + self.sphere_channels*(2*l+1)
+            l_sorted_output[:,start:end] = torch.squeeze(x_message_T[:, :, (l**2):(l**2)+(2*l+1)].reshape(batch_size, 1, -1))
+
+        return l_sorted_output
+
+    def process(self, x, x_edge, edge_index):
+
+        # 1. Extract the scalar components, which are the first # sphere_channels elements of this tensor
+        x_scalars = x[:, :self.sphere_channels]
+        x_nonscalars = x[:, self.sphere_channels:]
+
+        # 2. Prepare some scalars for gating
+
+        # gate with learnable scalars: the first 'sphere_channels' scalars are the l=0, and others are used for gating
+        all_scalars = self.lin_scalars_learnable(x_scalars) 
+        transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
+        gating_scalars = all_scalars[:, self.sphere_channels:]
+
+        print(transformed_l0_scalars.shape)
+        print(gating_scalars.shape)
+        print(x_nonscalars.shape)
+        exit()
+
+        # 3. Gate the l>0 irreps:
+        x_gated = self.gate(torch.cat([gating_scalars, x_nonscalars], dim=1))
+
+        # plug the l=0 components back into x_gated (currently they are zeros):
+        # x_gated = torch.cat([x_scalars, x_gated], dim=1)              # original scalars get plugged back in
+        x_gated = torch.cat([transformed_l0_scalars, x_gated], dim=1)   # use the transformed scalars
+        x_out = self.lin_out(x_gated)
+
+        return x_out

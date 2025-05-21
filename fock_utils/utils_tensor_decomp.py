@@ -3,7 +3,7 @@ from e3nn.nn import Extract
 import torch
 import numpy as np
 
-# All functions in this file are adapted from: https://github.com/Xiaoxun-Gong/DeepH-E3
+# functions in this file are adapted from: https://github.com/Xiaoxun-Gong/DeepH-E3
 
 def l1l2_to_l3s(l1, l2):
         
