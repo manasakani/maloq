@@ -50,8 +50,9 @@ def split_indices(rank, world_size, total_num_idx):
 
     local_num_idx = total_num_idx//world_size
     counts = np.array([local_num_idx]*world_size, dtype=np.int32)
-    for i in range(total_num_idx % world_size):
-        counts[i] += 1
+    print(f"IMPORTANT NOTE: Ignoring {total_num_idx % world_size} indices to make the distribution even!")
+    # for i in range(total_num_idx % world_size):
+    #     counts[i] += 1
 
     displacements = np.zeros_like(counts)
     for i in range(1, len(counts)):
@@ -62,7 +63,7 @@ def split_indices(rank, world_size, total_num_idx):
     local_num_idx = counts[rank]
     
     print(f"Rank {rank} does indices {start_idx} to {end_idx}")
-    dist.barrier()
+    dist.barrier() 
 
     return start_idx, end_idx, local_num_idx
 

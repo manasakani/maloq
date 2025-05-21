@@ -7,6 +7,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from e3nn.o3 import Irreps
 
+# note: removing amp to get better precision for now
+def disable_amp(func):
+    def wrapper(*args, **kwargs):
+        with torch.cuda.amp.autocast(enabled=False):
+            return func(*args, **kwargs)
+    return wrapper
+
 class SplitTrainer():
 
     def __init__(self, backbone, head, head_irreps, save_frequency=100):
@@ -16,6 +23,7 @@ class SplitTrainer():
         self.head_irreps = head_irreps
         self.save_frequency = save_frequency
 
+    @disable_amp
     def train(self, 
             num_epochs, 
             loss_fxn, 
@@ -37,9 +45,6 @@ class SplitTrainer():
         if not val_loader:
             print("Note: using training dataset for scheduler updates")
             val_loader = train_loader
-        
-        num_train_batches = len(train_loader)
-        num_val_batches = len(val_loader)
 
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank() 
@@ -51,6 +56,11 @@ class SplitTrainer():
             rank = 0
         
         scaler = GradScaler()  # required for mixed precision training
+
+        # Ensure that the ranks have the same number of batches!
+        num_train_batches = len(train_loader)
+        num_val_batches = len(val_loader)
+        self.check_batch_consistency(num_train_batches, num_val_batches, device)
 
         include_edges = False
         if edge_target_name:
@@ -64,6 +74,8 @@ class SplitTrainer():
         if include_edges:
             track_loss_edge = []
             track_loss_edge_val = []
+
+        # add assert that the ranks have the same number of batches
         
         for epoch in range(num_epochs):
             epoch_start = time.perf_counter()
@@ -223,6 +235,27 @@ class SplitTrainer():
                         self.save_training_state(self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder)
                         self.save_training_state(self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder)
     
+    def check_batch_consistency(self, num_train_batches, num_val_batches, device):
+
+        if dist.is_available() and dist.is_initialized():
+            train_batches_tensor = torch.tensor([num_train_batches], device=device)
+            val_batches_tensor = torch.tensor([num_val_batches], device=device)
+            train_batches_list = [torch.zeros_like(train_batches_tensor) for _ in range(dist.get_world_size())]
+            val_batches_list = [torch.zeros_like(val_batches_tensor) for _ in range(dist.get_world_size())]
+            dist.all_gather(train_batches_list, train_batches_tensor)
+            dist.all_gather(val_batches_list, val_batches_tensor)
+
+            dist.barrier()
+
+            if not all(train_batches_list[0] == tb for tb in train_batches_list):
+                print("Mismatch in number of training batches across ranks!", flush=True)
+                raise ValueError("Mismatch in number of training batches across ranks!", flush=True)
+                exit()
+            if not all(val_batches_list[0] == vb for vb in val_batches_list):
+                print("Mismatch in number of validation batches across ranks!", flush=True)
+                raise ValueError("Mismatch in number of validation batches across ranks!", flush=True)
+                exit()
+
     def adjust_learning_rate(self, optimizer, epoch, warmup_epochs, initial_lr, final_lr):
         """Adjusts the learning rate linearly during the warmup phase."""
         if epoch < warmup_epochs:

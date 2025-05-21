@@ -44,7 +44,7 @@ class Fock_Targets:
         
         ### Using a different target shape per molecule ###
         molecule_orbital_basis = {atom_number: self.orbital_basis[atom_number] for atom_number in self.atomic_numbers}
-        print("Using a molecule-specific basis! only one atom type")
+        # print("Using a molecule-specific basis! only one atom type")
         ### Using a different target shape per molecule ###
         
         # Analyze structure of orbital interactions
@@ -57,8 +57,8 @@ class Fock_Targets:
                                                             if_sort=False,
                                                             device_torch=self.device)
         
-        print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
-        print(f'Simplified irreps: {self.simplified_out_irreps}')
+        # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
+        # print(f'Simplified irreps: {self.simplified_out_irreps}')
 
         self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)])       # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
         self.target_len = target_len if target_len != 0 else None                   
