@@ -2,33 +2,45 @@ import os
 import torch
 import torch.distributed as dist
 import numpy as np
+from torch.distributed.launcher.api import LaunchConfig, elastic_launch
 
 def setup_env(rank, world_size):
 
-    # os.environ['MASTER_ADDR'] = 'localhost'
-    # os.environ['MASTER_PORT'] = '12355'
-    # device = torch.device('cuda')  
-    # print(f"rank {rank} sees {os.environ['CUDA_VISIBLE_DEVICES']}")
+    # copying over elastic launch for testing - nvm might have figured it out
+    # launch_config = LaunchConfig(
+    #             min_nodes=1,
+    #             max_nodes=1,
+    #             nproc_per_node=scheduler_cfg.ranks_per_node,
+    #             rdzv_backend="c10d",
+    #             max_restarts=0,
+    #         )
+    # elastic_launch(launch_config, _runner_wrapper)(cfg)
+
+    # dist.init_process_group(
+    #         backend=config["distributed_backend"],
+    #         rank=int(os.environ.get("RANK")),
+    #         world_size=config["world_size"],
+    #         timeout=timeout,
+    #     )
+    
+    # gpu_id = os.environ.get("RANK")
+    # torch.cuda.set_device(gpu_id) 
+    # device = torch.device('cuda:'+ str(gpu_id))
+    # # gpu_id = os.environ['SLURM_PROCID']
 
     print("Initializing distributed process group... ")     
     dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
 
-    # visibility is restricted to 0 in .sh file
-    # if len(os.environ['CUDA_VISIBLE_DEVICES']) == 1:
+    # !! make sure visibility is restricted to "gpu 0" in .sh file !!
     gpu_id = 0
     torch.cuda.set_device(gpu_id) 
     device = torch.device('cuda:'+ str(gpu_id))
-    # else:
-    #     print("len(os.environ['CUDA_VISIBLE_DEVICES']) ~= 1", flush=True)
-    #     torch.cuda.set_device(rank) 
-    #     device = torch.device(f'cuda:{rank}')
-
-    print("Finished setting up compute environment.")
+    
     return device
 
 def split_indices(rank, world_size, total_num_idx):
     """
-    Distributes data indices between ranks
+    Split data indices 
     """
 
     assert dist.is_initialized()

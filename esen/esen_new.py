@@ -884,6 +884,7 @@ class MLP_Energy_Head(nn.Module, HeadInterface):
             )
 
 
+# Note: with the aggregation, this is unstable! Sometimes elements cancel to zero
 @registry.register_model("esen_linear_force_head")
 class Linear_Force_Head(nn.Module, HeadInterface):
     def __init__(self, backbone):

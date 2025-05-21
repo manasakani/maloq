@@ -55,7 +55,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         max_neighbors: int = 300,
         use_pbc: bool = True,
         use_pbc_single: bool = False,
-        cutoff: float = 10.0,
+        cutoff = 10.0,
         edge_channels: int = 128,
         distance_function: str = "gaussian",
         num_distance_basis: int = 512,
@@ -113,7 +113,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                 0.0,
                 self.cutoff,
                 self.num_distance_basis,
-                1.0,
+                1.0, 
             )
         elif self.distance_function == "bessel":
             self.distance_expansion = EnvelopedBesselBasis(
@@ -258,6 +258,9 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         edge_distance_vec = data_dict["edge_dist"][:, [2, 3, 1]] 
         edge_distance = data_dict["edge_dist"][:, 0] 
 
+        # print("edge distance vec: ", edge_distance_vec)
+        # exit()
+
 
         # # From original eSEN forward pass:
         # edge_distance_vec = (
@@ -380,18 +383,18 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
 
         # Print to output files:
 
-        if output_dir:
-            file_path = os.path.join(output_dir, f'molecule_{batch_index}.txt')
-            with open(file_path, 'w') as f:
-                # Write the shape and elements of x_message_node
-                f.write("x_message_node\n")
-                f.write(f"{x_message_node.shape}\n")
-                f.write(' '.join(map(str, x_message_node.flatten().tolist())) + "\n")
+        # if output_dir:
+        #     file_path = os.path.join(output_dir, f'molecule_{batch_index}.txt')
+        #     with open(file_path, 'w') as f:
+        #         # Write the shape and elements of x_message_node
+        #         f.write("x_message_node\n")
+        #         f.write(f"{x_message_node.shape}\n")
+        #         f.write(' '.join(map(str, x_message_node.flatten().tolist())) + "\n")
                 
-                # Write the shape and elements of x_message_edge
-                f.write("x_message_edge\n")
-                f.write(f"{x_message_edge.shape}\n")
-                f.write(' '.join(map(str, x_message_edge.flatten().tolist())) + "\n")
+        #         # Write the shape and elements of x_message_edge
+        #         f.write("x_message_edge\n")
+        #         f.write(f"{x_message_edge.shape}\n")
+        #         f.write(' '.join(map(str, x_message_edge.flatten().tolist())) + "\n")
 
         # Prepare rank-N outputs:
         node_rank0 = self.convert_to_output_irreps(x_message_node, x_edge, self.sphere_channels, self.lmax, rank='0')

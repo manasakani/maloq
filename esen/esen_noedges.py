@@ -407,6 +407,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             "edge_rankN": edge_rankN,
         }
         out.update(graph_dict)
+
         return out
 
     def convert_to_output_irreps(self, x_message, x_edge, sphere_channels, lmax, rank, edge_index=None, node_or_edge='node'):   
