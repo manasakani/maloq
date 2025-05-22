@@ -6,6 +6,7 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 from e3nn.o3 import Irreps
+import wandb
 
 # note: removing amp to get better precision for now
 def disable_amp(func):
@@ -14,14 +15,29 @@ def disable_amp(func):
             return func(*args, **kwargs)
     return wrapper
 
+def get_timestamp_uid() -> str:
+    return datetime.datetime.now().strftime("%Y%m-%d%H-%M%S-") + str(uuid4())[:4]
+
 class SplitTrainer():
 
-    def __init__(self, backbone, head, head_irreps, save_frequency=100):
+    def __init__(self, backbone, head, head_irreps, save_frequency=100, run_id=None, run_name='noname'):
 
         self.backbone = backbone      # takes atom graph, outputs internal embeddings
         self.head = head              # takes internal embeddings, outputs fixed irrep size
         self.head_irreps = head_irreps
         self.save_frequency = save_frequency
+
+        if not run_id:
+            run_id = str(get_timestamp_uid)
+        
+        # config: any dictionary, add the training parameters
+        config = {}
+
+        wandb.init(config=config,    
+                   id=run_id,
+                   name=run_name,
+                   project='fockmatrices',
+                   entity='manasakani')
 
     @disable_amp
     def train(self, 
@@ -55,7 +71,7 @@ class SplitTrainer():
         else:
             rank = 0
         
-        scaler = GradScaler()  # required for mixed precision training
+        scaler = GradScaler()  # for mixed precision training
 
         # Ensure that the ranks have the same number of batches!
         num_train_batches = len(train_loader)
@@ -229,11 +245,11 @@ class SplitTrainer():
             if rank == 0:
                 if (epoch + 1) % self.save_frequency == 0:
                     if include_edges:
-                        self.save_training_state(self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
-                        self.save_training_state(self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)     
+                        self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
+                        self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)     
                     else:
-                        self.save_training_state(self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder)
-                        self.save_training_state(self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder)
+                        self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder)
+                        self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder)
     
     def check_batch_consistency(self, num_train_batches, num_val_batches, device):
 
@@ -250,11 +266,9 @@ class SplitTrainer():
             if not all(train_batches_list[0] == tb for tb in train_batches_list):
                 print("Mismatch in number of training batches across ranks!", flush=True)
                 raise ValueError("Mismatch in number of training batches across ranks!", flush=True)
-                exit()
             if not all(val_batches_list[0] == vb for vb in val_batches_list):
                 print("Mismatch in number of validation batches across ranks!", flush=True)
                 raise ValueError("Mismatch in number of validation batches across ranks!", flush=True)
-                exit()
 
     def adjust_learning_rate(self, optimizer, epoch, warmup_epochs, initial_lr, final_lr):
         """Adjusts the learning rate linearly during the warmup phase."""
@@ -377,7 +391,7 @@ class SplitTrainer():
             plt.savefig(output_folder+"/" + keyword + "_emb_"+str(i)+".png", dpi=300, bbox_inches='tight')
             plt.close()
 
-    def save_training_state(self, model, optimizer, track_loss_node, track_validation_node, save_file, output_folder, track_loss_edge=None, track_validation_edge=None):
+    def save_training_state(self, step, model, optimizer, track_loss_node, track_validation_node, save_file, output_folder, track_loss_edge=None, track_validation_edge=None):
         """
         Save the training state of the model and optimizer
         """
@@ -385,6 +399,13 @@ class SplitTrainer():
                     'optimizer_state_dict': optimizer.state_dict()}, output_folder + "/" + save_file + '.pt')
         torch.save(model.state_dict(), output_folder + "/" + save_file + '_state_dic.pt')
 
+        update_dict = {"node_loss": float(track_loss_node[-1]), 
+                       "node_val_loss": float(track_validation_node[-1]),
+                       "edge_loss": float(track_loss_edge[-1]), 
+                       "edge_val_loss": float(track_validation_edge[-1])}
+
+        # add some more stuff to the dictionary
+        wandb.log(update_dict)
 
         if track_loss_edge:
             with open(output_folder + "/" + save_file + '_training_loss.txt', 'w') as f:

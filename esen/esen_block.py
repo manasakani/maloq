@@ -143,6 +143,18 @@ class Edgewise(torch.nn.Module):
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
 
+        ## DEBUG ###
+        # reset backwards edges to rotation of forward edges
+        for forward_edge, (i, j) in enumerate(zip(edge_index[0], edge_index[1])):
+            if i < j:
+                mask = (edge_index[0] == j) & (edge_index[1] == i)
+                indices = torch.nonzero(mask, as_tuple=False)
+                index = indices[0].item() if indices.numel() > 0 else None
+                x_message[forward_edge] = -1*x_message[index] 
+                assert i == edge_index[1][index]
+                assert j == edge_index[0][index]
+        ## DEBUG ###
+
         # Compute the sum of the incoming neighboring messages for each target node
         new_embedding = torch.zeros(
             (x.shape[0],) + x_message.shape[1:],
@@ -178,6 +190,17 @@ class Edgewise(torch.nn.Module):
 
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
+
+        ## DEBUG ###
+        for forward_edge, (i, j) in enumerate(zip(edge_index[0], edge_index[1])):
+            if i < j:
+                mask = (edge_index[0] == j) & (edge_index[1] == i)
+                indices = torch.nonzero(mask, as_tuple=False)
+                index = indices[0].item() if indices.numel() > 0 else None
+                x_message[forward_edge] = -1*x_message[index]   
+                assert i == edge_index[1][index]
+                assert j == edge_index[0][index]
+        ## DEBUG ###
 
         # return new_embedding
         return x_message
