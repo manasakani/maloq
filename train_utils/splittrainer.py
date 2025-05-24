@@ -53,7 +53,7 @@ class SplitTrainer():
             val_loader=None, 
             edge_target_name=None, 
             output_folder='outputs',
-            num_warmup_epochs=20,
+            num_warmup_epochs=0,
             train_backbone=True,
             train_head=True):
 
@@ -118,7 +118,9 @@ class SplitTrainer():
                         node_output, edge_output = self.head(backbone_out, batch)
 
                         this_node_target = getattr(batch, node_target_name)
-                        this_edge_target = getattr(batch, edge_target_name)
+                        edge_mask = batch.edge_mask
+                        this_edge_target = getattr(batch, edge_target_name)[edge_mask]
+
                         output = torch.cat([node_output, edge_output], dim=0)
                         labels = torch.cat([this_node_target, this_edge_target], dim=0)
                         loss_node = loss_fxn(node_output, this_node_target)
@@ -180,7 +182,9 @@ class SplitTrainer():
                         if include_edges:
                             node_output, edge_output = self.head(backbone_out, batch)
                             this_node_target = getattr(batch, node_target_name)
-                            this_edge_target = getattr(batch, edge_target_name)
+                            edge_mask = batch.edge_mask
+                            this_edge_target = getattr(batch, edge_target_name)[edge_mask]
+
                             output = torch.cat([node_output, edge_output], dim=0)
                             labels = torch.cat([this_node_target, this_edge_target], dim=0)
                             loss_node = loss_fxn(node_output, this_node_target)
@@ -285,6 +289,7 @@ class SplitTrainer():
                 output_folder='outputs'):
         
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
+        print("Running eval.")
         self.backbone.eval() 
         self.head.eval() 
 
@@ -357,19 +362,11 @@ class SplitTrainer():
 
                     train_loss += loss
                 
-                # Aggregate loss 
-                # dist.all_reduce(train_loss, op=dist.ReduceOp.SUM)
-                # train_loss /= dist.get_world_size()
-                # if include_edges:
-                #     dist.all_reduce(train_loss_node, op=dist.ReduceOp.SUM)
-                #     train_loss_node /= dist.get_world_size()
-                #     dist.all_reduce(train_loss_edge, op=dist.ReduceOp.SUM)
-                #     train_loss_edge /= dist.get_world_size()
-                
                 # -- Track -- 
                 if include_edges:
                     track_loss_node.append(train_loss_node.cpu().detach().numpy()/num_eval_batches) 
                     track_loss_edge.append(train_loss_edge.cpu().detach().numpy()/num_eval_batches)
+                    track_loss.append(train_loss.cpu().detach().numpy()/num_eval_batches) 
                 else:
                     track_loss.append(train_loss.cpu().detach().numpy()/num_eval_batches) 
 

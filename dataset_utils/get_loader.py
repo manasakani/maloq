@@ -53,10 +53,17 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         
         graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype)
 
+        # collect only a subset of the edges (use reflection symmetry in the network)
+        forward_edge_mask = graph_targets.neighbour_list[0] < graph_targets.neighbour_list[1]
+        print("NOTE: Using half the edges + reflection symmetry!")
+        # use all edges:
+        # forward_edge_mask = [True]*len(graph_targets.neighbour_list[0])
+
         # 3. Make the data object
         data = gnnData(
                         pos=torch.tensor(graph_targets.atoms.positions, dtype=dtype),
                         edge_index=torch.tensor(graph_targets.neighbour_list), 
+                        edge_mask=torch.tensor(forward_edge_mask),
                         edge_attr=graph_targets.edge_dist, 
                         y=graph_targets.edge_labels,
                         node_y=graph_targets.node_labels,

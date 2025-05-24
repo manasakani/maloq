@@ -76,6 +76,7 @@ class EdgeDegreeEmbedding(torch.nn.Module):
         x_edge,
         edge_distance,
         edge_index,
+        forward_edge_mask,
         wigner_inv,
         node_or_edge='node'
     ):
@@ -109,8 +110,14 @@ class EdgeDegreeEmbedding(torch.nn.Module):
 
         if node_or_edge == 'node':
             x.index_add_(
-                0, edge_index[1], x_edge_embedding / self.rescale_factor
+                0, edge_index[1][forward_edge_mask], x_edge_embedding / self.rescale_factor
             )
+
+            if (~forward_edge_mask).any():  # if we are ignoring half the edges
+                x.index_add_(
+                0, edge_index[0][forward_edge_mask], -1*x_edge_embedding / self.rescale_factor
+            )
+
             return x
         else:
             return x_edge_embedding
