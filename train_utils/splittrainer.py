@@ -11,6 +11,7 @@ import wandb
 # note: removing amp to get better precision for now
 def disable_amp(func):
     def wrapper(*args, **kwargs):
+        print("Disabling torch amp")
         with torch.cuda.amp.autocast(enabled=False):
             return func(*args, **kwargs)
     return wrapper
@@ -20,7 +21,7 @@ def get_timestamp_uid() -> str:
 
 class SplitTrainer():
 
-    def __init__(self, backbone, head, head_irreps, save_frequency=100, run_id=None, run_name='noname'):
+    def __init__(self, backbone, head, head_irreps, save_frequency=10, run_id=None, run_name='noname'):
 
         self.backbone = backbone      # takes atom graph, outputs internal embeddings
         self.head = head              # takes internal embeddings, outputs fixed irrep size
@@ -38,7 +39,7 @@ class SplitTrainer():
                    name=run_name,
                    project='fockmatrices',
                    entity='manasakani')
-
+        
     @disable_amp
     def train(self, 
             num_epochs, 
@@ -90,8 +91,6 @@ class SplitTrainer():
         if include_edges:
             track_loss_edge = []
             track_loss_edge_val = []
-
-        # add assert that the ranks have the same number of batches
         
         for epoch in range(num_epochs):
             epoch_start = time.perf_counter()
@@ -140,15 +139,6 @@ class SplitTrainer():
                             print("To be implemented!") 
 
                         train_loss_node += loss
-                    
-                    # Aggregate loss 
-                    # dist.all_reduce(loss, op=dist.ReduceOp.SUM)
-                    # dist.all_reduce(train_loss_node, op=dist.ReduceOp.SUM)
-                    # loss /= dist.get_world_size()
-                    # train_loss_node /= dist.get_world_size()
-                    # if include_edges:
-                    #     dist.all_reduce(train_loss_edge, op=dist.ReduceOp.SUM)
-                    #     train_loss_edge /= dist.get_world_size()
                     
                 # -- Backwards -- 
                 # loss.backward()
@@ -214,10 +204,6 @@ class SplitTrainer():
                                 
                         val_loss += loss.item()
             
-            # val_loss_tensor = torch.tensor(val_loss, device=device)
-            # dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.SUM)
-            # val_loss = val_loss_tensor.item() / dist.get_world_size()
-
             # -- Output dump -- 
             if include_edges:
                 track_loss_node_val.append(val_loss_node.cpu().detach().numpy()/num_val_batches) 
@@ -240,6 +226,16 @@ class SplitTrainer():
             epoch_end = time.perf_counter()
             if rank == 0:
                 print("Time per epoch: ", epoch_end - epoch_start)
+
+            
+            # log:
+            update_dict = {"node_loss": float(track_loss_node[-1]), 
+                            "node_val_loss": float(track_loss_node_val[-1]),
+                            "edge_loss": float(track_loss_edge[-1]), 
+                            "edge_val_loss": float(track_loss_edge_val[-1])}
+
+            # add some more stuff to the dictionary
+            wandb.log(update_dict)
             
             # save state
             if rank == 0:
@@ -315,11 +311,20 @@ class SplitTrainer():
                 backbone_out = self.backbone(batch) 
 
                 # check
-                self.visualize_embeddings(backbone_out["node_embeddings"][0:2], output_folder, keyword='node')
-                self.visualize_embeddings(backbone_out["edge_embeddings"][0:2], output_folder, keyword='edge')
+                self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
+                self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
 
                 if include_edges:
                     node_output, edge_output = self.head(backbone_out, batch)
+
+                    # plt.imshow(np.log(np.abs(edge_output[0].detach().reshape(14, 14).cpu().numpy())))
+                    # plt.savefig("edge_01.png", dpi=300, bbox_inches='tight')
+                    # plt.close()
+                    # plt.imshow(np.log(np.abs(edge_output[3].detach().reshape(14, 14).cpu().numpy())))
+                    # plt.savefig("edge_10.png", dpi=300, bbox_inches='tight')
+                    # plt.close()
+                    # print("printed edges")
+                    # exit()
 
                     this_node_target = getattr(batch, node_target_name)
                     this_edge_target = getattr(batch, edge_target_name)
@@ -398,14 +403,6 @@ class SplitTrainer():
         torch.save({'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict()}, output_folder + "/" + save_file + '.pt')
         torch.save(model.state_dict(), output_folder + "/" + save_file + '_state_dic.pt')
-
-        update_dict = {"node_loss": float(track_loss_node[-1]), 
-                       "node_val_loss": float(track_validation_node[-1]),
-                       "edge_loss": float(track_loss_edge[-1]), 
-                       "edge_val_loss": float(track_validation_edge[-1])}
-
-        # add some more stuff to the dictionary
-        wandb.log(update_dict)
 
         if track_loss_edge:
             with open(output_folder + "/" + save_file + '_training_loss.txt', 'w') as f:

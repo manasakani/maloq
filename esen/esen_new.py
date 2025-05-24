@@ -504,7 +504,8 @@ class Fock_Irreps_Head(nn.Module):
         node_embeddings = emb["node_embeddings"]
         edge_embeddings = emb["edge_embeddings"]
         x_edge = emb["x_edge"]
-        edge_index = torch.tensor(batch.edge_index, dtype=torch.long).squeeze(0).reshape(2, -1)
+        # edge_index = torch.tensor(batch.edge_index, dtype=torch.long).squeeze(0).reshape(2, -1)
+        edge_index = batch.edge_index.squeeze(0).reshape(2, -1),
 
         if self.head_type == 'linear':
             node_embeddings = self.stack_irreps(node_embeddings)

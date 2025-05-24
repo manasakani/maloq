@@ -29,10 +29,10 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> QM7
-dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_ethanol_dft.db'
+dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_uracil.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_ethanol_fock'
+output_folder = 'outputs_QM7_uracil_fock'
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
@@ -56,7 +56,7 @@ train_or_eval = "train"
 num_val = 500                           # Number of validation structures
 num_train = 10000 
 num_epochs = 50000
-batch_size = 1                          # 1 for eval, 10 for train
+batch_size = 1                         # 1 for eval, 10 for train
 rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = 10.0                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -263,7 +263,7 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', fa
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='QM7_ethanol_May23')
+                                    run_name='QM7_uracil_May23')
 
 trainer.train(num_epochs, 
                 loss_fxn, 
