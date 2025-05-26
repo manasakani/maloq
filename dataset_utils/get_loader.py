@@ -23,6 +23,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     Make dataloader with the given indices of the mocules in the input database
     """
     rank = dist.get_rank()
+    assert end_idx > start_idx
 
     datalist = []
     for i in range(start_idx, end_idx):

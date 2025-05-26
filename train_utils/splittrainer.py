@@ -55,7 +55,10 @@ class SplitTrainer():
             output_folder='outputs',
             num_warmup_epochs=0,
             train_backbone=True,
-            train_head=True):
+            train_head=True,
+            basis_transform=None,
+            compute_uncoupled_loss=True,
+            min_lr=1e-8):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
 
@@ -116,16 +119,23 @@ class SplitTrainer():
 
                     if include_edges:
                         node_output, edge_output = self.head(backbone_out, batch)
-
+                        
                         this_node_target = getattr(batch, node_target_name)
                         edge_mask = batch.edge_mask
                         this_edge_target = getattr(batch, edge_target_name)[edge_mask]
 
+                        # do everything in the uncoupled basis:
+                        if compute_uncoupled_loss:
+                            node_output = basis_transform.get_H(node_output)
+                            edge_output = basis_transform.get_H(edge_output)
+                            this_node_target = basis_transform.get_H(this_node_target)
+                            this_edge_target = basis_transform.get_H(this_edge_target)
+
                         output = torch.cat([node_output, edge_output], dim=0)
                         labels = torch.cat([this_node_target, this_edge_target], dim=0)
-                        loss_node = loss_fxn(node_output, this_node_target)
-                        loss_edge = loss_fxn(edge_output, this_edge_target) 
-                        loss = loss_fxn(output, labels)
+                        loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
+                        loss_edge = loss_fxn(edge_output, this_edge_target, self.head_irreps) 
+                        loss = loss_fxn(output, labels, self.head_irreps)
 
                         train_loss_node += loss_node
                         train_loss_edge += loss_edge
@@ -136,7 +146,7 @@ class SplitTrainer():
 
                         if self.head_irreps == '1x1e':             
                             this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
-                            loss = loss_fxn(node_output['forces'], this_node_target) 
+                            loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps) 
                         else:
                             print("To be implemented!") 
 
@@ -185,11 +195,18 @@ class SplitTrainer():
                             edge_mask = batch.edge_mask
                             this_edge_target = getattr(batch, edge_target_name)[edge_mask]
 
+                            # do everything in the uncoupled basis:
+                            if compute_uncoupled_loss:
+                                node_output = basis_transform.get_H(node_output)
+                                edge_output = basis_transform.get_H(edge_output)
+                                this_node_target = basis_transform.get_H(this_node_target)
+                                this_edge_target = basis_transform.get_H(this_edge_target)
+
                             output = torch.cat([node_output, edge_output], dim=0)
                             labels = torch.cat([this_node_target, this_edge_target], dim=0)
-                            loss_node = loss_fxn(node_output, this_node_target)
-                            loss_edge = loss_fxn(edge_output, this_edge_target) 
-                            loss = loss_fxn(output, labels)
+                            loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
+                            loss_edge = loss_fxn(edge_output, this_edge_target, self.head_irreps) 
+                            loss = loss_fxn(output, labels, self.head_irreps)
 
                             val_loss_node += loss_node
                             val_loss_edge += loss_edge
@@ -200,7 +217,7 @@ class SplitTrainer():
 
                             if self.head_irreps == '1x1e':             # permute force vectors to match edge permutations
                                 this_node_target = this_node_target[:, [1, 2, 0]]
-                                loss = loss_fxn(node_output['forces'], this_node_target) 
+                                loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps) 
                             else:
                                 print("To be implemented!")  
 
@@ -232,14 +249,15 @@ class SplitTrainer():
                 print("Time per epoch: ", epoch_end - epoch_start)
 
             
-            # log:
-            update_dict = {"node_loss": float(track_loss_node[-1]), 
-                            "node_val_loss": float(track_loss_node_val[-1]),
-                            "edge_loss": float(track_loss_edge[-1]), 
-                            "edge_val_loss": float(track_loss_edge_val[-1])}
+            # # log:
+            # update_dict = {"node_loss": float(track_loss_node[-1]), 
+            #                 "node_val_loss": float(track_loss_node_val[-1]),
+            #                 "edge_loss": float(track_loss_edge[-1]), 
+            #                 "edge_val_loss": float(track_loss_edge_val[-1]),
+            #                 "learning_rate": float(current_lr)}
 
-            # add some more stuff to the dictionary
-            wandb.log(update_dict)
+            # # add some more stuff to the dictionary
+            # wandb.log(update_dict)
             
             # save state
             if rank == 0:
@@ -251,6 +269,13 @@ class SplitTrainer():
                         self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder)
                         self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder)
     
+            # End condition is based on the learning rate:
+            min_lr_reached = torch.tensor(float(current_lr == min_lr), device='cuda')
+            dist.all_reduce(min_lr_reached, op=dist.ReduceOp.SUM)
+            if min_lr_reached.item() > 0:
+                print("Reached minimum learning rate, finished training.")
+                return
+
     def check_batch_consistency(self, num_train_batches, num_val_batches, device):
 
         if dist.is_available() and dist.is_initialized():
@@ -306,33 +331,21 @@ class SplitTrainer():
         
         # -- Evaluate everything in the train_loader -- 
         with torch.no_grad():  
-            train_loss_node = 0.0
-            train_loss_edge = 0.0
-            train_loss = 0.0
-
+            
             for index, batch in enumerate(eval_loader):
 
                 batch = batch.to(device)
                 backbone_out = self.backbone(batch) 
 
-                # check
                 self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
                 self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
 
                 if include_edges:
                     node_output, edge_output = self.head(backbone_out, batch)
 
-                    # plt.imshow(np.log(np.abs(edge_output[0].detach().reshape(14, 14).cpu().numpy())))
-                    # plt.savefig("edge_01.png", dpi=300, bbox_inches='tight')
-                    # plt.close()
-                    # plt.imshow(np.log(np.abs(edge_output[3].detach().reshape(14, 14).cpu().numpy())))
-                    # plt.savefig("edge_10.png", dpi=300, bbox_inches='tight')
-                    # plt.close()
-                    # print("printed edges")
-                    # exit()
-
                     this_node_target = getattr(batch, node_target_name)
-                    this_edge_target = getattr(batch, edge_target_name)
+                    edge_mask = batch.edge_mask
+                    this_edge_target = getattr(batch, edge_target_name)[edge_mask]
 
                     # Transform back to uncoupled basis:
                     uncoupled_node_outputs = basis_transform.get_H(node_output)
@@ -346,10 +359,6 @@ class SplitTrainer():
                     loss_edge = loss_fxn(uncoupled_edge_outputs, uncoupled_edge_labels) 
                     loss = loss_fxn(output, labels)
 
-                    train_loss_node += loss_node
-                    train_loss_edge += loss_edge
-                    train_loss += loss
-
                 else:
                     node_output = self.head(backbone_out, batch)
                     this_node_target = getattr(batch, node_target_name)
@@ -359,16 +368,14 @@ class SplitTrainer():
                         loss = loss_fxn(node_output['forces'], this_node_target) 
                     else:
                         print("To be implemented!") 
-
-                    train_loss += loss
                 
                 # -- Track -- 
                 if include_edges:
-                    track_loss_node.append(train_loss_node.cpu().detach().numpy()/num_eval_batches) 
-                    track_loss_edge.append(train_loss_edge.cpu().detach().numpy()/num_eval_batches)
-                    track_loss.append(train_loss.cpu().detach().numpy()/num_eval_batches) 
+                    track_loss_node.append(loss_node.cpu().detach().numpy()) 
+                    track_loss_edge.append(loss_edge.cpu().detach().numpy())
+                    track_loss.append(loss.cpu().detach().numpy()) 
                 else:
-                    track_loss.append(train_loss.cpu().detach().numpy()/num_eval_batches) 
+                    track_loss.append(loss.cpu().detach().numpy()) 
 
                 # remove from gpu
                 del batch, node_output
