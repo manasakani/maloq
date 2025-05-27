@@ -68,6 +68,7 @@ class SplitTrainer():
 
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank() 
+            world_size = dist.get_world_size()
             if train_backbone:
                 self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, find_unused_parameters=False)
             if train_head:
@@ -153,8 +154,6 @@ class SplitTrainer():
                         train_loss_node += loss
                     
                 # -- Backwards -- 
-                # loss.backward()
-                # optimizer.step()
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
@@ -272,7 +271,8 @@ class SplitTrainer():
             # End condition is based on the learning rate:
             min_lr_reached = torch.tensor(float(current_lr == min_lr), device='cuda')
             dist.all_reduce(min_lr_reached, op=dist.ReduceOp.SUM)
-            if min_lr_reached.item() > 0:
+            # if min_lr_reached.item() > 0:             # if any of them
+            if min_lr_reached.item() == world_size:     # if all of them
                 print("Reached minimum learning rate, finished training.")
                 return
 
@@ -319,6 +319,7 @@ class SplitTrainer():
         self.head.eval() 
 
         num_eval_batches = len(eval_loader)
+        print(f"Running {num_eval_batches} batches through eval.")
 
         include_edges = False
         if edge_target_name:
@@ -331,15 +332,22 @@ class SplitTrainer():
         
         # -- Evaluate everything in the train_loader -- 
         with torch.no_grad():  
+
+            node_outputs = {}
+            node_labels = {}
+            if include_edges:
+                edge_outputs = {}
+                edge_labels = {}
             
             for index, batch in enumerate(eval_loader):
 
                 batch = batch.to(device)
                 backbone_out = self.backbone(batch) 
 
-                self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
-                self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
+                # self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
+                # self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
 
+                # pass all the batches through:
                 if include_edges:
                     node_output, edge_output = self.head(backbone_out, batch)
 
@@ -353,11 +361,16 @@ class SplitTrainer():
                     uncoupled_node_labels = basis_transform.get_H(this_node_target)
                     uncoupled_edge_labels = basis_transform.get_H(this_edge_target)
 
-                    output = torch.cat([uncoupled_node_outputs, uncoupled_edge_outputs], dim=0)
-                    labels = torch.cat([uncoupled_node_labels, uncoupled_edge_labels], dim=0)
-                    loss_node = loss_fxn(uncoupled_node_outputs, uncoupled_node_labels)
-                    loss_edge = loss_fxn(uncoupled_edge_outputs, uncoupled_edge_labels) 
-                    loss = loss_fxn(output, labels)
+                    # Unpad them into the hamiltonian orbital blocks
+                    node_orbital_blocks_output = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_outputs)
+                    edge_orbital_blocks_output = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_outputs)
+                    node_orbital_blocks_label = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_labels)
+                    edge_orbital_blocks_label = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_labels)
+
+                    node_outputs.update(node_orbital_blocks_output)
+                    edge_outputs.update(edge_orbital_blocks_output)
+                    node_labels.update(node_orbital_blocks_label)
+                    edge_labels.update(edge_orbital_blocks_label)
 
                 else:
                     node_output = self.head(backbone_out, batch)
@@ -368,20 +381,33 @@ class SplitTrainer():
                         loss = loss_fxn(node_output['forces'], this_node_target) 
                     else:
                         print("To be implemented!") 
-                
+
                 # -- Track -- 
                 if include_edges:
-                    track_loss_node.append(loss_node.cpu().detach().numpy()) 
-                    track_loss_edge.append(loss_edge.cpu().detach().numpy())
-                    track_loss.append(loss.cpu().detach().numpy()) 
+                    num_nodes = len(node_outputs.values())
+                    num_edges = len(edge_outputs.values())
+                    edge_multiplier = 2 if batch.fock_target_object[0].reflection_symmetry else 1
+
+                    node_losses = []
+                    edge_losses = []    
+                    for node_out, node_label in zip(node_outputs.values(), node_labels.values()):
+                        node_losses.append(torch.mean(torch.abs(node_out - node_label)))
+                    for edge_out, edge_label in zip(edge_outputs.values(), edge_labels.values()):
+                        edge_losses.append(torch.mean(torch.abs(edge_out - edge_label)))
+
+                    track_loss_node.append(torch.mean(torch.tensor(node_losses)))
+                    track_loss_edge.append(torch.mean(torch.tensor(edge_losses)))
+                    track_loss.append((track_loss_node[-1]*num_nodes + track_loss_edge[-1]*edge_multiplier*num_edges)/(num_nodes + edge_multiplier*num_edges))
+
                 else:
                     track_loss.append(loss.cpu().detach().numpy()) 
-
+                
                 # remove from gpu
                 del batch, node_output
                 if include_edges:
                     del edge_output
                 torch.cuda.empty_cache()
+
 
         # -- Output dump -- 
         if include_edges:

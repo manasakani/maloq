@@ -18,7 +18,7 @@ orbital_basis_def2_svp = {35: [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2],
                            6: [0, 0, 0, 1, 1, 2], 
                            1: [0, 0, 1]}
 
-def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32):
+def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, reflection_symmetry=True):
     """
     Make dataloader with the given indices of the mocules in the input database
     """
@@ -52,13 +52,10 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         if dataset_name == "QM7":                 
             hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate 
         
-        graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype)
+        graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, reflection_symmetry=reflection_symmetry)
 
         # collect only a subset of the edges (use reflection symmetry in the network)
-        forward_edge_mask = graph_targets.neighbour_list[0] < graph_targets.neighbour_list[1]
-        print("NOTE: Using half the edges + reflection symmetry!")
-        # use all edges:
-        # forward_edge_mask = [True]*len(graph_targets.neighbour_list[0])
+        forward_edge_mask = graph_targets.forward_edge_mask
 
         # 3. Make the data object
         data = gnnData(
@@ -71,7 +68,8 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
                         atomic_numbers=torch.tensor(graph_targets.atomic_numbers, dtype=torch.long).cpu(),  
                         energies=torch.tensor(energy, dtype=dtype),
                         forces=torch.tensor(forces, dtype=dtype),                                      # Hartree/Angstrom
-                        num_atoms_in_molecule=len(graph_targets.atomic_numbers)
+                        num_atoms_in_molecule=len(graph_targets.atomic_numbers),
+                        fock_target_object=graph_targets
                     )
         datalist.append(data)
 

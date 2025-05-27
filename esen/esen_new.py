@@ -68,9 +68,13 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         norm_type: str = "rms_norm_sh",
         act_type: str = "gate",
         mlp_type: str = "spectral",
-        gaussian_width = 1.0
+        gaussian_width = 1.0,
+        include_edges=True
     ):
         super().__init__()
+
+        if not include_edges:
+            print("Note: Initializing eSEN backbone without edge_embeddings!")
 
         self.max_num_elements = max_num_elements
         self.lmax = lmax
@@ -82,6 +86,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         self.direct_forces = direct_forces
         self.regress_stress = regress_stress
         self.mlp_type = mlp_type
+        self.include_edges = include_edges      # whether to use embeddings for the edges as well
 
         # rotation utils
         Jd_list = torch.load(os.path.join(os.path.dirname(__file__), "Jd.pt"))
@@ -160,7 +165,9 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
 
         # Initialize the blocks for each layer
         self.node_blocks = nn.ModuleList()
-        self.edge_blocks = nn.ModuleList()
+
+        if self.include_edges:
+            self.edge_blocks = nn.ModuleList()
 
         for _ in range(self.num_layers):
             node_block = eSEN_Block(
@@ -175,22 +182,26 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                 self.norm_type,
                 self.act_type,
                 self.mlp_type,
+                self.include_edges
             )
             self.node_blocks.append(node_block)
-            edge_block = eSEN_Block(
-                self.sphere_channels,
-                self.hidden_channels,
-                self.lmax,
-                self.mmax,
-                self.mappingReduced,
-                self.SO3_grid,
-                self.edge_channels_list,
-                self.cutoff,
-                self.norm_type,
-                self.act_type,
-                self.mlp_type,
-            )
-            self.edge_blocks.append(edge_block)
+
+            if self.include_edges:
+                edge_block = eSEN_Block(
+                    self.sphere_channels,
+                    self.hidden_channels,
+                    self.lmax,
+                    self.mmax,
+                    self.mappingReduced,
+                    self.SO3_grid,
+                    self.edge_channels_list,
+                    self.cutoff,
+                    self.norm_type,
+                    self.act_type,
+                    self.mlp_type,
+                    self.include_edges
+                )
+                self.edge_blocks.append(edge_block)
 
         self.norm = get_normalization_layer(
             self.norm_type,
@@ -276,16 +287,19 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         # set l = 0 components to the element embeddings:
         x_message_node[:, 0, :] = self.sphere_embedding(data_dict["atomic_numbers"]) 
 
-        # x_message_edge: [data_dict["nedges"] = #edges, self.sph_feature_size = (l_max+1)**2, self.sphere_channels = E]
-        x_message_edge = torch.zeros(
-            forward_edge_mask.sum().item(), # data_dict["nedges"] - forward edges only
-            self.sph_feature_size,
-            self.num_distance_basis, #self.sphere_channels,
-            device=data_dict["pos"].device,
-            dtype=data_dict["pos"].dtype,
-        )
-        # set l = 0 components to the distance expansion
-        x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"])
+        if self.include_edges:
+            # x_message_edge: [data_dict["nedges"] = #edges, self.sph_feature_size = (l_max+1)**2, self.sphere_channels = E]
+            x_message_edge = torch.zeros(
+                forward_edge_mask.sum().item(), # data_dict["nedges"] - forward edges only
+                self.sph_feature_size,
+                self.num_distance_basis, #self.sphere_channels,
+                device=data_dict["pos"].device,
+                dtype=data_dict["pos"].dtype,
+            )
+            # set l = 0 components to the distance expansion
+            x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"])
+        else:
+            x_message_edge = None
 
         # edge embedding: [num_edges, num gaussian basis functions]
         # source_embedding, target_embedding: [num_edges, self.sphere_channels]
@@ -316,15 +330,16 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             node_or_edge='node'
         )
 
-        x_message_edge = self.edge_degree_embedding(
-            x_message_node,
-            x_edge,
-            graph_dict["edge_distance"],
-            graph_dict["edge_index"],
-            graph_dict["forward_edge_mask"],
-            wigner_inv,
-            node_or_edge='edge'
-        )
+        if self.include_edges:
+            x_message_edge = self.edge_degree_embedding(
+                x_message_node,
+                x_edge,
+                graph_dict["edge_distance"],
+                graph_dict["edge_index"],
+                graph_dict["forward_edge_mask"],
+                wigner_inv,
+                node_or_edge='edge'
+            )
         
         # x_message_node shape:    # nodes, lmax, E
         # x_message_edge shape:    # edges, lmax, E
@@ -344,21 +359,25 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                 wigner_inv,
                 node_or_edge='node',
             )
-            x_message_edge = self.edge_blocks[i](
-                x_message_node,
-                x_message_edge,
-                x_edge,
-                graph_dict["edge_distance"],
-                graph_dict["edge_index"],
-                graph_dict["forward_edge_mask"],
-                wigner,
-                wigner_inv,
-                node_or_edge='edge',
-            )
+
+            if self.include_edges:
+                x_message_edge = self.edge_blocks[i](
+                    x_message_node,
+                    x_message_edge,
+                    x_edge,
+                    graph_dict["edge_distance"],
+                    graph_dict["edge_index"],
+                    graph_dict["forward_edge_mask"],
+                    wigner,
+                    wigner_inv,
+                    node_or_edge='edge',
+                )
         
         # Final layer norm
         x_message_node = self.norm(x_message_node)
-        x_message_edge = self.norm(x_message_edge)
+
+        if self.include_edges:
+            x_message_edge = self.norm(x_message_edge)
 
         # if output_dir:
         #     file_path = os.path.join(output_dir, f'molecule_{batch_index}.txt')
@@ -461,15 +480,8 @@ class Fock_Irreps_Head(nn.Module):
             input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
             combined_output_scalars = Irreps(f"{irreps_scalars.num_irreps + irreps_gated.num_irreps}x0e")
             self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars)
-
+            # self.lin_scalars_learnable_2 = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=irreps_gates)
             # this returns the irreps_gates
-
-            # self.gate = Gate(irreps_scalars=irreps_scalars,
-            #                     act_scalars=[torch.tanh] * len(irreps_scalars),
-            #                     irreps_gates=irreps_gates,
-            #                     act_gates=[torch.tanh] * len(irreps_gates),
-            #                     irreps_gated=irreps_gated
-            #                 )
 
             # 2. Apply the gating to the other ls (need to pass in a stack of [l=0, l~=0])
             self.gate = Gate(irreps_scalars=Irreps(),
@@ -478,6 +490,13 @@ class Fock_Irreps_Head(nn.Module):
                                 act_gates=[torch.sigmoid] * len(irreps_gates),
                                 irreps_gated=irreps_gated
                             )
+            # self.gate2 = Gate(irreps_scalars=Irreps(),
+            #                     act_scalars=[],
+            #                     irreps_gates=irreps_gates,
+            #                     act_gates=[torch.sigmoid] * len(irreps_gates),
+            #                     irreps_gated=irreps_gated
+            #                 )
+
             # print("gate irreps out (simplified): ", self.gate.irreps_out.sort()[0].simplify() ) 
             # print("irreps out (simplified): ", irreps_out.sort()[0].simplify() ) 
 
@@ -563,12 +582,43 @@ class Fock_Irreps_Head(nn.Module):
         transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
         gating_scalars = all_scalars[:, self.sphere_channels:]
 
+        # all_scalars_2 = self.lin_scalars_learnable_2(x_scalars) 
+        # transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
+        # gating_scalars_2 = all_scalars_2
+
         # 3. Gate the l>0 irreps:
         x_gated = self.gate(torch.cat([gating_scalars, x_nonscalars], dim=1))
+        # x_gated_2 = self.gate(torch.cat([gating_scalars_2, x_gated], dim=1))
 
         # plug the l=0 components back into x_gated (currently they are zeros):
-        # x_gated = torch.cat([x_scalars, x_gated], dim=1)              # original scalars get plugged back in
+        # x_gated = torch.cat([x_scalars, x_gated], dim=1)                # original scalars get plugged back in
         x_gated = torch.cat([transformed_l0_scalars, x_gated], dim=1)   # use the transformed scalars
+        x_out = self.lin_out(x_gated)
+
+        return x_out
+
+    def process_doublegated(self, x, x_edge, edge_index):
+
+        # 1. Extract the scalar components, which are the first # sphere_channels elements of this tensor
+        x_scalars = x[:, :self.sphere_channels]
+        x_nonscalars = x[:, self.sphere_channels:]
+
+        # 2. Prepare some scalars for gating
+        # gate with learnable scalars: the first 'sphere_channels' scalars are the l=0, and others are used for gating
+        all_scalars = self.lin_scalars_learnable(x_scalars) 
+        transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
+        gating_scalars = all_scalars[:, self.sphere_channels:]
+
+        # second gating pass:
+        gating_scalars_2 = self.lin_scalars_learnable_2(x_scalars) 
+
+        # 3. Gate the l>0 irreps:
+        x_gated = self.gate(torch.cat([gating_scalars, x_nonscalars], dim=1))
+        x_gated_2 = self.gate(torch.cat([gating_scalars_2, x_gated], dim=1))
+
+        # plug the l=0 components back into x_gated (currently they are zeros):
+        # x_gated = torch.cat([x_scalars, x_gated], dim=1)                # original scalars get plugged back in
+        x_gated = torch.cat([transformed_l0_scalars, x_gated_2], dim=1)   # use the transformed scalars
         x_out = self.lin_out(x_gated)
 
         return x_out
@@ -886,19 +936,19 @@ class MLP_Energy_Head(nn.Module, HeadInterface):
 class Linear_Force_Head(nn.Module, HeadInterface):
     def __init__(self, backbone):
         super().__init__()
-        # self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
-        self.linear = SO3_Linear(2*backbone.sphere_channels, 1, lmax=1)
+        self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
+        # self.linear = SO3_Linear(2*backbone.sphere_channels, 1, lmax=1)
 
     def forward(self, emb: dict[str, torch.Tensor], batch):
 
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
         
-        aggregated_emb = torch.zeros_like(emb["node_embeddings"])
-        aggregated_emb.index_add_(0, edge_index[1], emb["edge_embeddings"])
-        node_plus_edges = torch.cat((emb["node_embeddings"], aggregated_emb), 2)            # concatenate the node with its aggregated edges:
-        forces = self.linear(node_plus_edges.narrow(1, 0, 4))
+        # aggregated_emb = torch.zeros_like(emb["node_embeddings"])
+        # aggregated_emb.index_add_(0, edge_index[1], emb["edge_embeddings"])
+        # node_plus_edges = torch.cat((emb["node_embeddings"], aggregated_emb), 2)            # concatenate the node with its aggregated edges:
+        # forces = self.linear(node_plus_edges.narrow(1, 0, 4))
 
-        # forces = self.linear(emb["node_embeddings"].narrow(1, 0, 4))
+        forces = self.linear(emb["node_embeddings"].narrow(1, 0, 4))
         forces = forces.narrow(1, 1, 3)
         forces = forces.view(-1, 3).contiguous()
         return {"forces": forces}

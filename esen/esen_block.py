@@ -40,6 +40,7 @@ class Edgewise(torch.nn.Module):
         SO3_grid,
         cutoff,
         act_type="gate",
+        include_edges=True
     ):
         super().__init__()
 
@@ -52,6 +53,7 @@ class Edgewise(torch.nn.Module):
         self.SO3_grid = SO3_grid
         self.edge_channels_list = copy.deepcopy(edge_channels_list)
         self.act_type = act_type
+        self.include_edges = include_edges
 
         if self.act_type == "gate":
             self.act = GateActivation(
@@ -60,9 +62,14 @@ class Edgewise(torch.nn.Module):
             extra_m0_output_channels = self.lmax * self.hidden_channels
         else:
             raise ValueError(f"Unknown activation type {self.act_type}")
+        
+        if self.include_edges:
+            concat_size = 3
+        else:
+            concat_size = 2
 
         self.so2_conv_1 = SO2_Convolution(
-            3 * self.sphere_channels,  
+            concat_size * self.sphere_channels,  
             self.hidden_channels,
             self.lmax,
             self.mmax,
@@ -143,7 +150,11 @@ class Edgewise(torch.nn.Module):
 
         x_source = x[edge_index[0][edge_mask]]
         x_target = x[edge_index[1][edge_mask]]
-        x_message = torch.cat((x_source, x_message_edge, x_target), dim=2)
+
+        if self.include_edges:
+            x_message = torch.cat((x_source, x_message_edge, x_target), dim=2)
+        else:
+            x_message = torch.cat((x_source, x_target), dim=2)
 
         # Rotate the irreps to align with the edge
         x_message = torch.bmm(wigner, x_message)
@@ -280,6 +291,7 @@ class eSEN_Block(torch.nn.Module):
         norm_type: str,
         act_type: str,
         mlp_type: str,
+        include_edges=True
     ) -> None:
         super().__init__()
         self.sphere_channels = sphere_channels
@@ -302,6 +314,7 @@ class eSEN_Block(torch.nn.Module):
             SO3_grid=SO3_grid,
             cutoff=cutoff,
             act_type=act_type,
+            include_edges=include_edges
         )
 
         self.norm_2 = get_normalization_layer(
