@@ -5,7 +5,7 @@ import numpy as np
 import torch
 
 from fock_utils import utils_orca_out, fock_targets
-from train_utils import utils_training, utils_compute, splittrainer
+from train_utils import loss, utils_compute, splittrainer
 from dataset_utils import get_loader
 from dataset_utils.ASEDataset import ASEAtomsData
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
@@ -38,7 +38,7 @@ random.seed(42)
 # --> NablaDFT (tiny)
 database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_gated'
+output_folder = 'outputs_nablaDFT_sym'
 # ---------------------------
 
 # --> Model settings:
@@ -53,26 +53,28 @@ restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 1                             # Number of validation structures
-num_train = 1 
-num_epochs = 10000
+num_val = 8                             # Number of validation structures
+num_train = 2000 #len(database) 
+num_epochs = 50000
 batch_size = 1                          # 1 for eval, 10 for train
-rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
+rcut_orbitals = 10.0                    # connectivity cutoff (=2xrcut)
 rcut_gaussian = 10.0                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
+reflection_symmetry=True                # use only edges i,j where i<j
 
 train_backbone = True
 train_head = True
 
-dtype = torch.float32
+dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-5
+lr_init = 1e-3
 patience = 500                          # for scheduler
-threshold = 1e-5                        # for scheduler
+threshold = 1e-8                        # for scheduler
 
 loss_target = 'fock_matrix'
-head_type = 'gated'                    # linear or gated
-loss_fxn = utils_training.mse_padded_loss
+head_type = 'gated'                     # linear or gated
+train_loss_fxn = loss.combined_padded_loss
+loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
 
@@ -91,8 +93,9 @@ if rank == 0:
     print(f"Dataset - Edge cutoff distance for gaussian basis: {2*rcut_gaussian}", flush=True)
     print(f"Model - Num of Message Passing layers: {num_mp_layers}", flush=True)
     print(f"Model - Embedding dimension: {l_embedding_dim}", flush=True)
+    print(f"Model - Edge reflections: {reflection_symmetry}")
     print(f"Training - Loss target: {loss_target}", flush=True)
-    print(f"Training - Loss function: {loss_fxn}", flush=True)
+    print(f"Training - Loss function: {train_loss_fxn}", flush=True)
     print(f"Training - Initial learning rate: {lr_init}", flush=True)
 
 compute_start = time.perf_counter()
@@ -109,27 +112,27 @@ if rank == 0 and not os.path.exists(output_folder):
 
 data_load_start = time.perf_counter()
 
-# train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
+train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
 # val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
 
 # val_start_mol += num_train  # the validation molecules start after training ones
 # val_end_mol += num_train
 
 ### DEBUG ### - 22 is the first molecule with a Br atom
-train_start_mol = 22 
-train_end_mol = 23 
-val_start_mol = 22
-val_end_mol = 23
+# train_start_mol = 22 
+# train_end_mol = 23 
+# val_start_mol = 22
+# val_end_mol = 23
 ### DEBUG ###
 
-train_loader, required_irreps, basis_transformation = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype)
-val_loader, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype)
+train_loader, required_irreps, basis_transformation = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
+# val_loader, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
 
 print("Size of train loader: ", len(train_loader))
-print("Size of val loader: ", len(val_loader))
+# print("Size of val loader: ", len(val_loader))
 
 irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
 
@@ -146,7 +149,6 @@ else:
     output_irreps = '1x0e'
     node_target = 'energy'
     edge_target = None
-
 
 # --------------------------------------------
 # Get model
@@ -265,10 +267,11 @@ if restart_head:
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
-                                    head_irreps=output_irreps)
+                                    head_irreps=output_irreps,
+                                    run_name='nablaDFT_May27_sym')
 
 trainer.train(num_epochs, 
-                loss_fxn, 
+                train_loss_fxn, 
                 optimizer,
                 scheduler, 
                 device,
@@ -277,6 +280,7 @@ trainer.train(num_epochs,
                 node_target_name=node_target, 
                 edge_target_name=edge_target,
                 output_folder=output_folder,
-                val_loader=val_loader,
+                val_loader=None,
                 train_backbone=train_backbone,
-                train_head=train_head)
+                train_head=train_head,
+                basis_transform=basis_transformation)
