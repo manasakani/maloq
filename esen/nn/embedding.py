@@ -102,17 +102,19 @@ class EdgeDegreeEmbedding(torch.nn.Module):
             "nac,ab->nbc", x_edge_embedding, self.mappingReduced.to_m
         )
 
-        # Rotate back the irreps
-        # x_edge_embedding = torch.bmm(wigner_inv, x_edge_embedding)
-        x_edge_embedding = torch.bmm(wigner_inv[:, :, self.out_mask], x_edge_embedding) # this rotation seems to be important, but why
-
-        x_edge_embedding = x_edge_embedding.to(x.dtype)
-
         if node_or_edge == 'node':
+            # Rotate back the irreps
+            x_edge_embedding = torch.bmm(wigner_inv[forward_edge_mask], x_edge_embedding)  # this rotation seems to be important, but why
+
+            x_edge_embedding = x_edge_embedding.to(x.dtype)
+
+            # x.index_add_(
+            #     0, edge_index[1], x_edge_embedding / self.rescale_factor
+            # )
+
             x.index_add_(
                 0, edge_index[1][forward_edge_mask], x_edge_embedding / self.rescale_factor
             )
-
             if (~forward_edge_mask).any():  # if we are ignoring half the edges
                 x.index_add_(
                 0, edge_index[0][forward_edge_mask], -1*x_edge_embedding / self.rescale_factor
@@ -120,4 +122,10 @@ class EdgeDegreeEmbedding(torch.nn.Module):
 
             return x
         else:
+
+            # Rotate back the irreps
+            x_edge_embedding = torch.bmm(wigner_inv[forward_edge_mask], x_edge_embedding)
+
+            x_edge_embedding = x_edge_embedding.to(x.dtype)
+
             return x_edge_embedding

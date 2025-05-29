@@ -33,10 +33,12 @@ def combined_padded_loss(output, target, req_irreps=None):
 
     mse_loss = nn.MSELoss(reduction='mean') 
     l1_loss = nn.L1Loss(reduction='mean')
+
     mse = mse_loss(output, target)
+    rmse = torch.sqrt(mse)
     l1 = l1_loss(output, target)
 
-    return mse + l1
+    return rmse + l1
 
 def mse_unpadded_loss(output, target, req_irreps=None):
 
@@ -139,7 +141,7 @@ def adjust_learning_rate(optimizer, epoch, warmup_epochs, initial_lr, final_lr):
 # ----------------------
 
 class MonotonicDecreaseScheduler:
-    def __init__(self, optimizer, factor=0.9, min_lr=1e-8, lag_epochs=10):
+    def __init__(self, optimizer, factor=0.99, min_lr=1e-8, lag_epochs=10):
         self.optimizer = optimizer
         self.factor = factor
         self.inverse_factor = 1.0/factor

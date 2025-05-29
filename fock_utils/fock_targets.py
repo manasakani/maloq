@@ -40,9 +40,19 @@ class Fock_Targets:
         if self.reflection_symmetry:
             self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]    # keep edges i, j where i < j
             print("Note: Using edge reflection symmetry!")
+
+            # index of self.neighbour_list which contains the edge (either forward or backward, depending on if edge_mask)
+            self.reverse_edge_map = []
+            for ind, (i, j) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1])):
+                if i < j:
+                    self.reverse_edge_map.append(ind)
+                else:
+                    reverse_index = next(k for k, (x, y) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1])) if x == j and y == i)
+                    self.reverse_edge_map.append(reverse_index)
         else:
             self.forward_edge_mask = [True]*len(self.neighbour_list[0])                 # keep all edges
             print("Note: Not using edge reflection symmetry!")
+            self.reverse_edge_map = torch.arange(len(self.neighbour_list[0]))
 
         self.NA = len(atoms)
         self.atomic_numbers = self.atoms.get_atomic_numbers()
@@ -52,7 +62,7 @@ class Fock_Targets:
         
         ### Using a different target shape per molecule ###
         molecule_orbital_basis = {atom_number: self.orbital_basis[atom_number] for atom_number in self.atomic_numbers}
-        print("Using a molecule-specific basis! only one atom type")
+        print("Using a molecule-specific basis! only one molecule type")
         ### Using a different target shape per molecule ###
         
         # Analyze structure of orbital interactions
@@ -239,7 +249,7 @@ class Fock_Targets:
     
     def unpad_node_blocks(self, H_pred):
         
-        print("Single atom type only - using atomic numbers from fock targets!")
+        print("Single molecule type only - using atomic numbers from fock targets!")
         atom_orbitals = self.orbital_basis
 
         # Precompute number of orbitals for each atom

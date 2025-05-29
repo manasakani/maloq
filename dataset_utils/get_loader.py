@@ -56,12 +56,14 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
 
         # collect only a subset of the edges (use reflection symmetry in the network)
         forward_edge_mask = graph_targets.forward_edge_mask
+        reverse_edge_map = graph_targets.reverse_edge_map
 
         # 3. Make the data object
         data = gnnData(
                         pos=torch.tensor(graph_targets.atoms.positions, dtype=dtype),
                         edge_index=torch.tensor(graph_targets.neighbour_list), 
                         edge_mask=torch.tensor(forward_edge_mask),
+                        reverse_edge_map=torch.tensor(reverse_edge_map),
                         edge_attr=graph_targets.edge_dist, 
                         y=graph_targets.edge_labels,
                         node_y=graph_targets.node_labels,

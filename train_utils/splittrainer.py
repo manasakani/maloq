@@ -21,7 +21,7 @@ def get_timestamp_uid() -> str:
 
 class SplitTrainer():
 
-    def __init__(self, backbone, head, head_irreps, save_frequency=10, run_id=None, run_name='noname'):
+    def __init__(self, backbone, head, head_irreps, save_frequency=100, run_id=None, run_name='noname'):
 
         self.backbone = backbone      # takes atom graph, outputs internal embeddings
         self.head = head              # takes internal embeddings, outputs fixed irrep size
@@ -70,7 +70,7 @@ class SplitTrainer():
             rank = dist.get_rank() 
             world_size = dist.get_world_size()
             if train_backbone:
-                self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, find_unused_parameters=False)
+                self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, find_unused_parameters=True)
             if train_head:
                 self.head = nn.parallel.DistributedDataParallel(self.head, device_ids=[0], output_device=0, find_unused_parameters=False)
         else:
@@ -247,16 +247,15 @@ class SplitTrainer():
             if rank == 0:
                 print("Time per epoch: ", epoch_end - epoch_start)
 
-            
-            # # log:
-            # update_dict = {"node_loss": float(track_loss_node[-1]), 
-            #                 "node_val_loss": float(track_loss_node_val[-1]),
-            #                 "edge_loss": float(track_loss_edge[-1]), 
-            #                 "edge_val_loss": float(track_loss_edge_val[-1]),
-            #                 "learning_rate": float(current_lr)}
+            # log:
+            update_dict = {"node_loss": float(track_loss_node[-1]), 
+                            "node_val_loss": float(track_loss_node_val[-1]),
+                            "edge_loss": float(track_loss_edge[-1]), 
+                            "edge_val_loss": float(track_loss_edge_val[-1]),
+                            "learning_rate": float(current_lr)}
 
-            # # add some more stuff to the dictionary
-            # wandb.log(update_dict)
+            # add some more stuff to the dictionary
+            wandb.log(update_dict)
             
             # save state
             if rank == 0:
@@ -271,9 +270,14 @@ class SplitTrainer():
             # End condition is based on the learning rate:
             min_lr_reached = torch.tensor(float(current_lr == min_lr), device='cuda')
             dist.all_reduce(min_lr_reached, op=dist.ReduceOp.SUM)
-            # if min_lr_reached.item() > 0:             # if any of them
-            if min_lr_reached.item() == world_size:     # if all of them
+            if min_lr_reached.item() == world_size:     # if all of them reached the min_lr
                 print("Reached minimum learning rate, finished training.")
+                if include_edges:
+                    self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
+                    self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)     
+                else:
+                    self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder)
+                    self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder)
                 return
 
     def check_batch_consistency(self, num_train_batches, num_val_batches, device):
@@ -333,6 +337,7 @@ class SplitTrainer():
         # -- Evaluate everything in the train_loader -- 
         with torch.no_grad():  
 
+            # dictionaries to store the orbital blocks, they get rewritten by each batch
             node_outputs = {}
             node_labels = {}
             if include_edges:
@@ -384,20 +389,24 @@ class SplitTrainer():
 
                 # -- Track -- 
                 if include_edges:
-                    num_nodes = len(node_outputs.values())
-                    num_edges = len(edge_outputs.values())
+    
                     edge_multiplier = 2 if batch.fock_target_object[0].reflection_symmetry else 1
+                    total_node_element_loss = 0
+                    total_edge_element_loss = 0   
+                    num_node_block_elements = 0
+                    num_edge_block_elements = 0
 
-                    node_losses = []
-                    edge_losses = []    
                     for node_out, node_label in zip(node_outputs.values(), node_labels.values()):
-                        node_losses.append(torch.mean(torch.abs(node_out - node_label)))
-                    for edge_out, edge_label in zip(edge_outputs.values(), edge_labels.values()):
-                        edge_losses.append(torch.mean(torch.abs(edge_out - edge_label)))
+                        total_node_element_loss += torch.abs(node_out - node_label).sum()
+                        num_node_block_elements += node_out.numel()
 
-                    track_loss_node.append(torch.mean(torch.tensor(node_losses)))
-                    track_loss_edge.append(torch.mean(torch.tensor(edge_losses)))
-                    track_loss.append((track_loss_node[-1]*num_nodes + track_loss_edge[-1]*edge_multiplier*num_edges)/(num_nodes + edge_multiplier*num_edges))
+                    for edge_out, edge_label in zip(edge_outputs.values(), edge_labels.values()):
+                        total_edge_element_loss += edge_multiplier*(torch.abs(edge_out - edge_label).sum())
+                        num_edge_block_elements += edge_multiplier*edge_out.numel()
+
+                    track_loss_node.append(total_node_element_loss / num_node_block_elements)
+                    track_loss_edge.append(total_edge_element_loss / num_edge_block_elements)
+                    track_loss.append((total_node_element_loss+total_edge_element_loss) / (num_node_block_elements+num_edge_block_elements))
 
                 else:
                     track_loss.append(loss.cpu().detach().numpy()) 
@@ -461,6 +470,7 @@ class SplitTrainer():
         if track_loss_edge:
             plt.plot(track_validation_edge,  '--', c='red', label='validation edge')
             
+        plt.grid(True)
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
         plt.yscale('log')
