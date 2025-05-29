@@ -64,7 +64,8 @@ class Edgewise(torch.nn.Module):
             raise ValueError(f"Unknown activation type {self.act_type}")
         
         if self.include_edges:
-            concat_size = 3
+            # concat_size = 3
+            concat_size = 2
         else:
             concat_size = 2
 
@@ -113,6 +114,7 @@ class Edgewise(torch.nn.Module):
         x_edge,
         edge_index,
         edge_mask,
+        reverse_edge_map,
         wigner,
         wigner_inv,
         node_or_edge,
@@ -123,6 +125,7 @@ class Edgewise(torch.nn.Module):
                                     x_edge,
                                     edge_index,
                                     edge_mask,
+                                    reverse_edge_map,
                                     wigner,
                                     wigner_inv
                                     )
@@ -133,6 +136,7 @@ class Edgewise(torch.nn.Module):
                                     x_edge,
                                     edge_index,
                                     edge_mask,
+                                    reverse_edge_map,
                                     wigner,
                                     wigner_inv
                                     )
@@ -144,43 +148,39 @@ class Edgewise(torch.nn.Module):
         x_edge,
         edge_index,
         edge_mask,
+        reverse_edge_map,
         wigner,
         wigner_inv
     ):
 
         x_source = x[edge_index[0][edge_mask]]
         x_target = x[edge_index[1][edge_mask]]
+        # x_source = x[edge_index[0]]
+        # x_target = x[edge_index[1]]
 
         if self.include_edges:
-            x_message = torch.cat((x_source, x_message_edge, x_target), dim=2)
+            # x_message = torch.cat((x_source, x_message_edge, x_target), dim=2)
+            x_message = torch.cat((x_source, x_target), dim=2)   
+            # x_message = torch.stack([ torch.cat((x_source[i], x_target[i]), dim=1) if edge_mask[i] 
+            #                      else torch.cat((-x_target[i], -x_source[i]), dim=1) for i in range(len(edge_mask))], dim=0)
         else:
             x_message = torch.cat((x_source, x_target), dim=2)
 
         # Rotate the irreps to align with the edge
-        x_message = torch.bmm(wigner, x_message)
+        x_message = torch.bmm(wigner[edge_mask], x_message)
+        # x_message = torch.bmm(wigner, x_message)
+
+        # assemble x_edge for all the edges, including the backwards ones (reflected):
+        # full_x_edge = torch.stack([x_edge[reverse_edge_map[i]] if edge_mask[i] else -1*x_edge[reverse_edge_map[i]] for i in range(len(edge_mask))])
 
         # SO2 convolution
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
         x_message = self.act(x_0_gating, x_message)
         x_message = self.so2_conv_2(x_message, x_edge)
 
-        # testing extra convolution for nodes:
-        # x_message = self.so2_conv_3(x_message, x_edge)
-
         # Rotate back the irreps
-        x_message = torch.bmm(wigner_inv, x_message)
-
-        ## DEBUG ###
-        # reset backwards edges to rotation of forward edges
-        # for forward_edge, (i, j) in enumerate(zip(edge_index[0], edge_index[1])):
-        #     if i < j:
-        #         mask = (edge_index[0] == j) & (edge_index[1] == i)
-        #         indices = torch.nonzero(mask, as_tuple=False)
-        #         index = indices[0].item() if indices.numel() > 0 else None
-        #         x_message[forward_edge] = -1*x_message[index] 
-        #         assert i == edge_index[1][index]
-        #         assert j == edge_index[0][index]
-        ## DEBUG ###
+        x_message = torch.bmm(wigner_inv[edge_mask], x_message)
+        # x_message = torch.bmm(wigner_inv, x_message)
 
         # Compute the sum of the incoming neighboring messages for each target node
         new_embedding = torch.zeros(
@@ -191,9 +191,10 @@ class Edgewise(torch.nn.Module):
 
         # aggregate messages
         new_embedding.index_add_(0, edge_index[1][edge_mask], x_message)
-
         if (~edge_mask).any():  # if we are ignoring half the edges
-                new_embedding.index_add_(0, edge_index[0][edge_mask], -1*x_message)
+                new_embedding.index_add_(0, edge_index[0][edge_mask], -1*x_message)     # reflected
+                # new_embedding.index_add_(0, edge_index[0][edge_mask], x_message)      # not reflected, just equal
+        # new_embedding.index_add_(0, edge_index[1], x_message)
 
         return new_embedding
     
@@ -204,15 +205,19 @@ class Edgewise(torch.nn.Module):
         x_edge,
         edge_index,
         edge_mask,
+        reverse_edge_map,
         wigner,
         wigner_inv
     ):
+
         x_source = x[edge_index[0][edge_mask]]
         x_target = x[edge_index[1][edge_mask]]
-        x_message = torch.cat((x_source, x_message_edge, x_target), dim=2)
+        
+        # x_message = torch.cat((x_source, x_message_edge, x_target), dim=2)
+        x_message = torch.cat((x_source, x_target), dim=2)
 
         # Rotate the irreps to align with the edge
-        x_message = torch.bmm(wigner, x_message)
+        x_message = torch.bmm(wigner[edge_mask], x_message)
 
         # SO2 convolution
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
@@ -220,18 +225,7 @@ class Edgewise(torch.nn.Module):
         x_message = self.so2_conv_2(x_message, x_edge)
 
         # Rotate back the irreps
-        x_message = torch.bmm(wigner_inv, x_message)
-
-        ## DEBUG ###
-        # for forward_edge, (i, j) in enumerate(zip(edge_index[0], edge_index[1])):
-        #     if i < j:
-        #         mask = (edge_index[0] == j) & (edge_index[1] == i)
-        #         indices = torch.nonzero(mask, as_tuple=False)
-        #         index = indices[0].item() if indices.numel() > 0 else None
-        #         x_message[forward_edge] = -1*x_message[index]   
-        #         assert i == edge_index[1][index]
-        #         assert j == edge_index[0][index]
-        ## DEBUG ###
+        x_message = torch.bmm(wigner_inv[edge_mask], x_message)
 
         # return new_embedding
         return x_message
@@ -339,6 +333,7 @@ class eSEN_Block(torch.nn.Module):
         edge_distance,
         edge_index,
         edge_mask,
+        reverse_edge_map,
         wigner,
         wigner_inv,
         node_or_edge,
@@ -355,6 +350,7 @@ class eSEN_Block(torch.nn.Module):
                 x_edge,
                 edge_index,
                 edge_mask,
+                reverse_edge_map,
                 wigner,
                 wigner_inv,
                 node_or_edge,
@@ -377,6 +373,7 @@ class eSEN_Block(torch.nn.Module):
                 x_edge,
                 edge_index,
                 edge_mask,
+                reverse_edge_map,
                 wigner,
                 wigner_inv,
                 node_or_edge,

@@ -245,6 +245,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
             "pos": batch.pos,
             "edge_index": batch.edge_index.squeeze(0).reshape(2, -1),
             "forward_edge_mask": batch.edge_mask,
+            "reverse_edge_map": batch.reverse_edge_map,
             "edge_dist": batch.edge_attr,
             "nedges": len(batch.edge_index[0]),
             "natoms": len(batch.pos),
@@ -252,15 +253,16 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         }
         # collect forward edges:
         forward_edge_mask = data_dict["forward_edge_mask"]
+        reverse_edge_map = data_dict["reverse_edge_map"]
 
-        # The input edges are in xyz coordinates, we need to rotate them to the yzx coordinates expected by e3nn
-        # edge_distance_vec = data_dict["edge_dist"][:, 0:3]  # assuming the edge distances are already in the form of yzx
-        edge_distance_vec = data_dict["edge_dist"][:, [2, 3, 1]][forward_edge_mask] 
-        edge_distance = data_dict["edge_dist"][:, 0][forward_edge_mask]
+        # The input edges are in xyz coordinates, we need to rotate them to the yzx coordinates expected by e3nn        
+        edge_distance_vec = data_dict["edge_dist"][:, [2, 3, 1]]#[forward_edge_mask]     # make all the wignerD matrices
+        edge_distance = data_dict["edge_dist"][:, 0]#[forward_edge_mask] 
         
         graph_dict = {
             "edge_index": data_dict["edge_index"],  # this is the full edge_index, forward and backward
             "forward_edge_mask": forward_edge_mask,
+            "reverse_edge_map": reverse_edge_map,
             "edge_distance": edge_distance,         # corresponds to only the masked edges
             "edge_distance_vec": edge_distance_vec,
         }
@@ -297,7 +299,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                 dtype=data_dict["pos"].dtype,
             )
             # set l = 0 components to the distance expansion
-            x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"])
+            x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"][forward_edge_mask] )
         else:
             x_message_edge = None
 
@@ -305,14 +307,14 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         # source_embedding, target_embedding: [num_edges, self.sphere_channels]
         # x_edge: [num_edges, num gaussian basis functions + 2*self.sphere_channels]
 
-        edge_distance_embedding = self.distance_expansion(graph_dict["edge_distance"])
+        edge_distance_embedding = self.distance_expansion(graph_dict["edge_distance"][forward_edge_mask])
 
         source_embedding = self.source_embedding(
-            data_dict["atomic_numbers"][graph_dict["edge_index"][0][forward_edge_mask]]
+            data_dict["atomic_numbers"][graph_dict["edge_index"][0]][forward_edge_mask]
         )
 
         target_embedding = self.target_embedding(
-            data_dict["atomic_numbers"][graph_dict["edge_index"][1][forward_edge_mask]]
+            data_dict["atomic_numbers"][graph_dict["edge_index"][1]][forward_edge_mask]
         )
 
         x_edge = torch.cat(
@@ -355,6 +357,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                 graph_dict["edge_distance"],
                 graph_dict["edge_index"],
                 graph_dict["forward_edge_mask"],
+                graph_dict["reverse_edge_map"],
                 wigner,
                 wigner_inv,
                 node_or_edge='node',
@@ -368,6 +371,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
                     graph_dict["edge_distance"],
                     graph_dict["edge_index"],
                     graph_dict["forward_edge_mask"],
+                    graph_dict["reverse_edge_map"],
                     wigner,
                     wigner_inv,
                     node_or_edge='edge',
