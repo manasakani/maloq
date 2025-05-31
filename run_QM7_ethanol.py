@@ -32,7 +32,7 @@ random.seed(42)
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_ethanol_dft.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_ethanol_sym'
+output_folder = 'outputs_QM7_ethanol'
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
@@ -54,7 +54,7 @@ restart_optimizer = True
 # --> Training settings:
 train_or_eval = "eval"
 num_val = 500                           # Number of validation structures
-num_train = 5000 #25000 
+num_train = 25000  
 num_test = 4500
 num_epochs = 50000
 batch_size = 10                         # 1 for eval, 10 for train

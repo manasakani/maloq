@@ -29,16 +29,16 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> QM7
-dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_uracil.db'
-database = ASEAtomsData(dbpath)
-dataset_name = 'QM7'
-output_folder = 'outputs_QM7_uracil'
+# dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_water.db'
+# database = ASEAtomsData(dbpath)
+# dataset_name = 'QM7'
+# output_folder = 'outputs_QM7_water_forces'
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
-# original_database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
-# dataset_name = 'nablaDFT'
-# output_folder = 'outputs_nablaDFT'
+database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_5k.db")
+dataset_name = 'nablaDFT'
+output_folder = 'outputs_nablaDFT_medium'
 # ---------------------------
 
 # --> Model settings:
@@ -52,13 +52,12 @@ restart_head = True
 restart_optimizer = True
 
 # --> Training settings:
-train_or_eval = "eval"
-num_val = 500                           # Number of validation structures
-num_train = 25000 #25000 
-num_test = 4500
+train_or_eval = "train"
+num_val = 8                             # Number of validation structures
+num_train = len(database) 
 num_epochs = 50000
-batch_size = 10                         # for training (batch size is always 1 for eval)
-rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
+batch_size = 3                          # 1 for eval, 10 for train
+rcut_orbitals = 10.0                    # connectivity cutoff (=2xrcut)
 rcut_gaussian = 10.0                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 reflection_symmetry=True                # use only edges i,j where i<j
@@ -69,12 +68,12 @@ train_head = True
 dtype = torch.float64
 torch.set_default_dtype(dtype)
 lr_init = 1e-3
-patience = 20                          # for scheduler
+patience = 500                          # for scheduler
 threshold = 1e-8                        # for scheduler
 
 loss_target = 'fock_matrix'
+head_type = 'gated'                     # linear or gated
 train_loss_fxn = loss.combined_padded_loss
-test_loss_fxn = loss.l1_padded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
@@ -91,12 +90,12 @@ if rank == 0:
     print(f"Dataset - Num molecules used for training: {num_train}", flush=True)
     print(f"Dataset - Num molecules used for validation: {num_val}", flush=True)
     print(f"Dataset - Edge cutoff distance for orbital blocks: {2*rcut_orbitals}", flush=True)
-    print(f"Dataset - Edge cutoff distance for gaussian basis: {rcut_gaussian}", flush=True)
+    print(f"Dataset - Edge cutoff distance for gaussian basis: {2*rcut_gaussian}", flush=True)
     print(f"Model - Num of Message Passing layers: {num_mp_layers}", flush=True)
     print(f"Model - Embedding dimension: {l_embedding_dim}", flush=True)
     print(f"Model - Edge reflections: {reflection_symmetry}")
     print(f"Training - Loss target: {loss_target}", flush=True)
-    print(f"Training - Loss function for training: {train_loss_fxn}", flush=True)
+    print(f"Training - Loss function: {train_loss_fxn}", flush=True)
     print(f"Training - Initial learning rate: {lr_init}", flush=True)
 
 compute_start = time.perf_counter()
@@ -114,44 +113,35 @@ if rank == 0 and not os.path.exists(output_folder):
 data_load_start = time.perf_counter()
 
 train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
-val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
-test_start_mol, test_end_mol, test_local_num_mol = utils_compute.split_indices(rank, world_size, num_test)
+# val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
 
-val_start_mol += num_train  # the validation molecules start after training ones
-val_end_mol += num_train
+# val_start_mol += num_train  # the validation molecules start after training ones
+# val_end_mol += num_train
 
-test_start_mol += num_train+num_val
-test_end_mol += num_train+num_val
-
-### DEBUG ###
-# train_start_mol = 0
-# train_end_mol = 1
-# val_start_mol = 0
-# val_end_mol = 1
+### DEBUG ### - 22 is the first molecule with a Br atom
+# train_start_mol = 22 
+# train_end_mol = 23 
+# val_start_mol = 22
+# val_end_mol = 23
 ### DEBUG ###
 
-if train_or_eval == 'train':
-    train_loader, required_irreps, basis_transformation = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
-    val_loader, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
-    print("Size of train loader: ", len(train_loader))
-    print("Size of val loader: ", len(val_loader))
-
-else:
-    batch_size = 1
-    test_loader, required_irreps, basis_transformation = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
-    print("Size of test loader: ", len(test_loader))
+train_loader, required_irreps, basis_transformation = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
+# val_loader, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
 
+print("Size of train loader: ", len(train_loader))
+# print("Size of val loader: ", len(val_loader))
+
 irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
 
 # determine output irreps from target type:
-if loss_target == 'fock_matrix':
+if loss_target == "fock_matrix":
     output_irreps = required_irreps
     node_target = 'node_y'
     edge_target = 'y'
-elif loss_target == 'forces':
+elif loss_target == "forces":
     output_irreps = '1x1e'
     node_target = 'forces'
     edge_target = None
@@ -159,7 +149,6 @@ else:
     output_irreps = '1x0e'
     node_target = 'energy'
     edge_target = None
-
 
 # --------------------------------------------
 # Get model
@@ -196,7 +185,7 @@ elif model_name == 'esen':
                     lmax=required_irreps.lmax,
                     mmax=required_irreps.lmax,
                     use_pbc=False,
-                    cutoff=rcut_gaussian,
+                    cutoff=2*rcut_gaussian,
                     edge_channels=l_embedding_dim,
                     num_layers=num_mp_layers,
                     act_type='gate',
@@ -209,7 +198,9 @@ elif model_name == 'esen':
         head = Fock_Irreps_Head(irreps_in=irreps_in, 
                                 irreps_out=output_irreps, 
                                 lmax=required_irreps.lmax, 
-                                sphere_channels=l_embedding_dim)
+                                sphere_channels=l_embedding_dim,
+                                head_type=head_type)
+
     elif loss_target == "forces":
         head = Linear_Force_Head(backbone)
 
@@ -223,18 +214,18 @@ head = head.to(device)
 if train_backbone and train_head:
     optimizer = torch.optim.Adam(list(backbone.parameters()) + list(head.parameters()), lr=lr_init)
 
-elif train_head:                            # freeze backbone model
-    for param in backbone.parameters(): 
+elif train_head:
+    for param in backbone.parameters(): # freeze backbone model
         param.requires_grad = False
     optimizer = torch.optim.Adam(head.parameters(), lr=lr_init)
 
-elif train_backbone:                        # freeze output head
-    for param in head.parameters():     
+elif train_backbone:
+    for param in head.parameters():     # freeze output head
         param.requires_grad = False
     optimizer = torch.optim.Adam(backbone.parameters(), lr=lr_init)
 
 else:
-    print("Running evaluation")
+    print("Check train recipe (backbone/head)")
 
 print("Number of parameters in backbone: ", sum(p.numel() for p in backbone.parameters()))
 print("Number of parameters in output head: ", sum(p.numel() for p in head.parameters()))
@@ -275,34 +266,24 @@ if restart_head:
 
 # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
 scheduler = loss_scheduler(optimizer)
+
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='QM7_uracil_May27_actually_nosym',
-                                    save_frequency=20)
-if train_or_eval == "train":
-    trainer.train(num_epochs, 
-                    train_loss_fxn, 
-                    optimizer,
-                    scheduler, 
-                    device,
-                    train_loader=train_loader,
-                    loss_target_string=loss_target,
-                    node_target_name=node_target, 
-                    edge_target_name=edge_target,
-                    output_folder=output_folder,
-                    val_loader=val_loader,
-                    train_backbone=train_backbone,
-                    train_head=train_head,
-                    basis_transform=basis_transformation)
-else:
-    trainer.evaluate(test_loss_fxn,
-                    device,
-                    test_loader,
-                    loss_target_string=loss_target,
-                    node_target_name=node_target,
-                    edge_target_name=edge_target, 
-                    basis_transform=basis_transformation,
-                    output_folder=output_folder,
-                    )
-        
+                                    run_name='nablaDFT_May27_sym',
+                                    save_frequency=100)
+
+trainer.train(num_epochs, 
+                train_loss_fxn, 
+                optimizer,
+                scheduler, 
+                device,
+                train_loader=train_loader,
+                loss_target_string=loss_target,
+                node_target_name=node_target, 
+                edge_target_name=edge_target,
+                output_folder=output_folder,
+                val_loader=None,
+                train_backbone=train_backbone,
+                train_head=train_head,
+                basis_transform=basis_transformation)

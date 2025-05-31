@@ -21,7 +21,7 @@ def get_timestamp_uid() -> str:
 
 class SplitTrainer():
 
-    def __init__(self, backbone, head, head_irreps, save_frequency=100, run_id=None, run_name='noname'):
+    def __init__(self, backbone, head, head_irreps, save_frequency=10, run_id=None, run_name='noname'):
 
         self.backbone = backbone      # takes atom graph, outputs internal embeddings
         self.head = head              # takes internal embeddings, outputs fixed irrep size
@@ -237,6 +237,21 @@ class SplitTrainer():
                 else:
                     print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]}", flush=True)    
 
+            
+            if dist.is_initialized():
+                val_loss_tensor = torch.tensor(val_loss, device=device)
+                val_loss_node_tensor = torch.tensor(val_loss_node, device=device)
+                val_loss_edge_tensor = torch.tensor(val_loss_edge, device=device)
+
+                dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.SUM)
+                dist.all_reduce(val_loss_node_tensor, op=dist.ReduceOp.SUM)
+                dist.all_reduce(val_loss_edge_tensor, op=dist.ReduceOp.SUM)
+
+                world_size = dist.get_world_size()
+                val_loss = val_loss_tensor.item() / world_size
+                val_loss_node = val_loss_node_tensor.item() / world_size
+                val_loss_edge = val_loss_edge_tensor.item() / world_size
+
             # -- Scheduler -- 
             scheduler.step(val_loss)
             current_lr = optimizer.param_groups[0]['lr']
@@ -345,6 +360,7 @@ class SplitTrainer():
                 edge_labels = {}
             
             for index, batch in enumerate(eval_loader):
+                print(f"Processing molecule {index}...")                
 
                 batch = batch.to(device)
                 backbone_out = self.backbone(batch) 
@@ -371,6 +387,10 @@ class SplitTrainer():
                     edge_orbital_blocks_output = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_outputs)
                     node_orbital_blocks_label = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_labels)
                     edge_orbital_blocks_label = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_labels)
+
+                    # reassemble the matrix and diagonalize it
+                    # output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output)
+                    # label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label)
 
                     node_outputs.update(node_orbital_blocks_output)
                     edge_outputs.update(edge_orbital_blocks_output)

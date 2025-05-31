@@ -47,16 +47,16 @@ num_distance_basis = l_embedding_dim    # number of gaussian basis functions use
 hidden_dim = l_embedding_dim
 num_mp_layers = 2 
 model_name = 'esen'
-restart_backbone = False
-restart_head = False
-restart_optimizer = False
+restart_backbone = True
+restart_head = True
+restart_optimizer = True
 
 # --> Training settings:
 train_or_eval = "train"
 num_val = 8                             # Number of validation structures
 num_train = 2000 #len(database) 
 num_epochs = 50000
-batch_size = 1                          # 1 for eval, 10 for train
+batch_size = 3                          # 1 for eval, 10 for train
 rcut_orbitals = 10.0                    # connectivity cutoff (=2xrcut)
 rcut_gaussian = 10.0                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -67,7 +67,7 @@ train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-3
+lr_init = 5e-4
 patience = 500                          # for scheduler
 threshold = 1e-8                        # for scheduler
 
@@ -264,11 +264,14 @@ if restart_head:
 # Run Training or Evaluation
 # --------------------------------------------
 
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+# scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+scheduler = loss_scheduler(optimizer)
+
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='nablaDFT_May27_sym')
+                                    run_name='nablaDFT_May27_sym',
+                                    save_frequency=100)
 
 trainer.train(num_epochs, 
                 train_loss_fxn, 
