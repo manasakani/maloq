@@ -55,6 +55,8 @@ class ASEDataset(Dataset):
         orbital_basis = structure.data['orbital_basis']
         edge_dist = torch.tensor(structure.data['edge_dist'], dtype=self.dtype)
         edge_index = torch.tensor(neighbour_list, dtype=torch.long)
+        edge_mask = torch.tensor(structure.data['edge_mask'])
+        reverse_edge_map = torch.tensor(structure.data['reverse_edge_map'])
 
         # Targets
         # fock_matrix = torch.tensor(structure.data['fock_matrix'], dtype=self.dtype) # not saving the fock matrix
@@ -71,6 +73,8 @@ class ASEDataset(Dataset):
             x=torch.tensor(atomic_numbers),
             edge_index=edge_index,
             edge_attr=edge_dist,
+            edge_mask=edge_mask,
+            reverse_edge_map=reverse_edge_map,
             y=edge_labels,
             node_y=node_labels,
             atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),  

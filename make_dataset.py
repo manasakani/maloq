@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from fock_utils import utils_orca_out, utils_tensor_decomp, fock_targets
+from fock_utils import utils_orca_out, utils_tensor_decomp, fock_targets, basis_sets
 import time
 import argparse
 
@@ -25,7 +25,7 @@ structure_folders = [f for f in os.listdir(structures_dir)
                     if len(os.listdir(os.path.join(structures_dir, f))) > 0 and 
                     os.path.isdir(os.path.join(structures_dir, f)) ]
 orca_file = 'orca.out'
-cutoff = 4.0            
+cutoff = 5.0            
 num_local_structures = int(args.max_structures) # use to impose only making a subset
 
 print(structure_folders)
@@ -76,21 +76,26 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
 
     # Atomic and electronic structure:
     read_time_start = time.perf_counter()
-    fock_matrix, elements, coordinates, basis = utils_orca_out.read_orca_out(orca_output_filepath)
+    fock_matrix, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath)
 
-    # --------------------------------------------------------------------------------------
-    basis = {8: [0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 0, 1, 2], 1: [0, 0, 0, 1, 1]}
-    # --------------------------------------------------------------------------------------
+    # Get basis in correct l-order for rearranging matrix:
+    basis = {element: basis_sets.def2_tzvpd[utils_orca_out.periodic_table_number[element]] for element in elements}
 
+    # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
     fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, np.array(elements))
 
     structure = Atoms(elements, positions=coordinates)  
     read_time_end = time.perf_counter()
     print("Time to make atoms and get matrix: ", read_time_end - read_time_start, flush=True)
 
-    # Targets:
+    # Create fock targets:
     target_time_start = time.perf_counter()
-    structures.append(fock_targets.Fock_Targets(structure, cutoff, basis, fock_matrix))
+    full_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
+
+    print("basis: ", basis)
+    print("full basis: ", full_basis)
+
+    structures.append(fock_targets.Fock_Targets(structure, cutoff, full_basis, fock_matrix, reflection_symmetry=True))
     target_time_end = time.perf_counter()
     print("Time to make targets: ", target_time_end - target_time_start, flush=True)
     
@@ -116,6 +121,8 @@ for current_rank in range(world_size):
                     "orbital_basis": structure.orbital_basis,
                     "req_output_irreps": structure.req_output_irreps,
                     "edge_index": structure.neighbour_list,
+                    "edge_mask": structure.forward_edge_mask,
+                    "reverse_edge_map": structure.reverse_edge_map,
                     "edge_dist": structure.edge_dist.detach().cpu().numpy(),
                     "nedges": len(structure.neighbour_list),
                     "natoms": len(structure.atoms.get_positions()),
@@ -127,12 +134,13 @@ for current_rank in range(world_size):
                     "total_charge": orca_output_dict["total_charge"],
                     "multipoles": orca_output_dict["multipoles"],
                     "cutoff": cutoff,
-                    "required_irreps": str(structure.req_output_irreps)
+                    "required_irreps": str(structure.req_output_irreps),
+                    "num_atoms_in_molecule": len(structure.atomic_numbers),
                 }
                 structure_db.write(atoms, data=data)
     dist.barrier()
     
-print("done")
+print("done!")
 
 # visualization:
 # from ase.visualize import view

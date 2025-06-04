@@ -29,9 +29,9 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
-database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_10k.db")
+database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_5k.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_medium'
+output_folder = 'outputs_nablaDFT_small'
 # ---------------------------
 
 # --> Model settings:
@@ -60,7 +60,7 @@ train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-4
+lr_init = 1e-3
 patience = 500                          # for scheduler
 threshold = 1e-8                        # for scheduler
 
@@ -263,7 +263,7 @@ scheduler = loss_scheduler(optimizer)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='nabla_medium',
+                                    run_name='nablaDFT_May27_sym',
                                     save_frequency=10)
 
 trainer.train(num_epochs, 

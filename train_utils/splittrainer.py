@@ -337,6 +337,13 @@ class SplitTrainer():
         self.backbone.eval() 
         self.head.eval() 
 
+        if dist.is_available() and dist.is_initialized():
+            rank = dist.get_rank() 
+            world_size = dist.get_world_size()
+        else:
+            rank = 0
+            world_size = 1
+
         num_eval_batches = len(eval_loader)
         print(f"Running {num_eval_batches} batches through eval.")
 
@@ -440,11 +447,11 @@ class SplitTrainer():
 
         # -- Output dump -- 
         if include_edges:
-            with open(output_folder + "/" + 'model' + '_eval.txt', 'w') as f:
+            with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                     for edge, node, total in zip(track_loss_edge, track_loss_node, track_loss):
                         f.write(f"{edge:.10f}\t{node:.10f}\t{total:.10f}\n")
         else:
-            with open(output_folder + "/" + 'model' + '_eval.txt', 'w') as f:
+            with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                     for node in track_loss:
                         f.write(f"{node:.10f}\n")
                 

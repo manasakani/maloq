@@ -11,7 +11,7 @@ class Fock_Targets:
     Input target shape to standardize across molecules with different elements
     """
 
-    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix, target_len=0, dtype=torch.float32, reflection_symmetry=True):
+    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix=None, target_len=0, dtype=torch.float32, reflection_symmetry=True):
         """
         atoms - ASE atoms object of the atomic structure
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]] 
@@ -78,19 +78,25 @@ class Fock_Targets:
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         # print(f'Simplified irreps: {self.simplified_out_irreps}')
 
-        self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)])       # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
-        self.target_len = target_len if target_len != 0 else None                   
+        # If the fock targets should be computed on-the-fly rather than loaded from the db:
+        if fock_matrix is not None:
 
-        self.node_labels = None
-        self.edge_labels = None
-        self.edge_dist = None
+            self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)])       # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
+            self.target_len = target_len if target_len != 0 else None                  
+            print("self.block_starts: ", self.block_starts)
 
-        # Decompose the Fock matrix into orbital blocks and insert them into the targets
-        self.make_targets()
+            self.node_labels = None
+            self.edge_labels = None
+            self.edge_dist = None
+
+            # Decompose the Fock matrix into orbital blocks and insert them into the targets
+            self.make_targets()
 
     def make_targets(self):
 
         self.target_len = self.get_target_len()                                 # each target should fit in a NxN matrix (to be flattened)
+
+        print("target len: ", self.target_len)
 
         # initialize torch tensors of size N for nodes and edges
         node_labels = torch.zeros(( len(self.atoms), self.target_len ), dtype=self.dtype, device=self.device)
@@ -111,6 +117,8 @@ class Fock_Targets:
                 slice_col = slice(block_slice[2], block_slice[3])
                 slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
                 flat_blocks.append((condition_numbers, slice_row, slice_col, slice_out))
+
+        print("slice out; ", slice_out)
 
         time_label_start = time.perf_counter()
         # Off-diagonal orbital blocks --> Edge labels
@@ -288,7 +296,6 @@ class Fock_Targets:
     
     def unpad_edge_blocks(self, H_pred):
         
-        print("Single atom type only - using atomic numbers from fock targets!")
         edge_index = self.neighbour_list
         atom_orbitals = self.orbital_basis
 
@@ -334,5 +341,24 @@ class Fock_Targets:
 
         return H_prev
     
-    def reconstruct_matrix():
+    def reconstruct_matrix(node_blocks, edge_blocks):
+
+        N = self.block_starts[-1]
+        reconstructed_matrix = torch.zeros((N, N))
+
+        # insert node orbital blocks
+        for i, node in enumerate(node_blocks):
+            starting_i, num_orbitals_i = self.locate_atom_in_matrix(i)
+            reconstructed_matrix[starting_i:starting_i+num_orbitals_i, starting_i:starting_i+num_orbitals_i] = node
+
+        # for i in enumerate(edge_blocks):
+        #     if self.reflection_symmetry:
+        #         if self.edge_mask[i]:
+        #             # insert forward edge:
+        #             # insert backward edge:
+
+        #     else:
+        #         # just insert edge
+
+
         raise NotImplementedError

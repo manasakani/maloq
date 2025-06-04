@@ -32,7 +32,7 @@ random.seed(42)
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_uracil.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_uracil'
+output_folder = 'outputs_QM7_uracil_nosym'
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
@@ -45,7 +45,7 @@ output_folder = 'outputs_QM7_uracil'
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 2 
+num_mp_layers = 2
 model_name = 'esen'
 restart_backbone = True
 restart_head = True
@@ -61,7 +61,7 @@ batch_size = 10                         # for training (batch size is always 1 f
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = 10.0                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
-reflection_symmetry=True                # use only edges i,j where i<j
+reflection_symmetry=False                # use only edges i,j where i<j
 
 train_backbone = True
 train_head = True
@@ -278,7 +278,7 @@ scheduler = loss_scheduler(optimizer)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='QM7_uracil_May27_actually_nosym',
+                                    run_name='QM7_uracil_withsym',
                                     save_frequency=20)
 if train_or_eval == "train":
     trainer.train(num_epochs, 
