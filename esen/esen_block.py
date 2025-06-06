@@ -155,20 +155,11 @@ class Edgewise(torch.nn.Module):
 
         x_source = x[edge_index[0][edge_mask]]
         x_target = x[edge_index[1][edge_mask]]
-        # x_source = x[edge_index[0]]
-        # x_target = x[edge_index[1]]
 
-        if self.include_edges:
-            # x_message = torch.cat((x_source, x_message_edge, x_target), dim=2)
-            x_message = torch.cat((x_source, x_target), dim=2)   
-            # x_message = torch.stack([ torch.cat((x_source[i], x_target[i]), dim=1) if edge_mask[i] 
-            #                      else torch.cat((-x_target[i], -x_source[i]), dim=1) for i in range(len(edge_mask))], dim=0)
-        else:
-            x_message = torch.cat((x_source, x_target), dim=2)
+        x_message = torch.cat((x_source, x_target), dim=2)  
 
         # Rotate the irreps to align with the edge
-        x_message = torch.bmm(wigner[edge_mask], x_message)
-        # x_message = torch.bmm(wigner, x_message)
+        x_message = torch.bmm(wigner, x_message)
 
         # assemble x_edge for all the edges, including the backwards ones (reflected):
         # full_x_edge = torch.stack([x_edge[reverse_edge_map[i]] if edge_mask[i] else -1*x_edge[reverse_edge_map[i]] for i in range(len(edge_mask))])
@@ -179,8 +170,7 @@ class Edgewise(torch.nn.Module):
         x_message = self.so2_conv_2(x_message, x_edge)
 
         # Rotate back the irreps
-        x_message = torch.bmm(wigner_inv[edge_mask], x_message)
-        # x_message = torch.bmm(wigner_inv, x_message)
+        x_message = torch.bmm(wigner_inv, x_message)
 
         # Compute the sum of the incoming neighboring messages for each target node
         new_embedding = torch.zeros(
@@ -192,9 +182,7 @@ class Edgewise(torch.nn.Module):
         # aggregate messages
         new_embedding.index_add_(0, edge_index[1][edge_mask], x_message)
         if (~edge_mask).any():  # if we are ignoring half the edges
-                new_embedding.index_add_(0, edge_index[0][edge_mask], -1*x_message)     # reflected
-                # new_embedding.index_add_(0, edge_index[0][edge_mask], x_message)      # not reflected, just equal
-        # new_embedding.index_add_(0, edge_index[1], x_message)
+                new_embedding.index_add_(0, edge_index[0][edge_mask], -1*x_message)   
 
         return new_embedding
     
@@ -217,7 +205,7 @@ class Edgewise(torch.nn.Module):
         x_message = torch.cat((x_source, x_target), dim=2)
 
         # Rotate the irreps to align with the edge
-        x_message = torch.bmm(wigner[edge_mask], x_message)
+        x_message = torch.bmm(wigner, x_message)
 
         # SO2 convolution
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
@@ -225,7 +213,7 @@ class Edgewise(torch.nn.Module):
         x_message = self.so2_conv_2(x_message, x_edge)
 
         # Rotate back the irreps
-        x_message = torch.bmm(wigner_inv[edge_mask], x_message)
+        x_message = torch.bmm(wigner_inv, x_message)
 
         # return new_embedding
         return x_message

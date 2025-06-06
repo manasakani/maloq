@@ -69,7 +69,7 @@ class SplitTrainer():
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank() 
             world_size = dist.get_world_size()
-            if train_backbone:
+            if train_backbone: # FIX TRUE -> FLSE HERE
                 self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, find_unused_parameters=True)
             if train_head:
                 self.head = nn.parallel.DistributedDataParallel(self.head, device_ids=[0], output_device=0, find_unused_parameters=False)
@@ -78,7 +78,7 @@ class SplitTrainer():
         
         scaler = GradScaler()  # for mixed precision training
 
-        # Ensure that the ranks have the same number of batches!
+        # Ensure that the ranks have the same number of batches! - need to be careful of this due to the custom data distribution
         num_train_batches = len(train_loader)
         num_val_batches = len(val_loader)
         self.check_batch_consistency(num_train_batches, num_val_batches, device)
@@ -114,7 +114,9 @@ class SplitTrainer():
                 optimizer.zero_grad()
 
                 # -- Forward -- 
+                forward_start = time.perf_counter()
                 batch = batch.to(device)
+                torch.cuda.reset_peak_memory_stats()
                 with autocast():
                     backbone_out = self.backbone(batch) 
 
@@ -123,7 +125,7 @@ class SplitTrainer():
                         
                         this_node_target = getattr(batch, node_target_name)
                         edge_mask = batch.edge_mask
-                        this_edge_target = getattr(batch, edge_target_name)[edge_mask]
+                        this_edge_target = getattr(batch, edge_target_name)
 
                         # do everything in the uncoupled basis:
                         if compute_uncoupled_loss:
@@ -152,11 +154,22 @@ class SplitTrainer():
                             print("To be implemented!") 
 
                         train_loss_node += loss
-                    
+
+                forward_end = time.perf_counter()
+
+                if rank == 0:
+                    peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024)  # in MB
+                    print(f"Peak memory allocation: {peak_mem:.2f} MB")
+
                 # -- Backwards -- 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
+                backward_end = time.perf_counter()
+
+                if rank == 0:
+                    print("Time per forward pass: ", forward_end - forward_start)
+                    print("Time for both forward and backward pass: ", backward_end - forward_start)
                 
             # -- Output dump -- 
             if include_edges:
@@ -192,7 +205,7 @@ class SplitTrainer():
                             node_output, edge_output = self.head(backbone_out, batch)
                             this_node_target = getattr(batch, node_target_name)
                             edge_mask = batch.edge_mask
-                            this_edge_target = getattr(batch, edge_target_name)[edge_mask]
+                            this_edge_target = getattr(batch, edge_target_name)
 
                             # do everything in the uncoupled basis:
                             if compute_uncoupled_loss:
@@ -262,14 +275,13 @@ class SplitTrainer():
             if rank == 0:
                 print("Time per epoch: ", epoch_end - epoch_start)
 
-            # log:
+            # log to wandb:
             update_dict = {"node_loss": float(track_loss_node[-1]), 
                             "node_val_loss": float(track_loss_node_val[-1]),
-                            "edge_loss": float(track_loss_edge[-1]), 
-                            "edge_val_loss": float(track_loss_edge_val[-1]),
                             "learning_rate": float(current_lr)}
-
-            # add some more stuff to the dictionary
+            if include_edges:
+                update_dict.update({"edge_loss": float(track_loss_edge[-1]), 
+                                    "edge_val_loss": float(track_loss_edge_val[-1])})
             wandb.log(update_dict)
             
             # save state

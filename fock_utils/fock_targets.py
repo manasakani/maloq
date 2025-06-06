@@ -17,6 +17,7 @@ class Fock_Targets:
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]] 
         orbital_basis - H2O: {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]} (ex. dzvp)
         fock_matrix - Norb x Norb fock matrix (dense)
+        reflection_symmetry - when True, only considers forward edge blocks (backward edges are constructed as the reflected forward ones)
         """
 
         if torch.cuda.is_available():
@@ -29,6 +30,7 @@ class Fock_Targets:
         self.fock_matrix = torch.from_numpy(fock_matrix).to(self.device)
         self.dtype = dtype
         self.reflection_symmetry = reflection_symmetry
+
 
         # Connectivity list:
         num_atoms = len(atoms)
@@ -56,18 +58,21 @@ class Fock_Targets:
 
         self.NA = len(atoms)
         self.atomic_numbers = self.atoms.get_atomic_numbers()
+
+        ### Using a different target shape per molecule ###
+        # molecule_orbital_basis = {atom_number: self.orbital_basis[atom_number] for atom_number in self.atomic_numbers}
+        # print("Using a molecule-specific basis! only one molecule type")
+        # print(molecule_orbital_basis)
+        # self.orbital_basis = molecule_orbital_basis
+        ### Using a different target shape per molecule ###
+
         self.orbitals_per_atom = ([ sum([(2*l+1)    
                                          for l in orbital_basis[atom_number]]) 
                                          for atom_number in self.atomic_numbers ])
-        
-        ### Using a different target shape per molecule ###
-        molecule_orbital_basis = {atom_number: self.orbital_basis[atom_number] for atom_number in self.atomic_numbers}
-        print("Using a molecule-specific basis! only one molecule type")
-        ### Using a different target shape per molecule ###
+    
         
         # Analyze structure of orbital interactions
-        # targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions
-        targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(molecule_orbital_basis)     # list of all possible irreps required to capture the orbital interactions
+        targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions
         self.equivariant_blocks, out_js_list, self.orbital_starts = utils_tensor_decomp.process_targets(self.orbital_basis, targets)
         self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
                                                             out_js_list,
@@ -96,11 +101,11 @@ class Fock_Targets:
 
         self.target_len = self.get_target_len()                                 # each target should fit in a NxN matrix (to be flattened)
 
-        print("target len: ", self.target_len)
+        print("Single target length: ", self.target_len)
 
-        # initialize torch tensors of size N for nodes and edges
+        # initialize torch tensors of size N for nodes and (forward) edges
         node_labels = torch.zeros(( len(self.atoms), self.target_len ), dtype=self.dtype, device=self.device)
-        edge_labels = torch.zeros(( len(self.neighbour_list[0]), self.target_len ), dtype=self.dtype, device=self.device)
+        edge_labels = torch.zeros(( len(self.neighbour_list[0][self.forward_edge_mask]), self.target_len ), dtype=self.dtype, device=self.device)
 
         # Extract blocks from fock matrix:
         self_edges = [list(range(self.NA)), list(range(self.NA))]
@@ -117,8 +122,7 @@ class Fock_Targets:
                 slice_col = slice(block_slice[2], block_slice[3])
                 slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
                 flat_blocks.append((condition_numbers, slice_row, slice_col, slice_out))
-
-        print("slice out; ", slice_out)
+        
 
         time_label_start = time.perf_counter()
         # Off-diagonal orbital blocks --> Edge labels
@@ -130,11 +134,18 @@ class Fock_Targets:
 
             # select relevant edges and accumulate the corresponding slices
             matching_indices = np.where(mask)[0]  
+            edge_track = 0
             for edge_idx in matching_indices:
 
-                edge_labels[edge_idx, slice_out] += torch.squeeze(
-                    edge_orbital_blocks[edge_idx][slice_row, slice_col].reshape(1, -1)
-                )
+                # only collect from forward edges if we are using reflected edges
+                if self.forward_edge_mask[edge_idx]:
+                   
+                    edge_labels[edge_track, slice_out] += torch.squeeze(
+                        edge_orbital_blocks[edge_idx][slice_row, slice_col].reshape(1, -1)
+                    )
+                    # this keeps track of how far along the edge list we are, since the edge_labels only contain the forward ones but edge_orbital_blocks contains all the edges
+                    edge_track += 1 
+
 
         # Diagonal orbital blocks --> Node labels
         atomic_numbers_i = self.atomic_numbers[self_edges[0]]
@@ -247,11 +258,19 @@ class Fock_Targets:
             atom_i_index = int(edges[0][i])
             atom_j_index = int(edges[1][i])
 
-            starting_i, num_orbitals_i = self.locate_atom_in_matrix(atom_i_index)
-            starting_j, num_orbitals_j = self.locate_atom_in_matrix(atom_j_index)
-            mat = self.fock_matrix[starting_i:starting_i+num_orbitals_i, starting_j:starting_j+num_orbitals_j]
+            # if it is a self edge or a forward edge (omit the backward edges)
+            if atom_i_index == atom_j_index or self.forward_edge_mask[i]:
 
-            orbital_blocks[i] = mat
+                starting_i, num_orbitals_i = self.locate_atom_in_matrix(atom_i_index)
+                starting_j, num_orbitals_j = self.locate_atom_in_matrix(atom_j_index)
+                mat = self.fock_matrix[starting_i:starting_i+num_orbitals_i, starting_j:starting_j+num_orbitals_j]
+
+                orbital_blocks[i] = mat
+            
+            # if it is a backward edge and 
+            else: 
+                orbital_blocks[i] = None
+                
 
         return orbital_blocks
     

@@ -57,6 +57,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         # collect only a subset of the edges (use reflection symmetry in the network)
         forward_edge_mask = graph_targets.forward_edge_mask
         reverse_edge_map = graph_targets.reverse_edge_map
+        orbital_basis = {k: torch.tensor(v) for k, v in graph_targets.orbital_basis.items()}
 
         # 3. Make the data object
         data = gnnData(
@@ -71,7 +72,8 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
                         energies=torch.tensor(energy, dtype=dtype),
                         forces=torch.tensor(forces, dtype=dtype),                                      # Hartree/Angstrom
                         num_atoms_in_molecule=len(graph_targets.atomic_numbers),
-                        fock_target_object=graph_targets
+                        fock_target_object=graph_targets,
+                        orbital_basis=orbital_basis
                     )
         datalist.append(data)
 
