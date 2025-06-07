@@ -338,8 +338,7 @@ class Fock_Targets:
 
                 # Initialize H_prev for this edge
                 H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_j), dtype=float)
-
-                H_prev_edge = H_prev[key_term]  # Avoid repeated dictionary lookup 
+                H_prev_edge = H_prev[key_term]  
 
                 for index_target, equivariant_block in enumerate(self.equivariant_blocks):
                     slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])

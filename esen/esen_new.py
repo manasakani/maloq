@@ -464,7 +464,6 @@ class Fock_Irreps_Head(nn.Module):
         # fake small basis for testing: 
         # print("Using fake mini basis for testing!")
         # self.orbital_basis = {1: torch.tensor([0, 1]), 2: torch.tensor([0, 1])}
-        # print("orbital_basis: ", self.orbital_basis)
 
         # Option to extract minimal node irreps to project to:
         if self.reduce_node:
@@ -732,7 +731,7 @@ class Fock_Irreps_Head(nn.Module):
         # expanded_node_output:  torch.Size([3, 1024]) [#edges, target_len]
         # self.irreps_out = Irreps("1x0e+1x1e+1x1e+1x0e+1x1e+1x2e")
 
-        output_irrep_p = 0                # pointer to track the irreps in irreps_out, from 0 to len(self.irreps_out)
+        output_irrep_p = 0                # pointer to track the irreps in irreps_out (from 0 to len(self.irreps_out)
         reduced_irrep_p = 0               # pointer to track the irreps in reduced_irreps
 
         for i, l1 in enumerate(self.ls_list):
@@ -777,9 +776,23 @@ class Fock_Irreps_Head(nn.Module):
                 if i > j:
                     these_irreps = self.get_product_irreps(l1, l2)
                     irreps_len = sum([2*l + 1 for l in these_irreps.ls])
-                    forward_edge_bounds = self.backward_irrep_track[(i, j)] 
+                    forward_edge_bounds = self.backward_irrep_track[(i, j)] # contains the location of the forward edge
 
-                    expanded_node_output[:, output_irrep_p:output_irrep_p + irreps_len] = node_output[:, forward_edge_bounds[0]:forward_edge_bounds[1]]
+                    forward_edge_irreps = node_output[:, forward_edge_bounds[0]:forward_edge_bounds[1]]
+
+                    # add the parity operator (this implements a reflection)
+                    outer_parity = ((-1) ** (l1+l2)).item()
+                    start_l = 0
+                    for l in these_irreps.ls:
+                        inner_parity = (-1) ** l
+                        end_l = start_l + (2 * l + 1)                        
+                        if inner_parity != outer_parity:
+                            # print("flipping l = ", l, " for l1 = ", l1, " and l2 = ", l2)
+                            forward_edge_irreps[:, start_l:end_l] *= -1                        
+                        start_l = end_l
+                
+                    expanded_node_output[:, output_irrep_p:output_irrep_p + irreps_len] = forward_edge_irreps
+                    
                     output_irrep_p += sum([2*l + 1 for l in these_irreps.ls]) # only need to update the pointer along the output_irreps
 
         # print("node_output[0]: ", node_output[0])

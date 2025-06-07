@@ -9,7 +9,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
 import torch.distributed as dist
 
-orbital_basis_def2_svp = {35: [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2], 
+orbital_basis_def2_svp_nabla = {35: [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2], 
                           17: [0, 0, 0, 0, 1, 1, 1, 2], 
                           16: [0, 0, 0, 0, 1, 1, 1, 2], 
                            9: [0, 0, 0, 1, 1, 2], 
@@ -17,6 +17,12 @@ orbital_basis_def2_svp = {35: [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2],
                            7: [0, 0, 0, 1, 1, 2], 
                            6: [0, 0, 0, 1, 1, 2], 
                            1: [0, 0, 1]}
+
+orbital_basis_def2_svp_QM7 = {9: [0, 0, 0, 1, 1, 2], 
+                              8: [0, 0, 0, 1, 1, 2], 
+                              7: [0, 0, 0, 1, 1, 2], 
+                              6: [0, 0, 0, 1, 1, 2], 
+                              1: [0, 0, 1]}
 
 def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, reflection_symmetry=True):
     """
@@ -36,11 +42,11 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             hamiltonian = mol['hamiltonian'].numpy()   
             atomic_numbers = mol['_atomic_numbers'].numpy()
             positions=mol['_positions'].numpy()
-            orbital_basis = orbital_basis_def2_svp
+            orbital_basis = orbital_basis_def2_svp_QM7
         
         elif dataset_name == "nablaDFT":
             atomic_numbers, positions, energy, forces, hamiltonian, overlap, coeff_matrix, moses_id, conformation_id = database[i]
-            orbital_basis = orbital_basis_def2_svp
+            orbital_basis = orbital_basis_def2_svp_nabla
 
         else: 
             print("Unknown database!")
@@ -57,8 +63,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         # collect only a subset of the edges (use reflection symmetry in the network)
         forward_edge_mask = graph_targets.forward_edge_mask
         reverse_edge_map = graph_targets.reverse_edge_map
-        orbital_basis = {k: torch.tensor(v) for k, v in graph_targets.orbital_basis.items()}
-
+        
         # 3. Make the data object
         data = gnnData(
                         pos=torch.tensor(graph_targets.atoms.positions, dtype=dtype),
@@ -73,10 +78,10 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
                         forces=torch.tensor(forces, dtype=dtype),                                      # Hartree/Angstrom
                         num_atoms_in_molecule=len(graph_targets.atomic_numbers),
                         fock_target_object=graph_targets,
-                        orbital_basis=orbital_basis
                     )
         datalist.append(data)
 
+    orbital_basis = {k: torch.tensor(v) for k, v in graph_targets.orbital_basis.items()}
     required_irreps = graph_targets.req_output_irreps
     print("required irreps: ", required_irreps)
 
@@ -85,4 +90,4 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     dataset = sampleDataset(datalist)
     data_loader = DataLoader(dataset, batch_size=batch_size)
 
-    return data_loader, required_irreps, basis_transform
+    return data_loader, required_irreps, basis_transform, orbital_basis
