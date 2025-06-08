@@ -10,19 +10,20 @@ from torch_geometric.data import Data as gnnData, Dataset
 import torch.distributed as dist
 
 orbital_basis_def2_svp_nabla = {35: [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2], 
-                          17: [0, 0, 0, 0, 1, 1, 1, 2], 
-                          16: [0, 0, 0, 0, 1, 1, 1, 2], 
-                           9: [0, 0, 0, 1, 1, 2], 
-                           8: [0, 0, 0, 1, 1, 2], 
-                           7: [0, 0, 0, 1, 1, 2], 
-                           6: [0, 0, 0, 1, 1, 2], 
-                           1: [0, 0, 1]}
+                                17: [0, 0, 0, 0, 1, 1, 1, 2], 
+                                16: [0, 0, 0, 0, 1, 1, 1, 2], 
+                                9: [0, 0, 0, 1, 1, 2], 
+                                8: [0, 0, 0, 1, 1, 2], 
+                                7: [0, 0, 0, 1, 1, 2], 
+                                6: [0, 0, 0, 1, 1, 2], 
+                                1: [0, 0, 1]}
 
 orbital_basis_def2_svp_QM7 = {9: [0, 0, 0, 1, 1, 2], 
                               8: [0, 0, 0, 1, 1, 2], 
                               7: [0, 0, 0, 1, 1, 2], 
                               6: [0, 0, 0, 1, 1, 2], 
                               1: [0, 0, 1]}
+
 
 def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, reflection_symmetry=True):
     """

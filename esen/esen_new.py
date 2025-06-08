@@ -506,9 +506,8 @@ class Fock_Irreps_Head(nn.Module):
             
             # Now we can project to this reduced set of irreps and expand it out 
             self.irreps_nodereduced = Irreps('+'.join(irreps_nodereduced))
-
-            print("irreps_out: ", irreps_out)
-            print("self.irreps_nodereduced: ", self.irreps_nodereduced)
+            # print("irreps_out: ", irreps_out)
+            # print("self.irreps_nodereduced: ", self.irreps_nodereduced)
 
         if self.head_type == 'linear':
             self.map_node_to_rank_N = e3nn_Linear(irreps_in=irreps_in, irreps_out=irreps_out, biases=True)
@@ -578,7 +577,7 @@ class Fock_Irreps_Head(nn.Module):
         p = 1   # even parity only (real-valued Fock matrix)
         l3s = range(abs(l1 - l2), l1 + l2 + 1)
 
-        # return only the even irreps:
+        # return only the even/odd irreps:
         if even_or_odd is not None:
             if even_or_odd == 'even':
                 even_l3s = [l for l in l3s if l % 2 == 0]
@@ -722,15 +721,6 @@ class Fock_Irreps_Head(nn.Module):
             device=node_output.device,
         )
 
-        # fake irreps out for debugging:
-        # expanded_node_output = torch.zeros(
-        #     (node_output.shape[0], 16), 
-        #     dtype=node_output.dtype,
-        #     device=node_output.device,
-        # )
-        # expanded_node_output:  torch.Size([3, 1024]) [#edges, target_len]
-        # self.irreps_out = Irreps("1x0e+1x1e+1x1e+1x0e+1x1e+1x2e")
-
         output_irrep_p = 0                # pointer to track the irreps in irreps_out (from 0 to len(self.irreps_out)
         reduced_irrep_p = 0               # pointer to track the irreps in reduced_irreps
 
@@ -787,7 +777,6 @@ class Fock_Irreps_Head(nn.Module):
                         inner_parity = (-1) ** l
                         end_l = start_l + (2 * l + 1)                        
                         if inner_parity != outer_parity:
-                            # print("flipping l = ", l, " for l1 = ", l1, " and l2 = ", l2)
                             forward_edge_irreps[:, start_l:end_l] *= -1                        
                         start_l = end_l
                 

@@ -31,6 +31,14 @@ class Fock_Targets:
         self.dtype = dtype
         self.reflection_symmetry = reflection_symmetry
 
+        # import matplotlib.pyplot as plt
+        # matrix_target = fock_matrix
+        # plt.imshow(np.log(np.abs(matrix_target)))
+        # plt.colorbar()
+        # plt.savefig("uracil_fock.png", dpi=300, bbox_inches='tight')
+        # plt.close()
+        # exit()
+
 
         # Connectivity list:
         num_atoms = len(atoms)
@@ -41,7 +49,7 @@ class Fock_Targets:
 
         if self.reflection_symmetry:
             self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]    # keep edges i, j where i < j
-            print("Note: Using edge reflection symmetry!")
+            print("Note: Reducing symmetric edges!")
 
             # index of self.neighbour_list which contains the edge (either forward or backward, depending on if edge_mask)
             self.reverse_edge_map = []
@@ -53,7 +61,7 @@ class Fock_Targets:
                     self.reverse_edge_map.append(reverse_index)
         else:
             self.forward_edge_mask = [True]*len(self.neighbour_list[0])                 # keep all edges
-            print("Note: Not using edge reflection symmetry!")
+            print("Note: Not reducing symmetric edges!")
             self.reverse_edge_map = torch.arange(len(self.neighbour_list[0]))
 
         self.NA = len(atoms)
@@ -88,7 +96,6 @@ class Fock_Targets:
 
             self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)])       # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
             self.target_len = target_len if target_len != 0 else None                  
-            print("self.block_starts: ", self.block_starts)
 
             self.node_labels = None
             self.edge_labels = None
@@ -105,7 +112,7 @@ class Fock_Targets:
 
         # initialize torch tensors of size N for nodes and (forward) edges
         node_labels = torch.zeros(( len(self.atoms), self.target_len ), dtype=self.dtype, device=self.device)
-        edge_labels = torch.zeros(( len(self.neighbour_list[0][self.forward_edge_mask]), self.target_len ), dtype=self.dtype, device=self.device)
+        edge_labels = torch.zeros(( len(self.neighbour_list[0]), self.target_len ), dtype=self.dtype, device=self.device)
 
         # Extract blocks from fock matrix:
         self_edges = [list(range(self.NA)), list(range(self.NA))]
@@ -134,18 +141,17 @@ class Fock_Targets:
 
             # select relevant edges and accumulate the corresponding slices
             matching_indices = np.where(mask)[0]  
-            edge_track = 0
             for edge_idx in matching_indices:
 
-                # only collect from forward edges if we are using reflected edges
+                # only collect from forward edges if we are using reflected edges, the other edge_orbital_blocks are None
                 if self.forward_edge_mask[edge_idx]:
                    
-                    edge_labels[edge_track, slice_out] += torch.squeeze(
+                    edge_labels[edge_idx, slice_out] += torch.squeeze(
                         edge_orbital_blocks[edge_idx][slice_row, slice_col].reshape(1, -1)
                     )
-                    # this keeps track of how far along the edge list we are, since the edge_labels only contain the forward ones but edge_orbital_blocks contains all the edges
-                    edge_track += 1 
 
+        # Keep only the filled forward edges
+        edge_labels = edge_labels[self.forward_edge_mask]
 
         # Diagonal orbital blocks --> Node labels
         atomic_numbers_i = self.atomic_numbers[self_edges[0]]
@@ -267,7 +273,7 @@ class Fock_Targets:
 
                 orbital_blocks[i] = mat
             
-            # if it is a backward edge and 
+            # if it is a backward edge  
             else: 
                 orbital_blocks[i] = None
                 
