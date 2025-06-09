@@ -354,24 +354,56 @@ class Fock_Targets:
 
         return H_prev
     
-    def reconstruct_matrix(node_blocks, edge_blocks):
+    # def reconstruct_matrix(node_blocks, edge_blocks):
+
+    #     N = self.block_starts[-1]
+    #     reconstructed_matrix = torch.zeros((N, N))
+
+    #     # insert node orbital blocks
+    #     for i, node in enumerate(node_blocks):
+    #         starting_i, num_orbitals_i = self.locate_atom_in_matrix(i)
+    #         reconstructed_matrix[starting_i:starting_i+num_orbitals_i, starting_i:starting_i+num_orbitals_i] = node
+
+    #     # for i in enumerate(edge_blocks):
+    #     #     if self.reflection_symmetry:
+    #     #         if self.edge_mask[i]:
+    #     #             # insert forward edge:
+    #     #             # insert backward edge:
+
+    #     #     else:
+    #     #         # just insert edge
+
+
+    #     raise NotImplementedError
+    def reconstruct_matrix(self, node_blocks, edge_blocks):
 
         N = self.block_starts[-1]
-        reconstructed_matrix = torch.zeros((N, N))
+        reconstructed_matrix = torch.zeros((N, N), dtype=self.dtype, device=self.device)
 
-        # insert node orbital blocks
+        # Insert node orbital blocks (diagonal blocks)
         for i, node in enumerate(node_blocks):
             starting_i, num_orbitals_i = self.locate_atom_in_matrix(i)
-            reconstructed_matrix[starting_i:starting_i+num_orbitals_i, starting_i:starting_i+num_orbitals_i] = node
+            reconstructed_matrix[starting_i:starting_i+num_orbitals_i, starting_i:starting_i+num_orbitals_i] = node_blocks[node]
 
-        # for i in enumerate(edge_blocks):
-        #     if self.reflection_symmetry:
-        #         if self.edge_mask[i]:
-        #             # insert forward edge:
-        #             # insert backward edge:
+        # Insert edge orbital blocks (off-diagonal blocks)
+        edge_counter = 0
+        for index_edge in range(len(self.neighbour_list[0])):
 
-        #     else:
-        #         # just insert edge
+            # get just the forward edges if we are using a reduced set of edges
+            if self.forward_edge_mask[index_edge]:
 
+                i, j = self.neighbour_list[0][index_edge], self.neighbour_list[1][index_edge]
+                starting_i, num_orbitals_i = self.locate_atom_in_matrix(i)
+                starting_j, num_orbitals_j = self.locate_atom_in_matrix(j)
 
-        raise NotImplementedError
+                # Insert forward edge
+                edge = edge_blocks[(i, j)]
+                reconstructed_matrix[starting_i:starting_i+num_orbitals_i, starting_j:starting_j+num_orbitals_j] = edge
+
+                # If reflection symmetry is used, insert the backward edge as the transpose
+                if self.reflection_symmetry:
+                    reconstructed_matrix[starting_j:starting_j+num_orbitals_j, starting_i:starting_i+num_orbitals_i] = edge.T
+                    
+                edge_counter += 1
+
+        return reconstructed_matrix

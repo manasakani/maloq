@@ -414,8 +414,46 @@ class SplitTrainer():
                     # plt.close()
 
                     # reassemble the matrix and diagonalize it
-                    # output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output)
-                    # label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label)
+                    output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output)
+                    label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label)
+
+                    # import matplotlib.pyplot as plt
+                    # matrix_out = output_fock_matrix.cpu().numpy()
+                    # plt.imshow(np.log(np.abs(matrix_out)), vmin=-20.0, vmax=5.0)
+                    # plt.colorbar()
+                    # plt.savefig("predicted_fock.png", dpi=300, bbox_inches='tight')
+                    # plt.close()
+
+                    # matrix_out = label_fock_matrix.cpu().numpy()
+                    # plt.imshow(np.log(np.abs(matrix_out)), vmin=-20.0, vmax=5.0)
+                    # plt.colorbar()
+                    # plt.savefig("labed_fock.png", dpi=300, bbox_inches='tight')
+                    # plt.close()
+
+                    # matrix_out = np.abs(np.abs(label_fock_matrix.cpu().numpy()) - np.abs(output_fock_matrix.cpu().numpy()))
+                    # plt.imshow(matrix_out)
+                    # plt.colorbar()
+                    # plt.savefig("diff_fock.png", dpi=300, bbox_inches='tight')
+                    # plt.close()
+
+                    # plt.figure(figsize=(4, 3))
+                    # self.plot_eigenvalues(label_fock_matrix.cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
+                    # self.plot_eigenvalues(output_fock_matrix.cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
+
+                    label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix.cpu().numpy())
+                    pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix.cpu().numpy())
+                    print("MAE error in eigenvalues: ", np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues))
+
+                    # losstype = nn.L1Loss(reduction='mean') 
+                    # print(losstype(label_eigenvalues, pred_eigenvalues))
+                    # plt.xlabel('Eigenvalue #')
+                    # plt.ylabel('Eigenvalue ($E_h$)')
+                    # # plt.yscale('log')
+                    # plt.legend()
+                    # plt.grid(True)
+                    # plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
+                    # plt.close()
+                    # exit()
 
                     node_outputs.update(node_orbital_blocks_output)
                     edge_outputs.update(edge_orbital_blocks_output)
@@ -499,6 +537,13 @@ class SplitTrainer():
                 plt.colorbar()
             plt.savefig(output_folder+"/" + keyword + "_emb_"+str(i)+".png", dpi=300, bbox_inches='tight')
             plt.close()
+
+    def plot_eigenvalues(self, matrix, s=1, alpha=0.3, label='', color='blue'):
+        """
+        Here for convinience, just plots the eigenvalues of the matrix
+        """
+        eigenvalues = np.linalg.eigvalsh(matrix)
+        plt.scatter(range(len(eigenvalues)), eigenvalues, s=s, alpha=alpha, label=label, color=color, edgecolors='none')
 
     def save_training_state(self, step, model, optimizer, track_loss_node, track_validation_node, save_file, output_folder, track_loss_edge=None, track_validation_edge=None):
         """
