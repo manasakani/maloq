@@ -38,29 +38,33 @@ random.seed(42)
 # --> NablaDFT (tiny)
 database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_sym'
+output_folder = 'outputs_nablaDFT_3xreduced'
 # ---------------------------
 
 # --> Model settings:
 l_embedding_dim = 128                   # sphere channels
-num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
+num_distance_basis = 256    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 2 
 model_name = 'esen'
-restart_backbone = True
-restart_head = True
-restart_optimizer = True
+restart_backbone = False
+restart_head = False
+restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
 num_val = 8                             # Number of validation structures
-num_train = 2000 #len(database) 
+num_train = len(database) 
 num_epochs = 50000
-batch_size = 3                          # 1 for eval, 10 for train
-rcut_orbitals = 10.0                    # connectivity cutoff (=2xrcut)
+batch_size = 5                          # 1 for eval, 10 for train
+rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = 10.0                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
-reflection_symmetry=True                # use only edges i,j where i<j
+
+# Additional symmetries:
+reduce_edge = True                      # use only edges i,j where i<j (other edges are reflected)
+reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
@@ -77,6 +81,7 @@ train_loss_fxn = loss.combined_padded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
+include_edges = False if loss_target == 'forces' else True
 
 # --------------------------------------------
 # Initialize compute environment 
@@ -93,7 +98,9 @@ if rank == 0:
     print(f"Dataset - Edge cutoff distance for gaussian basis: {2*rcut_gaussian}", flush=True)
     print(f"Model - Num of Message Passing layers: {num_mp_layers}", flush=True)
     print(f"Model - Embedding dimension: {l_embedding_dim}", flush=True)
-    print(f"Model - Edge reflections: {reflection_symmetry}")
+    print(f"Model - Edge reduction: {reduce_edge}")
+    print(f"Model - Node reduction - interorbital: {reduce_node}")
+    print(f"Model - Node reduction - intraorbital: {reduce_node_intra}")
     print(f"Training - Loss target: {loss_target}", flush=True)
     print(f"Training - Loss function: {train_loss_fxn}", flush=True)
     print(f"Training - Initial learning rate: {lr_init}", flush=True)
@@ -125,14 +132,11 @@ train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indice
 # val_end_mol = 23
 ### DEBUG ###
 
-train_loader, required_irreps, basis_transformation = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
-# val_loader, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype)
+train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
-
 print("Size of train loader: ", len(train_loader))
-# print("Size of val loader: ", len(val_loader))
 
 irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
 
@@ -191,7 +195,8 @@ elif model_name == 'esen':
                     act_type='gate',
                     mlp_type = 'spectral',
                     num_distance_basis=num_distance_basis,
-                    gaussian_width=gaussian_width
+                    gaussian_width=gaussian_width,
+                    include_edges=include_edges
                 )
 
     if loss_target == "fock_matrix":
@@ -199,7 +204,10 @@ elif model_name == 'esen':
                                 irreps_out=output_irreps, 
                                 lmax=required_irreps.lmax, 
                                 sphere_channels=l_embedding_dim,
-                                head_type=head_type)
+                                head_type=head_type,
+                                reduce_node=reduce_node,
+                                reduce_node_intra=reduce_node_intra,
+                                orbital_basis=orbital_basis)
 
     elif loss_target == "forces":
         head = Linear_Force_Head(backbone)
@@ -270,8 +278,8 @@ scheduler = loss_scheduler(optimizer)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='nablaDFT_May27_sym',
-                                    save_frequency=100)
+                                    run_name='nablaDFT_jun8',
+                                    save_frequency=20)
 
 trainer.train(num_epochs, 
                 train_loss_fxn, 

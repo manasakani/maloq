@@ -31,15 +31,6 @@ class Fock_Targets:
         self.dtype = dtype
         self.reflection_symmetry = reflection_symmetry
 
-        # import matplotlib.pyplot as plt
-        # matrix_target = fock_matrix
-        # plt.imshow(np.log(np.abs(matrix_target)))
-        # plt.colorbar()
-        # plt.savefig("uracil_fock.png", dpi=300, bbox_inches='tight')
-        # plt.close()
-        # exit()
-
-
         # Connectivity list:
         num_atoms = len(atoms)
         neighbours = NeighborList(np.ones(num_atoms)*cutoff, skin=0, self_interaction=False, bothways=True)
@@ -107,8 +98,7 @@ class Fock_Targets:
     def make_targets(self):
 
         self.target_len = self.get_target_len()                                 # each target should fit in a NxN matrix (to be flattened)
-
-        print("Single target length: ", self.target_len)
+        # print("Single target length: ", self.target_len)
 
         # initialize torch tensors of size N for nodes and (forward) edges
         node_labels = torch.zeros(( len(self.atoms), self.target_len ), dtype=self.dtype, device=self.device)
@@ -282,7 +272,6 @@ class Fock_Targets:
     
     def unpad_node_blocks(self, H_pred):
         
-        print("Single molecule type only - using atomic numbers from fock targets!")
         atom_orbitals = self.orbital_basis
 
         # Precompute number of orbitals for each atom

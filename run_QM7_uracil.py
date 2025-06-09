@@ -32,7 +32,7 @@ random.seed(42)
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_uracil.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_uracil_nosym'
+output_folder = 'outputs_QM7_uracil_3MP'
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
@@ -43,9 +43,9 @@ output_folder = 'outputs_QM7_uracil_nosym'
 
 # --> Model settings:
 l_embedding_dim = 128                   # sphere channels
-num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
+num_distance_basis = 256                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 2
+num_mp_layers = 3
 model_name = 'esen'
 restart_backbone = True
 restart_head = True
@@ -54,14 +54,18 @@ restart_optimizer = True
 # --> Training settings:
 train_or_eval = "eval"
 num_val = 500                           # Number of validation structures
-num_train = 25000 #25000 
-num_test = 4500
+num_train = 25000  
+num_test = 100 #4500
 num_epochs = 50000
 batch_size = 10                         # for training (batch size is always 1 for eval)
-rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
-rcut_gaussian = 10.0                    # connectivity cutoff (=2xrcut)
+rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut_orbitals)
+rcut_gaussian = 10.0                    # gaussian basis distance 
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
-reflection_symmetry=False                # use only edges i,j where i<j
+
+# Additional symmetries:
+reflection_symmetry = True              # use only edges i,j where i<j (other edges are reflected)
+reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
@@ -69,7 +73,7 @@ train_head = True
 dtype = torch.float64
 torch.set_default_dtype(dtype)
 lr_init = 1e-3
-patience = 20                          # for scheduler
+patience = 20                           # for scheduler
 threshold = 1e-8                        # for scheduler
 
 loss_target = 'fock_matrix'
@@ -94,7 +98,10 @@ if rank == 0:
     print(f"Dataset - Edge cutoff distance for gaussian basis: {rcut_gaussian}", flush=True)
     print(f"Model - Num of Message Passing layers: {num_mp_layers}", flush=True)
     print(f"Model - Embedding dimension: {l_embedding_dim}", flush=True)
-    print(f"Model - Edge reflections: {reflection_symmetry}")
+    print(f"Model - # Distance basis functions: {num_distance_basis}", flush=True)
+    print(f"Model - Edge reduction: {reflection_symmetry}")
+    print(f"Model - Node reduction - interorbital: {reduce_node}")
+    print(f"Model - Node reduction - intraorbital: {reduce_node_intra}")
     print(f"Training - Loss target: {loss_target}", flush=True)
     print(f"Training - Loss function for training: {train_loss_fxn}", flush=True)
     print(f"Training - Initial learning rate: {lr_init}", flush=True)
@@ -131,14 +138,14 @@ test_end_mol += num_train+num_val
 ### DEBUG ###
 
 if train_or_eval == 'train':
-    train_loader, required_irreps, basis_transformation = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
-    val_loader, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
+    train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
+    val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
     print("Size of train loader: ", len(train_loader))
     print("Size of val loader: ", len(val_loader))
 
 else:
     batch_size = 1
-    test_loader, required_irreps, basis_transformation = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
+    test_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
     print("Size of test loader: ", len(test_loader))
 
 data_load_end = time.perf_counter()
@@ -209,7 +216,10 @@ elif model_name == 'esen':
         head = Fock_Irreps_Head(irreps_in=irreps_in, 
                                 irreps_out=output_irreps, 
                                 lmax=required_irreps.lmax, 
-                                sphere_channels=l_embedding_dim)
+                                sphere_channels=l_embedding_dim,
+                                reduce_node=reduce_node,
+                                reduce_node_intra=reduce_node_intra,
+                                orbital_basis=orbital_basis)
     elif loss_target == "forces":
         head = Linear_Force_Head(backbone)
 
@@ -278,7 +288,7 @@ scheduler = loss_scheduler(optimizer)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='QM7_uracil_withsym',
+                                    run_name='QM7_uracil_1MP_jun8',
                                     save_frequency=20)
 if train_or_eval == "train":
     trainer.train(num_epochs, 

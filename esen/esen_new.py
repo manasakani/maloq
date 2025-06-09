@@ -395,12 +395,6 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         #         f.write(f"{x_message_edge.shape}\n")
         #         f.write(' '.join(map(str, x_message_edge.flatten().tolist())) + "\n")
 
-        # Prepare rank-N outputs:
-        # node_rank0 = self.convert_to_output_irreps(x_message_node, x_edge, self.sphere_channels, self.lmax, rank='0')
-        # node_rank1 = self.convert_to_output_irreps(x_message_node, x_edge, self.sphere_channels, self.lmax, rank='1')
-        # node_rankN = self.convert_to_output_irreps(x_message_node, x_edge, self.sphere_channels, self.lmax, rank='N', edge_index=graph_dict["edge_index"], node_or_edge='node') 
-        # edge_rankN = self.convert_to_output_irreps(x_message_edge, x_edge, self.sphere_channels, self.lmax, rank='N', edge_index=graph_dict["edge_index"], node_or_edge='edge')
-
         # Return the output
         out = {
                 "node_embeddings": x_message_node,
@@ -461,10 +455,6 @@ class Fock_Irreps_Head(nn.Module):
         self.irreps_out = irreps_out
         self.orbital_basis = orbital_basis
         
-        # fake small basis for testing: 
-        # print("Using fake mini basis for testing!")
-        # self.orbital_basis = {1: torch.tensor([0, 1]), 2: torch.tensor([0, 1])}
-
         # Option to extract minimal node irreps to project to:
         if self.reduce_node:
             assert self.orbital_basis is not None
@@ -506,8 +496,8 @@ class Fock_Irreps_Head(nn.Module):
             
             # Now we can project to this reduced set of irreps and expand it out 
             self.irreps_nodereduced = Irreps('+'.join(irreps_nodereduced))
-            # print("irreps_out: ", irreps_out)
-            # print("self.irreps_nodereduced: ", self.irreps_nodereduced)
+            # print("full irreps: ", irreps_out)
+            # print("minimal node irreps: ", self.irreps_nodereduced)
 
         if self.head_type == 'linear':
             self.map_node_to_rank_N = e3nn_Linear(irreps_in=irreps_in, irreps_out=irreps_out, biases=True)

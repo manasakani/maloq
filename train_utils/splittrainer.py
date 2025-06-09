@@ -157,9 +157,9 @@ class SplitTrainer():
 
                 forward_end = time.perf_counter()
 
-                if rank == 0:
-                    peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024)  # in MB
-                    print(f"Peak memory allocation: {peak_mem:.2f} MB")
+                # if rank == 0:
+                #     peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024)  # in MB
+                #     print(f"Peak memory allocation: {peak_mem:.2f} MB")
 
                 # -- Backwards -- 
                 scaler.scale(loss).backward()
@@ -167,9 +167,9 @@ class SplitTrainer():
                 scaler.update()
                 backward_end = time.perf_counter()
 
-                if rank == 0:
-                    print("Time per forward pass: ", forward_end - forward_start)
-                    print("Time for both forward and backward pass: ", backward_end - forward_start)
+                # if rank == 0:
+                #     print("Time per forward pass: ", forward_end - forward_start)
+                #     print("Time for both forward and backward pass: ", backward_end - forward_start)
                 
             # -- Output dump -- 
             if include_edges:
@@ -204,7 +204,7 @@ class SplitTrainer():
                         if include_edges:
                             node_output, edge_output = self.head(backbone_out, batch)
                             this_node_target = getattr(batch, node_target_name)
-                            edge_mask = batch.edge_mask
+                            # edge_mask = batch.edge_mask
                             this_edge_target = getattr(batch, edge_target_name)
 
                             # do everything in the uncoupled basis:
@@ -384,16 +384,15 @@ class SplitTrainer():
                 batch = batch.to(device)
                 backbone_out = self.backbone(batch) 
 
-                # self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
-                # self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
+                self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
+                self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
 
                 # pass all the batches through:
                 if include_edges:
-                    node_output, edge_output = self.head(backbone_out, batch)
 
+                    node_output, edge_output = self.head(backbone_out, batch)
                     this_node_target = getattr(batch, node_target_name)
-                    edge_mask = batch.edge_mask
-                    this_edge_target = getattr(batch, edge_target_name)[edge_mask]
+                    this_edge_target = getattr(batch, edge_target_name)
 
                     # Transform back to uncoupled basis:
                     uncoupled_node_outputs = basis_transform.get_H(node_output)
@@ -406,6 +405,13 @@ class SplitTrainer():
                     edge_orbital_blocks_output = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_outputs)
                     node_orbital_blocks_label = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_labels)
                     edge_orbital_blocks_label = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_labels)
+
+                    # import matplotlib.pyplot as plt
+                    # matrix_out = edge_orbital_blocks_output[(0, 1)].reshape(14, 14)
+                    # plt.imshow(np.log(np.abs(matrix_out)))
+                    # plt.colorbar()
+                    # plt.savefig("edge_output.png", dpi=300, bbox_inches='tight')
+                    # plt.close()
 
                     # reassemble the matrix and diagonalize it
                     # output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output)
@@ -466,11 +472,31 @@ class SplitTrainer():
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                     for node in track_loss:
                         f.write(f"{node:.10f}\n")
+    
+    def get_orbital(self, tensor, irreps_list, l):
+        """
+        Extract and return all irreps of type l from the tensor
+        """
+
+        collect = []
+        pointer = 0
+        for irrep in irreps_list:
+            irrep_l = int(str(irrep).split('x')[-1][0])
+            if irrep_l == l:
+                collect.append(tensor[pointer : pointer + 2*l+1])
+
+            pointer += 2*irrep_l+1
+        
+        return collect
                 
-    def visualize_embeddings(self, embs, output_folder, keyword):
+    def visualize_embeddings(self, embs, output_folder, keyword, plot_log=True):
 
         for i, emb in enumerate(embs):
-            plt.imshow(emb.cpu().detach().numpy(), cmap='RdBu', vmin=-1.0, vmax=1.0)
+            if not plot_log:
+                plt.imshow(emb.cpu().detach().numpy(), cmap='RdBu', vmin=-1.0, vmax=1.0)
+            else:
+                plt.imshow(np.log(np.abs(emb.cpu().detach().numpy())), cmap='RdBu_r')
+                plt.colorbar()
             plt.savefig(output_folder+"/" + keyword + "_emb_"+str(i)+".png", dpi=300, bbox_inches='tight')
             plt.close()
 
