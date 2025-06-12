@@ -133,7 +133,7 @@ class SplitTrainer():
                             edge_output = basis_transform.get_H(edge_output)
                             this_node_target = basis_transform.get_H(this_node_target)
                             this_edge_target = basis_transform.get_H(this_edge_target)
-
+                    
                         output = torch.cat([node_output, edge_output], dim=0)
                         labels = torch.cat([this_node_target, this_edge_target], dim=0)
                         loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
@@ -296,8 +296,7 @@ class SplitTrainer():
     
             # End condition is based on the learning rate:
             min_lr_reached = torch.tensor(float(current_lr == min_lr), device='cuda')
-            dist.all_reduce(min_lr_reached, op=dist.ReduceOp.SUM)
-            if min_lr_reached.item() == world_size:     # if all of them reached the min_lr
+            if min_lr_reached:
                 print("Reached minimum learning rate, finished training.")
                 if include_edges:
                     self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
@@ -374,6 +373,7 @@ class SplitTrainer():
             # dictionaries to store the orbital blocks, they get rewritten by each batch
             node_outputs = {}
             node_labels = {}
+            eigenvalue_maes = []
             if include_edges:
                 edge_outputs = {}
                 edge_labels = {}
@@ -413,7 +413,7 @@ class SplitTrainer():
                     # plt.savefig("edge_output.png", dpi=300, bbox_inches='tight')
                     # plt.close()
 
-                    # reassemble the matrix and diagonalize it
+                    # reassemble the matrix 
                     output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output)
                     label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label)
 
@@ -440,9 +440,12 @@ class SplitTrainer():
                     # self.plot_eigenvalues(label_fock_matrix.cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
                     # self.plot_eigenvalues(output_fock_matrix.cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
 
+                    # Compute the eigenvalues and eigenvalue error
                     label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix.cpu().numpy())
                     pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix.cpu().numpy())
-                    print("MAE error in eigenvalues: ", np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues))
+                    eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
+                    eigenvalue_maes.append(eigenvalue_MAE)
+                    print("MAE error in eigenvalues: ", eigenvalue_MAE)
 
                     # losstype = nn.L1Loss(reduction='mean') 
                     # print(losstype(label_eigenvalues, pred_eigenvalues))
@@ -504,8 +507,8 @@ class SplitTrainer():
         # -- Output dump -- 
         if include_edges:
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
-                    for edge, node, total in zip(track_loss_edge, track_loss_node, track_loss):
-                        f.write(f"{edge:.10f}\t{node:.10f}\t{total:.10f}\n")
+                    for edge, node, total, eig in zip(track_loss_edge, track_loss_node, track_loss, eigenvalue_maes):
+                        f.write(f"{edge:.10f}\t{node:.10f}\t{total:.10f}\t{eig:.10f}\n")
         else:
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                     for node in track_loss:

@@ -64,7 +64,7 @@ class Edgewise(torch.nn.Module):
             raise ValueError(f"Unknown activation type {self.act_type}")
         
         if self.include_edges:
-            # concat_size = 3
+            # concat_size = 1
             concat_size = 2
         else:
             concat_size = 2
@@ -156,7 +156,9 @@ class Edgewise(torch.nn.Module):
         x_source = x[edge_index[0][edge_mask]]
         x_target = x[edge_index[1][edge_mask]]
 
-        x_message = torch.cat((x_source, x_target), dim=2)  
+        # x_message = torch.cat((x_source, x_target), dim=2)                                             # reflected (operating on only half the edges)  
+        # x_message = torch.cat((x_source, x_target), dim=2) + torch.cat((x_target, x_source), dim=2)    # permutation invariant, edges would be the same in both directions
+        x_message = torch.cat((x_source, x_target), dim=2) - torch.cat((x_target, x_source), dim=2)      # antisymmetrized
 
         # Rotate the irreps to align with the edge
         x_message = torch.bmm(wigner, x_message)
@@ -180,8 +182,8 @@ class Edgewise(torch.nn.Module):
         )
 
         # aggregate messages
-        new_embedding.index_add_(0, edge_index[1][edge_mask], x_message)
-        if (~edge_mask).any():  # if we are ignoring half the edges
+        new_embedding.index_add_(0, edge_index[1][edge_mask], x_message)    # if using the same, can just skip the if below
+        if (~edge_mask).any():                                              # if we are ignoring half the edges, need to now add the other half
                 new_embedding.index_add_(0, edge_index[0][edge_mask], -1*x_message)   
 
         return new_embedding
@@ -201,8 +203,9 @@ class Edgewise(torch.nn.Module):
         x_source = x[edge_index[0][edge_mask]]
         x_target = x[edge_index[1][edge_mask]]
         
-        # x_message = torch.cat((x_source, x_message_edge, x_target), dim=2)
-        x_message = torch.cat((x_source, x_target), dim=2)
+        # x_message = torch.cat((x_source, x_target), dim=2)                                             # reflected (operating on only half the edges) 
+        # x_message = torch.cat((x_source, x_target), dim=2) + torch.cat((x_target, x_source), dim=2)    # permutation invariant/symmetric, edges would be the same in both directions
+        x_message = torch.cat((x_source, x_target), dim=2) - torch.cat((x_target, x_source), dim=2)      # antisymmetrized
 
         # Rotate the irreps to align with the edge
         x_message = torch.bmm(wigner, x_message)

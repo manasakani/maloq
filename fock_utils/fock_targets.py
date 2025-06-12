@@ -31,6 +31,10 @@ class Fock_Targets:
         self.dtype = dtype
         self.reflection_symmetry = reflection_symmetry
 
+        eigenvalues, eigenvectors = torch.linalg.eigh(self.fock_matrix)   # compute eigenvalues and eigenvectors of the fock matrix
+        self.eigenvalues = eigenvalues.to(self.device)                    # store eigenvalues
+        self.eigenvectors = eigenvectors.to(self.device)                  # store eigenvectors
+
         # Connectivity list:
         num_atoms = len(atoms)
         neighbours = NeighborList(np.ones(num_atoms)*cutoff, skin=0, self_interaction=False, bothways=True)
@@ -58,18 +62,10 @@ class Fock_Targets:
         self.NA = len(atoms)
         self.atomic_numbers = self.atoms.get_atomic_numbers()
 
-        ### Using a different target shape per molecule ###
-        # molecule_orbital_basis = {atom_number: self.orbital_basis[atom_number] for atom_number in self.atomic_numbers}
-        # print("Using a molecule-specific basis! only one molecule type")
-        # print(molecule_orbital_basis)
-        # self.orbital_basis = molecule_orbital_basis
-        ### Using a different target shape per molecule ###
-
         self.orbitals_per_atom = ([ sum([(2*l+1)    
                                          for l in orbital_basis[atom_number]]) 
                                          for atom_number in self.atomic_numbers ])
     
-        
         # Analyze structure of orbital interactions
         targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions
         self.equivariant_blocks, out_js_list, self.orbital_starts = utils_tensor_decomp.process_targets(self.orbital_basis, targets)
@@ -165,47 +161,6 @@ class Fock_Targets:
         self.edge_labels = self.basis_transformation.get_net_out(edge_labels)
         # ---------------------------------------------------------------------------------------------
 
-        # dump the targets:
-        # import os
-        # output_dir = './fock_tensors_dumped'
-        # file_path = os.path.join(output_dir, f'molecule_{0}.txt')
-        # with open(file_path, 'w') as f:
-
-        #     f.write("node_labels\n")
-        #     f.write(f"{self.node_labels.shape}\n")
-        #     f.write(' '.join(map(str, self.node_labels.flatten().tolist())) + "\n")
-            
-        #     f.write("edge_labels\n")
-        #     f.write(f"{self.edge_labels.shape}\n")
-        #     f.write(' '.join(map(str, self.edge_labels.flatten().tolist())) + "\n")
-        # exit()
-
-        # # for debug:
-        # print("after basis transform: ", self.node_labels[0])
-        # plt.imshow(np.log(np.abs(self.node_labels[0].reshape(H_size, H_size).detach().cpu())))
-        # plt.savefig("self.node_labels_transformed[0].png", dpi=300, bbox_inches='tight')
-        # plt.close()
-
-        # self.node_labels = self.basis_transformation.get_H(self.node_labels)
-        # self.edge_labels = self.basis_transformation.get_H(self.edge_labels)
-
-        # print("first label_netout: ", self.node_labels[0])
-        # plt.imshow(np.log(np.abs(self.node_labels[0].reshape(H_size, H_size).detach().cpu())))
-        # plt.savefig("self.node_labels_back[0].png", dpi=300, bbox_inches='tight')
-        # plt.close()
-        # print("self.neighbour_list: ", self.neighbour_list)
-        # exit()
-        
-        # Apply Rotation to rotate (1) the structure and (2) every block of H from [xyz] to [yzx] order: 
-        # - not needed, ORCA is already in yzx after permutation
-        # ---------------------------------------------------------------------------------------------
-        # R_cart, R_sphere = self.get_cartesian_and_spherical_rotations_to_yzx()
-
-        # transpose each position into a [Nx1], multiply it by the rotation, and then transpose it back to [1xN]
-        # self.node_labels = torch.matmul(R_sphere, self.node_labels.permute(1, 0)).permute(1, 0)
-        # self.edge_labels = torch.matmul(R_sphere, self.edge_labels.permute(1, 0)).permute(1, 0)
-        # self.atoms.positions = torch.matmul(R_cart, torch.tensor(self.atoms.get_positions().transpose(), dtype=self.dtype)).numpy().transpose()
-
         # Make edge vectors
         # ---------------------------------------------------------------------------------------------
         indices0 = self.neighbour_list[0]  # First atom indices
@@ -218,6 +173,7 @@ class Fock_Targets:
     def get_cartesian_and_spherical_rotations_to_yzx(self):
         """
         Specifically gets the cartesian and spherical rotations for xyz -> yzx
+        Note: not needed.
         """
         R_cart = torch.tensor([[0.0,  0.0, 1.0],
                                [ 1.0, 0.0, 0.0],
@@ -354,28 +310,11 @@ class Fock_Targets:
 
         return H_prev
     
-    # def reconstruct_matrix(node_blocks, edge_blocks):
 
-    #     N = self.block_starts[-1]
-    #     reconstructed_matrix = torch.zeros((N, N))
-
-    #     # insert node orbital blocks
-    #     for i, node in enumerate(node_blocks):
-    #         starting_i, num_orbitals_i = self.locate_atom_in_matrix(i)
-    #         reconstructed_matrix[starting_i:starting_i+num_orbitals_i, starting_i:starting_i+num_orbitals_i] = node
-
-    #     # for i in enumerate(edge_blocks):
-    #     #     if self.reflection_symmetry:
-    #     #         if self.edge_mask[i]:
-    #     #             # insert forward edge:
-    #     #             # insert backward edge:
-
-    #     #     else:
-    #     #         # just insert edge
-
-
-    #     raise NotImplementedError
     def reconstruct_matrix(self, node_blocks, edge_blocks):
+        """
+        Note: always returns a symmetric matrix (symmetrizes it if not already symmetric)
+        """
 
         N = self.block_starts[-1]
         reconstructed_matrix = torch.zeros((N, N), dtype=self.dtype, device=self.device)
@@ -403,7 +342,12 @@ class Fock_Targets:
                 # If reflection symmetry is used, insert the backward edge as the transpose
                 if self.reflection_symmetry:
                     reconstructed_matrix[starting_j:starting_j+num_orbitals_j, starting_i:starting_i+num_orbitals_i] = edge.T
-                    
+
                 edge_counter += 1
+        
+        # Check if the matrix is symmetric and symmetrize if not
+        if not torch.allclose(reconstructed_matrix, reconstructed_matrix.T, atol=1e-10):
+            print("Matrix is not already symmetrix! Symmetrizing the matrix")
+            reconstructed_matrix = (reconstructed_matrix + reconstructed_matrix.T) / 2
 
         return reconstructed_matrix
