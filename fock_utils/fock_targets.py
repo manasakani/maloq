@@ -44,7 +44,7 @@ class Fock_Targets:
 
         if self.reflection_symmetry:
             self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]    # keep edges i, j where i < j
-            print("Note: Reducing symmetric edges!")
+            # print("Note: Reducing symmetric edges!")
 
             # index of self.neighbour_list which contains the edge (either forward or backward, depending on if edge_mask)
             self.reverse_edge_map = []
@@ -56,7 +56,7 @@ class Fock_Targets:
                     self.reverse_edge_map.append(reverse_index)
         else:
             self.forward_edge_mask = [True]*len(self.neighbour_list[0])                 # keep all edges
-            print("Note: Not reducing symmetric edges!")
+            # print("Note: Not reducing symmetric edges!")
             self.reverse_edge_map = torch.arange(len(self.neighbour_list[0]))
 
         self.NA = len(atoms)

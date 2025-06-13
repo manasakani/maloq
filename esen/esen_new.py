@@ -17,12 +17,10 @@ from e3nn.o3 import Linear as e3nn_Linear
 from e3nn.nn import Gate
 from torch.nn import Linear
 import numpy as np
+from abc import ABCMeta, abstractmethod
 
-# Fix this later!:
-sys.path.append('/home/manasakani/fairchem/src/')
 from fairchem.core.common.registry import registry
 from fairchem.core.common.utils import conditional_grad
-from fairchem.core.models.base import GraphModelMixin, HeadInterface
 
 from .common.rotation import (
     init_edge_rot_mat,
@@ -44,7 +42,7 @@ from .nn.radial import EnvelopedBesselBasis, GaussianSmearing
 from .nn.so3_layers import SO3_Linear
 
 @registry.register_model("esen_backbone")
-class eSEN_Backbone(nn.Module, GraphModelMixin):
+class eSEN_Backbone(nn.Module):
     def __init__(
         self,
         irreps_out,
@@ -439,6 +437,7 @@ class eSEN_Backbone(nn.Module, GraphModelMixin):
         return set(no_wd_list)
 
 
+
 @registry.register_model("fock_irreps_head")
 class Fock_Irreps_Head(nn.Module):
     """
@@ -826,163 +825,47 @@ class Seperable_Linear_Fock_Head(nn.Module):
             # convert from simplified to full output irreps        
             return self.convert_to_output_irreps(out)
 
-
-# class SO2_m_Conv_output(torch.nn.Module):
-#     """
-#     SO(2) Conv: Perform an SO(2) convolution on features corresponding to +- m
-
-#     Args:
-#         m (int):                    Order of the spherical harmonic coefficients
-#         sphere_channels (int):      Number of spherical channels
-#         m_output_channels (int):    Number of output channels used during the SO(2) conv
-#         lmax (int):                 degrees (l)
-#         mmax (int):                 orders (m)
-#     """
-
-#     def __init__(
-#         self,
-#         m: int,
-#         sphere_channels: int,
-#         m_multiplicity: int,
-#         lmax: int,
-#         mmax: int,
-#     ) -> None:
+# @registry.register_model("esen_mlp_energy_head")
+# class MLP_Energy_Head(nn.Module, HeadInterface):
+#     def __init__(self, backbone, reduce: str = "sum"):
 #         super().__init__()
+#         self.reduce = reduce
 
-#         self.m = m
-#         self.sphere_channels = sphere_channels
-#         # self.m_output_channels = m_output_channels
-#         self.lmax = lmax
-#         self.mmax = mmax
-
-#         assert self.mmax >= m
-#         num_coefficents = self.lmax - m + 1
-#         num_channels = num_coefficents * self.sphere_channels
-
-#         self.out_channels_half = m_multiplicity
-#         # self.m_output_channels * (
-#         #     num_channels // self.sphere_channels
-#         # )
-#         self.fc = Linear(
-#             num_channels,
-#             2 * self.out_channels_half,
-#             bias=False,
+#         self.sphere_channels = backbone.sphere_channels
+#         self.hidden_channels = backbone.hidden_channels
+#         self.energy_block = nn.Sequential(
+#             nn.Linear(self.sphere_channels, self.hidden_channels, bias=True),
+#             nn.SiLU(),
+#             nn.Linear(self.hidden_channels, self.hidden_channels, bias=True),
+#             nn.SiLU(),
+#             nn.Linear(self.hidden_channels, 1, bias=True),
 #         )
-#         self.fc.weight.data.mul_(1 / math.sqrt(2))
 
-#     def forward(self, x_m):
-#         x_m = self.fc(x_m)
-#         x_r = x_m.narrow(2, 0, self.out_channels_half)
-#         x_i = x_m.narrow(2, self.out_channels_half, self.out_channels_half)
-#         x_m_r = x_r.narrow(1, 0, 1) - x_i.narrow(1, 1, 1)  # x_r[:, 0] - x_i[:, 1]
-#         x_m_i = x_r.narrow(1, 1, 1) + x_i.narrow(1, 0, 1)  # x_r[:, 1] + x_i[:, 0]
-#         return torch.cat((x_m_r, x_m_i), dim=1)
+#     def forward(self, data_dict, emb: dict[str, torch.Tensor]):
+#         node_energy = self.energy_block(
+#             emb["node_embedding"].narrow(1, 0, 1).squeeze()
+#         ).view(-1, 1, 1)
 
-@registry.register_model("esen_mlp_efs_head")
-class MLP_EFS_Head(nn.Module, HeadInterface):
-    def __init__(self, backbone):
-        super().__init__()
-        backbone.energy_block = None
-        backbone.force_block = None
-        self.regress_stress = backbone.regress_stress
-        self.regress_forces = backbone.regress_forces
+#         energy = torch.zeros(
+#             len(data_dict["natoms"]),
+#             device=node_energy.device,
+#             dtype=node_energy.dtype,
+#         )
 
-        self.sphere_channels = backbone.sphere_channels
-        self.hidden_channels = backbone.hidden_channels
-        self.energy_block = nn.Sequential(
-            nn.Linear(self.sphere_channels, self.hidden_channels, bias=True),
-            nn.SiLU(),
-            nn.Linear(self.hidden_channels, self.hidden_channels, bias=True),
-            nn.SiLU(),
-            nn.Linear(self.hidden_channels, 1, bias=True),
-        )
-
-        backbone.direct_forces = False
-
-    @conditional_grad(torch.enable_grad())
-    def forward(self, data, emb: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        energy_key = "energy"
-        forces_key = "forces"
-        stress_key = "stress"
-
-        outputs = {}
-
-        node_energy = self.energy_block(
-            emb["node_embedding"].narrow(1, 0, 1).squeeze()
-        ).view(-1, 1, 1)
-
-        energy = torch.zeros(
-            len(data["natoms"]), device=data["pos"].device, dtype=node_energy.dtype
-        )
-        energy.index_add_(0, data["batch"], node_energy.view(-1))
-        outputs[energy_key] = energy
-
-        if self.regress_stress:
-            grads = torch.autograd.grad(
-                [energy.sum()],
-                [data["pos"], emb["displacement"]],
-                create_graph=self.training,
-            )
-            forces = torch.neg(grads[0])
-            virial = grads[1].view(-1, 3, 3)
-            volume = torch.det(data["cell"]).abs().unsqueeze(-1)
-            stress = virial / volume.view(-1, 1, 1)
-            virial = torch.neg(virial)
-            outputs[forces_key] = forces
-            outputs[stress_key] = stress.view(-1, 9)
-            data["cell"] = emb["orig_cell"]
-        elif self.regress_forces:
-            forces = (
-                -1
-                * torch.autograd.grad(
-                    energy.sum(), data["pos"], create_graph=self.training
-                )[0]
-            )
-            outputs[forces_key] = forces
-        return outputs
-
-
-@registry.register_model("esen_mlp_energy_head")
-class MLP_Energy_Head(nn.Module, HeadInterface):
-    def __init__(self, backbone, reduce: str = "sum"):
-        super().__init__()
-        self.reduce = reduce
-
-        self.sphere_channels = backbone.sphere_channels
-        self.hidden_channels = backbone.hidden_channels
-        self.energy_block = nn.Sequential(
-            nn.Linear(self.sphere_channels, self.hidden_channels, bias=True),
-            nn.SiLU(),
-            nn.Linear(self.hidden_channels, self.hidden_channels, bias=True),
-            nn.SiLU(),
-            nn.Linear(self.hidden_channels, 1, bias=True),
-        )
-
-    def forward(self, data_dict, emb: dict[str, torch.Tensor]):
-        node_energy = self.energy_block(
-            emb["node_embedding"].narrow(1, 0, 1).squeeze()
-        ).view(-1, 1, 1)
-
-        energy = torch.zeros(
-            len(data_dict["natoms"]),
-            device=node_energy.device,
-            dtype=node_energy.dtype,
-        )
-
-        energy.index_add_(0, data_dict["batch"], node_energy.view(-1))
-        if self.reduce == "sum":
-            return {"energy": energy}
-        elif self.reduce == "mean":
-            return {"energy": energy / data_dict["natoms"]}
-        else:
-            raise ValueError(
-                f"reduce can only be sum or mean, user provided: {self.reduce}"
-            )
+#         energy.index_add_(0, data_dict["batch"], node_energy.view(-1))
+#         if self.reduce == "sum":
+#             return {"energy": energy}
+#         elif self.reduce == "mean":
+#             return {"energy": energy / data_dict["natoms"]}
+#         else:
+#             raise ValueError(
+#                 f"reduce can only be sum or mean, user provided: {self.reduce}"
+#             )
 
 
 # Note: with the aggregation, this is unstable! Sometimes elements cancel to zero
 @registry.register_model("esen_linear_force_head")
-class Linear_Force_Head(nn.Module, HeadInterface):
+class Linear_Force_Head(nn.Module):
     def __init__(self, backbone):
         super().__init__()
         self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
@@ -1002,7 +885,7 @@ class Linear_Force_Head(nn.Module, HeadInterface):
         forces = forces.view(-1, 3).contiguous()
         return {"forces": forces}
     
-class Convolution_Force_Head(nn.Module, HeadInterface):
+class Convolution_Force_Head(nn.Module):
     def __init__(self, backbone):
         super().__init__()
         
