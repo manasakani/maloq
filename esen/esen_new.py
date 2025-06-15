@@ -148,12 +148,12 @@ class eSEN_Backbone(nn.Module):
             self.edge_channels,
         ]
 
-        # # Testing for antisym!
-        # self.edge_expansion = nn.Linear(
-        #     2 * self.edge_channels,
-        #     self.num_distance_basis + 2 * self.edge_channels,
-        #     bias=False
-        # )
+        # Testing for antisym!
+        self.edge_expansion = nn.Linear(
+            2 * self.edge_channels,
+            self.num_distance_basis + 2 * self.edge_channels,
+            bias=False
+        )
 
         self.edge_expansion2 = nn.Linear(
             self.edge_channels,
@@ -301,10 +301,6 @@ class eSEN_Backbone(nn.Module):
             if not edges_ij[ind]:  # if this is a backward edge, we need to flip the sign of the wigner matrix
                 wigner[ind] = -1*wigner[data_dict["reverse_edge_map"][ind]]
                 wigner_inv[ind] = -1*wigner_inv[data_dict["reverse_edge_map"][ind]]
-
-        # print("batch.reverse_edge_map: ", data_dict["reverse_edge_map"])
-        # print("forward_edge_mask: ", forward_edge_mask)
-        # exit()
         
         # Rotation test:
         # rotated_edges_to_z_axis = torch.bmm(edge_rot_mat, graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
@@ -424,9 +420,6 @@ class eSEN_Backbone(nn.Module):
                     wigner_inv,
                     node_or_edge='edge',
                 )
-        
-        # zero_sum_check = torch.sum(torch.sum(x_message_edge[0] + x_message_edge[3], dim=0) + torch.sum(x_message_edge[1] + x_message_edge[4], dim=0) + torch.sum(x_message_edge[2] + x_message_edge[5], dim=0), dim=0)
-        # print("zero_sum_check after layers:", zero_sum_check)
         
         # Final layer norm
         x_message_node = self.norm(x_message_node)
@@ -594,8 +587,8 @@ class Fock_Irreps_Head(nn.Module):
 
             # now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
             if reduce_node:
-                self.lin_out_node = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_nodereduced, biases=False) 
-                self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=True) # turn biases false later
+                self.lin_out_node = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_nodereduced, biases=False)
+                self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=True) #, biases=False)
             else:
                 self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=False) 
 
