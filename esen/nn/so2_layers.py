@@ -112,7 +112,8 @@ class SO2_Convolution(torch.nn.Module):
         )
         if self.extra_m0_output_channels is not None:
             m0_output_channels = m0_output_channels + self.extra_m0_output_channels
-        self.fc_m0 = Linear(num_channels_m0, m0_output_channels)
+        # self.fc_m0 = Linear(num_channels_m0, m0_output_channels)
+        self.fc_m0 = Linear(num_channels_m0, m0_output_channels, bias=False)  # for antisymmetry
         num_channels_rad = self.fc_m0.in_features
 
         # SO(2) convolution for non-zero m
@@ -147,7 +148,7 @@ class SO2_Convolution(torch.nn.Module):
         # Reshape the spherical harmonics based on m (order)
         x = torch.einsum("nac,ba->nbc", x, self.mappingReduced.to_m)
 
-        # radial function
+        # radial function - this is now antisymmetrized (no bias, tanh)!
         if self.rad_func is not None:
             x_edge = self.rad_func(x_edge)
         offset_rad = 0
@@ -246,7 +247,7 @@ class SO2_Linear(torch.nn.Module):
         # SO(2) linear for m = 0
         self.fc_m0 = Linear(
             num_channels_m0,
-            self.m_output_channels * (num_channels_m0 // self.sphere_channels),
+            self.m_output_channels * (num_channels_m0 // self.sphere_channels), bias=False # biase is false for antisymmetry
         )
         num_channels_rad = self.fc_m0.in_features
 

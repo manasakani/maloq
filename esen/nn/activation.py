@@ -32,9 +32,11 @@ class GateActivation(torch.nn.Module):
         self.register_buffer("expand_index", expand_index)
 
         self.scalar_act = (
-            torch.nn.SiLU()
+            # torch.nn.SiLU()
+            torch.nn.Tanh()  # for antisym
         )  # SwiGLU(self.num_channels, self.num_channels)  # #
-        self.gate_act = torch.nn.Sigmoid()  # torch.nn.SiLU() # #
+        # self.gate_act = torch.nn.Sigmoid()  # torch.nn.SiLU() # #
+        self.gate_act = torch.nn.Tanh()  # torch.nn.SiLU() # #
 
     def forward(self, gating_scalars, input_tensors):
         """

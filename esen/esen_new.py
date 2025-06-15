@@ -19,6 +19,8 @@ from torch.nn import Linear
 import numpy as np
 from abc import ABCMeta, abstractmethod
 
+# Fix this later!:
+sys.path.append('/home/manasakani/fairchem/src/')
 from fairchem.core.common.registry import registry
 from fairchem.core.common.utils import conditional_grad
 
@@ -132,16 +134,33 @@ class eSEN_Backbone(nn.Module):
             raise ValueError("Unknown distance function")
 
         # equivariant initial embedding
-        self.source_embedding = nn.Embedding(self.max_num_elements, self.edge_channels)
-        self.target_embedding = nn.Embedding(self.max_num_elements, self.edge_channels)
-        nn.init.uniform_(self.source_embedding.weight.data, -0.001, 0.001)
-        nn.init.uniform_(self.target_embedding.weight.data, -0.001, 0.001)
+        self.element_embedding = nn.Embedding(self.max_num_elements, self.edge_channels)
+        # self.source_embedding = nn.Embedding(self.max_num_elements, self.edge_channels)
+        # self.target_embedding = nn.Embedding(self.max_num_elements, self.edge_channels)
+
+        nn.init.uniform_(self.element_embedding.weight.data, -0.001, 0.001)
+        # nn.init.uniform_(self.source_embedding.weight.data, -0.001, 0.001)
+        # nn.init.uniform_(self.target_embedding.weight.data, -0.001, 0.001)
 
         self.edge_channels_list = [
             self.num_distance_basis + 2 * self.edge_channels,
             self.edge_channels,
             self.edge_channels,
         ]
+
+        # # Testing for antisym!
+        # self.edge_expansion = nn.Linear(
+        #     2 * self.edge_channels,
+        #     self.num_distance_basis + 2 * self.edge_channels,
+        #     bias=False
+        # )
+
+        self.edge_expansion2 = nn.Linear(
+            self.edge_channels,
+            2*self.edge_channels,
+            bias=False
+        )
+        
 
         self.edge_degree_embedding = EdgeDegreeEmbedding(
             sphere_channels=self.sphere_channels,
@@ -206,6 +225,7 @@ class eSEN_Backbone(nn.Module):
             self.norm_type,
             lmax=self.lmax,
             num_channels=self.sphere_channels,
+            centering=False # for antisymmetry, removes the bias!
         )
 
         # # Irreps of the internal embeddings
@@ -271,8 +291,26 @@ class eSEN_Backbone(nn.Module):
             graph_dict["edge_distance_vec"]
         )
 
-        # check rotation matrix:
+        # NEW: The rotation matrices for opposite edges need to be symmetric for the antisymmetrization to work correctly!!!
+        # This needs to be consistent with how reverse_edge_map is defined in the dataset!
+        # otherwise half the edges will point to the -z axis instead of the +z axis
+        edges_ij = data_dict["edge_index"][0] < data_dict["edge_index"][1]  
+
+        # ONLY WORKS FOR 1 MOLECULE TEST
+        for ind, w in enumerate(wigner):
+            if not edges_ij[ind]:  # if this is a backward edge, we need to flip the sign of the wigner matrix
+                wigner[ind] = -1*wigner[data_dict["reverse_edge_map"][ind]]
+                wigner_inv[ind] = -1*wigner_inv[data_dict["reverse_edge_map"][ind]]
+
+        # print("batch.reverse_edge_map: ", data_dict["reverse_edge_map"])
+        # print("forward_edge_mask: ", forward_edge_mask)
+        # exit()
+        
+        # Rotation test:
         # rotated_edges_to_z_axis = torch.bmm(edge_rot_mat, graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
+        # rotated_edges_to_z_axis = torch.bmm(wigner[:, 1:4, 1:4], graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
+        # print("Rotated edges to z-axis: ", rotated_edges_to_z_axis)
+        # exit()
 
         ###############################################################
         # Initialize node and edge embeddings
@@ -299,7 +337,7 @@ class eSEN_Backbone(nn.Module):
                 dtype=data_dict["pos"].dtype,
             )
             # set l = 0 components to the distance expansion
-            x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"])
+            # x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"]) # breaks antisymmetry
         else:
             x_message_edge = None
 
@@ -309,17 +347,26 @@ class eSEN_Backbone(nn.Module):
 
         edge_distance_embedding = self.distance_expansion(graph_dict["edge_distance"])
 
-        source_embedding = self.source_embedding(
+        source_embedding = self.element_embedding(
             data_dict["atomic_numbers"][graph_dict["edge_index"][0]][forward_edge_mask]
         )
 
-        target_embedding = self.target_embedding(
+        target_embedding = self.element_embedding(
             data_dict["atomic_numbers"][graph_dict["edge_index"][1]][forward_edge_mask]
         )
 
-        x_edge = torch.cat(
-            (edge_distance_embedding, source_embedding, target_embedding), dim=1
-        )
+        # x_edge = torch.cat(
+        #     (edge_distance_embedding, source_embedding, target_embedding), dim=1
+        # )
+
+        # REVISIT FOR EXPRESSIVENESS: (find a better way to incorporate the edge distance embedding)
+        x_edge = torch.cat((source_embedding, target_embedding), dim=1) + torch.cat((target_embedding, source_embedding), dim=1)      # symmetrized
+        larger_edge_distance_embedding = self.edge_expansion2(edge_distance_embedding)
+        x_edge = x_edge * larger_edge_distance_embedding
+        x_edge = self.edge_expansion(x_edge)        # expand scalars to the full edge channels dimensions
+
+        # zero_sum_check = torch.sum(torch.sum(x_edge[0] + x_edge[3], dim=0) + torch.sum(x_edge[1] + x_edge[4], dim=0) + torch.sum(x_edge[2] + x_edge[5], dim=0), dim=0)
+        # print("zero_sum_check in esen_new:", zero_sum_check)
 
         # do edge degree embeddings for both nodes and edges:
         x_message_node = self.edge_degree_embedding(
@@ -332,16 +379,20 @@ class eSEN_Backbone(nn.Module):
             node_or_edge='node'
         )
 
-        if self.include_edges:
-            x_message_edge = self.edge_degree_embedding(
-                x_message_node,
-                x_edge,
-                graph_dict["edge_distance"],
-                graph_dict["edge_index"],
-                graph_dict["forward_edge_mask"],
-                wigner_inv,
-                node_or_edge='edge'
-            )
+        # if self.include_edges: # this is not antisymmetrized (yet)
+        #     x_message_edge = self.edge_degree_embedding(
+        #         x_message_node,
+        #         x_edge,
+        #         graph_dict["edge_distance"],
+        #         graph_dict["edge_index"],
+        #         graph_dict["forward_edge_mask"],
+        #         wigner_inv,
+        #         node_or_edge='edge'
+        #     )
+
+        # zero_sum_check = torch.sum(torch.sum(x_message_edge[0] + x_message_edge[3], dim=0) + torch.sum(x_message_edge[1] + x_message_edge[4], dim=0) + torch.sum(x_message_edge[2] + x_message_edge[5], dim=0), dim=0)
+        # print("zero_sum_check before layers:", zero_sum_check)
+            
 
         ###############################################################
         # Update spherical node embeddings
@@ -373,6 +424,9 @@ class eSEN_Backbone(nn.Module):
                     wigner_inv,
                     node_or_edge='edge',
                 )
+        
+        # zero_sum_check = torch.sum(torch.sum(x_message_edge[0] + x_message_edge[3], dim=0) + torch.sum(x_message_edge[1] + x_message_edge[4], dim=0) + torch.sum(x_message_edge[2] + x_message_edge[5], dim=0), dim=0)
+        # print("zero_sum_check after layers:", zero_sum_check)
         
         # Final layer norm
         x_message_node = self.norm(x_message_node)
@@ -523,7 +577,7 @@ class Fock_Irreps_Head(nn.Module):
             # --> gate with learnable parameters by outputting more random scalars:
             input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
             combined_output_scalars = Irreps(f"{irreps_scalars.num_irreps + irreps_gated.num_irreps}x0e")
-            self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars)
+            self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars, biases=True)
             # self.lin_scalars_learnable_2 = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=irreps_gates)
             # this returns the irreps_gates
 
@@ -541,7 +595,7 @@ class Fock_Irreps_Head(nn.Module):
             # now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
             if reduce_node:
                 self.lin_out_node = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_nodereduced, biases=False) 
-                self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=False)
+                self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=True) # turn biases false later
             else:
                 self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=False) 
 
@@ -759,7 +813,7 @@ class Fock_Irreps_Head(nn.Module):
 
                     forward_edge_irreps = node_output[:, forward_edge_bounds[0]:forward_edge_bounds[1]]
 
-                    # add the parity operator (this implements a reflection)
+                    # add the parity operator 
                     outer_parity = ((-1) ** (l1+l2)).item()
                     start_l = 0
                     for l in these_irreps.ls:

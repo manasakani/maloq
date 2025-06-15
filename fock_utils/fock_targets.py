@@ -45,19 +45,19 @@ class Fock_Targets:
         if self.reflection_symmetry:
             self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]    # keep edges i, j where i < j
             # print("Note: Reducing symmetric edges!")
-
-            # index of self.neighbour_list which contains the edge (either forward or backward, depending on if edge_mask)
-            self.reverse_edge_map = []
-            for ind, (i, j) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1])):
-                if i < j:
-                    self.reverse_edge_map.append(ind)
-                else:
-                    reverse_index = next(k for k, (x, y) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1])) if x == j and y == i)
-                    self.reverse_edge_map.append(reverse_index)
         else:
             self.forward_edge_mask = [True]*len(self.neighbour_list[0])                 # keep all edges
             # print("Note: Not reducing symmetric edges!")
-            self.reverse_edge_map = torch.arange(len(self.neighbour_list[0]))
+            # self.reverse_edge_map = torch.arange(len(self.neighbour_list[0]))
+        
+        # index of self.neighbour_list which contains the edge (either forward or backward, depending on if edge_mask)
+        self.reverse_edge_map = []
+        for ind, (i, j) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1])):
+            if i < j:
+                self.reverse_edge_map.append(ind)
+            else:
+                reverse_index = next(k for k, (x, y) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1])) if x == j and y == i)
+                self.reverse_edge_map.append(reverse_index)
 
         self.NA = len(atoms)
         self.atomic_numbers = self.atoms.get_atomic_numbers()
@@ -311,7 +311,7 @@ class Fock_Targets:
         return H_prev
     
 
-    def reconstruct_matrix(self, node_blocks, edge_blocks):
+    def reconstruct_matrix(self, node_blocks, edge_blocks, symmetrize_matrix_if_needed=False):
         """
         Note: always returns a symmetric matrix (symmetrizes it if not already symmetric)
         """
@@ -346,7 +346,7 @@ class Fock_Targets:
                 edge_counter += 1
         
         # Check if the matrix is symmetric and symmetrize if not
-        if not torch.allclose(reconstructed_matrix, reconstructed_matrix.T, atol=1e-10):
+        if not torch.allclose(reconstructed_matrix, reconstructed_matrix.T, atol=1e-10) and symmetrize_matrix_if_needed:
             print("Matrix is not already symmetrix! Symmetrizing the matrix")
             reconstructed_matrix = (reconstructed_matrix + reconstructed_matrix.T) / 2
 

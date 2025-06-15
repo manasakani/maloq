@@ -91,17 +91,6 @@ class Edgewise(torch.nn.Module):
             extra_m0_output_channels=None,
         )
 
-        # self.so2_conv_3 = SO2_Convolution(
-        #     self.sphere_channels,
-        #     self.sphere_channels,
-        #     self.lmax,
-        #     self.mmax,
-        #     self.mappingReduced,
-        #     internal_weights=True,
-        #     edge_channels_list=None,
-        #     extra_m0_output_channels=None,
-        # )
-
         self.out_mask = self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
             self.lmax, self.mmax
         )
@@ -156,23 +145,33 @@ class Edgewise(torch.nn.Module):
         x_source = x[edge_index[0][edge_mask]]
         x_target = x[edge_index[1][edge_mask]]
 
-        # x_message = torch.cat((x_source, x_target), dim=2)                                             # reflected (operating on only half the edges)  
-        # x_message = torch.cat((x_source, x_target), dim=2) + torch.cat((x_target, x_source), dim=2)    # permutation invariant, edges would be the same in both directions
-        x_message = torch.cat((x_source, x_target), dim=2) - torch.cat((x_target, x_source), dim=2)      # antisymmetrized
-
+        # Create antisymmetrized messages
+        x_message = torch.cat((x_source, x_target), dim=2) - torch.cat((x_target, x_source), dim=2)     
+        
         # Rotate the irreps to align with the edge
         x_message = torch.bmm(wigner, x_message)
 
-        # assemble x_edge for all the edges, including the backwards ones (reflected):
-        # full_x_edge = torch.stack([x_edge[reverse_edge_map[i]] if edge_mask[i] else -1*x_edge[reverse_edge_map[i]] for i in range(len(edge_mask))])
-
         # SO2 convolution
-        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
+        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge) 
+
+        # Symmetrize the gating - COLLATE REVERSE EDGE MAP BEFORE USING THIS
+        if not (~edge_mask).any():
+            edges_ij = edge_index[0] < edge_index[1]
+            for ind, g in enumerate(x_0_gating):
+                if not edges_ij[ind]:
+                    reverse_ind = reverse_edge_map[ind]
+                    average_gating = (x_0_gating[ind] + x_0_gating[reverse_ind]) / 2
+                    x_0_gating[ind] = average_gating
+                    x_0_gating[reverse_ind] = average_gating
+                    
         x_message = self.act(x_0_gating, x_message)
         x_message = self.so2_conv_2(x_message, x_edge)
 
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
+        
+        # zero_sum_check = torch.sum(torch.sum(x_message[0] + x_message[3], dim=0) + torch.sum(x_message[1] + x_message[4], dim=0) + torch.sum(x_message[2] + x_message[5], dim=0), dim=0)
+        # print("zero_sum_check after rotation back (node_conv):", zero_sum_check)
 
         # Compute the sum of the incoming neighboring messages for each target node
         new_embedding = torch.zeros(
@@ -199,12 +198,11 @@ class Edgewise(torch.nn.Module):
         wigner,
         wigner_inv
     ):
-
+        
         x_source = x[edge_index[0][edge_mask]]
         x_target = x[edge_index[1][edge_mask]]
-        
-        # x_message = torch.cat((x_source, x_target), dim=2)                                             # reflected (operating on only half the edges) 
-        # x_message = torch.cat((x_source, x_target), dim=2) + torch.cat((x_target, x_source), dim=2)    # permutation invariant/symmetric, edges would be the same in both directions
+
+        # Create antisymmetrized messages
         x_message = torch.cat((x_source, x_target), dim=2) - torch.cat((x_target, x_source), dim=2)      # antisymmetrized
 
         # Rotate the irreps to align with the edge
@@ -212,11 +210,28 @@ class Edgewise(torch.nn.Module):
 
         # SO2 convolution
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
+        
+        # Symmetrize the gating - COLLATE REVERSE EDGE MAP
+        if not (~edge_mask).any():
+            edges_ij = edge_index[0] < edge_index[1]
+            for ind, g in enumerate(x_0_gating):
+                if not edges_ij[ind]:
+                    reverse_ind = reverse_edge_map[ind]
+                    average_gating = (x_0_gating[ind] + x_0_gating[reverse_ind]) / 2
+                    x_0_gating[ind] = average_gating
+                    x_0_gating[reverse_ind] = average_gating
+                    
+        # zero_sum_check = torch.sum(torch.sum(x_0_gating[0] - x_0_gating[3], dim=0) + torch.sum(x_0_gating[1] - x_0_gating[4], dim=0) + torch.sum(x_0_gating[2] - x_0_gating[5], dim=0), dim=0)
+        # print("x_0_gating zero_sum_check after rotation back (node_conv):", zero_sum_check)
+
         x_message = self.act(x_0_gating, x_message)
         x_message = self.so2_conv_2(x_message, x_edge)
 
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
+
+        # zero_sum_check = torch.sum(torch.sum(x_message[0] + x_message[3], dim=0) + torch.sum(x_message[1] + x_message[4], dim=0) + torch.sum(x_message[2] + x_message[5], dim=0), dim=0)
+        # print("zero_sum_check after rotation back (edge_conv):", zero_sum_check)
 
         # return new_embedding
         return x_message
@@ -240,9 +255,9 @@ class SpectralAtomwise(torch.nn.Module):
             nn.Linear(
                 self.sphere_channels,
                 self.lmax * self.hidden_channels,
-                bias=True,
+                bias=False, # for antisymmetry
             ),
-            nn.SiLU(),
+            nn.Tanh(), #SiLU(), # for antisymmetry
         )
 
         self.so3_linear_1 = SO3_Linear(
@@ -303,7 +318,7 @@ class eSEN_Block(torch.nn.Module):
         )
 
         self.norm_2 = get_normalization_layer(
-            norm_type, lmax=self.lmax, num_channels=sphere_channels
+            norm_type, lmax=self.lmax, num_channels=sphere_channels, centering=False # last one is for antisym
         )
 
         if mlp_type == "spectral":
@@ -373,7 +388,9 @@ class eSEN_Block(torch.nn.Module):
             x_message_edge = x_message_edge + x_res
 
             x_res = x_message_edge
+
             x_message_edge = self.norm_2(x_message_edge)
 
-            x_message_edge = self.atom_wise(x_message_edge)
+            # x_message_edge = self.atom_wise(x_message_edge) # need to antisymmterize this!
+
             return x_message_edge + x_res
