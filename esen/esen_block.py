@@ -101,6 +101,7 @@ class Edgewise(torch.nn.Module):
         x,
         x_message_edge,
         x_edge,
+        edge_distance_embedding,
         edge_index,
         edge_mask,
         reverse_edge_map,
@@ -112,6 +113,7 @@ class Edgewise(torch.nn.Module):
             return self.forward_node(x,
                                     x_message_edge,
                                     x_edge,
+                                    edge_distance_embedding,
                                     edge_index,
                                     edge_mask,
                                     reverse_edge_map,
@@ -123,6 +125,7 @@ class Edgewise(torch.nn.Module):
             return self.forward_edge(x,
                                     x_message_edge,
                                     x_edge,
+                                    edge_distance_embedding,
                                     edge_index,
                                     edge_mask,
                                     reverse_edge_map,
@@ -135,6 +138,7 @@ class Edgewise(torch.nn.Module):
         x,
         x_message_edge,
         x_edge,
+        edge_distance_embedding,
         edge_index,
         edge_mask,
         reverse_edge_map,
@@ -170,9 +174,6 @@ class Edgewise(torch.nn.Module):
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
         
-        # zero_sum_check = torch.sum(torch.sum(x_message[0] + x_message[3], dim=0) + torch.sum(x_message[1] + x_message[4], dim=0) + torch.sum(x_message[2] + x_message[5], dim=0), dim=0)
-        # print("zero_sum_check after rotation back (node_conv):", zero_sum_check)
-
         # Compute the sum of the incoming neighboring messages for each target node
         new_embedding = torch.zeros(
             (x.shape[0],) + x_message.shape[1:],
@@ -192,6 +193,7 @@ class Edgewise(torch.nn.Module):
         x,
         x_message_edge,
         x_edge,
+        edge_distance_embedding,
         edge_index,
         edge_mask,
         reverse_edge_map,
@@ -203,12 +205,10 @@ class Edgewise(torch.nn.Module):
         x_target = x[edge_index[1][edge_mask]]
 
         # Create antisymmetrized messages
-        x_message = torch.cat((x_source, x_target), dim=2) - torch.cat((x_target, x_source), dim=2)      # antisymmetrized
+        x_message = torch.cat((x_source, x_target), dim=2) - torch.cat((x_target, x_source), dim=2)  
 
         # Rotate the irreps to align with the edge
         x_message = torch.bmm(wigner, x_message)
-
-        # assert torch.allclose(torch.sum(x_message_edge), torch.tensor(0.0), atol=1e-12), f"edge conservation check failed!"
 
         # SO2 convolution
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
@@ -223,17 +223,15 @@ class Edgewise(torch.nn.Module):
                     x_0_gating[ind] = average_gating
                     x_0_gating[reverse_ind] = average_gating
                     
-        # zero_sum_check = torch.sum(torch.sum(x_0_gating[0] - x_0_gating[3], dim=0) + torch.sum(x_0_gating[1] - x_0_gating[4], dim=0) + torch.sum(x_0_gating[2] - x_0_gating[5], dim=0), dim=0)
-        # print("x_0_gating zero_sum_check after rotation back (node_conv):", zero_sum_check)
-
         x_message = self.act(x_0_gating, x_message)
         x_message = self.so2_conv_2(x_message, x_edge)
 
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
 
-        # zero_sum_check = torch.sum(torch.sum(x_message[0] + x_message[3], dim=0) + torch.sum(x_message[1] + x_message[4], dim=0) + torch.sum(x_message[2] + x_message[5], dim=0), dim=0)
-        # print("zero_sum_check after rotation back (edge_conv):", zero_sum_check)
+        # If not using the edge mask, check that the edges remain antisymmetrized
+        if not (~edge_mask).any():
+            assert torch.allclose(torch.sum(x_message_edge), torch.tensor(0.0), atol=1e-12), f"edge conservation check failed!"
 
         # return new_embedding
         return x_message
@@ -317,11 +315,11 @@ class eSEN_Block(torch.nn.Module):
         
         if node_or_edge == 'node':
             self.norm_1 = get_normalization_layer(
-                norm_type, lmax=self.lmax, num_channels=sphere_channels, centering=False # last one is for antisym
+                norm_type, lmax=self.lmax, num_channels=sphere_channels, centering=True # centering=True breaks antisym, but only used for nodes now
             )
 
             self.norm_2 = get_normalization_layer(
-                norm_type, lmax=self.lmax, num_channels=sphere_channels, centering=False # last one is for antisym
+                norm_type, lmax=self.lmax, num_channels=sphere_channels, centering=True # centering=True breaks antisym, but only used for nodes now
             )
         
             self.atom_wise = SpectralAtomwise(
@@ -336,6 +334,7 @@ class eSEN_Block(torch.nn.Module):
         x_message_node,
         x_message_edge,
         x_edge,
+        edge_distance_embedding,
         edge_distance,
         edge_index,
         edge_mask,
@@ -354,6 +353,7 @@ class eSEN_Block(torch.nn.Module):
                 x_message_node,
                 x_message_edge,
                 x_edge,
+                edge_distance_embedding,
                 edge_index,
                 edge_mask,
                 reverse_edge_map,
@@ -377,6 +377,7 @@ class eSEN_Block(torch.nn.Module):
                 x_message_node,
                 x_message_edge,
                 x_edge,
+                edge_distance_embedding,
                 edge_index,
                 edge_mask,
                 reverse_edge_map,
@@ -389,10 +390,9 @@ class eSEN_Block(torch.nn.Module):
 
             x_res = x_message_edge
 
-            assert torch.allclose(torch.sum(x_message_edge), torch.tensor(0.0), atol=1e-12), f"Edge conservation check failed!"
+            # assert torch.allclose(torch.sum(x_message_edge), torch.tensor(0.0), atol=1e-12), f"Edge conservation check failed!"
 
             # x_message_edge = self.norm_2(x_message_edge)
-
             # x_message_edge = self.atom_wise(x_message_edge) # only doing this for the nodes, it's not antisymmetric
 
             return x_message_edge + x_res

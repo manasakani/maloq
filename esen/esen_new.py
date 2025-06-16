@@ -149,17 +149,17 @@ class eSEN_Backbone(nn.Module):
         ]
 
         # Testing for antisym!
-        self.edge_expansion = nn.Linear(
-            2 * self.edge_channels,
-            self.num_distance_basis + 2 * self.edge_channels,
-            bias=False
-        )
+        # self.edge_expansion = nn.Linear(
+        #     2 * self.edge_channels,
+        #     self.num_distance_basis + 2 * self.edge_channels,
+        #     bias=False
+        # )
 
-        self.edge_expansion2 = nn.Linear(
-            self.edge_channels,
-            2*self.edge_channels,
-            bias=False
-        )
+        # self.edge_expansion2 = nn.Linear(
+        #     self.edge_channels,
+        #     2*self.edge_channels,
+        #     bias=False
+        # )
         
 
         self.edge_degree_embedding = EdgeDegreeEmbedding(
@@ -357,13 +357,14 @@ class eSEN_Backbone(nn.Module):
         # )
 
         # REVISIT FOR EXPRESSIVENESS: (find a better way to incorporate the edge distance embedding)
-        x_edge = torch.cat((source_embedding, target_embedding), dim=1) + torch.cat((target_embedding, source_embedding), dim=1)      # symmetrized
-        larger_edge_distance_embedding = self.edge_expansion2(edge_distance_embedding)
-        x_edge = x_edge * larger_edge_distance_embedding
-        x_edge = self.edge_expansion(x_edge)        # expand scalars to the full edge channels dimensions
+        # x_edge needs to be symmetric over edges:
+        x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) + torch.cat((target_embedding, edge_distance_embedding, source_embedding), dim=1)      # symmetrized
+        # larger_edge_distance_embedding = self.edge_expansion2(edge_distance_embedding)
+        # x_edge = x_edge * larger_edge_distance_embedding
+        # x_edge = self.edge_expansion(x_edge)        # expand scalars to the full edge channels dimensions
 
-        zero_sum_check = torch.sum(torch.sum(x_edge[0] - x_edge[3], dim=0) + torch.sum(x_edge[1] - x_edge[4], dim=0) + torch.sum(x_edge[2] - x_edge[5], dim=0), dim=0)
-        print("zero_sum_check in esen_new:", zero_sum_check)
+        # zero_sum_check = torch.sum(torch.sum(x_edge[0] - x_edge[3], dim=0) + torch.sum(x_edge[1] - x_edge[4], dim=0) + torch.sum(x_edge[2] - x_edge[5], dim=0), dim=0)
+        # print("zero_sum_check in esen_new:", zero_sum_check)
 
         # do edge degree embeddings for both nodes and edges:
         x_message_node = self.edge_degree_embedding(
@@ -399,6 +400,7 @@ class eSEN_Backbone(nn.Module):
                 x_message_node,
                 x_message_edge,
                 x_edge,
+                edge_distance_embedding,
                 graph_dict["edge_distance"],
                 graph_dict["edge_index"],
                 graph_dict["forward_edge_mask"],
@@ -413,6 +415,7 @@ class eSEN_Backbone(nn.Module):
                     x_message_node,
                     x_message_edge,
                     x_edge,
+                    edge_distance_embedding,
                     graph_dict["edge_distance"],
                     graph_dict["edge_index"],
                     graph_dict["forward_edge_mask"],
@@ -966,7 +969,6 @@ class Convolution_Force_Head(nn.Module):
 
             edgewise_forces = self.linear(final_edge_output.narrow(1, 0, 4))
             edgewise_forces = edgewise_forces.narrow(1, 1, 3)
-            # print("Edge symmetry check for final force components (should be zero)! :", torch.sum(edgewise_forces))
 
             # aggregate force components onto nodes:
             aggregated_forces = torch.zeros(
@@ -1002,12 +1004,8 @@ class Convolution_Force_Head(nn.Module):
 
         aggregated_forces = aggregated_forces.view(-1, 3).contiguous()
 
-        # turnthe above into an assert:
+        # check that the forces are conserved:
         assert torch.allclose(torch.sum(aggregated_forces), torch.tensor(0.0), atol=1e-12), f"Force conservation check failed!"
-                      
-        # if torch.sum(aggregated_forces) != 0:
-        #     print("Warning! Forces are not zero-sum!")
-        #     # assert torch.sum(aggregated_forces) == 0, "Forces are not zero-sum, this is not expected in a force head!"
 
         return {"forces": aggregated_forces}
 
