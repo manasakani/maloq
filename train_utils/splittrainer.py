@@ -61,6 +61,7 @@ class SplitTrainer():
             min_lr=1e-8):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
+        # torch.autograd.set_detect_anomaly(True)
 
         if not val_loader:
             print("Note: using training dataset for scheduler updates")
@@ -69,8 +70,8 @@ class SplitTrainer():
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank() 
             world_size = dist.get_world_size()
-            if train_backbone: # FIX TRUE -> FLSE HERE
-                self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, find_unused_parameters=True)
+            if train_backbone: 
+                self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, find_unused_parameters=False)
             if train_head:
                 self.head = nn.parallel.DistributedDataParallel(self.head, device_ids=[0], output_device=0, find_unused_parameters=False)
         else:
@@ -120,11 +121,14 @@ class SplitTrainer():
                 with autocast():
                     backbone_out = self.backbone(batch) 
 
-                    if include_edges:
+                    # zero_sum_check = torch.sum(backbone_out["edge_embeddings"])
+                    # print("Edge symmetry check! (if using all edges, this should be zero):", zero_sum_check)
+                    # assert torch.allclose(zero_sum_check, torch.tensor(0.0), atol=1e-12), f"Edge conservation check failed: {zero_sum_check.item()} is not close to zero!"
+                        
+                    if loss_target_string == 'fock_matrix':
                         node_output, edge_output = self.head(backbone_out, batch)
                         
                         this_node_target = getattr(batch, node_target_name)
-                        edge_mask = batch.edge_mask
                         this_edge_target = getattr(batch, edge_target_name)
 
                         # do everything in the uncoupled basis:
@@ -143,17 +147,16 @@ class SplitTrainer():
                         train_loss_node += loss_node
                         train_loss_edge += loss_edge
 
-                    else:
+                    elif loss_target_string == 'forces':
                         node_output = self.head(backbone_out, batch)
                         this_node_target = getattr(batch, node_target_name)
 
-                        if self.head_irreps == '1x1e':             
-                            this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
-                            loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps) 
-                        else:
-                            print("To be implemented!") 
+                        this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
+                        loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps) 
 
                         train_loss_node += loss
+                    else:
+                        raise ValueError(f"Unknown loss target string: {loss_target_string}")
 
                 forward_end = time.perf_counter()
 
@@ -167,19 +170,24 @@ class SplitTrainer():
                 scaler.update()
                 backward_end = time.perf_counter()
 
+                # for name, param in self.backbone.named_parameters():
+                #     if param.grad is None:
+                #         print(f"Parameter {name} is unused.")
+                # exit()
+        
                 # if rank == 0:
                 #     print("Time per forward pass: ", forward_end - forward_start)
                 #     print("Time for both forward and backward pass: ", backward_end - forward_start)
                 
             # -- Output dump -- 
-            if include_edges:
+            if loss_target_string == 'fock_matrix':
                 track_loss_node.append(train_loss_node.cpu().detach().numpy()/num_train_batches) 
                 track_loss_edge.append(train_loss_edge.cpu().detach().numpy()/num_train_batches)
             else:
                 track_loss_node.append(train_loss_node.cpu().detach().numpy()/num_train_batches) 
 
             if rank == 0:
-                if include_edges:
+                if loss_target_string == 'fock_matrix':
                     print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]} [edge] {track_loss_edge[-1]}", flush=True)    
                 else:
                     print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]}", flush=True)    
@@ -201,10 +209,10 @@ class SplitTrainer():
                         backbone_out = self.backbone(batch) 
                         
                         # -- Loss --
-                        if include_edges:
+                        if loss_target_string == 'fock_matrix':
                             node_output, edge_output = self.head(backbone_out, batch)
+                            
                             this_node_target = getattr(batch, node_target_name)
-                            # edge_mask = batch.edge_mask
                             this_edge_target = getattr(batch, edge_target_name)
 
                             # do everything in the uncoupled basis:
@@ -223,7 +231,7 @@ class SplitTrainer():
                             val_loss_node += loss_node
                             val_loss_edge += loss_edge
 
-                        else:
+                        elif loss_target_string == 'forces':
                             node_output = self.head(backbone_out, batch)
                             this_node_target = getattr(batch, node_target_name)
 
@@ -234,18 +242,20 @@ class SplitTrainer():
                                 print("To be implemented!")  
 
                             val_loss_node += loss
-                                
+                        else:
+                            raise ValueError(f"Unknown loss target string: {loss_target_string}")
+
                         val_loss += loss.item()
             
             # -- Output dump -- 
-            if include_edges:
+            if loss_target_string == 'fock_matrix':
                 track_loss_node_val.append(val_loss_node.cpu().detach().numpy()/num_val_batches) 
                 track_loss_edge_val.append(val_loss_edge.cpu().detach().numpy()/num_val_batches)
             else:
                 track_loss_node_val.append(val_loss_node.cpu().detach().numpy()/num_val_batches) 
 
             if rank == 0:
-                if include_edges:
+                if loss_target_string == 'fock_matrix':
                     print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)    
                 else:
                     print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]}", flush=True)    
@@ -279,7 +289,7 @@ class SplitTrainer():
             update_dict = {"node_loss": float(track_loss_node[-1]), 
                             "node_val_loss": float(track_loss_node_val[-1]),
                             "learning_rate": float(current_lr)}
-            if include_edges:
+            if loss_target_string == 'fock_matrix':
                 update_dict.update({"edge_loss": float(track_loss_edge[-1]), 
                                     "edge_val_loss": float(track_loss_edge_val[-1])})
             wandb.log(update_dict)
@@ -287,7 +297,7 @@ class SplitTrainer():
             # save state
             if rank == 0:
                 if (epoch + 1) % self.save_frequency == 0:
-                    if include_edges:
+                    if loss_target_string == 'fock_matrix':
                         self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
                         self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)     
                     else:
@@ -298,7 +308,7 @@ class SplitTrainer():
             min_lr_reached = torch.tensor(float(current_lr == min_lr), device='cuda')
             if min_lr_reached:
                 print("Reached minimum learning rate, finished training.")
-                if include_edges:
+                if loss_target_string == 'fock_matrix':
                     self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
                     self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)     
                 else:
@@ -364,7 +374,7 @@ class SplitTrainer():
 
         track_loss = []
         track_loss_node = []
-        if include_edges:
+        if loss_target_string == 'fock_matrix':
             track_loss_edge = []
         
         # -- Evaluate everything in the train_loader -- 
@@ -374,7 +384,7 @@ class SplitTrainer():
             node_outputs = {}
             node_labels = {}
             eigenvalue_maes = []
-            if include_edges:
+            if loss_target_string == 'fock_matrix':
                 edge_outputs = {}
                 edge_labels = {}
             
@@ -384,23 +394,35 @@ class SplitTrainer():
                 batch = batch.to(device)
                 backbone_out = self.backbone(batch) 
 
-                self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
-                self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
+                # zero_sum_check = torch.sum(torch.sum(backbone_out["edge_embeddings"][0] + backbone_out["edge_embeddings"][3], dim=0) + torch.sum(backbone_out["edge_embeddings"][1] + backbone_out["edge_embeddings"][4], dim=0) + torch.sum(backbone_out["edge_embeddings"][2] + backbone_out["edge_embeddings"][5], dim=0), dim=0)
+                # print("zero_sum_check after backbone out:", zero_sum_check)
+                
+                # self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
+                # self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
 
                 # pass all the batches through:
-                if include_edges:
+                if loss_target_string == 'fock_matrix':
 
+                    print("Running head...")
                     node_output, edge_output = self.head(backbone_out, batch)
+                    # zero_sum_check = torch.sum(torch.sum(edge_output[0] + edge_output[3], dim=0) + torch.sum(edge_output[1] + edge_output[4], dim=0) + torch.sum(edge_output[2] + edge_output[5], dim=0), dim=0)
+                    # print("zero_sum_check after head out:", zero_sum_check)
+                    # print("head out edge 0:", edge_output[0])
+                    # print("head out edge 3:", edge_output[3])
+                    # exit()
+
                     this_node_target = getattr(batch, node_target_name)
                     this_edge_target = getattr(batch, edge_target_name)
 
                     # Transform back to uncoupled basis:
+                    print("Transforming to uncoupled basis...")
                     uncoupled_node_outputs = basis_transform.get_H(node_output)
                     uncoupled_edge_outputs = basis_transform.get_H(edge_output)
                     uncoupled_node_labels = basis_transform.get_H(this_node_target)
                     uncoupled_edge_labels = basis_transform.get_H(this_edge_target)
 
                     # Unpad them into the hamiltonian orbital blocks
+                    print("Unpadding orbital blocks...")
                     node_orbital_blocks_output = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_outputs)
                     edge_orbital_blocks_output = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_outputs)
                     node_orbital_blocks_label = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_labels)
@@ -414,14 +436,18 @@ class SplitTrainer():
                     # plt.close()
 
                     # reassemble the matrix 
-                    output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output)
-                    label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label)
+                    print("Reconstructing matrices...")
+                    output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=False)
+                    label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=False)
 
                     # import matplotlib.pyplot as plt
                     # matrix_out = output_fock_matrix.cpu().numpy()
-                    # plt.imshow(np.log(np.abs(matrix_out)), vmin=-20.0, vmax=5.0)
+                    # plt.imshow(np.log(np.abs(matrix_out - np.transpose(matrix_out))), vmin=-20.0, vmax=5.0)
+                    # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
+                    # print("Matrix symmetry error: ", matrix_symmetry_error)
+
                     # plt.colorbar()
-                    # plt.savefig("predicted_fock.png", dpi=300, bbox_inches='tight')
+                    # plt.savefig("predicted_fock_tranpose.png", dpi=300, bbox_inches='tight')
                     # plt.close()
 
                     # matrix_out = label_fock_matrix.cpu().numpy()
@@ -429,6 +455,7 @@ class SplitTrainer():
                     # plt.colorbar()
                     # plt.savefig("labed_fock.png", dpi=300, bbox_inches='tight')
                     # plt.close()
+                    # exit()
 
                     # matrix_out = np.abs(np.abs(label_fock_matrix.cpu().numpy()) - np.abs(output_fock_matrix.cpu().numpy()))
                     # plt.imshow(matrix_out)
@@ -441,6 +468,7 @@ class SplitTrainer():
                     # self.plot_eigenvalues(output_fock_matrix.cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
 
                     # Compute the eigenvalues and eigenvalue error
+                    print("Computing eigenvalues...")
                     label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix.cpu().numpy())
                     pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix.cpu().numpy())
                     eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
@@ -474,8 +502,9 @@ class SplitTrainer():
                         print("To be implemented!") 
 
                 # -- Track -- 
-                if include_edges:
+                if loss_target_string == 'fock_matrix':
     
+                    print("Tracking loss for batch ", index, flush=True)
                     edge_multiplier = 2 if batch.fock_target_object[0].reflection_symmetry else 1
                     total_node_element_loss = 0
                     total_edge_element_loss = 0   
@@ -498,6 +527,7 @@ class SplitTrainer():
                     track_loss.append(loss.cpu().detach().numpy()) 
                 
                 # remove from gpu
+                print("Removing batch from GPU memory")
                 del batch, node_output
                 if include_edges:
                     del edge_output
@@ -505,7 +535,7 @@ class SplitTrainer():
 
 
         # -- Output dump -- 
-        if include_edges:
+        if loss_target_string == 'fock_matrix':
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                     for edge, node, total, eig in zip(track_loss_edge, track_loss_node, track_loss, eigenvalue_maes):
                         f.write(f"{edge:.10f}\t{node:.10f}\t{total:.10f}\t{eig:.10f}\n")

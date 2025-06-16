@@ -135,7 +135,7 @@ class eSEN_Backbone(nn.Module):
 
         # equivariant initial embedding
         self.element_embedding = nn.Embedding(self.max_num_elements, self.edge_channels)
-        # self.source_embedding = nn.Embedding(self.max_num_elements, self.edge_channels)
+        # self.source_embedding = nn.Embedding(self.max_num_elements, self.edge_channels) # for antisym
         # self.target_embedding = nn.Embedding(self.max_num_elements, self.edge_channels)
 
         nn.init.uniform_(self.element_embedding.weight.data, -0.001, 0.001)
@@ -200,7 +200,8 @@ class eSEN_Backbone(nn.Module):
                 self.norm_type,
                 self.act_type,
                 self.mlp_type,
-                self.include_edges
+                self.include_edges,
+                node_or_edge='node'
             )
             self.node_blocks.append(node_block)
 
@@ -217,7 +218,8 @@ class eSEN_Backbone(nn.Module):
                     self.norm_type,
                     self.act_type,
                     self.mlp_type,
-                    self.include_edges
+                    self.include_edges,
+                    node_or_edge='edge'
                 )
                 self.edge_blocks.append(edge_block)
 
@@ -302,11 +304,10 @@ class eSEN_Backbone(nn.Module):
                 wigner[ind] = -1*wigner[data_dict["reverse_edge_map"][ind]]
                 wigner_inv[ind] = -1*wigner_inv[data_dict["reverse_edge_map"][ind]]
         
-        # Rotation test:
+        # --> Rotation test:
         # rotated_edges_to_z_axis = torch.bmm(edge_rot_mat, graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
         # rotated_edges_to_z_axis = torch.bmm(wigner[:, 1:4, 1:4], graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
-        # print("Rotated edges to z-axis: ", rotated_edges_to_z_axis)
-        # exit()
+        # print("Rotated edges to z-axis: ", rotated_edges_to_z_axis) # only middle components should be nonzero (equal to distance)
 
         ###############################################################
         # Initialize node and edge embeddings
@@ -361,8 +362,8 @@ class eSEN_Backbone(nn.Module):
         x_edge = x_edge * larger_edge_distance_embedding
         x_edge = self.edge_expansion(x_edge)        # expand scalars to the full edge channels dimensions
 
-        # zero_sum_check = torch.sum(torch.sum(x_edge[0] + x_edge[3], dim=0) + torch.sum(x_edge[1] + x_edge[4], dim=0) + torch.sum(x_edge[2] + x_edge[5], dim=0), dim=0)
-        # print("zero_sum_check in esen_new:", zero_sum_check)
+        zero_sum_check = torch.sum(torch.sum(x_edge[0] - x_edge[3], dim=0) + torch.sum(x_edge[1] - x_edge[4], dim=0) + torch.sum(x_edge[2] - x_edge[5], dim=0), dim=0)
+        print("zero_sum_check in esen_new:", zero_sum_check)
 
         # do edge degree embeddings for both nodes and edges:
         x_message_node = self.edge_degree_embedding(
@@ -426,19 +427,6 @@ class eSEN_Backbone(nn.Module):
 
         if self.include_edges:
             x_message_edge = self.norm(x_message_edge)
-
-        # if output_dir:
-        #     file_path = os.path.join(output_dir, f'molecule_{batch_index}.txt')
-        #     with open(file_path, 'w') as f:
-        #         # Write the shape and elements of x_message_node
-        #         f.write("x_message_node\n")
-        #         f.write(f"{x_message_node.shape}\n")
-        #         f.write(' '.join(map(str, x_message_node.flatten().tolist())) + "\n")
-                
-        #         # Write the shape and elements of x_message_edge
-        #         f.write("x_message_edge\n")
-        #         f.write(f"{x_message_edge.shape}\n")
-        #         f.write(' '.join(map(str, x_message_edge.flatten().tolist())) + "\n")
 
         # Return the output
         out = {
@@ -588,7 +576,7 @@ class Fock_Irreps_Head(nn.Module):
             # now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
             if reduce_node:
                 self.lin_out_node = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_nodereduced, biases=False)
-                self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=True) #, biases=False)
+                self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=False) # biases were true for some runs
             else:
                 self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=False) 
 
@@ -936,47 +924,92 @@ class Convolution_Force_Head(nn.Module):
     def __init__(self, backbone):
         super().__init__()
         
-        self.output_node_block = eSEN_Block(
-                                            backbone.sphere_channels,
-                                            backbone.hidden_channels,
-                                            backbone.lmax,
-                                            backbone.mmax,
-                                            backbone.mappingReduced,
-                                            backbone.SO3_grid,
-                                            backbone.edge_channels_list,
-                                            backbone.cutoff,
-                                            backbone.norm_type,
-                                            backbone.act_type,
-                                            backbone.mlp_type,
-                                        )
+        # self.output_node_block = eSEN_Block(
+        #                                     backbone.sphere_channels,
+        #                                     backbone.hidden_channels,
+        #                                     backbone.lmax,
+        #                                     backbone.mmax,
+        #                                     backbone.mappingReduced,
+        #                                     backbone.SO3_grid,
+        #                                     backbone.edge_channels_list,
+        #                                     backbone.cutoff,
+        #                                     backbone.norm_type,
+        #                                     backbone.act_type,
+        #                                     backbone.mlp_type,
+        #                                 )
+        self.edgewise_forward = True
         self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
 
     def forward(self, emb: dict[str, torch.Tensor], batch):
 
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
         edge_distance = batch.edge_attr
+        edge_mask = batch.edge_mask
+        reverse_edge_map = batch.reverse_edge_map
 
-        aggregated_node_output = self.output_node_block(
-                emb["node_embeddings"],
-                emb["edge_embeddings"],
-                emb["x_edge"],
-                edge_distance,
-                edge_index,
-                emb["wigner"],
-                emb["wigner_inv"],
-                node_or_edge='node',
+        # edgewise forward (convolution + edgewise linear + aggregation):
+        # -------------------------------------------------------
+        if self.edgewise_forward:
+            # final_edge_output = self.output_node_block(
+            #         emb["node_embeddings"],
+            #         emb["edge_embeddings"],
+            #         emb["x_edge"],
+            #         edge_distance,
+            #         edge_index,
+            #         edge_mask,
+            #         reverse_edge_map,
+            #         emb["wigner"],
+            #         emb["wigner_inv"],
+            #         node_or_edge='edge', 
+            #     )
+            final_edge_output = emb["edge_embeddings"]
+
+            edgewise_forces = self.linear(final_edge_output.narrow(1, 0, 4))
+            edgewise_forces = edgewise_forces.narrow(1, 1, 3)
+            # print("Edge symmetry check for final force components (should be zero)! :", torch.sum(edgewise_forces))
+
+            # aggregate force components onto nodes:
+            aggregated_forces = torch.zeros(
+                (emb["node_embeddings"].shape[0],) + edgewise_forces.shape[1:],
+                dtype=edgewise_forces.dtype,
+                device=edgewise_forces.device,
             )
-        
-        # plt.imshow(aggregated_node_output[1].cpu().detach().numpy(), cmap='RdBu', vmin=-1.0, vmax=1.0)
-        # plt.savefig("internal_emb.png", dpi=300, bbox_inches='tight')
-        # plt.close()
-        # exit()
 
-        forces = self.linear(aggregated_node_output.narrow(1, 0, 4))
-        forces = forces.narrow(1, 1, 3)
-        forces = forces.view(-1, 3).contiguous()
-        return {"forces": forces}
+            aggregated_forces.index_add_(0, edge_index[1][edge_mask], edgewise_forces)
+            if (~edge_mask).any():                                              # if we are ignoring half the edges, need to now add the other half
+                    aggregated_forces.index_add_(0, edge_index[0][edge_mask], -1*edgewise_forces)   
 
+
+        # nodewise forward (convolution + aggregation):
+        # -------------------------------------------------------
+        else:
+
+            aggregated_forces = self.output_node_block(
+                    emb["node_embeddings"],
+                    emb["edge_embeddings"],
+                    emb["x_edge"],
+                    edge_distance,
+                    edge_index,
+                    edge_mask,
+                    reverse_edge_map,
+                    emb["wigner"],
+                    emb["wigner_inv"],
+                    node_or_edge='node', 
+                )
+
+            aggregated_forces = self.linear(aggregated_forces.narrow(1, 0, 4))
+            aggregated_forces = aggregated_forces.narrow(1, 1, 3)
+
+        aggregated_forces = aggregated_forces.view(-1, 3).contiguous()
+
+        # turnthe above into an assert:
+        assert torch.allclose(torch.sum(aggregated_forces), torch.tensor(0.0), atol=1e-12), f"Force conservation check failed!"
+                      
+        # if torch.sum(aggregated_forces) != 0:
+        #     print("Warning! Forces are not zero-sum!")
+        #     # assert torch.sum(aggregated_forces) == 0, "Forces are not zero-sum, this is not expected in a force head!"
+
+        return {"forces": aggregated_forces}
 
 
 @registry.register_model("gated_force_head")

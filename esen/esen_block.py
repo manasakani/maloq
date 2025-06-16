@@ -208,6 +208,8 @@ class Edgewise(torch.nn.Module):
         # Rotate the irreps to align with the edge
         x_message = torch.bmm(wigner, x_message)
 
+        # assert torch.allclose(torch.sum(x_message_edge), torch.tensor(0.0), atol=1e-12), f"edge conservation check failed!"
+
         # SO2 convolution
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
         
@@ -291,18 +293,14 @@ class eSEN_Block(torch.nn.Module):
         norm_type: str,
         act_type: str,
         mlp_type: str,
-        include_edges=True
+        include_edges=True,
+        node_or_edge: str = 'node',  # 'node' or 'edge'
     ) -> None:
         super().__init__()
         self.sphere_channels = sphere_channels
         self.hidden_channels = hidden_channels
         self.lmax = lmax
         self.mmax = mmax
-
-        self.norm_1 = get_normalization_layer(
-            norm_type, lmax=self.lmax, num_channels=sphere_channels
-        )
-        
 
         self.edge_wise = Edgewise(
             sphere_channels=sphere_channels,
@@ -316,20 +314,22 @@ class eSEN_Block(torch.nn.Module):
             act_type=act_type,
             include_edges=include_edges
         )
+        
+        if node_or_edge == 'node':
+            self.norm_1 = get_normalization_layer(
+                norm_type, lmax=self.lmax, num_channels=sphere_channels, centering=False # last one is for antisym
+            )
 
-        self.norm_2 = get_normalization_layer(
-            norm_type, lmax=self.lmax, num_channels=sphere_channels, centering=False # last one is for antisym
-        )
-
-        if mlp_type == "spectral":
+            self.norm_2 = get_normalization_layer(
+                norm_type, lmax=self.lmax, num_channels=sphere_channels, centering=False # last one is for antisym
+            )
+        
             self.atom_wise = SpectralAtomwise(
                 sphere_channels=sphere_channels,
                 hidden_channels=hidden_channels,
                 lmax=lmax,
                 mmax=mmax,
             )
-        else:
-            raise ValueError(f"Unknown MLP type {mlp_type}")
 
     def forward(
         self,
@@ -371,7 +371,7 @@ class eSEN_Block(torch.nn.Module):
             
         else:
             x_res = x_message_edge
-            x_message_edge = self.norm_1(x_message_edge)
+            # x_message_edge = self.norm_1(x_message_edge)
 
             x_message_edge = self.edge_wise(
                 x_message_node,
@@ -389,8 +389,10 @@ class eSEN_Block(torch.nn.Module):
 
             x_res = x_message_edge
 
-            x_message_edge = self.norm_2(x_message_edge)
+            assert torch.allclose(torch.sum(x_message_edge), torch.tensor(0.0), atol=1e-12), f"Edge conservation check failed!"
 
-            # x_message_edge = self.atom_wise(x_message_edge) # need to antisymmterize this!
+            # x_message_edge = self.norm_2(x_message_edge)
+
+            # x_message_edge = self.atom_wise(x_message_edge) # only doing this for the nodes, it's not antisymmetric
 
             return x_message_edge + x_res
