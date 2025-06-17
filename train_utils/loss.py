@@ -141,7 +141,7 @@ def adjust_learning_rate(optimizer, epoch, warmup_epochs, initial_lr, final_lr):
 # ----------------------
 
 class MonotonicDecreaseScheduler:
-    def __init__(self, optimizer, factor=0.99, min_lr=1e-8, lag_epochs=10):
+    def __init__(self, optimizer, factor=0.99, min_lr=1e-9, lag_epochs=10):
         self.optimizer = optimizer
         self.factor = factor
         self.inverse_factor = 1.0/factor

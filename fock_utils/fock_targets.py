@@ -11,7 +11,7 @@ class Fock_Targets:
     Input target shape to standardize across molecules with different elements
     """
 
-    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix=None, target_len=0, dtype=torch.float32, reflection_symmetry=True):
+    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix=None, target_len=0, dtype=torch.float32, reflection_symmetry=True, compute_fock_eigenvalues=True):
         """
         atoms - ASE atoms object of the atomic structure
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]] 
@@ -27,13 +27,8 @@ class Fock_Targets:
                 
         self.atoms = atoms                          
         self.orbital_basis = orbital_basis          
-        self.fock_matrix = torch.from_numpy(fock_matrix).to(self.device)
         self.dtype = dtype
         self.reflection_symmetry = reflection_symmetry
-
-        eigenvalues, eigenvectors = torch.linalg.eigh(self.fock_matrix)   # compute eigenvalues and eigenvectors of the fock matrix
-        self.eigenvalues = eigenvalues.to(self.device)                    # store eigenvalues
-        self.eigenvectors = eigenvectors.to(self.device)                  # store eigenvectors
 
         # Connectivity list:
         num_atoms = len(atoms)
@@ -78,15 +73,23 @@ class Fock_Targets:
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         # print(f'Simplified irreps: {self.simplified_out_irreps}')
 
+        self.edge_dist = None
+        self.make_edge_vectors()  # make edge vectors (distances and vector components)
+
         # If the fock targets should be computed on-the-fly rather than loaded from the db:
+        self.node_labels = None
+        self.edge_labels = None    
         if fock_matrix is not None:
 
-            self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)])       # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
-            self.target_len = target_len if target_len != 0 else None                  
+            self.fock_matrix = torch.from_numpy(fock_matrix).to(self.device)
 
-            self.node_labels = None
-            self.edge_labels = None
-            self.edge_dist = None
+            if compute_fock_eigenvalues:
+                eigenvalues, eigenvectors = torch.linalg.eigh(self.fock_matrix)   # compute eigenvalues and eigenvectors of the fock matrix
+                self.eigenvalues = eigenvalues.to(self.device)                    # store eigenvalues
+                self.eigenvectors = eigenvectors.to(self.device)                  # store eigenvectors
+
+            self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)]) # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
+            self.target_len = target_len if target_len != 0 else None                  
 
             # Decompose the Fock matrix into orbital blocks and insert them into the targets
             self.make_targets()
@@ -161,7 +164,8 @@ class Fock_Targets:
         self.edge_labels = self.basis_transformation.get_net_out(edge_labels)
         # ---------------------------------------------------------------------------------------------
 
-        # Make edge vectors
+    def make_edge_vectors(self):
+
         # ---------------------------------------------------------------------------------------------
         indices0 = self.neighbour_list[0]  # First atom indices
         indices1 = self.neighbour_list[1]  # Second atom indices

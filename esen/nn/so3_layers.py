@@ -44,8 +44,8 @@ class SO3_Linear(torch.nn.Module):
         out = torch.einsum(
             "bmi, moi -> bmo", input_embedding, weight
         )  # [N, (L_max + 1) ** 2, C_out]
-        bias = self.bias.view(1, 1, self.out_features)            # comment out for antisym
-        out[:, 0:1, :] = out.narrow(1, 0, 1) + bias               # comment out for antisym
+        bias = self.bias.view(1, 1, self.out_features)            # Note: comment out for antisymmetic node updates?
+        out[:, 0:1, :] = out.narrow(1, 0, 1) + bias               # Note: comment out for antisymmetic node updates?
         return out
 
     def __repr__(self) -> str:
