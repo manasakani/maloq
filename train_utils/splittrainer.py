@@ -40,6 +40,7 @@ class SplitTrainer():
                    project='fockmatrices',
                    entity='manasakani')
         
+    # -- Train model --
     @disable_amp
     def train(self, 
             num_epochs, 
@@ -124,12 +125,16 @@ class SplitTrainer():
                     # zero_sum_check = torch.sum(backbone_out["edge_embeddings"])
                     # print("Edge symmetry check! (if using all edges, this should be zero):", zero_sum_check)
                     # assert torch.allclose(zero_sum_check, torch.tensor(0.0), atol=1e-12), f"Edge conservation check failed: {zero_sum_check.item()} is not close to zero!"
-                        
+
                     if loss_target_string == 'fock_matrix':
                         node_output, edge_output = self.head(backbone_out, batch)
                         
                         this_node_target = getattr(batch, node_target_name)
                         this_edge_target = getattr(batch, edge_target_name)
+
+                        print("edge diff 0: ", torch.round(edge_output[0] - this_edge_target[0], decimals=7))
+                        print("edge diff 3: ", torch.round(edge_output[3] - this_edge_target[3], decimals=7))
+                        # exit()
 
                         # do everything in the uncoupled basis:
                         if compute_uncoupled_loss:
@@ -161,7 +166,7 @@ class SplitTrainer():
                 forward_end = time.perf_counter()
 
                 # if rank == 0:
-                #     peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024)  # in MB
+                #     peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024) 
                 #     print(f"Peak memory allocation: {peak_mem:.2f} MB")
 
                 # -- Backwards -- 
@@ -169,12 +174,6 @@ class SplitTrainer():
                 scaler.step(optimizer)
                 scaler.update()
                 backward_end = time.perf_counter()
-
-                # for name, param in self.backbone.named_parameters():
-                #     if param.grad is None:
-                #         print(f"Parameter {name} is unused.")
-                # exit()
-        
                 # if rank == 0:
                 #     print("Time per forward pass: ", forward_end - forward_start)
                 #     print("Time for both forward and backward pass: ", backward_end - forward_start)
@@ -215,7 +214,7 @@ class SplitTrainer():
                             this_node_target = getattr(batch, node_target_name)
                             this_edge_target = getattr(batch, edge_target_name)
 
-                            # do everything in the uncoupled basis:
+                            # Fock matrix loss
                             if compute_uncoupled_loss:
                                 node_output = basis_transform.get_H(node_output)
                                 edge_output = basis_transform.get_H(edge_output)
@@ -287,8 +286,8 @@ class SplitTrainer():
 
             # log to wandb:
             update_dict = {"node_loss": float(track_loss_node[-1]), 
-                            "node_val_loss": float(track_loss_node_val[-1]),
-                            "learning_rate": float(current_lr)}
+                           "node_val_loss": float(track_loss_node_val[-1]),
+                           "learning_rate": float(current_lr)}
             if loss_target_string == 'fock_matrix':
                 update_dict.update({"edge_loss": float(track_loss_edge[-1]), 
                                     "edge_val_loss": float(track_loss_edge_val[-1])})
@@ -343,6 +342,7 @@ class SplitTrainer():
                 param_group['lr'] = lr
             print(f"Warmup epoch {epoch+1}: setting learning rate to {lr}")
     
+    # -- Evaluate model --
     def evaluate(self, 
                 loss_fxn, 
                 device, 
@@ -397,8 +397,8 @@ class SplitTrainer():
                 # zero_sum_check = torch.sum(torch.sum(backbone_out["edge_embeddings"][0] + backbone_out["edge_embeddings"][3], dim=0) + torch.sum(backbone_out["edge_embeddings"][1] + backbone_out["edge_embeddings"][4], dim=0) + torch.sum(backbone_out["edge_embeddings"][2] + backbone_out["edge_embeddings"][5], dim=0), dim=0)
                 # print("zero_sum_check after backbone out:", zero_sum_check)
                 
-                # self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
-                # self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
+                self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
+                self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
 
                 # pass all the batches through:
                 if loss_target_string == 'fock_matrix':
@@ -442,7 +442,9 @@ class SplitTrainer():
 
                     # import matplotlib.pyplot as plt
                     # matrix_out = output_fock_matrix.cpu().numpy()
-                    # plt.imshow(np.log(np.abs(matrix_out - np.transpose(matrix_out))), vmin=-20.0, vmax=5.0)
+                    # # set all elemnts of matrix_out that are less than 1e-10 to 0
+                    # matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                    # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
                     # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
                     # print("Matrix symmetry error: ", matrix_symmetry_error)
 
@@ -451,7 +453,7 @@ class SplitTrainer():
                     # plt.close()
 
                     # matrix_out = label_fock_matrix.cpu().numpy()
-                    # plt.imshow(np.log(np.abs(matrix_out)), vmin=-20.0, vmax=5.0)
+                    # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
                     # plt.colorbar()
                     # plt.savefig("labed_fock.png", dpi=300, bbox_inches='tight')
                     # plt.close()
@@ -463,9 +465,9 @@ class SplitTrainer():
                     # plt.savefig("diff_fock.png", dpi=300, bbox_inches='tight')
                     # plt.close()
 
-                    # plt.figure(figsize=(4, 3))
-                    # self.plot_eigenvalues(label_fock_matrix.cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
-                    # self.plot_eigenvalues(output_fock_matrix.cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
+                    plt.figure(figsize=(4, 3))
+                    self.plot_eigenvalues(label_fock_matrix.cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
+                    self.plot_eigenvalues(output_fock_matrix.cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
 
                     # Compute the eigenvalues and eigenvalue error
                     print("Computing eigenvalues...")
@@ -477,14 +479,13 @@ class SplitTrainer():
 
                     # losstype = nn.L1Loss(reduction='mean') 
                     # print(losstype(label_eigenvalues, pred_eigenvalues))
-                    # plt.xlabel('Eigenvalue #')
-                    # plt.ylabel('Eigenvalue ($E_h$)')
-                    # # plt.yscale('log')
-                    # plt.legend()
-                    # plt.grid(True)
-                    # plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
-                    # plt.close()
-                    # exit()
+                    plt.xlabel('Eigenvalue #')
+                    plt.ylabel('Eigenvalue ($E_h$)')
+                    # plt.yscale('log')
+                    plt.legend()
+                    plt.grid(True)
+                    plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
+                    plt.close()
 
                     node_outputs.update(node_orbital_blocks_output)
                     edge_outputs.update(edge_orbital_blocks_output)
@@ -563,10 +564,14 @@ class SplitTrainer():
     def visualize_embeddings(self, embs, output_folder, keyword, plot_log=True):
 
         for i, emb in enumerate(embs):
+
+            print(emb[0:4, :])
+
             if not plot_log:
-                plt.imshow(emb.cpu().detach().numpy(), cmap='RdBu', vmin=-1.0, vmax=1.0)
+                plt.imshow(emb.cpu().detach().numpy(), cmap='RdBu', vmin=-0.5, vmax=0.5)
             else:
-                plt.imshow(np.log(np.abs(emb.cpu().detach().numpy())), cmap='RdBu_r')
+                # plt.imshow(np.log(np.abs(emb.cpu().detach().numpy())), cmap='RdBu_r', vmin=-5.0, vmax=1.0)
+                plt.imshow(np.log(np.abs(emb.cpu().detach().numpy())), cmap='viridis', vmin=-5.0, vmax=1.0)
                 plt.colorbar()
             plt.savefig(output_folder+"/" + keyword + "_emb_"+str(i)+".png", dpi=300, bbox_inches='tight')
             plt.close()

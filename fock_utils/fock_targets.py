@@ -30,12 +30,18 @@ class Fock_Targets:
         self.dtype = dtype
         self.reflection_symmetry = reflection_symmetry
 
-        # Connectivity list:
+        # Atoms and cnnectivity list:
         num_atoms = len(atoms)
         neighbours = NeighborList(np.ones(num_atoms)*cutoff, skin=0, self_interaction=False, bothways=True)
         neighbours.update(self.atoms)
         neighbour_list = neighbours.get_connectivity_matrix(sparse=True).tocoo()
         self.neighbour_list = np.vstack([neighbour_list.row, neighbour_list.col])
+
+        self.NA = len(atoms)
+        self.atomic_numbers = self.atoms.get_atomic_numbers()
+        self.orbitals_per_atom = ([ sum([(2*l+1)    
+                                         for l in orbital_basis[atom_number]]) 
+                                         for atom_number in self.atomic_numbers ])
 
         if self.reflection_symmetry:
             self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]    # keep edges i, j where i < j
@@ -53,13 +59,6 @@ class Fock_Targets:
             else:
                 reverse_index = next(k for k, (x, y) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1])) if x == j and y == i)
                 self.reverse_edge_map.append(reverse_index)
-
-        self.NA = len(atoms)
-        self.atomic_numbers = self.atoms.get_atomic_numbers()
-
-        self.orbitals_per_atom = ([ sum([(2*l+1)    
-                                         for l in orbital_basis[atom_number]]) 
-                                         for atom_number in self.atomic_numbers ])
     
         # Analyze structure of orbital interactions
         targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions

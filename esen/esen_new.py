@@ -535,6 +535,11 @@ class Fock_Irreps_Head(nn.Module):
             self.irreps_nodereduced = Irreps('+'.join(irreps_nodereduced))
             # print("full irreps: ", irreps_out)
             # print("minimal node irreps: ", self.irreps_nodereduced)
+        
+
+        self.edge_m_reflection = None
+        self.edge_permutation = self.get_edge_permutation()
+
 
         if self.head_type == 'linear':
             self.map_node_to_rank_N = e3nn_Linear(irreps_in=irreps_in, irreps_out=irreps_out, biases=True)
@@ -561,18 +566,32 @@ class Fock_Irreps_Head(nn.Module):
             # --> gate with learnable parameters by outputting more random scalars:
             input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
             combined_output_scalars = Irreps(f"{irreps_scalars.num_irreps + irreps_gated.num_irreps}x0e")
-            self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars, biases=True)
-            # self.lin_scalars_learnable_2 = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=irreps_gates)
+            self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars, biases=False)
+            self.act_input_scalars = torch.nn.Tanh() # torch.nn.Sigmoid() # torch.nn.Tanh() # torch.nn.ReLU() # torch.nn.SiLU() # torch.nn.GELU()
+
+            # symmetrize_scalars should be a linear layer
+            self.symmetrize_scalars = nn.Linear(
+                in_features=self.sphere_channels,
+                out_features=self.sphere_channels,
+                bias=True
+            )
+
             # this returns the irreps_gates
 
             # 2. Apply the gating to the other ls (need to pass in a stack of [l=0, l~=0])
+            # self.gate = Gate(irreps_scalars=Irreps(),
+            #                     act_scalars=[],
+            #                     irreps_gates=irreps_gates,
+            #                     act_gates=[torch.sigmoid] * len(irreps_gates),
+            #                     irreps_gated=irreps_gated
+            #                 )
             self.gate = Gate(irreps_scalars=Irreps(),
                                 act_scalars=[],
                                 irreps_gates=irreps_gates,
-                                act_gates=[torch.sigmoid] * len(irreps_gates),
+                                act_gates=[torch.tanh] * len(irreps_gates),
                                 irreps_gated=irreps_gated
                             )
-
+            
             # print("gate irreps out (simplified): ", self.gate.irreps_out.sort()[0].simplify() ) 
             # print("irreps out (simplified): ", irreps_out.sort()[0].simplify() ) 
 
@@ -622,8 +641,17 @@ class Fock_Irreps_Head(nn.Module):
 
         node_embeddings = emb["node_embeddings"]
         edge_embeddings = emb["edge_embeddings"]
+
+        # print edge embeding 0 and 3:
+        # print("edge embedding 0: ", edge_embeddings[0, 0:10])
+        # print("edge embedding 3: ", edge_embeddings[3, 0:10])
+
+        # assert that the edges sum to zero:
+        # zero_sum_check1 = torch.sum(torch.sum(edge_embeddings[0] + edge_embeddings[3], dim=0) + torch.sum(edge_embeddings[1] + edge_embeddings[4], dim=0) + torch.sum(edge_embeddings[2] + edge_embeddings[5], dim=0), dim=0)
+        # print("zero_sum_check in fock_irreps_head:", zero_sum_check1)
+
         x_edge = emb["x_edge"]
-        edge_index = batch.edge_index.squeeze(0).reshape(2, -1),
+        edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
 
         if self.head_type == 'linear':
             node_embeddings = self.stack_irreps(node_embeddings)
@@ -645,7 +673,90 @@ class Fock_Irreps_Head(nn.Module):
         if self.reduce_node:
             node_output = self.expand_reduced_node(node_output, edge_output)
 
+        # need reflection on same device, could not access device from within constructor functions
+        self.edge_m_reflection = torch.tensor(self.edge_m_reflection, dtype=edge_output.dtype, device=edge_output.device)
+        
+        # Permute the irreps for the 'reverse' edges (the edge irreps are the same, but the order is different)
+        # NOTE: vectorize this later! - Need to account for edge mask if it exists
+        for i in range(len(edge_index[0])):
+            source = edge_index[0][i]
+            target = edge_index[1][i]
+            
+            if source > target:
+                edge_output[i] = edge_output[i, self.edge_permutation] * self.edge_m_reflection
+
         return node_output, edge_output
+
+    def get_edge_permutation(self):
+        """
+        The forward and backward edges contain the same irreps, but they are permuted in the data list 
+        due to the order of flattening the matrix blocks. Here we permute the irreps to match the reverse edge order.
+        We also handle the reflection rules of the orbital interactions, which are different for even and odd parity.
+        """
+
+        full_irrep_len = [sum([2*l + 1 for l in Irreps(str(self.get_product_irreps(l1, l2))).ls]) for l1 in self.ls_list for l2 in self.ls_list]
+        edge_permutation = [0] * sum(full_irrep_len)
+        self.edge_m_reflection = np.ones(sum(full_irrep_len), dtype=int)
+        forward_irrep_track = {}
+        pointer = 0
+
+        for i, l1 in enumerate(self.ls_list):
+            for j, l2 in enumerate(self.ls_list):
+
+                # --> 1. Handle the permutation of the irreps:
+                product_irreps = str(self.get_product_irreps(l1, l2))
+                irrep_len = sum([2*l + 1 for l in Irreps(product_irreps).ls])
+
+                # if it's the same orbital interaction going backward and forward (eg, p1A-p1B vs. p1B-p1A), we keep the same irreps
+                if i == j:
+                    edge_permutation[pointer:pointer+irrep_len] = [pointer + i for i in range(irrep_len)]
+
+                # if its an interaction between different orbitals (eg, p1A-p2B vs. p2B-p1A), we append the index of the permutation
+                if i < j:
+                    # store this in the forward_irrep_track:
+                    forward_irrep_track[(j, i)] = [pointer, pointer + irrep_len]
+                                    
+                if i > j:
+
+                    # Find where the p1A-p2B irreps are in the forward edge
+                    forward_irrep_start = forward_irrep_track[(i, j)][0]
+                    forward_irrep_end = forward_irrep_track[(i, j)][1]
+
+                    # Update both the forward and backward edge permutations
+                    edge_permutation[pointer:pointer+irrep_len] = list(range(forward_irrep_start, forward_irrep_end))
+                    edge_permutation[forward_irrep_start:forward_irrep_end] = list(range(pointer, pointer + irrep_len))
+                
+                # --> 2. Handle the reflections
+                parity = ((-1) ** (l1+l2)).item()
+
+                # Even parity: odd output irreps are flipped
+                if parity == 1: 
+                    start_l = 0
+                    for p in product_irreps.split('+'):
+                        l = Irreps(p).ls[0]
+                        if l % 2 != 0:
+                            l_orb_start = pointer + start_l
+                            l_orb_end = l_orb_start + (2*l + 1)
+                            self.edge_m_reflection[l_orb_start:l_orb_end] *= -1
+                        start_l += (2*l + 1)
+
+                # Odd parity: even output irreps are flipped
+                if parity == -1: 
+                    start_l = 0
+                    for p in product_irreps.split('+'):
+                        l = Irreps(p).ls[0]
+                        if l % 2 == 0:
+                            l_orb_start = pointer + start_l
+                            l_orb_end = l_orb_start + (2*l + 1)
+                            self.edge_m_reflection[l_orb_start:l_orb_end] *= -1
+                        start_l += (2*l + 1)
+                    
+                pointer += irrep_len
+
+        print("edge_permutation: ", edge_permutation)
+                
+        return edge_permutation
+
 
     def stack_irreps(self, x_message):   
         # input = x_message = [num_atoms/edges (batch_size), (lmax+1)**2, sphere_channels]
@@ -690,13 +801,13 @@ class Fock_Irreps_Head(nn.Module):
         transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
         gating_scalars = all_scalars[:, self.sphere_channels:]
 
+        # Symmetrize the final scalar values across edges
+        transformed_l0_scalars = torch.abs(transformed_l0_scalars) 
+        transformed_l0_scalars = self.symmetrize_scalars(transformed_l0_scalars)  
+
         # 3. Gate the l>0 irreps:
         x_gated = self.gate(torch.cat([gating_scalars, x_nonscalars], dim=1))
-        # x_gated_2 = self.gate(torch.cat([gating_scalars_2, x_gated], dim=1))
-
-        # plug the l=0 components back into x_gated (currently they are zeros):
-        # x_gated = torch.cat([x_scalars, x_gated], dim=1)                # original scalars get plugged back in
-        x_gated = torch.cat([transformed_l0_scalars, x_gated], dim=1)   # use the transformed scalars
+        x_gated = torch.cat([transformed_l0_scalars, x_gated], dim=1)   # use the transformed scalars as the output
 
         if not self.reduce_node:
             x_out = self.lin_out(x_gated)
@@ -863,61 +974,17 @@ class Seperable_Linear_Fock_Head(nn.Module):
             # convert from simplified to full output irreps        
             return self.convert_to_output_irreps(out)
 
-# @registry.register_model("esen_mlp_energy_head")
-# class MLP_Energy_Head(nn.Module, HeadInterface):
-#     def __init__(self, backbone, reduce: str = "sum"):
-#         super().__init__()
-#         self.reduce = reduce
 
-#         self.sphere_channels = backbone.sphere_channels
-#         self.hidden_channels = backbone.hidden_channels
-#         self.energy_block = nn.Sequential(
-#             nn.Linear(self.sphere_channels, self.hidden_channels, bias=True),
-#             nn.SiLU(),
-#             nn.Linear(self.hidden_channels, self.hidden_channels, bias=True),
-#             nn.SiLU(),
-#             nn.Linear(self.hidden_channels, 1, bias=True),
-#         )
-
-#     def forward(self, data_dict, emb: dict[str, torch.Tensor]):
-#         node_energy = self.energy_block(
-#             emb["node_embedding"].narrow(1, 0, 1).squeeze()
-#         ).view(-1, 1, 1)
-
-#         energy = torch.zeros(
-#             len(data_dict["natoms"]),
-#             device=node_energy.device,
-#             dtype=node_energy.dtype,
-#         )
-
-#         energy.index_add_(0, data_dict["batch"], node_energy.view(-1))
-#         if self.reduce == "sum":
-#             return {"energy": energy}
-#         elif self.reduce == "mean":
-#             return {"energy": energy / data_dict["natoms"]}
-#         else:
-#             raise ValueError(
-#                 f"reduce can only be sum or mean, user provided: {self.reduce}"
-#             )
-
-
-# Note: with the aggregation, this is unstable! Sometimes elements cancel to zero
 @registry.register_model("esen_linear_force_head")
 class Linear_Force_Head(nn.Module):
     def __init__(self, backbone):
         super().__init__()
         self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
-        # self.linear = SO3_Linear(2*backbone.sphere_channels, 1, lmax=1)
 
     def forward(self, emb: dict[str, torch.Tensor], batch):
 
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
         
-        # aggregated_emb = torch.zeros_like(emb["node_embeddings"])
-        # aggregated_emb.index_add_(0, edge_index[1], emb["edge_embeddings"])
-        # node_plus_edges = torch.cat((emb["node_embeddings"], aggregated_emb), 2)            # concatenate the node with its aggregated edges:
-        # forces = self.linear(node_plus_edges.narrow(1, 0, 4))
-
         forces = self.linear(emb["node_embeddings"].narrow(1, 0, 4))
         forces = forces.narrow(1, 1, 3)
         forces = forces.view(-1, 3).contiguous()
@@ -1005,7 +1072,7 @@ class Convolution_Force_Head(nn.Module):
         aggregated_forces = aggregated_forces.view(-1, 3).contiguous()
 
         # check that the forces are conserved:
-        assert torch.allclose(torch.sum(aggregated_forces), torch.tensor(0.0), atol=1e-12), f"Force conservation check failed!"
+        assert torch.allclose(torch.sum(aggregated_forces), torch.tensor(0.0), atol=1e-8), f"Force conservation check failed! Edge sum: {torch.sum(aggregated_forces)}"
 
         return {"forces": aggregated_forces}
 

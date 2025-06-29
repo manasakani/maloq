@@ -13,7 +13,7 @@ from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 # Models
 from equiformer.network import SO2Net
 from equiformer.SO3 import CoefficientMappingModule
-from esen.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Convolution_Force_Head, Gated_Force_Head     # NO EDGES: .esen_noedges
+from esen.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Convolution_Force_Head, Gated_Force_Head  
 from e3nn.o3 import Irreps
 
 import_end = time.perf_counter()
@@ -27,47 +27,45 @@ random.seed(42)
 # -----------------------------------------------
 # Settings (just dumping everything here for now)
 # -----------------------------------------------
-# ---------------------------
+# --------------------------- 
 # --> QM7
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_water.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_water_edgesym'
-# ---------------------------
-# ---------------------------
-# --> NablaDFT (tiny)
-# original_database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
-# dataset_name = 'nablaDFT'
-# output_folder = 'outputs_nablaDFT'
+output_folder = 'outputs_QM7_water'
 # ---------------------------
 
 # --> Shuffle:
-print("Shuffling database...")
-indices = list(range(len(database)))
-random.shuffle(indices)
-database = [database[i] for i in indices]
+print("Not shuffling database, using the first molecule only for debugging")
+# print("Shuffling database...")
+# indices = list(range(len(database)))
+# random.shuffle(indices)
+# database = [database[i] for i in indices]
 
 # --> Model settings:
 l_embedding_dim = 128                   # sphere channels
-num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
+num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 2
-model_name = 'esen'
+num_mp_layers = 3
 restart_backbone = False
 restart_head = False
 restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 500                           # Number of validation structures
-num_train = 500 
-num_test = 500
+num_val = 1#500                           # Number of validation structures
+num_train = 1#500 
+num_test = 4500
 num_epochs = 200000
-batch_size = 10                         # 1 for eval, 10 for train
-rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
-rcut_gaussian = 5.0                     # connectivity cutoff (=2xrcut)
+batch_size = 1#0                         # 1 for eval, 10 for train
+rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
+rcut_gaussian = 10.0                     # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
-reflection_symmetry=True                # use only edges i,j where i<j
+
+# Additional symmetries:
+reduce_edge = False                      # use only edge orbital blocks for edge i,j where i<j (other edges are reflected)
+reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
@@ -75,17 +73,17 @@ train_head = True
 dtype = torch.float64
 torch.set_default_dtype(dtype)
 lr_init = 1e-3
-patience = 500                          # for scheduler
-threshold = 1e-8                        # for scheduler
+patience = 100                          # if ReduceLROnPlateau scheduler
+threshold = 1e-8                        # if ReduceLROnPlateau scheduler
 
 loss_target = 'fock_matrix'
-# train_loss_fxn = loss.mse_padded_loss
 train_loss_fxn = loss.combined_padded_loss
-# train_loss_fxn = loss.weighted_irrep_mse_loss
 test_loss_fxn = loss.l1_unpadded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
+head_type = 'gated'                   # 'linear' or 'gated'
+include_edges = True
 
 # --------------------------------------------
 # Initialize compute environment 
@@ -102,7 +100,10 @@ if rank == 0:
     print(f"Dataset - Edge cutoff distance for gaussian basis: {rcut_gaussian}", flush=True)
     print(f"Model - Num of Message Passing layers: {num_mp_layers}", flush=True)
     print(f"Model - Embedding dimension: {l_embedding_dim}", flush=True)
-    print(f"Model - Edge reflections: {reflection_symmetry}")
+    print(f"Model - # Distance basis functions: {num_distance_basis}", flush=True)
+    print(f"Model - Edge reduction: {reduce_edge}")
+    print(f"Model - Node reduction - interorbital: {reduce_node}")
+    print(f"Model - Node reduction - intraorbital: {reduce_node_intra}")
     print(f"Training - Loss target: {loss_target}", flush=True)
     print(f"Training - Loss function: {train_loss_fxn}", flush=True)
     print(f"Training - Initial learning rate: {lr_init}", flush=True)
@@ -132,25 +133,25 @@ test_start_mol += num_train+num_val
 test_end_mol += num_train+num_val
 
 ### DEBUG ###
-# train_start_mol = 0
-# train_end_mol = 1
-# val_start_mol = 0
-# val_end_mol = 1
+print("USING THE DEBUG MOLECULE")
+train_start_mol = 0
+train_end_mol = 1
+val_start_mol = 0
+val_end_mol = 1
 ### DEBUG ###
 
 if train_or_eval == 'train':
-    train_loader, required_irreps, basis_transformation = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
-    val_loader, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
+    train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge)
+    val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge)
     print("Size of train loader: ", len(train_loader))
     print("Size of val loader: ", len(val_loader))
 else:
     batch_size = 1
-    test_loader, required_irreps, basis_transformation = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
+    test_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge)
     print("Size of test loader: ", len(test_loader))
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
-
 
 irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
 
@@ -170,62 +171,43 @@ else:
 
 
 # --------------------------------------------
-# Get model
+# Get model backbone + head
 # --------------------------------------------
-if model_name == 'equiformer':
-    mappingReduced = CoefficientMappingModule(required_irreps.lmax, required_irreps.lmax)
-    edge_channels_list = [l_embedding_dim, l_embedding_dim, l_embedding_dim]
 
-    attn_hidden_channels = 128 
-    attn_alpha_channels = 32
-    attn_value_channels = 32 
-    ffn_hidden_channels = 64 
-    num_heads=2
+backbone = eSEN_Backbone(
+                required_irreps,
+                sphere_channels=l_embedding_dim,
+                hidden_channels=hidden_dim,
+                lmax=required_irreps.lmax,
+                mmax=required_irreps.lmax,
+                use_pbc=False,
+                cutoff=rcut_gaussian,
+                edge_channels=l_embedding_dim,
+                num_layers=num_mp_layers,
+                act_type='gate',
+                mlp_type = 'spectral',
+                num_distance_basis=num_distance_basis,
+                gaussian_width=gaussian_width,
+                include_edges=include_edges
+            )
 
-    backbone = SO2Net(num_mp_layers, 
-                    required_irreps.lmax, 
-                    required_irreps.lmax, 
-                    mappingReduced, 
-                    l_embedding_dim, 
-                    edge_channels_list, 
-                    attn_hidden_channels, 
-                    num_heads, 
-                    attn_alpha_channels, 
-                    attn_value_channels, 
-                    ffn_hidden_channels, 
-                    irreps_in, 
-                    required_irreps)
+if loss_target == "fock_matrix":
+    head = Fock_Irreps_Head(irreps_in=irreps_in, 
+                            irreps_out=output_irreps, 
+                            lmax=required_irreps.lmax, 
+                            sphere_channels=l_embedding_dim,
+                            head_type=head_type,
+                            reduce_node=reduce_node,
+                            reduce_node_intra=reduce_node_intra,
+                            orbital_basis=orbital_basis)
 
-elif model_name == 'esen':
-    backbone = eSEN_Backbone(
-                    required_irreps,
-                    sphere_channels=l_embedding_dim,
-                    hidden_channels=hidden_dim,
-                    lmax=required_irreps.lmax,
-                    mmax=required_irreps.lmax,
-                    use_pbc=False,
-                    cutoff=rcut_gaussian,
-                    edge_channels=l_embedding_dim,
-                    num_layers=num_mp_layers,
-                    act_type='gate',
-                    mlp_type = 'spectral',
-                    num_distance_basis=num_distance_basis,
-                    gaussian_width=gaussian_width
-                )
+elif loss_target == "forces":
+    head = Linear_Force_Head(backbone)
+    # head = Convolution_Force_Head(backbone)
+    # head = Gated_Force_Head(backbone, irreps_in)
 
-    if loss_target == "fock_matrix":
-        head = Fock_Irreps_Head(irreps_in=irreps_in, 
-                                irreps_out=output_irreps, 
-                                lmax=required_irreps.lmax, 
-                                sphere_channels=l_embedding_dim)
-    elif loss_target == "forces":
-        # head = Linear_Force_Head(backbone)
-        # head = Convolution_Force_Head(backbone)
-        head = Gated_Force_Head(backbone, irreps_in)
-
-    elif loss_target == "energy":
-        print("To be implemented!")
-
+elif loss_target == "energy":
+    print("To be implemented!")
 
 backbone = backbone.to(device)
 head = head.to(device)
@@ -289,8 +271,8 @@ scheduler = loss_scheduler(optimizer)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='QM7_water_May26',
-                                    save_frequency=100)
+                                    run_name='water_jun14',
+                                    save_frequency=50)
 
 if train_or_eval == "train":
     trainer.train(num_epochs, 
