@@ -148,33 +148,19 @@ class eSEN_Backbone(nn.Module):
             self.edge_channels,
         ]
 
-        # Testing for antisym!
-        # self.edge_expansion = nn.Linear(
-        #     2 * self.edge_channels,
-        #     self.num_distance_basis + 2 * self.edge_channels,
-        #     bias=False
+        # self.edge_degree_embedding = EdgeDegreeEmbedding(
+        #     sphere_channels=self.sphere_channels,
+        #     lmax=self.lmax,
+        #     mmax=self.mmax,
+        #     max_num_elements=self.max_num_elements,
+        #     edge_channels_list=self.edge_channels_list,
+        #     rescale_factor=5.0,
+        #     cutoff=self.cutoff,
+        #     mappingReduced=self.mappingReduced,
+        #     out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
+        #         self.lmax, self.mmax
+        #     )
         # )
-
-        # self.edge_expansion2 = nn.Linear(
-        #     self.edge_channels,
-        #     2*self.edge_channels,
-        #     bias=False
-        # )
-        
-
-        self.edge_degree_embedding = EdgeDegreeEmbedding(
-            sphere_channels=self.sphere_channels,
-            lmax=self.lmax,
-            mmax=self.mmax,
-            max_num_elements=self.max_num_elements,
-            edge_channels_list=self.edge_channels_list,
-            rescale_factor=5.0,
-            cutoff=self.cutoff,
-            mappingReduced=self.mappingReduced,
-            out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
-                self.lmax, self.mmax
-            )
-        )
 
         self.num_layers = num_layers
         self.hidden_channels = hidden_channels
@@ -293,21 +279,35 @@ class eSEN_Backbone(nn.Module):
             graph_dict["edge_distance_vec"]
         )
 
-        # NEW: The rotation matrices for opposite edges need to be symmetric for the antisymmetrization to work correctly!!!
+        # NOTE: The rotation matrices for opposite edges need to be symmetric for the antisymmetrization to work correctly.
         # This needs to be consistent with how reverse_edge_map is defined in the dataset!
-        # otherwise half the edges will point to the -z axis instead of the +z axis
-        edges_ij = data_dict["edge_index"][0] < data_dict["edge_index"][1]  
+        # Note that if we set the wigner D matrices for opposite edges equal, half the edges will point to the -z axis
+        forward_edges = None
 
-        # ONLY WORKS FOR 1 MOLECULE TEST
-        for ind, w in enumerate(wigner):
-            if not edges_ij[ind]:  # if this is a backward edge, we need to flip the sign of the wigner matrix
-                wigner[ind] = -1*wigner[data_dict["reverse_edge_map"][ind]]
-                wigner_inv[ind] = -1*wigner_inv[data_dict["reverse_edge_map"][ind]]
+        # edges_ij = data_dict["edge_index"][0] < data_dict["edge_index"][1]  
+
+        # COLLATE REVERSE_EDGE_MAP!
+        if not (~forward_edge_mask).any(): # if we are considering all the edges
+            for ind, w in enumerate(wigner):
+                # if not edges_ij[ind]:  # if this is a backward edge, we need to flip the sign of the wigner matrix
+                if ind != reverse_edge_map[ind]: # if this is a backward edge
+                    # wigner[ind] = -1*wigner[data_dict["reverse_edge_map"][ind]]            
+                    # wigner_inv[ind] = -1*wigner_inv[data_dict["reverse_edge_map"][ind]] 
+
+                    # The even irreps share the same wigner matrix, the odd irreps have a sign flip
+                    start_l = 0
+                    for l in range(self.lmax + 1):
+                        end_l = start_l + (2 * l + 1)
+                        l_parity = (-1)**l
+                        wigner[ind, start_l:end_l, start_l:end_l] = l_parity * wigner[data_dict["reverse_edge_map"][ind], start_l:end_l, start_l:end_l]
+                        wigner_inv[ind, start_l:end_l, start_l:end_l] = l_parity * wigner_inv[data_dict["reverse_edge_map"][ind], start_l:end_l, start_l:end_l]
+                        start_l = end_l
         
         # --> Rotation test:
         # rotated_edges_to_z_axis = torch.bmm(edge_rot_mat, graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
         # rotated_edges_to_z_axis = torch.bmm(wigner[:, 1:4, 1:4], graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
         # print("Rotated edges to z-axis: ", rotated_edges_to_z_axis) # only middle components should be nonzero (equal to distance)
+        # exit()
 
         ###############################################################
         # Initialize node and edge embeddings
@@ -352,32 +352,24 @@ class eSEN_Backbone(nn.Module):
             data_dict["atomic_numbers"][graph_dict["edge_index"][1]][forward_edge_mask]
         )
 
-        # x_edge = torch.cat(
-        #     (edge_distance_embedding, source_embedding, target_embedding), dim=1
-        # )
-
-        # REVISIT FOR EXPRESSIVENESS: (find a better way to incorporate the edge distance embedding)
         # x_edge needs to be symmetric over edges:
         x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) + torch.cat((target_embedding, edge_distance_embedding, source_embedding), dim=1)      # symmetrized
-        # larger_edge_distance_embedding = self.edge_expansion2(edge_distance_embedding)
-        # x_edge = x_edge * larger_edge_distance_embedding
-        # x_edge = self.edge_expansion(x_edge)        # expand scalars to the full edge channels dimensions
 
         # zero_sum_check = torch.sum(torch.sum(x_edge[0] - x_edge[3], dim=0) + torch.sum(x_edge[1] - x_edge[4], dim=0) + torch.sum(x_edge[2] - x_edge[5], dim=0), dim=0)
-        # print("zero_sum_check in esen_new:", zero_sum_check)
+        # print("zero_sum_check in esen_new:", zero_sum_check) # (water)
 
-        # do edge degree embeddings for both nodes and edges:
-        x_message_node = self.edge_degree_embedding(
-            x_message_node,
-            x_edge,
-            graph_dict["edge_distance"],
-            graph_dict["edge_index"],
-            graph_dict["forward_edge_mask"],
-            wigner_inv,
-            node_or_edge='node'
-        )
+        # do edge degree embeddings for both nodes and edges: - this breaks symmetry of identical nodes..
+        # x_message_node = self.edge_degree_embedding(
+        #     x_message_node,
+        #     x_edge,
+        #     graph_dict["edge_distance"],
+        #     graph_dict["edge_index"],
+        #     graph_dict["forward_edge_mask"],
+        #     wigner_inv,
+        #     node_or_edge='node'
+        # )
 
-        # if self.include_edges: # this is not antisymmetrized (yet)
+        # if self.include_edges: # this is not antisymmetrized (yet) 
         #     x_message_edge = self.edge_degree_embedding(
         #         x_message_node,
         #         x_edge,
@@ -388,10 +380,6 @@ class eSEN_Backbone(nn.Module):
         #         node_or_edge='edge'
         #     )
 
-        # zero_sum_check = torch.sum(torch.sum(x_message_edge[0] + x_message_edge[3], dim=0) + torch.sum(x_message_edge[1] + x_message_edge[4], dim=0) + torch.sum(x_message_edge[2] + x_message_edge[5], dim=0), dim=0)
-        # print("zero_sum_check before layers:", zero_sum_check)
-            
-
         ###############################################################
         # Update spherical node embeddings
         ###############################################################
@@ -400,7 +388,7 @@ class eSEN_Backbone(nn.Module):
                 x_message_node,
                 x_message_edge,
                 x_edge,
-                edge_distance_embedding,
+                forward_edges,
                 graph_dict["edge_distance"],
                 graph_dict["edge_index"],
                 graph_dict["forward_edge_mask"],
@@ -415,7 +403,7 @@ class eSEN_Backbone(nn.Module):
                     x_message_node,
                     x_message_edge,
                     x_edge,
-                    edge_distance_embedding,
+                    forward_edges,
                     graph_dict["edge_distance"],
                     graph_dict["edge_index"],
                     graph_dict["forward_edge_mask"],
@@ -492,54 +480,53 @@ class Fock_Irreps_Head(nn.Module):
         self.irreps_out = irreps_out
         self.orbital_basis = orbital_basis
         
-        # Option to extract minimal node irreps to project to:
-        if self.reduce_node:
-            assert self.orbital_basis is not None
-            ls_list = []
-            N = 0
-            for l in range(5): # searching for up to g orbitals
-                counts = [torch.sum(self.orbital_basis[el] == l) for el in self.orbital_basis]
-                ls_list.append(torch.tensor(max(counts) * [l], dtype=torch.int))
+        # --> Option to extract minimal node irreps to project to:
+        # NOTE: only use this explicitly in the forward pass, where the odd components are manually filtered out to produce a symmetric matrix
+        # it seems to be useful to keep the zeros in during training, so the network learns that those components should be zero.
+        # if self.reduce_node:
+        assert self.orbital_basis is not None
+        ls_list = []
+        N = 0
+        for l in range(5): # searching for up to g orbitals
+            counts = [torch.sum(self.orbital_basis[el] == l) for el in self.orbital_basis]
+            ls_list.append(torch.tensor(max(counts) * [l], dtype=torch.int))
 
-            self.ls_list = torch.cat(ls_list)        # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2]
-            self.backward_irrep_track = {}           # helper dict to keep track of where to find the forward edges when we expand them out later
+        self.ls_list = torch.cat(ls_list)        # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2]
+        self.backward_irrep_track = {}           # helper dict to keep track of where to find the forward edges when we expand them out later
 
-            # We need to make a new list of irreps (irreps_nodereduced) which contains only the unique irreps in the node blocks
-            irreps_nodereduced = []
-            irrep_pointer = 0
-            for i, l1 in enumerate(self.ls_list):
-                for j, l2 in enumerate(self.ls_list):
+        # We make a new list of irreps (irreps_nodereduced) which contains only the unique irreps in the node blocks
+        irreps_nodereduced = []
+        irrep_pointer = 0
+        for i, l1 in enumerate(self.ls_list):
+            for j, l2 in enumerate(self.ls_list):
 
-                    # if this is an orbital self-interaction within the node block, we add the even irreps
-                    if i == j and l1 == l2:
-                        if self.reduce_node_intra:
-                            product_irreps = str(self.get_product_irreps(l1, l2, 'even'))
-                        else:
-                            product_irreps = str(self.get_product_irreps(l1, l2))
-
-                        irreps_nodereduced.append(product_irreps)
-                        irrep_pointer += sum([2*l + 1 for l in Irreps(product_irreps).ls])
-
-                    # this is an upper-triangle off-diag interaction within the node block, we add all the required irreps
-                    if i < j:
+                # if this is an orbital self-interaction within the node block, we add the even irreps
+                if i == j and l1 == l2:
+                    if self.reduce_node_intra:
+                        product_irreps = str(self.get_product_irreps(l1, l2, 'even'))
+                    else:
                         product_irreps = str(self.get_product_irreps(l1, l2))
-                        irreps_nodereduced.append(product_irreps)
-                        irrep_len = sum([2*l + 1 for l in Irreps(product_irreps).ls])
-                        
-                        # track it for the backward edge in the expand section later:
-                        self.backward_irrep_track[(j, i)] = [irrep_pointer, irrep_pointer+irrep_len]
-                        irrep_pointer += irrep_len
 
-            
-            # Now we can project to this reduced set of irreps and expand it out 
-            self.irreps_nodereduced = Irreps('+'.join(irreps_nodereduced))
-            # print("full irreps: ", irreps_out)
-            # print("minimal node irreps: ", self.irreps_nodereduced)
+                    irreps_nodereduced.append(product_irreps)
+                    irrep_pointer += sum([2*l + 1 for l in Irreps(product_irreps).ls])
+
+                # this is an upper-triangle off-diag interaction within the node block, we add all the required irreps
+                if i < j:
+                    product_irreps = str(self.get_product_irreps(l1, l2))
+                    irreps_nodereduced.append(product_irreps)
+                    irrep_len = sum([2*l + 1 for l in Irreps(product_irreps).ls])
+                    
+                    # track it for the backward edge in the expand section later:
+                    self.backward_irrep_track[(j, i)] = [irrep_pointer, irrep_pointer+irrep_len]
+                    irrep_pointer += irrep_len
+
         
+        # Now we can project to this reduced set of irreps, and expand it out later
+        self.irreps_nodereduced = Irreps('+'.join(irreps_nodereduced))
 
+        # This permutation list and reflection vector together define the relationship between the forward and backward edges
         self.edge_m_reflection = None
         self.edge_permutation = self.get_edge_permutation()
-
 
         if self.head_type == 'linear':
             self.map_node_to_rank_N = e3nn_Linear(irreps_in=irreps_in, irreps_out=irreps_out, biases=True)
@@ -570,35 +557,28 @@ class Fock_Irreps_Head(nn.Module):
             self.act_input_scalars = torch.nn.Tanh() # torch.nn.Sigmoid() # torch.nn.Tanh() # torch.nn.ReLU() # torch.nn.SiLU() # torch.nn.GELU()
 
             # symmetrize_scalars should be a linear layer
-            self.symmetrize_scalars = nn.Linear(
-                in_features=self.sphere_channels,
-                out_features=self.sphere_channels,
-                bias=True
-            )
+            # self.symmetrize_scalars = nn.Linear(
+            #     in_features=self.sphere_channels,
+            #     out_features=self.sphere_channels,
+            #     bias=True
+            # )
 
             # this returns the irreps_gates
 
             # 2. Apply the gating to the other ls (need to pass in a stack of [l=0, l~=0])
-            # self.gate = Gate(irreps_scalars=Irreps(),
-            #                     act_scalars=[],
-            #                     irreps_gates=irreps_gates,
-            #                     act_gates=[torch.sigmoid] * len(irreps_gates),
-            #                     irreps_gated=irreps_gated
-            #                 )
             self.gate = Gate(irreps_scalars=Irreps(),
                                 act_scalars=[],
                                 irreps_gates=irreps_gates,
                                 act_gates=[torch.tanh] * len(irreps_gates),
                                 irreps_gated=irreps_gated
                             )
-            
             # print("gate irreps out (simplified): ", self.gate.irreps_out.sort()[0].simplify() ) 
             # print("irreps out (simplified): ", irreps_out.sort()[0].simplify() ) 
 
             # now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
             if reduce_node:
                 self.lin_out_node = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_nodereduced, biases=False)
-                self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=False) # biases were true for some runs
+                self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=True) # biases were true for some runs
             else:
                 self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=False) 
 
@@ -642,17 +622,21 @@ class Fock_Irreps_Head(nn.Module):
         node_embeddings = emb["node_embeddings"]
         edge_embeddings = emb["edge_embeddings"]
 
-        # print edge embeding 0 and 3:
-        # print("edge embedding 0: ", edge_embeddings[0, 0:10])
-        # print("edge embedding 3: ", edge_embeddings[3, 0:10])
+        reverse_edge_map = batch.reverse_edge_map
+
+        # print("edge embedding final 0: ", edge_embeddings[0, :50]) # for debugging
+        # print("edge embedding final 3: ", edge_embeddings[3, :50]) # for debugging
 
         # assert that the edges sum to zero:
-        # zero_sum_check1 = torch.sum(torch.sum(edge_embeddings[0] + edge_embeddings[3], dim=0) + torch.sum(edge_embeddings[1] + edge_embeddings[4], dim=0) + torch.sum(edge_embeddings[2] + edge_embeddings[5], dim=0), dim=0)
-        # print("zero_sum_check in fock_irreps_head:", zero_sum_check1)
+        # zero_sum_check1 = torch.sum(torch.sum(edge_embeddings[0, 1:4, :] - edge_embeddings[3, 1:4, :], dim=0) + torch.sum(edge_embeddings[1, 1:4, :] - edge_embeddings[4, 1:4, :], dim=0) + torch.sum(edge_embeddings[2, 1:4, :] - edge_embeddings[5, 1:4, :], dim=0), dim=0)
+        # print("zero_sum_check for l=1 in fock_irreps_head:", zero_sum_check1)
+        # zero_sum_check2 = torch.sum(torch.sum(edge_embeddings[0, 4:9, :] - edge_embeddings[3, 4:9, :], dim=0) - torch.sum(edge_embeddings[1, 4:9, :] - edge_embeddings[4, 4:9, :], dim=0) + torch.sum(edge_embeddings[2, 4:9, :] - edge_embeddings[5, 4:9, :], dim=0), dim=0)
+        # print("zero_sum_check for l=2 in fock_irreps_head:", zero_sum_check2)
 
         x_edge = emb["x_edge"]
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
-
+        edge_mask = batch.edge_mask
+        
         if self.head_type == 'linear':
             node_embeddings = self.stack_irreps(node_embeddings)
             edge_embeddings = self.stack_irreps(edge_embeddings)
@@ -667,30 +651,44 @@ class Fock_Irreps_Head(nn.Module):
         
         else:
             print("Error! Mispelt head type")
-
+        
         # augment the node irreps back to the full irrep list (containing the lower triangle of orbital interactions and odd self-interaction irreps)
         # using edge_output to infer the total size of the output embeddings
         if self.reduce_node:
             node_output = self.expand_reduced_node(node_output, edge_output)
-
+        
         # need reflection on same device, could not access device from within constructor functions
         self.edge_m_reflection = torch.tensor(self.edge_m_reflection, dtype=edge_output.dtype, device=edge_output.device)
+
+        # print("edge_output[0] before permute: ", edge_output[0, :50]) # for debugging
+        # print("edge_output[3] before permute: ", edge_output[3, :50]) # for debugging
+        # exit()
+
+        # Permute+reflect the irreps for the 'reverse' edges (the edge irreps are the same, but the order is different)
+        # NOTE: vectorize this later! 
+        if not (~edge_mask).any():              # if we are considering all the edges
+            for i in range(len(edge_index[0])):
+                source = edge_index[0][i]
+                target = edge_index[1][i]
+                
+                # NOTE: we look at source > target because this uniquely defines the direction of the edge,
+                # if source > target:
+                # if torch.sum(node_output[source]) > torch.sum(node_output[target]): 
+                if i != reverse_edge_map[i]: # if this is a backward edge
+                    # print("setting node_output[{}] to node_output[{}]".format(i, reverse_edge_map[i]))
+                    edge_output[i] = edge_output[reverse_edge_map[i], self.edge_permutation] * self.edge_m_reflection
+                    # edge_output[i] = edge_output[i, self.edge_permutation] * self.edge_m_reflection
         
-        # Permute the irreps for the 'reverse' edges (the edge irreps are the same, but the order is different)
-        # NOTE: vectorize this later! - Need to account for edge mask if it exists
-        for i in range(len(edge_index[0])):
-            source = edge_index[0][i]
-            target = edge_index[1][i]
-            
-            if source > target:
-                edge_output[i] = edge_output[i, self.edge_permutation] * self.edge_m_reflection
+        # print("edge_output[0]: ", edge_output[0, :50]) # for debugging
+        # print("edge_output[3]: ", edge_output[3, :50]) # for debugging
+        # exit()
 
         return node_output, edge_output
 
     def get_edge_permutation(self):
         """
         The forward and backward edges contain the same irreps, but they are permuted in the data list 
-        due to the order of flattening the matrix blocks. Here we permute the irreps to match the reverse edge order.
+        due to the order of flattening the matrix blocks. Here we create the permutation of the irreps to match the reverse edge order.
         We also handle the reflection rules of the orbital interactions, which are different for even and odd parity.
         """
 
@@ -801,9 +799,9 @@ class Fock_Irreps_Head(nn.Module):
         transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
         gating_scalars = all_scalars[:, self.sphere_channels:]
 
-        # Symmetrize the final scalar values across edges
-        transformed_l0_scalars = torch.abs(transformed_l0_scalars) 
-        transformed_l0_scalars = self.symmetrize_scalars(transformed_l0_scalars)  
+        # Symmetrize the final scalar values across edges, since they will be the same for both forward and backward edges
+        # transformed_l0_scalars = torch.abs(transformed_l0_scalars) 
+        # transformed_l0_scalars = self.symmetrize_scalars(transformed_l0_scalars)  
 
         # 3. Gate the l>0 irreps:
         x_gated = self.gate(torch.cat([gating_scalars, x_nonscalars], dim=1))

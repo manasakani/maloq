@@ -11,7 +11,7 @@ class Fock_Targets:
     Input target shape to standardize across molecules with different elements
     """
 
-    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix=None, target_len=0, dtype=torch.float32, reflection_symmetry=True, compute_fock_eigenvalues=True):
+    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix=None, target_len=0, dtype=torch.float32, reflection_symmetry=False, compute_fock_eigenvalues=True):
         """
         atoms - ASE atoms object of the atomic structure
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]] 
@@ -30,12 +30,15 @@ class Fock_Targets:
         self.dtype = dtype
         self.reflection_symmetry = reflection_symmetry
 
-        # Atoms and cnnectivity list:
+        # Atoms and connectivity list:
         num_atoms = len(atoms)
         neighbours = NeighborList(np.ones(num_atoms)*cutoff, skin=0, self_interaction=False, bothways=True)
         neighbours.update(self.atoms)
         neighbour_list = neighbours.get_connectivity_matrix(sparse=True).tocoo()
         self.neighbour_list = np.vstack([neighbour_list.row, neighbour_list.col])
+
+        self.edge_dist = None
+        self.make_edge_vectors()  # make edge vectors (distances and vector components)
 
         self.NA = len(atoms)
         self.atomic_numbers = self.atoms.get_atomic_numbers()
@@ -45,20 +48,17 @@ class Fock_Targets:
 
         if self.reflection_symmetry:
             self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]    # keep edges i, j where i < j
-            # print("Note: Reducing symmetric edges!")
         else:
             self.forward_edge_mask = [True]*len(self.neighbour_list[0])                 # keep all edges
-            # print("Note: Not reducing symmetric edges!")
-            # self.reverse_edge_map = torch.arange(len(self.neighbour_list[0]))
         
-        # index of self.neighbour_list which contains the edge (either forward or backward, depending on if edge_mask)
-        self.reverse_edge_map = []
+        # index of self.neighbour_list which contains the forward edge 
+        self.reverse_edge_map = [-1] * len(self.neighbour_list[0])  # Initialize with -1 for safety
+        edge_dict = {(i.item(), j.item()): idx for idx, (i, j) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1]))}
         for ind, (i, j) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1])):
             if i < j:
-                self.reverse_edge_map.append(ind)
+                self.reverse_edge_map[ind] = ind
             else:
-                reverse_index = next(k for k, (x, y) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1])) if x == j and y == i)
-                self.reverse_edge_map.append(reverse_index)
+                self.reverse_edge_map[ind] = edge_dict.get((j.item(), i.item()), None)
     
         # Analyze structure of orbital interactions
         targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions
@@ -71,9 +71,6 @@ class Fock_Targets:
         
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         # print(f'Simplified irreps: {self.simplified_out_irreps}')
-
-        self.edge_dist = None
-        self.make_edge_vectors()  # make edge vectors (distances and vector components)
 
         # If the fock targets should be computed on-the-fly rather than loaded from the db:
         self.node_labels = None

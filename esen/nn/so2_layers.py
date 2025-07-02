@@ -247,7 +247,7 @@ class SO2_Linear(torch.nn.Module):
         # SO(2) linear for m = 0
         self.fc_m0 = Linear(
             num_channels_m0,
-            self.m_output_channels * (num_channels_m0 // self.sphere_channels), bias=False # biase is false for antisymmetry
+            self.m_output_channels * (num_channels_m0 // self.sphere_channels), bias=True 
         )
         num_channels_rad = self.fc_m0.in_features
 

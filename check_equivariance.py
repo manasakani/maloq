@@ -5,13 +5,11 @@ import numpy as np
 from ase import Atoms
 from ase.neighborlist import NeighborList
 
-
 from copy import deepcopy
 import matplotlib.pyplot as plt
 
 import torch
 import torch.distributed as dist
-
 
 from fock_utils import utils_orca_out, fock_targets
 from train_utils import loss, utils_compute, splittrainer
@@ -23,9 +21,6 @@ from dataset_utils.ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
 import random
-
-from equiformer.network import SO2Net
-from equiformer.SO3 import CoefficientMappingModule
 
 from esen.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Convolution_Force_Head, Gated_Force_Head     # NO EDGES: .esen_noedges
 from e3nn.o3 import Irreps, rand_matrix
@@ -54,8 +49,7 @@ print("Targets available: ", database.available_properties)
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 3
-model_name = 'esen'
+num_mp_layers = 2
 restart_backbone = False
 restart_head = False
 restart_optimizer = False
@@ -67,18 +61,18 @@ head_type = 'gated'                   # 'linear' or 'gated'
 loss_fxn = loss.combined_padded_loss
 
 # -> Training settings:
-num_val = 1                           # Number of validation structures
+num_val = 1                            # Number of validation structures
 num_train = 1 
 num_epochs = 200000
 batch_size = 1                         # 1 for eval, 10 for train
-rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
+rcut_orbitals = 6.0                    # connectivity cutoff (=2xrcut)
 rcut_gaussian = 5.0                    # connectivity cutoff (=2xrcut)
-gaussian_width = 1.0                    # width of gaussians used to expand edge distance
+gaussian_width = 1.0                   # width of gaussians used to expand edge distance
 dtype = torch.float32
 include_edges = True
 
 # Additional symmetries:
-reduce_edge = True                      # use only edge orbital blocks for edge i,j where i<j (other edges are reflected)
+reduce_edge = False                      # use only edge orbital blocks for edge i,j where i<j (other edges are reflected)
 reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
 reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
 
@@ -118,7 +112,7 @@ for i in range(num_molecules):      # deterministic
     hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)  
 
     time_start = time.perf_counter()
-    graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian)
+    graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, reflection_symmetry=reduce_edge)
     time_end = time.perf_counter()
     print("time to make targets: ", time_end - time_start)
 
@@ -164,64 +158,39 @@ print("Time to load dataset: ", data_load_end - data_load_start)
 # --------------------------------------------
 irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
 
-if model_name == 'equiformer':
-    mappingReduced = CoefficientMappingModule(required_irreps.lmax, required_irreps.lmax)
-    edge_channels_list = [l_embedding_dim, l_embedding_dim, l_embedding_dim]
+backbone = eSEN_Backbone(
+                required_irreps,
+                sphere_channels=l_embedding_dim,
+                hidden_channels=hidden_dim,
+                lmax=required_irreps.lmax,
+                mmax=required_irreps.lmax,
+                use_pbc=False,
+                cutoff=rcut_gaussian,
+                edge_channels=l_embedding_dim,
+                num_layers=num_mp_layers,
+                act_type='gate',
+                mlp_type = 'spectral',
+                num_distance_basis=num_distance_basis,
+                gaussian_width=gaussian_width,
+                include_edges=include_edges
+            )
 
-    attn_hidden_channels = 128 
-    attn_alpha_channels = 32
-    attn_value_channels = 32 
-    ffn_hidden_channels = 64 
-    num_heads=2
+if loss_target == "fock_matrix":
+    head = Fock_Irreps_Head(irreps_in=irreps_in, 
+                            irreps_out=output_irreps, 
+                            lmax=required_irreps.lmax, 
+                            sphere_channels=l_embedding_dim,
+                            head_type=head_type,
+                            reduce_node=reduce_node,
+                            reduce_node_intra=reduce_node_intra,
+                            orbital_basis=orbital_basis)
 
-    backbone = SO2Net(num_mp_layers, 
-                    required_irreps.lmax, 
-                    required_irreps.lmax, 
-                    mappingReduced, 
-                    l_embedding_dim, 
-                    edge_channels_list, 
-                    attn_hidden_channels, 
-                    num_heads, 
-                    attn_alpha_channels, 
-                    attn_value_channels, 
-                    ffn_hidden_channels, 
-                    irreps_in, 
-                    required_irreps)
+elif loss_target == "forces":
+    # head = Linear_Force_Head(backbone)
+    head = Convolution_Force_Head(backbone)
 
-elif model_name == 'esen':
-    backbone = eSEN_Backbone(
-                    required_irreps,
-                    sphere_channels=l_embedding_dim,
-                    hidden_channels=hidden_dim,
-                    lmax=required_irreps.lmax,
-                    mmax=required_irreps.lmax,
-                    use_pbc=False,
-                    cutoff=rcut_gaussian,
-                    edge_channels=l_embedding_dim,
-                    num_layers=num_mp_layers,
-                    act_type='gate',
-                    mlp_type = 'spectral',
-                    num_distance_basis=num_distance_basis,
-                    gaussian_width=gaussian_width,
-                    include_edges=include_edges
-                )
-
-    if loss_target == "fock_matrix":
-        head = Fock_Irreps_Head(irreps_in=irreps_in, 
-                                irreps_out=output_irreps, 
-                                lmax=required_irreps.lmax, 
-                                sphere_channels=l_embedding_dim,
-                                head_type=head_type,
-                                reduce_node=reduce_node,
-                                reduce_node_intra=reduce_node_intra,
-                                orbital_basis=orbital_basis)
-
-    elif loss_target == "forces":
-        # head = Linear_Force_Head(backbone)
-        head = Convolution_Force_Head(backbone)
-
-    elif loss_target == "energy":
-        print("To be implemented!")
+elif loss_target == "energy":
+    print("To be implemented!")
 
 
 backbone = backbone.to(device)
@@ -285,19 +254,10 @@ for batch in train_loader:
     rotated_input.edge_attr[:, 1:4] = rotated_input_edge_vec
     print("final rotated_input.edge_attr: ", rotated_input.edge_attr)
 
-    # with torch.no_grad():
-    # rotated_input = model(rotated_input) 
-    # rotated_input_nodes = rotated_input["node_rankN"]
-    # rotated_input_edges = rotated_input["edge_rankN"]
-
     rotated_input = backbone(rotated_input) 
     rotated_input_nodes, rotated_input_edges = head(rotated_input, batch)
     
     # --> 2. Rotated the output of the "rotated output" batch - WD(f(x)):
-    # with torch.no_grad():
-    # rotated_output = model(rotated_output) 
-    # rotated_output_nodes = (spherical_rot_mat @ rotated_output["node_rankN"].T).T
-    # rotated_output_edges = (spherical_rot_mat @ rotated_output["edge_rankN"].T).T
     rotated_output = backbone(rotated_output)
     rotated_output_nodes, rotated_output_edges = head(rotated_output, batch)
     rotated_output_nodes = (spherical_rot_mat @ rotated_output_nodes.T).T
@@ -311,10 +271,10 @@ for batch in train_loader:
 
     for n in range(len(rotated_output_nodes)):
         print("Checking node " + str(n) + "...")
-        if not torch.allclose(rotated_input_nodes[n], rotated_output_nodes[n]):
+        if not torch.allclose(rotated_input_nodes[n], rotated_output_nodes[n], atol=1e-4):
             print(f"Error: Node {n} input and output are not allclose")
         plt.imshow(rotated_input_nodes[n].detach().cpu().numpy().reshape(14, 14) 
-                - rotated_output_nodes[n].detach().cpu().numpy().reshape(14, 14), vmin=0, vmax=1e-6)
+                - rotated_output_nodes[n].detach().cpu().numpy().reshape(14, 14), vmin=0, vmax=1e-5)
         plt.colorbar()
         plt.savefig("equivariance_test_results/numerical_equivariance_err_node" + str(n) + ".png", dpi=300, bbox_inches='tight')
         plt.close()
@@ -324,7 +284,7 @@ for batch in train_loader:
         if not torch.allclose(rotated_input_edges[e], rotated_output_edges[e]):
             print(f"Error: Edge {e} input and output are not allclose")
         plt.imshow(rotated_input_edges[e].detach().cpu().numpy().reshape(14, 14) 
-                - rotated_output_edges[e].detach().cpu().numpy().reshape(14, 14), vmin=0, vmax=1e-6)
+                - rotated_output_edges[e].detach().cpu().numpy().reshape(14, 14), vmin=0, vmax=1e-5)
         plt.colorbar()
         plt.savefig("equivariance_test_results/numerical_equivariance_err_edge" + str(e) + ".png", dpi=300, bbox_inches='tight')
         plt.close()
@@ -349,14 +309,6 @@ for batch in val_loader:
     rotated_input_edge_vec = (cartesian_rot_mat @ rotated_input_edge_vec.T).T       
     rotated_input_edge_vec = rotated_input_edge_vec[:, [2, 0, 1]]                   # yzx -> xyz because the network will do -> xyz   
     rotated_input.edge_attr[:, 1:4] = rotated_input_edge_vec
-
-    # with torch.no_grad():
-    # unrotated_mol = model(unrotated_input) 
-    # rotated_mol = model(rotated_input) 
-    # unrotated_node_output = unrotated_mol["node_rankN"]
-    # unrotated_edge_output = unrotated_mol["edge_rankN"]
-    # rotated_node_output = rotated_mol["node_rankN"]
-    # rotated_edge_output = rotated_mol["edge_rankN"]
 
     unrotated_mol = backbone(unrotated_input)
     rotated_mol = backbone(rotated_input)

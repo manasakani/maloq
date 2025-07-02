@@ -126,16 +126,16 @@ class RadialMLP(nn.Module):
             if i == 0:
                 continue
 
-            # modules.append(nn.Linear(input_channels, channels_list[i], bias=True))
-            modules.append(nn.Linear(input_channels, channels_list[i], bias=False)) # for antisymmetry
+            modules.append(nn.Linear(input_channels, channels_list[i], bias=True))
+            # modules.append(nn.Linear(input_channels, channels_list[i], bias=False)) # for antisymmetry (if edge)
             input_channels = channels_list[i]
 
             if i == len(channels_list) - 1:
                 break
 
             modules.append(nn.LayerNorm(channels_list[i]))
-            # modules.append(torch.nn.SiLU())
-            modules.append(torch.nn.Tanh()) # for antisymmetry
+            modules.append(torch.nn.SiLU())
+            # modules.append(torch.nn.Tanh()) # for antisymmetry (if edge)
 
         self.net = nn.Sequential(*modules)
 
