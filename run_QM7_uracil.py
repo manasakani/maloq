@@ -3,6 +3,7 @@ import_start = time.perf_counter()
 import os, sys, random
 import numpy as np
 import torch
+from e3nn.o3 import Irreps
 
 from fock_utils import utils_orca_out, fock_targets
 from train_utils import loss, utils_compute, splittrainer
@@ -11,10 +12,7 @@ from dataset_utils.ASEDataset import ASEAtomsData
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
 # Models
-from equiformer.network import SO2Net
-from equiformer.SO3 import CoefficientMappingModule
 from esen.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head     
-from e3nn.o3 import Irreps
 
 import_end = time.perf_counter()
 print("Time to do imports: ", import_end - import_start)
@@ -32,7 +30,7 @@ random.seed(42)
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_uracil.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_uracil_test'
+output_folder = 'outputs_QM7_uracil'
 # ---------------------------
 
 # --> Shuffle:
@@ -46,15 +44,15 @@ print("Not shuffling database, using the first molecule only for debugging")
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 4
+num_mp_layers = 3
 restart_backbone = False
 restart_head = False
 restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 1#500                     # Number of validation structures
-num_train = 1#25000  
+num_val = 500                     # Number of validation structures
+num_train = 25000  
 num_test = 4500
 num_epochs = 50000
 batch_size = 1                          # for training (batch size is always 1 for eval) - small batch for multi-gpu!
@@ -63,16 +61,16 @@ rcut_gaussian = 10.0                    # gaussian basis distance
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reflection_symmetry = False              # use only edges i,j where i<j (other edges are reflected)
-reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
+reflection_symmetry = True              # use only edges i,j where i<j (other edges are reflected)
+reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-3 #8e-5
+lr_init = 8e-5 #8e-5
 patience = 20                           # for scheduler
 threshold = 1e-8                        # for scheduler
 
@@ -131,10 +129,10 @@ test_start_mol += num_train+num_val
 test_end_mol += num_train+num_val
 
 ### DEBUG ###
-train_start_mol = 0
-train_end_mol = 1
-val_start_mol = 0
-val_end_mol = 1
+# train_start_mol = 0
+# train_end_mol = 1
+# val_start_mol = 0
+# val_end_mol = 1
 ### DEBUG ###
 
 if train_or_eval == 'train':
@@ -265,7 +263,7 @@ trainer = splittrainer.SplitTrainer(backbone=backbone,
                                     head=head,
                                     head_irreps=output_irreps,
                                     run_name='QM7_uracil_antisym',
-                                    save_frequency=50)
+                                    save_frequency=5)
 if train_or_eval == "train":
     trainer.train(num_epochs, 
                     train_loss_fxn, 

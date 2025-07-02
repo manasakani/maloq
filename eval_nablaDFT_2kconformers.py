@@ -29,7 +29,9 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> NablaDFT (tiny conformers)
-database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/test_2k_conformers.db")
+# database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/test_2k_conformers.db")
+database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
+
 dataset_name = 'nablaDFT'
 output_folder = 'outputs_nablaDFT_3xreduced'
 # ---------------------------
@@ -40,15 +42,15 @@ num_distance_basis = 256                # number of gaussian basis functions use
 hidden_dim = l_embedding_dim
 num_mp_layers = 2 
 model_name = 'esen'
-restart_backbone = True
-restart_head = True
+restart_backbone = False
+restart_head = False
 restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "eval"
 num_val = 8                             # Number of validation structures
 num_train = 2000 #len(database) 
-num_test = len(database)
+num_test = 1#len(database)
 num_epochs = 50000
 batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 8.0                    # connectivity cutoff (=2xrcut)
@@ -56,7 +58,7 @@ rcut_gaussian = 10.0                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reduce_edge = True                      # use only edges i,j where i<j (other edges are reflected)
+reduce_edge = False                      # use only edges i,j where i<j (other edges are reflected)
 reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
 reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
 
@@ -117,12 +119,10 @@ data_load_start = time.perf_counter()
 # train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
 test_start_mol, test_end_mol, test_local_num_mol = utils_compute.split_indices(rank, world_size, num_test)
 
-### DEBUG ### - 22 is the first molecule with a Br atom
-# train_start_mol = 22 
-# train_end_mol = 23 
-# val_start_mol = 22
-# val_end_mol = 23
-### DEBUG ###
+## DEBUG ### - 22 is the first molecule with a Br atom
+test_start_mol = 22 
+test_end_mol = 23 
+## DEBUG ###
 
 if train_or_eval == 'train':
     train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge)
