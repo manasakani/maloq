@@ -20,7 +20,7 @@ import numpy as np
 from abc import ABCMeta, abstractmethod
 
 # Fix this later!:
-sys.path.append('/home/manasakani/fairchem/src/')
+# sys.path.append('/home/manasakani/fairchem/src/')
 from fairchem.core.common.registry import registry
 from fairchem.core.common.utils import conditional_grad
 
@@ -148,19 +148,19 @@ class eSEN_Backbone(nn.Module):
             self.edge_channels,
         ]
 
-        # self.edge_degree_embedding = EdgeDegreeEmbedding(
-        #     sphere_channels=self.sphere_channels,
-        #     lmax=self.lmax,
-        #     mmax=self.mmax,
-        #     max_num_elements=self.max_num_elements,
-        #     edge_channels_list=self.edge_channels_list,
-        #     rescale_factor=5.0,
-        #     cutoff=self.cutoff,
-        #     mappingReduced=self.mappingReduced,
-        #     out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
-        #         self.lmax, self.mmax
-        #     )
-        # )
+        self.edge_degree_embedding = EdgeDegreeEmbedding(
+            sphere_channels=self.sphere_channels,
+            lmax=self.lmax,
+            mmax=self.mmax,
+            max_num_elements=self.max_num_elements,
+            edge_channels_list=self.edge_channels_list,
+            rescale_factor=5.0,
+            cutoff=self.cutoff,
+            mappingReduced=self.mappingReduced,
+            out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
+                self.lmax, self.mmax
+            )
+        )
 
         self.num_layers = num_layers
         self.hidden_channels = hidden_channels
@@ -280,7 +280,6 @@ class eSEN_Backbone(nn.Module):
         )
 
         # NOTE: The rotation matrices for opposite edges need to be symmetric for the antisymmetrization to work correctly.
-        # This needs to be consistent with how reverse_edge_map is defined in the dataset!
         # Note that if we set the wigner D matrices for opposite edges equal, half the edges will point to the -z axis
         forward_edges = None
 
@@ -289,7 +288,6 @@ class eSEN_Backbone(nn.Module):
         # COLLATE REVERSE_EDGE_MAP!
         if not (~forward_edge_mask).any(): # if we are considering all the edges
             for ind, w in enumerate(wigner):
-                # if not edges_ij[ind]:  # if this is a backward edge, we need to flip the sign of the wigner matrix
                 if ind != reverse_edge_map[ind]: # if this is a backward edge
                     # wigner[ind] = -1*wigner[data_dict["reverse_edge_map"][ind]]            
                     # wigner_inv[ind] = -1*wigner_inv[data_dict["reverse_edge_map"][ind]] 
@@ -307,7 +305,6 @@ class eSEN_Backbone(nn.Module):
         # rotated_edges_to_z_axis = torch.bmm(edge_rot_mat, graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
         # rotated_edges_to_z_axis = torch.bmm(wigner[:, 1:4, 1:4], graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
         # print("Rotated edges to z-axis: ", rotated_edges_to_z_axis) # only middle components should be nonzero (equal to distance)
-        # exit()
 
         ###############################################################
         # Initialize node and edge embeddings
@@ -334,7 +331,7 @@ class eSEN_Backbone(nn.Module):
                 dtype=data_dict["pos"].dtype,
             )
             # set l = 0 components to the distance expansion
-            # x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"]) # breaks antisymmetry
+            x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"])
         else:
             x_message_edge = None
 
@@ -359,15 +356,15 @@ class eSEN_Backbone(nn.Module):
         # print("zero_sum_check in esen_new:", zero_sum_check) # (water)
 
         # do edge degree embeddings for both nodes and edges: - this breaks symmetry of identical nodes..
-        # x_message_node = self.edge_degree_embedding(
-        #     x_message_node,
-        #     x_edge,
-        #     graph_dict["edge_distance"],
-        #     graph_dict["edge_index"],
-        #     graph_dict["forward_edge_mask"],
-        #     wigner_inv,
-        #     node_or_edge='node'
-        # )
+        x_message_node = self.edge_degree_embedding(
+            x_message_node,
+            x_edge,
+            graph_dict["edge_distance"],
+            graph_dict["edge_index"],
+            graph_dict["forward_edge_mask"],
+            wigner_inv,
+            node_or_edge='node'
+        )
 
         # if self.include_edges: # this is not antisymmetrized (yet) 
         #     x_message_edge = self.edge_degree_embedding(
@@ -624,15 +621,6 @@ class Fock_Irreps_Head(nn.Module):
 
         reverse_edge_map = batch.reverse_edge_map
 
-        # print("edge embedding final 0: ", edge_embeddings[0, :50]) # for debugging
-        # print("edge embedding final 3: ", edge_embeddings[3, :50]) # for debugging
-
-        # assert that the edges sum to zero:
-        # zero_sum_check1 = torch.sum(torch.sum(edge_embeddings[0, 1:4, :] - edge_embeddings[3, 1:4, :], dim=0) + torch.sum(edge_embeddings[1, 1:4, :] - edge_embeddings[4, 1:4, :], dim=0) + torch.sum(edge_embeddings[2, 1:4, :] - edge_embeddings[5, 1:4, :], dim=0), dim=0)
-        # print("zero_sum_check for l=1 in fock_irreps_head:", zero_sum_check1)
-        # zero_sum_check2 = torch.sum(torch.sum(edge_embeddings[0, 4:9, :] - edge_embeddings[3, 4:9, :], dim=0) - torch.sum(edge_embeddings[1, 4:9, :] - edge_embeddings[4, 4:9, :], dim=0) + torch.sum(edge_embeddings[2, 4:9, :] - edge_embeddings[5, 4:9, :], dim=0), dim=0)
-        # print("zero_sum_check for l=2 in fock_irreps_head:", zero_sum_check2)
-
         x_edge = emb["x_edge"]
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
         edge_mask = batch.edge_mask
@@ -660,10 +648,6 @@ class Fock_Irreps_Head(nn.Module):
         # need reflection on same device, could not access device from within constructor functions
         self.edge_m_reflection = torch.tensor(self.edge_m_reflection, dtype=edge_output.dtype, device=edge_output.device)
 
-        # print("edge_output[0] before permute: ", edge_output[0, :50]) # for debugging
-        # print("edge_output[3] before permute: ", edge_output[3, :50]) # for debugging
-        # exit()
-
         # Permute+reflect the irreps for the 'reverse' edges (the edge irreps are the same, but the order is different)
         # NOTE: vectorize this later! 
         if not (~edge_mask).any():              # if we are considering all the edges
@@ -675,14 +659,9 @@ class Fock_Irreps_Head(nn.Module):
                 # if source > target:
                 # if torch.sum(node_output[source]) > torch.sum(node_output[target]): 
                 if i != reverse_edge_map[i]: # if this is a backward edge
-                    # print("setting node_output[{}] to node_output[{}]".format(i, reverse_edge_map[i]))
                     edge_output[i] = edge_output[reverse_edge_map[i], self.edge_permutation] * self.edge_m_reflection
                     # edge_output[i] = edge_output[i, self.edge_permutation] * self.edge_m_reflection
         
-        # print("edge_output[0]: ", edge_output[0, :50]) # for debugging
-        # print("edge_output[3]: ", edge_output[3, :50]) # for debugging
-        # exit()
-
         return node_output, edge_output
 
     def get_edge_permutation(self):

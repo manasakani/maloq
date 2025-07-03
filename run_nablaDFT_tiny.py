@@ -30,14 +30,14 @@ random.seed(42)
 # --> NablaDFT (tiny)
 database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_tiny'
+output_folder = 'outputs_nablaDFT_tiny_edgereduce_5MP'
 # ---------------------------
 
 # --> Model settings:
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 3 
+num_mp_layers = 5 
 model_name = 'esen'
 restart_backbone = False
 restart_head = False
@@ -45,8 +45,8 @@ restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 8                             # Number of validation structures
-num_train = len(database) 
+num_val = 64                             # Number of validation structures
+num_train = len(database) - num_val
 num_epochs = 50000
 batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
@@ -54,9 +54,9 @@ rcut_gaussian = 10.0                     # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reduce_edge = False                      # use only edges i,j where i<j (other edges are reflected)
-reduce_node = False                      # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = False                # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_edge = True                      # use only edges i,j where i<j (other edges are reflected)
+reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
@@ -112,10 +112,10 @@ if rank == 0 and not os.path.exists(output_folder):
 data_load_start = time.perf_counter()
 
 train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
-# val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
+val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
 
-# val_start_mol += num_train  # the validation molecules start after training ones
-# val_end_mol += num_train
+val_start_mol += num_train  # the validation molecules start after training ones
+val_end_mol += num_train
 
 ### DEBUG ### - 22 is the first molecule with a Br atom
 # train_start_mol = 22 
@@ -125,6 +125,7 @@ train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indice
 ### DEBUG ###
 
 train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge)
+val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
@@ -246,7 +247,7 @@ scheduler = loss_scheduler(optimizer)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='nablaDFT',
+                                    run_name='nablaDFT_jul2',
                                     save_frequency=5)
 
 trainer.train(num_epochs, 
@@ -259,7 +260,7 @@ trainer.train(num_epochs,
                 node_target_name=node_target, 
                 edge_target_name=edge_target,
                 output_folder=output_folder,
-                val_loader=None,
+                val_loader=val_loader,
                 train_backbone=train_backbone,
                 train_head=train_head,
                 basis_transform=basis_transformation)

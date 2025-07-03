@@ -1,13 +1,13 @@
 #!/bin/bash
 
 #SBATCH --job-name=uracil
-#SBATCH --nodes=4
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=8
 #SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:8
-#SBATCH --time=20:00:00
+#SBATCH --time=08:00:00
 #SBATCH --error=error_file.err
-#SBATCH --output=out-train_uracil.out
+#SBATCH --output=out-train_water_uracil_5MP.out
 #   SBATCH --qos=ocp_high
 #   SBATCH --qos=alignment_shared
 #   SBATCH --partition=ocp

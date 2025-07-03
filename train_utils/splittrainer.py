@@ -132,8 +132,11 @@ class SplitTrainer():
                         this_node_target = getattr(batch, node_target_name)
                         this_edge_target = getattr(batch, edge_target_name)
 
-                        print("edge diff 0: ", torch.round(edge_output[0] - this_edge_target[0], decimals=7))
-                        print("edge diff 3: ", torch.round(edge_output[3] - this_edge_target[3], decimals=7))
+                        # print("edge diff 0: ", torch.round(edge_output[0, -50:] - this_edge_target[0, -50:], decimals=4))
+                        # print("real edge 0: ", torch.round(this_edge_target[0, 0:50], decimals=4))
+                        # print("real edge 3: ", torch.round(this_edge_target[3, 0:50], decimals=4))
+                        # exit()
+                        # print("edge diff 3: ", torch.round(edge_output[3] - this_edge_target[3], decimals=4))
                         # exit()
 
                         # do everything in the uncoupled basis:
@@ -403,13 +406,7 @@ class SplitTrainer():
                 # pass all the batches through:
                 if loss_target_string == 'fock_matrix':
 
-                    print("Running head...")
                     node_output, edge_output = self.head(backbone_out, batch)
-                    # zero_sum_check = torch.sum(torch.sum(edge_output[0] + edge_output[3], dim=0) + torch.sum(edge_output[1] + edge_output[4], dim=0) + torch.sum(edge_output[2] + edge_output[5], dim=0), dim=0)
-                    # print("zero_sum_check after head out:", zero_sum_check)
-                    # print("head out edge 0:", edge_output[0])
-                    # print("head out edge 3:", edge_output[3])
-                    # exit()
 
                     this_node_target = getattr(batch, node_target_name)
                     this_edge_target = getattr(batch, edge_target_name)

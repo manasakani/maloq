@@ -11,3 +11,4 @@ slurm-*
 *.db
 *.err
 *.sh
+wandb/

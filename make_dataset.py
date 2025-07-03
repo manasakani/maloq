@@ -95,7 +95,8 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
     print("basis: ", basis)
     print("full basis: ", full_basis)
 
-    structures.append(fock_targets.Fock_Targets(structure, cutoff, full_basis, fock_matrix, reflection_symmetry=True))
+    # structures.append(fock_targets.Fock_Targets(structure, cutoff, full_basis, fock_matrix, reflection_symmetry=False))
+    structures.append(fock_targets.Fock_Targets(structure, cutoff, basis, fock_matrix, reflection_symmetry=False)) # temp for water! Fix the full basis later
     target_time_end = time.perf_counter()
     print("Time to make targets: ", target_time_end - target_time_start, flush=True)
     

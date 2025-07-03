@@ -21,6 +21,11 @@ def init_edge_rot_mat(edge_distance_vec, rot_clip=False):
     edge_vec_0 = edge_distance_vec
     edge_vec_0_distance = torch.sqrt(torch.sum(edge_vec_0**2, dim=1))
 
+    # Keep half the edges reflected to maintain antisymmetry of the edges later:
+    # z_axis = torch.tensor([0.0, 1.0, 0.0], device=edge_distance_vec.device)
+    # closer_to_positive_z = torch.matmul(edge_vec_0, z_axis) >= 0
+    # edge_distance_vec[closer_to_positive_z] = -edge_distance_vec[closer_to_positive_z]
+
     # Make sure the atoms are far enough apart
     # assert torch.min(edge_vec_0_distance) < 0.0001
     if len(edge_vec_0_distance) > 0 and torch.min(edge_vec_0_distance) < 0.0001:
@@ -69,6 +74,8 @@ def init_edge_rot_mat(edge_distance_vec, rot_clip=False):
 
     edge_rot_mat_inv = torch.cat([norm_z, norm_x, norm_y], dim=2)
     edge_rot_mat = torch.transpose(edge_rot_mat_inv, 1, 2)
+
+    # edge_rot_mat[closer_to_positive_z] = -edge_rot_mat[closer_to_positive_z]
 
     if rot_clip:
         return edge_rot_mat

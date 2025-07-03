@@ -170,7 +170,7 @@ class Edgewise(torch.nn.Module):
         # SO2 convolution
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge) 
 
-        # Symmetrize the gating - COLLATE REVERSE EDGE MAP BEFORE USING THIS 
+        # Symmetrize the gating - COLLATE REVERSE EDGE MAP
         if not (~edge_mask).any():
             edges_ij = edge_index[0] < edge_index[1]
             for ind, g in enumerate(x_0_gating):
@@ -185,7 +185,7 @@ class Edgewise(torch.nn.Module):
 
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
-        
+
         # Compute the sum of the incoming neighboring messages for each target node
         new_embedding = torch.zeros(
             (x.shape[0],) + x_message.shape[1:],
@@ -196,7 +196,6 @@ class Edgewise(torch.nn.Module):
         # aggregate messages
         new_embedding.index_add_(0, edge_index[1][edge_mask], x_message)    # if using the same, can just skip the if below
         if (~edge_mask).any():                                              # if we are ignoring half the edges, need to now add the other half
-            # print("Using edge mask, aggregating messages for the other half of edges - +1")
             # new_embedding.index_add_(0, edge_index[0][edge_mask], x_message)  
             l_start = 0
             for l in range(self.lmax + 1): 
@@ -259,11 +258,6 @@ class Edgewise(torch.nn.Module):
 
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
-
-        # If not using the edge mask, check that the edges remain antisymmetrized
-        # if not (~edge_mask).any():
-        #     assert torch.allclose(torch.sum(x_message[:, 1:4, :]), torch.tensor(0.0), atol=1e-6), f"edge conservation check failed for l=1! Edge sum: {torch.sum(x_message)}"
-        #     assert torch.allclose(torch.sum(x_message[:, 9:16, :]), torch.tensor(0.0), atol=1e-6), f"edge conservation check failed for l=3! Edge sum: {torch.sum(x_message)}"
 
         # return new_embedding
         return x_message
@@ -417,14 +411,16 @@ class eSEN_Block(torch.nn.Module):
                 wigner_inv,
                 node_or_edge,
             )
-
+            # Note, remove this extra residual connection later
             x_message_edge = x_message_edge + x_res
-
-            x_res = x_message_edge
-
-            # assert torch.allclose(torch.sum(x_message_edge), torch.tensor(0.0), atol=1e-10), f"Edge conservation check failed after edgewise!"
+            x_res = x_message_edge # ran uracil with it though
 
             # x_message_edge = self.norm_2(x_message_edge)
             # x_message_edge = self.atom_wise(x_message_edge) # only doing this for the nodes, it's not antisymmetric
 
-            return x_message_edge + x_res
+            # If not using the edge mask, check that the edges remain antisymmetrized
+            if not (~edge_mask).any():
+                assert torch.allclose(torch.sum(x_message_edge[:, 1:4, :]), torch.tensor(0.0), atol=1e-6), f"edge conservation check failed for l=1! Edge sum: {torch.sum(x_message_edge)}"
+                assert torch.allclose(torch.sum(x_message_edge[:, 9:16, :]), torch.tensor(0.0), atol=1e-6), f"edge conservation check failed for l=3! Edge sum: {torch.sum(x_message_edge)}"
+
+            return x_message_edge # + x_res

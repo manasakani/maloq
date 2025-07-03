@@ -30,7 +30,7 @@ random.seed(42)
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_uracil.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_uracil'
+output_folder = 'outputs_QM7_uracil_5MP'
 # ---------------------------
 
 # --> Shuffle:
@@ -44,14 +44,14 @@ print("Not shuffling database, using the first molecule only for debugging")
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 3
-restart_backbone = False
-restart_head = False
-restart_optimizer = False
+num_mp_layers = 5
+restart_backbone = True 
+restart_head = True
+restart_optimizer = True
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 500                     # Number of validation structures
+num_val = 500                           # Number of validation structures
 num_train = 25000  
 num_test = 4500
 num_epochs = 50000
@@ -62,8 +62,8 @@ gaussian_width = 1.0                    # width of gaussians used to expand edge
 
 # Additional symmetries:
 reflection_symmetry = True              # use only edges i,j where i<j (other edges are reflected)
-reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_node = True                     # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True               # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
