@@ -29,6 +29,18 @@ def l1_padded_loss(output, target, req_irreps=None):
     l1_loss_type = nn.L1Loss(reduction='mean') 
     return l1_loss_type(output, target)
 
+def rmse_padded_loss(output, target, req_irreps=None):
+    mse_loss_type = nn.MSELoss(reduction='mean') 
+    mse = mse_loss_type(output, target)
+    rmse = torch.sqrt(mse)
+    return rmse
+
+def rmse_mse_padded_loss(output, target, req_irreps=None):
+    mse_loss_type = nn.MSELoss(reduction='mean') 
+    mse = mse_loss_type(output, target)
+    rmse = torch.sqrt(mse)
+    return rmse + mse
+
 def combined_padded_loss(output, target, req_irreps=None):
 
     mse_loss = nn.MSELoss(reduction='mean') 

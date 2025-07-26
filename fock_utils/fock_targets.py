@@ -4,6 +4,7 @@ from . import utils_tensor_decomp
 import torch
 import time
 from ase.neighborlist import NeighborList
+import random
 
 class Fock_Targets:
     """
@@ -11,7 +12,7 @@ class Fock_Targets:
     Input target shape to standardize across molecules with different elements
     """
 
-    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix=None, target_len=0, dtype=torch.float32, reflection_symmetry=False, compute_fock_eigenvalues=True):
+    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix=None, target_len=0, dtype=torch.float32, reflection_symmetry=False, compute_fock_eigenvalues=True, scale_shift_data=None):
         """
         atoms - ASE atoms object of the atomic structure
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]] 
@@ -30,7 +31,7 @@ class Fock_Targets:
         self.dtype = dtype
         self.reflection_symmetry = reflection_symmetry
 
-        # Atoms and connectivity list:
+        # --> Atoms and connectivity list:
         num_atoms = len(atoms)
         neighbours = NeighborList(np.ones(num_atoms)*cutoff, skin=0, self_interaction=False, bothways=True)
         neighbours.update(self.atoms)
@@ -45,9 +46,23 @@ class Fock_Targets:
         self.orbitals_per_atom = ([ sum([(2*l+1)    
                                          for l in orbital_basis[atom_number]]) 
                                          for atom_number in self.atomic_numbers ])
+        
+        # --> Helper variables for edge symmetry conditions
+        # random_int = random.randint(0, 1000)    # randomly select whether to use forward or backwards edges in this graph
+        # if random_int % 2 == 0:
+        #     print("using forward edges (i < j) for the graph")
+        #     self.edge_type = "i < j"            
+        # else:
+        #     print("using backward edges (i > j) for the graph")
+        #     self.edge_type = "i > j"            
+
+        self.edge_type = "i < j"              # keep edges i, j where i < j or i > j
 
         if self.reflection_symmetry:
-            self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]    # keep edges i, j where i < j
+            if self.edge_type == "i < j":
+                self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]    
+            elif self.edge_type == "i > j":
+                self.forward_edge_mask = self.neighbour_list[0] > self.neighbour_list[1]
         else:
             self.forward_edge_mask = [True]*len(self.neighbour_list[0])                 # keep all edges
         
@@ -55,12 +70,29 @@ class Fock_Targets:
         self.reverse_edge_map = [-1] * len(self.neighbour_list[0])  # Initialize with -1 for safety
         edge_dict = {(i.item(), j.item()): idx for idx, (i, j) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1]))}
         for ind, (i, j) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1])):
-            if i < j:
+
+            if self.edge_type == "i < j":
+                edge_condition = i < j
+            elif self.edge_type == "i > j":
+                edge_condition = i > j
+
+            if edge_condition:
                 self.reverse_edge_map[ind] = ind
             else:
                 self.reverse_edge_map[ind] = edge_dict.get((j.item(), i.item()), None)
+
+        # TEST: randomly flip one of the true/false pairs in the forward_edge_mask corresponding to the same edges:
+        # print("forward edge mask: ", self.forward_edge_mask, flush=True)
+        # print("reverse edge map: ", self.reverse_edge_map, flush=True)
+        # for i in range(len(self.forward_edge_mask)):
+        #     random_int = random.randint(0, 1000)   
+        #     if not self.forward_edge_mask[i] and random_int % 2 == 0:
+        #         self.forward_edge_mask[i] = True
+        #         self.forward_edge_mask[self.reverse_edge_map[i]] = False  # flip the corresponding backward edge 
+        # self.reverse_edge_map = [0, 4, 5, 0, 4, 5]
+        # TEST: randomly flip one of the true/false pairs in the forward_edge_mask corresponding to the same edges:
     
-        # Analyze structure of orbital interactions
+        # --> Analyze structure of orbital interactions
         targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions
         self.equivariant_blocks, out_js_list, self.orbital_starts = utils_tensor_decomp.process_targets(self.orbital_basis, targets)
         self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
@@ -75,6 +107,7 @@ class Fock_Targets:
         # If the fock targets should be computed on-the-fly rather than loaded from the db:
         self.node_labels = None
         self.edge_labels = None    
+        self.scale_shift_data = None
         if fock_matrix is not None:
 
             self.fock_matrix = torch.from_numpy(fock_matrix).to(self.device)
@@ -89,6 +122,10 @@ class Fock_Targets:
 
             # Decompose the Fock matrix into orbital blocks and insert them into the targets
             self.make_targets()
+
+            if scale_shift_data is not None:
+                self.scale_shift_data = scale_shift_data
+                self.scale_shift_node_blocks()
 
     def make_targets(self):
 
@@ -169,6 +206,73 @@ class Fock_Targets:
         self.edge_dist = torch.zeros((len(indices0), 4), dtype=self.dtype)
         self.edge_dist[:, 1:4] = torch.from_numpy(self.atoms.get_distances(indices1, indices0, vector=True))    # Vector components
         self.edge_dist[:, 0] = torch.linalg.norm(self.edge_dist[:, 1:4], dim=-1, keepdim=False)                 # Scalar distances
+    
+    def scale_shift_node_blocks(self):
+        """
+        Scale the l=0 values in the targets
+        scales - a list of scaling factors for each l=0 irrep component
+        shifts - a list of shifts for each l=0 irrep component
+        scalar_indices - a list of indices in the node_labels that correspond to the l=0 irreps
+        self.node_labels - the node labels that will be scaled
+        """
+
+        means = self.scale_shift_data['element_scalar_means']
+        stds = self.scale_shift_data['element_scalar_stds']
+        scalar_indices = self.scale_shift_data['scalar_irrep_indices']
+
+        for i, (node_block, z) in enumerate(zip(self.node_labels, self.atomic_numbers)):
+            z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
+
+            if z not in means or z not in stds:
+                raise ValueError(f"No scaling/shifting data found for atomic number {z}! Check /dataset.")
+
+            mean_vals = means[z]
+            std_vals = stds[z]
+
+            if len(mean_vals) != len(scalar_indices):
+                raise ValueError(f"Mismatch in number of mean/std values and scalar indices for Z={z}. Basis might be wrong.")
+
+
+            for idx_offset, idx in enumerate(scalar_indices):
+                
+                if std_vals[idx_offset] == 0.0: # Only scale/unscale if std != 0.0
+                    continue
+
+                # print("scaling and shifting node block idx: ", idx, "by mean: ", mean_vals[idx_offset], "std: ", std_vals[idx_offset], flush=True)
+                node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
+
+            # Save back the updated block
+            self.node_labels[i] = node_block
+    
+    def unscale_shift_node_blocks(self, node_blocks):
+        """
+        Undo the scaling and shifting applied to the l=0 values in the targets.
+        """
+
+        if self.scale_shift_data is None:
+            print("Possible Error! No scale/shift data provided! Not unscaling")
+            return node_blocks
+            
+        means = self.scale_shift_data['element_scalar_means']
+        stds = self.scale_shift_data['element_scalar_stds']
+        scalar_indices = self.scale_shift_data['scalar_irrep_indices']
+
+        for i, (node_block, z) in enumerate(zip(node_blocks, self.atomic_numbers)):
+            z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
+
+            mean_vals = means[z]
+            std_vals = stds[z]
+
+            for idx_offset, idx in enumerate(scalar_indices):
+                if std_vals[idx_offset] == 0.0: # Only scale/unscale if std != 0.0
+                    continue
+                # print("applying unscale/shift to node block idx: ", idx, flush=True)
+                node_block[idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
+
+            node_blocks[i] = node_block
+        
+        return node_blocks
+
 
     def get_cartesian_and_spherical_rotations_to_yzx(self):
         """
@@ -309,6 +413,16 @@ class Fock_Targets:
                 edge_counter += 1
 
         return H_prev
+
+    def undo_scale_shift(self, node_blocks):
+
+        # Unscale and shift the node blocks!
+        if self.scale_shift_data is None:
+            print("Possible Error! No scale/shift data provided! Not unscaling")
+            return node_blocks
+        else:
+            print("Unscaling node blocks with scale/shift data")
+            return self.unscale_shift_node_blocks(node_blocks)
     
 
     def reconstruct_matrix(self, node_blocks, edge_blocks, symmetrize_matrix_if_needed=False):

@@ -59,7 +59,7 @@ class SplitTrainer():
             train_head=True,
             basis_transform=None,
             compute_uncoupled_loss=True,
-            min_lr=1e-8):
+            min_lr=1e-15):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
         # torch.autograd.set_detect_anomaly(True)
@@ -177,6 +177,11 @@ class SplitTrainer():
                 scaler.step(optimizer)
                 scaler.update()
                 backward_end = time.perf_counter()
+
+                # for name, param in self.backbone.named_parameters():
+                #     if param.grad is None:
+                #         print(f"Parameter {name} did not receive a gradient")
+                        
                 # if rank == 0:
                 #     print("Time per forward pass: ", forward_end - forward_start)
                 #     print("Time for both forward and backward pass: ", backward_end - forward_start)
@@ -411,6 +416,10 @@ class SplitTrainer():
                     this_node_target = getattr(batch, node_target_name)
                     this_edge_target = getattr(batch, edge_target_name)
 
+                    # Undo scale/shift layers:
+                    node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
+                    this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target)
+
                     # Transform back to uncoupled basis:
                     print("Transforming to uncoupled basis...")
                     uncoupled_node_outputs = basis_transform.get_H(node_output)
@@ -434,12 +443,11 @@ class SplitTrainer():
 
                     # reassemble the matrix 
                     print("Reconstructing matrices...")
-                    output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=False)
-                    label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=False)
+                    output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=True)
+                    label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
 
                     # import matplotlib.pyplot as plt
                     # matrix_out = output_fock_matrix.cpu().numpy()
-                    # # set all elemnts of matrix_out that are less than 1e-10 to 0
                     # matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
                     # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
                     # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
@@ -452,7 +460,7 @@ class SplitTrainer():
                     # matrix_out = label_fock_matrix.cpu().numpy()
                     # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
                     # plt.colorbar()
-                    # plt.savefig("labed_fock.png", dpi=300, bbox_inches='tight')
+                    # plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
                     # plt.close()
                     # exit()
 
@@ -462,9 +470,9 @@ class SplitTrainer():
                     # plt.savefig("diff_fock.png", dpi=300, bbox_inches='tight')
                     # plt.close()
 
-                    plt.figure(figsize=(4, 3))
-                    self.plot_eigenvalues(label_fock_matrix.cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
-                    self.plot_eigenvalues(output_fock_matrix.cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
+                    # plt.figure(figsize=(4, 3))
+                    # self.plot_eigenvalues(label_fock_matrix.cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
+                    # self.plot_eigenvalues(output_fock_matrix.cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
 
                     # Compute the eigenvalues and eigenvalue error
                     print("Computing eigenvalues...")
@@ -476,13 +484,13 @@ class SplitTrainer():
 
                     # losstype = nn.L1Loss(reduction='mean') 
                     # print(losstype(label_eigenvalues, pred_eigenvalues))
-                    plt.xlabel('Eigenvalue #')
-                    plt.ylabel('Eigenvalue ($E_h$)')
-                    # plt.yscale('log')
-                    plt.legend()
-                    plt.grid(True)
-                    plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
-                    plt.close()
+                    # plt.xlabel('Eigenvalue #')
+                    # plt.ylabel('Eigenvalue ($E_h$)')
+                    # # plt.yscale('log')
+                    # plt.legend()
+                    # plt.grid(True)
+                    # plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
+                    # plt.close()
 
                     node_outputs.update(node_orbital_blocks_output)
                     edge_outputs.update(edge_orbital_blocks_output)
@@ -561,8 +569,6 @@ class SplitTrainer():
     def visualize_embeddings(self, embs, output_folder, keyword, plot_log=True):
 
         for i, emb in enumerate(embs):
-
-            print(emb[0:4, :])
 
             if not plot_log:
                 plt.imshow(emb.cpu().detach().numpy(), cmap='RdBu', vmin=-0.5, vmax=0.5)

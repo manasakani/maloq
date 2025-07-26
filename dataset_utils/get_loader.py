@@ -25,7 +25,7 @@ orbital_basis_def2_svp_QM7 = {9: [0, 0, 0, 1, 1, 2],
                               1: [0, 0, 1]}
 
 
-def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, reflection_symmetry=True, make_fock_targets=True):
+def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, reflection_symmetry=True, make_fock_targets=True, scale_shift_data=None):
     """
     Make dataloader with the given indices of the mocules in the input database
     """
@@ -60,9 +60,11 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             if dataset_name == "QM7":                 
                 hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate 
             
-            graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, reflection_symmetry=reflection_symmetry)
+            graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, reflection_symmetry=reflection_symmetry,
+                                                      scale_shift_data=scale_shift_data)
         else:
-            graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, None, dtype=dtype, reflection_symmetry=reflection_symmetry)
+            graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, None, dtype=dtype, reflection_symmetry=reflection_symmetry,
+                                                      scale_shift_data=scale_shift_data)
 
         # collect only a subset of the edges (use reflection symmetry in the network)
         forward_edge_mask = graph_targets.forward_edge_mask
