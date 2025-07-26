@@ -213,8 +213,10 @@ class eSEN_Backbone(nn.Module):
             self.norm_type,
             lmax=self.lmax,
             num_channels=self.sphere_channels,
-            centering=False # for antisymmetry, removes the bias!
+            affine=True, centering=True # false for antisymmetry, removes the bias!
         )
+
+        # affine=True, centering=True # for antisymmetry, removes the bias!
 
         # # Irreps of the internal embeddings
         # build_irreps = []
@@ -251,8 +253,8 @@ class eSEN_Backbone(nn.Module):
         data_dict = {
             "pos": batch.pos,
             "edge_index": batch.edge_index.squeeze(0).reshape(2, -1),
-            "forward_edge_mask": batch.edge_mask,
-            "reverse_edge_map": batch.reverse_edge_map,
+            "forward_edge_mask": batch.edge_mask if "edge_mask" in batch else None,
+            "reverse_edge_map": batch.reverse_edge_map if "reverse_edge_map" in batch else None,
             "edge_dist": batch.edge_attr,
             "nedges": len(batch.edge_index[0]),
             "natoms": len(batch.pos),
@@ -262,6 +264,11 @@ class eSEN_Backbone(nn.Module):
         forward_edge_mask = data_dict["forward_edge_mask"]  # which edges in edge_index are 'forward', and computed explicitly. eg: [T, T, T, F, F, F] for H2O with [[0,0,1,1,2,2], [1,2,2,0,0,1]]
         reverse_edge_map = data_dict["reverse_edge_map"]    # the elements corresponding to T in forward_edge_mask have their own index, and the ones corresponding to F have the index of their forward edge
                                                             # for the H2o example, reverse_edge_map = [0, 1, 2, 0, 1, 2] because the last three are the backward edges of the first three
+
+        # In case these are not provided, we use all the edges
+        if forward_edge_mask is None:
+            forward_edge_mask = torch.ones(data_dict["edge_index"].shape[1], dtype=torch.bool, device=data_dict["pos"].device)
+            reverse_edge_map = torch.arange(data_dict["edge_index"].shape[1], dtype=torch.long, device=data_dict["pos"].device)
 
         # The input edges are in xyz coordinates, we need to rotate them to the yzx coordinates expected by e3nn to be consistent with the data       
         edge_distance_vec = data_dict["edge_dist"][:, [2, 3, 1]][forward_edge_mask]  
@@ -349,11 +356,8 @@ class eSEN_Backbone(nn.Module):
             data_dict["atomic_numbers"][graph_dict["edge_index"][1]][forward_edge_mask]
         )
 
-        # x_edge needs to be symmetric over edges:
-        x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) # + torch.cat((target_embedding, edge_distance_embedding, source_embedding), dim=1)      # symmetrized
-
-        # zero_sum_check = torch.sum(torch.sum(x_edge[0] - x_edge[3], dim=0) + torch.sum(x_edge[1] - x_edge[4], dim=0) + torch.sum(x_edge[2] - x_edge[5], dim=0), dim=0)
-        # print("zero_sum_check in esen_new:", zero_sum_check) # (water)
+        # x_edge needs to be symmetric over edges: (testing with sym)
+        x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) + torch.cat((target_embedding, edge_distance_embedding, source_embedding), dim=1)      # symmetrized
 
         # do edge degree embeddings for both nodes and edges: - this breaks symmetry of identical nodes..
         x_message_node = self.edge_degree_embedding(
@@ -620,11 +624,11 @@ class Fock_Irreps_Head(nn.Module):
         node_embeddings = emb["node_embeddings"]
         edge_embeddings = emb["edge_embeddings"]
 
-        reverse_edge_map = batch.reverse_edge_map
+        # reverse_edge_map = batch.reverse_edge_map if "reverse_edge_map" in batch else None
+        # edge_mask = batch.edge_mask if "edge_mask" in batch else None
 
         x_edge = emb["x_edge"]
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
-        edge_mask = batch.edge_mask
         
         if self.head_type == 'linear':
             node_embeddings = self.stack_irreps(node_embeddings)
@@ -951,6 +955,69 @@ class Seperable_Linear_Fock_Head(nn.Module):
             # convert from simplified to full output irreps        
             return self.convert_to_output_irreps(out)
 
+@registry.register_model("esen_linear_energy_head")
+class Linear_Energy_Head(nn.Module):
+    def __init__(self, backbone, include_edges=True):
+        super().__init__()
+        # self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=0)
+        # self.linear = nn.Linear(backbone.sphere_channels, 1, bias=True)  
+
+        self.include_edges = include_edges
+
+        self.linear = nn.Sequential(
+            nn.Linear(backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
+            nn.SiLU(),
+            nn.Linear(2*backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
+            nn.SiLU(),
+            nn.Linear(2*backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
+            nn.SiLU(),
+            nn.Linear(2*backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
+            nn.SiLU(),
+            nn.Linear(2*backbone.sphere_channels, 1, bias=True),
+        )
+        self.lmax = backbone.lmax
+
+    def forward(self, emb: dict[str, torch.Tensor], batch):
+
+        edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
+        enegies_for_linear = emb["node_embeddings"].narrow(1, 0, 1)
+        edge_mask = batch.edge_mask
+
+        # aggregate the edges onto every node:
+        if self.include_edges:
+            agg_embedding = torch.zeros(
+                (emb["node_embeddings"].shape[0],) + emb["edge_embeddings"].shape[1:],
+                dtype=emb["node_embeddings"].dtype,
+                device=emb["node_embeddings"].device,
+            )
+
+            agg_embedding.index_add_(0, edge_index[1][edge_mask], emb["edge_embeddings"]) 
+            if (~edge_mask).any():                                              # if we are ignoring half the edges, need to now add the other half
+                l_start = 0
+                for l in range(self.lmax + 1): 
+                    l_end = l_start + (2 * l + 1) 
+                    parity = 1 if l % 2 == 0 else -1
+                    agg_embedding[:, l_start:l_end, :].index_add_(
+                        0, edge_index[0][edge_mask], parity * emb["edge_embeddings"][:, l_start:l_end, :]
+                    )
+                    l_start = l_end
+        else:
+            agg_embedding = emb["node_embeddings"]
+
+        energies = self.linear(agg_embedding.narrow(1, 0, 1))
+        energies = energies.squeeze(-1).squeeze(-1)  # remove the last two dimensions
+
+        molecule_indices = torch.cat([
+            torch.full((num_atoms,), i, dtype=torch.long, device=energies.device)
+            for i, num_atoms in enumerate(batch.num_atoms_in_molecule)
+        ])
+
+        # atom-resolved energy -> molecule-resolved energy
+        num_molecules = batch.num_atoms_in_molecule.size(0)
+        energies_per_molecule = torch.zeros(num_molecules, device=energies.device)
+        energies_per_molecule = energies_per_molecule.scatter_add(0, molecule_indices, energies)
+
+        return {"energies": energies_per_molecule}
 
 @registry.register_model("esen_linear_force_head")
 class Linear_Force_Head(nn.Module):

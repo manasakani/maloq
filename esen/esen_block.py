@@ -150,7 +150,7 @@ class Edgewise(torch.nn.Module):
         x_target = x[edge_index[1][edge_mask]]
 
         # Create antisymmetrized messages (according to the parity of the irreps)
-        # x_message = torch.cat((x_source, x_target), dim=2) - torch.cat((x_target, x_source), dim=2)  
+        # x_message = torch.cat((x_source, x_target), dim=2) + torch.cat((x_target, x_source), dim=2)  
 
         x_message = torch.zeros((x_source.shape[0], x_source.shape[1], 2 * x_source.shape[2]), dtype=x_source.dtype, device=x_source.device)
         l_start = 0

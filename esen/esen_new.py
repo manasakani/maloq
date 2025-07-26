@@ -656,7 +656,6 @@ class Fock_Irreps_Head(nn.Module):
                 target = edge_index[1][i]
                 
                 # NOTE: we look at source > target because this uniquely defines the direction of the edge,
-                # if source > target:
                 # if torch.sum(node_output[source]) > torch.sum(node_output[target]): 
                 if i != reverse_edge_map[i]: # if this is a backward edge
                     edge_output[i] = edge_output[reverse_edge_map[i], self.edge_permutation] * self.edge_m_reflection

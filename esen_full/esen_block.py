@@ -146,20 +146,20 @@ class Edgewise(torch.nn.Module):
         x_target = x[edge_index[1][edge_mask]]
 
         # Create regular messages 
-        # x_message = torch.cat((x_source, x_target), dim=2)
+        x_message = torch.cat((x_source, x_target), dim=2) - torch.cat((x_target, x_source), dim=2)
         
         # Create antisymmetrized messages (according to the parity of the irreps)
-        x_message = torch.zeros((x_source.shape[0], x_source.shape[1], 2 * x_source.shape[2]), dtype=x_source.dtype, device=x_source.device)
-        l_start = 0
-        for l in range(self.lmax + 1):   
-            l_end = l_start + (2 * l + 1) 
-            # even irreps are the same for forward and backward edges
-            if l % 2 == 0:
-                x_message[:, l_start:l_end, :] = torch.cat((x_source[:, l_start:l_end, :], x_target[:, l_start:l_end, :]), dim=2) + torch.cat((x_target[:, l_start:l_end, :], x_source[:, l_start:l_end, :]), dim=2) 
-            # odd irreps are reflected for forward and backward edges
-            else:
-                x_message[:, l_start:l_end, :] = torch.cat((x_source[:, l_start:l_end, :], x_target[:, l_start:l_end, :]), dim=2) - torch.cat((x_target[:, l_start:l_end, :], x_source[:, l_start:l_end, :]), dim=2)
-            l_start = l_end
+        # x_message = torch.zeros((x_source.shape[0], x_source.shape[1], 2 * x_source.shape[2]), dtype=x_source.dtype, device=x_source.device)
+        # l_start = 0
+        # for l in range(self.lmax + 1):   
+        #     l_end = l_start + (2 * l + 1) 
+        #     # even irreps are the same for forward and backward edges
+        #     if l % 2 == 0:
+        #         x_message[:, l_start:l_end, :] = torch.cat((x_source[:, l_start:l_end, :], x_target[:, l_start:l_end, :]), dim=2) + torch.cat((x_target[:, l_start:l_end, :], x_source[:, l_start:l_end, :]), dim=2) 
+        #     # odd irreps are reflected for forward and backward edges
+        #     else:
+        #         x_message[:, l_start:l_end, :] = torch.cat((x_source[:, l_start:l_end, :], x_target[:, l_start:l_end, :]), dim=2) - torch.cat((x_target[:, l_start:l_end, :], x_source[:, l_start:l_end, :]), dim=2)
+        #     l_start = l_end
 
         # Rotate the irreps to align with the edge
         x_message = torch.bmm(wigner, x_message)
@@ -222,18 +222,18 @@ class Edgewise(torch.nn.Module):
         x_target = x[edge_index[1][edge_mask]]
 
         # Create regular messages
-        # x_message = torch.cat((x_source, x_target), dim=2) 
+        x_message = torch.cat((x_source, x_target), dim=2) - torch.cat((x_target, x_source), dim=2)
 
         # Create antisymmetrized messages (according to the parity of the irreps)
-        x_message = torch.zeros((x_source.shape[0], x_source.shape[1], 2 * x_source.shape[2]), dtype=x_source.dtype, device=x_source.device)
-        l_start = 0
-        for l in range(self.lmax + 1):   
-            l_end = l_start + (2 * l + 1) 
-            if l % 2 == 0:
-                x_message[:, l_start:l_end, :] = torch.cat((x_source[:, l_start:l_end, :], x_target[:, l_start:l_end, :]), dim=2) + torch.cat((x_target[:, l_start:l_end, :], x_source[:, l_start:l_end, :]), dim=2) 
-            else:
-                x_message[:, l_start:l_end, :] = torch.cat((x_source[:, l_start:l_end, :], x_target[:, l_start:l_end, :]), dim=2) - torch.cat((x_target[:, l_start:l_end, :], x_source[:, l_start:l_end, :]), dim=2)
-            l_start = l_end
+        # x_message = torch.zeros((x_source.shape[0], x_source.shape[1], 2 * x_source.shape[2]), dtype=x_source.dtype, device=x_source.device)
+        # l_start = 0
+        # for l in range(self.lmax + 1):   
+        #     l_end = l_start + (2 * l + 1) 
+        #     if l % 2 == 0:
+        #         x_message[:, l_start:l_end, :] = torch.cat((x_source[:, l_start:l_end, :], x_target[:, l_start:l_end, :]), dim=2) + torch.cat((x_target[:, l_start:l_end, :], x_source[:, l_start:l_end, :]), dim=2) 
+        #     else:
+        #         x_message[:, l_start:l_end, :] = torch.cat((x_source[:, l_start:l_end, :], x_target[:, l_start:l_end, :]), dim=2) - torch.cat((x_target[:, l_start:l_end, :], x_source[:, l_start:l_end, :]), dim=2)
+        #     l_start = l_end
 
         # Rotate the irreps to align with the edge
         x_message = torch.bmm(wigner, x_message)
@@ -337,15 +337,15 @@ class eSEN_Block(torch.nn.Module):
             include_edges=include_edges
         )
         
-        # if node_or_edge == 'node':
-        self.norm_1 = get_normalization_layer(
-            norm_type, lmax=self.lmax, num_channels=sphere_channels, affine=False # centering=True breaks antisym, but only used for nodes now
-        )
+        if node_or_edge == 'node':
+            self.norm_1 = get_normalization_layer(
+                norm_type, lmax=self.lmax, num_channels=sphere_channels, affine=True, centering=True # centering=True breaks antisym, but only used for nodes now
+            )
 
         self.norm_2 = get_normalization_layer(
-            norm_type, lmax=self.lmax, num_channels=sphere_channels, affine=False # centering=True breaks antisym, but only used for nodes now
+            norm_type, lmax=self.lmax, num_channels=sphere_channels, affine=True, centering=True # centering=True breaks antisym, but only used for nodes now
         )
-    
+        
         self.atom_wise = SpectralAtomwise(
             sphere_channels=sphere_channels,
             hidden_channels=hidden_channels,
@@ -396,7 +396,7 @@ class eSEN_Block(torch.nn.Module):
         else:
             x_res = x_message_edge
 
-            x_message_edge = self.norm_1(x_message_edge)
+            # x_message_edge = self.norm_1(x_message_edge)
 
             x_message_edge = self.edge_wise(
                 x_message_node,
