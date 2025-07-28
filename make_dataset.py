@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from ase import Atoms
 from ase.db import connect
 from pathlib import Path
+from ase.visualize import view
 
 import torch
 import torch.distributed as dist
@@ -27,8 +28,12 @@ structure_folders = [f for f in os.listdir(structures_dir)
 orca_file = 'orca.out'
 cutoff = 5.0            
 num_local_structures = int(args.max_structures) # use to impose only making a subset
+scale_and_shift = True
+dataset_name = 'omol' 
 
-print(structure_folders)
+# Orbital basis for the omol tzvpd dataset:
+full_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
+full_basis = {k: sorted(v) for k, v in full_basis.items()} # The basis must be in l-major
 
 # ----------------------------
 # --> Initialize compute setup
@@ -53,7 +58,7 @@ for i in range(1, len(counts)):
 folder_start_idx = displacements[rank]
 folder_end_idx = displacements[rank] + counts[rank]
 local_num_folders = counts[rank]
-print(f"Processing {total_num_folders} structures between {world_size} GPUs")
+print(f"Processing {total_num_folders} structures between {world_size} GPUs", flush=True)
 
 # ----------------------------
 # --> Make the structures
@@ -64,7 +69,7 @@ big_time_start = time.perf_counter()
 for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx:folder_end_idx]):
     if folder_idx >= num_local_structures:
         print("Reached max set structure per rank, exiting")
-        break
+        break    
 
     print(f"Rank {rank} of {world_size} is working on folder {structure_folder}", flush=True)
     time_start = time.perf_counter()
@@ -76,13 +81,24 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
 
     # Atomic and electronic structure:
     read_time_start = time.perf_counter()
-    fock_matrix, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath)
+    fock_matrix, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath) 
+    #NOTE: The basis returned by utils_orca_out (taken from the output file) is not in the right order for the diffuse functions!
 
-    # Get basis in correct l-order for rearranging matrix:
-    basis = {element: basis_sets.def2_tzvpd[utils_orca_out.periodic_table_number[element]] for element in elements}
+    # Get basis (for this structure) in the correct l-order for rearranging matrix:
+    basis = {element: basis_sets.def2_tzvpd[utils_orca_out.periodic_table_number[element]] for element in elements} # not in l-major order yet
+    fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
+    fock_matrix = utils_orca_out.sort_by_l(fock_matrix, basis, np.array(elements))  # Shift into l-major (in case of diffuse functions)
+    basis = {k: sorted(v) for k, v in basis.items()} # now the basis is in l-major order
 
-    # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
-    fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, np.array(elements))
+    # Display the fock matrix:
+    plt.imshow(fock_matrix, cmap='viridis', interpolation='nearest', vmin=-0.5, vmax=0.5)
+    plt.colorbar()
+    plt.savefig(f"fock_matrix_{structure_folder}.png", bbox_inches='tight', dpi=300)
+    plt.close()
+    ###
+
+    # print("basis: ", basis)
+    # print("full basis: ", full_basis)
 
     structure = Atoms(elements, positions=coordinates)  
     read_time_end = time.perf_counter()
@@ -90,13 +106,28 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
 
     # Create fock targets:
     target_time_start = time.perf_counter()
-    full_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
 
-    print("basis: ", basis)
-    print("full basis: ", full_basis)
+    if scale_and_shift:
+        print("Getting scale and shift factors...", flush=True)
+        scale_shift_file = 'element_scale_shifts_water_' + dataset_name + '.pt'
+        print(f"Scale and shift file: {scale_shift_file}", flush=True)
+        if scale_shift_file not in os.listdir('./fock_datasets/'):
+            print("[Computing element scale and shift factors for the dataset]", flush=True)
+            get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge)
+        else:
+            print("[Loading element scale and shift factors from file]", flush=True)
+            scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
+            scale_shift_data = {
+                "element_scalar_means": scale_shift_data["element_scalar_means"],  # dict[int -> list[float]]
+                "element_scalar_stds": scale_shift_data["element_scalar_stds"],    # dict[int -> list[float]]
+                "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"]   # list[int]
+            }
+    else:
+        print("Not scaling or shifting the dataset")
+        scale_shift_data = None
 
-    # structures.append(fock_targets.Fock_Targets(structure, cutoff, full_basis, fock_matrix, reflection_symmetry=False))
-    structures.append(fock_targets.Fock_Targets(structure, cutoff, basis, fock_matrix, reflection_symmetry=False)) # temp for water! Fix the full basis later
+    # structures.append(fock_targets.Fock_Targets(structure, cutoff, full_basis, fock_matrix, reflection_symmetry=False, scale_shift_data=scale_shift_data))
+    structures.append(fock_targets.Fock_Targets(structure, cutoff, basis, fock_matrix, reflection_symmetry=False, scale_shift_data=scale_shift_data)) # temp for water! Fix the full basis later
     target_time_end = time.perf_counter()
     print("Time to make targets: ", target_time_end - target_time_start, flush=True)
     
@@ -104,7 +135,8 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
     print("Total time for one structure: ", time_end - time_start, flush=True)
 
 big_time_end = time.perf_counter()
-print(f"Time to make {local_num_folders} targets: {big_time_end - big_time_start}", flush=True)
+num_targets_made = min(world_size * num_local_structures, local_num_folders)
+print(f"Time to make {num_targets_made} targets: {big_time_end - big_time_start}", flush=True)
 
 # ----------------------------
 # --> make an ASE DB:

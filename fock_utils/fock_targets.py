@@ -12,7 +12,7 @@ class Fock_Targets:
     Input target shape to standardize across molecules with different elements
     """
 
-    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix=None, target_len=0, dtype=torch.float32, reflection_symmetry=False, compute_fock_eigenvalues=True, scale_shift_data=None):
+    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix=None, target_len=0, dtype=torch.float32, reflection_symmetry=False, compute_fock_eigenvalues=False, scale_shift_data=None):
         """
         atoms - ASE atoms object of the atomic structure
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]] 
@@ -130,7 +130,6 @@ class Fock_Targets:
     def make_targets(self):
 
         self.target_len = self.get_target_len()                                 # each target should fit in a NxN matrix (to be flattened)
-        # print("Single target length: ", self.target_len)
 
         # initialize torch tensors of size N for nodes and (forward) edges
         node_labels = torch.zeros(( len(self.atoms), self.target_len ), dtype=self.dtype, device=self.device)
@@ -167,7 +166,7 @@ class Fock_Targets:
 
                 # only collect from forward edges if we are using reflected edges, the other edge_orbital_blocks are None
                 if self.forward_edge_mask[edge_idx]:
-                   
+
                     edge_labels[edge_idx, slice_out] += torch.squeeze(
                         edge_orbital_blocks[edge_idx][slice_row, slice_col].reshape(1, -1)
                     )
@@ -214,6 +213,7 @@ class Fock_Targets:
         shifts - a list of shifts for each l=0 irrep component
         scalar_indices - a list of indices in the node_labels that correspond to the l=0 irreps
         self.node_labels - the node labels that will be scaled
+        NOTE: if an element does not have that scalar value, the corresponding mean is 0.0 and std is 1.0
         """
 
         means = self.scale_shift_data['element_scalar_means']
@@ -229,16 +229,11 @@ class Fock_Targets:
             mean_vals = means[z]
             std_vals = stds[z]
 
-            if len(mean_vals) != len(scalar_indices):
-                raise ValueError(f"Mismatch in number of mean/std values and scalar indices for Z={z}. Basis might be wrong.")
-
-
             for idx_offset, idx in enumerate(scalar_indices):
                 
-                if std_vals[idx_offset] == 0.0: # Only scale/unscale if std != 0.0
+                if std_vals[idx_offset] == 0.0: # Only scale/unscale if std != 0.0, otherwise it means this element doesn't have that nonzero value
                     continue
 
-                # print("scaling and shifting node block idx: ", idx, "by mean: ", mean_vals[idx_offset], "std: ", std_vals[idx_offset], flush=True)
                 node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
 
             # Save back the updated block
@@ -257,6 +252,8 @@ class Fock_Targets:
         stds = self.scale_shift_data['element_scalar_stds']
         scalar_indices = self.scale_shift_data['scalar_irrep_indices']
 
+        new_node_blocks = node_blocks.clone()  # Create a copy to avoid modifying the original list
+
         for i, (node_block, z) in enumerate(zip(node_blocks, self.atomic_numbers)):
             z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
 
@@ -264,14 +261,12 @@ class Fock_Targets:
             std_vals = stds[z]
 
             for idx_offset, idx in enumerate(scalar_indices):
-                if std_vals[idx_offset] == 0.0: # Only scale/unscale if std != 0.0
-                    continue
-                # print("applying unscale/shift to node block idx: ", idx, flush=True)
-                node_block[idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
 
-            node_blocks[i] = node_block
-        
-        return node_blocks
+                # node_block[idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
+                new_node_blocks[i][idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
+
+            # new_node_blocks[i] = node_block
+        return new_node_blocks
 
 
     def get_cartesian_and_spherical_rotations_to_yzx(self):
@@ -289,11 +284,13 @@ class Fock_Targets:
         """
         Returns the expected size of the targets which contain the maximum orbital interactions.
         This corresponds to max(Ns)x1 + max(Np)x3 + max(Nd)x5 + max(Nf)x7 + max(Ng)x9
-        Searches for up to g-orbitals
+        Searches for up to h-orbitals
+
+        = 6s + 6p + 3d + 1f = 6*1 + 6*3 + 3*5 + 1*7 = 46*46 = 2116
         """
 
         N = 0
-        for l in range(5):
+        for l in range(6):
             max_l_multiplicity = np.max([self.orbital_basis[el].count(l) for el in self.orbital_basis])
             N += (2*l + 1) * max_l_multiplicity
 

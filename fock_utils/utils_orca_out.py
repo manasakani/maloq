@@ -214,14 +214,14 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
     num_cols = hamiltonian.shape[0]
     
     m_to_m_conversion = []
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5]})  
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5]})  
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5]}) 
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5]})  
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5]}) 
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5]})  
+    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
+    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
+    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
+    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
+    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
+    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
 
-    reflection = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [-1, 1, 1, 1, 1, 1, -1]}   
+    reflection = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [-1, 1, 1, 1, 1, 1, -1], 4: [-1, -1, 1, 1, 1, 1, 1, -1, -1]} # reflection for each l 
 
     permutation = np.arange(0, num_cols)
     full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
@@ -263,6 +263,61 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
 
     # permuted_hamiltonian = hamiltonian[permutation, :]
     # permuted_hamiltonian = permuted_hamiltonian[:, permutation]
+    return permuted_hamiltonian
+
+# def sort_by_l(hamiltonian, orbital_basis, atomic_numbers):
+#     """
+#     Sorts the basis into l-major. If there are diffuse functions, this will sort those. 
+#     """
+#     num_cols = hamiltonian.shape[0]
+
+#     permutation = np.arange(0, num_cols)
+#     full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
+#     permuted_hamiltonian = hamiltonian.copy()
+
+#     print(full_orb_list, flush=True)
+
+#     for i, atom in enumerate(atomic_numbers):
+#         these_orbitals = orbital_basis[atomic_numbers[i]]
+#         print("these_orbitals: ", these_orbitals, flush=True)
+
+#         # check if these_orbitals are sorted:
+#         if these_orbitals != sorted(these_orbitals):
+#             print("Orbitals are not sorted, sorting them now", flush=True)
+           
+
+#     permuted_hamiltonian = hamiltonian[permutation, :]
+#     permuted_hamiltonian = permuted_hamiltonian[:, permutation]
+
+def sort_by_l(hamiltonian, orbital_basis, atomic_numbers):
+    """
+    Sorts the basis into l-major order within each atom block.
+    """
+    permutation = []
+    current_index = 0
+
+    # Iterate over each atom
+    for atom in atomic_numbers:
+        these_orbitals = orbital_basis[atom]
+
+        # print(f"Atom {atom} orbitals: {these_orbitals}", flush=True)
+        # Create a list of tuples (l, start_index, block_size) for the current atom
+        orbital_blocks = []
+        for l in these_orbitals:
+            block_size = 2 * l + 1
+            orbital_blocks.append((l, current_index, block_size))
+            current_index += block_size
+
+        # Sort the orbital blocks by l for the current atom
+        orbital_blocks.sort(key=lambda x: x[0])
+
+        # Create the permutation for the current atom based on sorted blocks
+        for _, start_index, block_size in orbital_blocks:
+            permutation.extend(range(start_index, start_index + block_size))
+
+    # Apply the permutation to the Hamiltonian matrix
+    permuted_hamiltonian = hamiltonian[permutation, :]
+    permuted_hamiltonian = permuted_hamiltonian[:, permutation]
     return permuted_hamiltonian
 
 
