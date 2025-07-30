@@ -357,7 +357,7 @@ class eSEN_Backbone(nn.Module):
         )
 
         # x_edge needs to be symmetric over edges: (testing with sym)
-        x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) + torch.cat((target_embedding, edge_distance_embedding, source_embedding), dim=1)      # symmetrized
+        x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) #+ torch.cat((target_embedding, edge_distance_embedding, source_embedding), dim=1)      # symmetrized
 
         # do edge degree embeddings for both nodes and edges: - this breaks symmetry of identical nodes..
         x_message_node = self.edge_degree_embedding(
@@ -554,33 +554,35 @@ class Fock_Irreps_Head(nn.Module):
             # --> gate with learnable parameters by outputting more random scalars:
             input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
             combined_output_scalars = Irreps(f"{irreps_scalars.num_irreps + irreps_gated.num_irreps}x0e")
-            self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars, biases=True)
-            # self.act_input_scalars = torch.nn.Tanh() # torch.nn.Sigmoid() # torch.nn.Tanh() # torch.nn.ReLU() # torch.nn.SiLU() # torch.nn.GELU()
-            self.act_input_scalars = torch.nn.SiLU() # torch.nn.Sigmoid() # torch.nn.Tanh() # torch.nn.ReLU() # torch.nn.SiLU() # torch.nn.GELU()
-
-            # symmetrize_scalars should be a linear layer
-            # self.symmetrize_scalars = nn.Linear(
-            #     in_features=self.sphere_channels,
-            #     out_features=self.sphere_channels,
+            self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars, biases=True) # just a linear layer
+            # self.lin_scalars_learnable_2 = nn.Linear(
+            #     in_features=self.sphere_channels, 
+            #     out_features=combined_output_scalars.num_irreps, 
             #     bias=True
             # )
-
+            self.act_input_scalars = torch.nn.SiLU() # torch.nn.Sigmoid() # torch.nn.Tanh() # torch.nn.ReLU() # torch.nn.SiLU() # torch.nn.GELU()
             # this returns the irreps_gates
 
             # 2. Apply the gating to the other ls (need to pass in a stack of [l=0, l~=0])
             self.gate = Gate(irreps_scalars=Irreps(),
                                 act_scalars=[],
                                 irreps_gates=irreps_gates,
-                                act_gates=[torch.tanh] * len(irreps_gates),
+                                act_gates=[torch.sigmoid] * len(irreps_gates),
                                 irreps_gated=irreps_gated
                             )
+            # self.gate2 = Gate(irreps_scalars=Irreps(),
+            #                     act_scalars=[],
+            #                     irreps_gates=irreps_gates,
+            #                     act_gates=[torch.sigmoid] * len(irreps_gates),
+            #                     irreps_gated=irreps_gated
+            #                 )
             # print("gate irreps out (simplified): ", self.gate.irreps_out.sort()[0].simplify() ) 
             # print("irreps out (simplified): ", irreps_out.sort()[0].simplify() ) 
 
             # now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
             if reduce_node:
                 self.lin_out_node = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_nodereduced, biases=True)
-                self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=True) # biases were true for some runs
+                self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=True) 
             else:
                 self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=True) 
 
@@ -623,13 +625,31 @@ class Fock_Irreps_Head(nn.Module):
 
         node_embeddings = emb["node_embeddings"]
         edge_embeddings = emb["edge_embeddings"]
-
-        # reverse_edge_map = batch.reverse_edge_map if "reverse_edge_map" in batch else None
-        # edge_mask = batch.edge_mask if "edge_mask" in batch else None
-
         x_edge = emb["x_edge"]
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
-        
+
+        reverse_edge_map = batch.reverse_edge_map if "reverse_edge_map" in batch else None
+        edge_mask = batch.edge_mask if "edge_mask" in batch else None
+
+        # *** TEST: Symmetrize the edges
+        # for ind, w in enumerate(edge_embeddings):
+        #     if ind != reverse_edge_map[ind]: # if this is a 'backward' edge
+        #         rev_ind = reverse_edge_map[ind]
+
+        #         start_l = 0
+        #         for l in range(self.lmax + 1):
+        #             end_l = start_l + (2 * l + 1)
+        #             if l % 2 == 0:  # even l: symmetric combination of edge irreps
+        #                 sym = edge_embeddings[ind, start_l:end_l, :] + edge_embeddings[rev_ind, start_l:end_l, :]
+        #                 edge_embeddings[ind, start_l:end_l, :] = sym
+        #                 edge_embeddings[rev_ind, start_l:end_l, :] = sym
+        #             else:           # odd l: antisymmetric combination of edge irreps
+        #                 asym = edge_embeddings[ind, start_l:end_l, :] - edge_embeddings[rev_ind, start_l:end_l, :]
+        #                 edge_embeddings[ind, start_l:end_l, :] = asym
+        #                 edge_embeddings[rev_ind, start_l:end_l, :] = -asym
+        #             start_l = end_l
+        # *** TEST: Symmetrize the edges
+
         if self.head_type == 'linear':
             node_embeddings = self.stack_irreps(node_embeddings)
             edge_embeddings = self.stack_irreps(edge_embeddings)
@@ -641,6 +661,8 @@ class Fock_Irreps_Head(nn.Module):
             edge_embeddings = self.stack_irreps(edge_embeddings)
             node_output = self.process(node_embeddings, x_edge, edge_index, 'node')
             edge_output = self.process(edge_embeddings, x_edge, edge_index, 'edge')
+            # node_output = self.process_doublegated(node_embeddings, x_edge, edge_index, 'node')
+            # edge_output = self.process_doublegated(edge_embeddings, x_edge, edge_index, 'edge')
         
         else:
             print("Error! Mispelt head type")
@@ -653,16 +675,16 @@ class Fock_Irreps_Head(nn.Module):
         # need reflection on same device, could not access device from within constructor functions
         # self.edge_m_reflection = torch.tensor(self.edge_m_reflection, dtype=edge_output.dtype, device=edge_output.device)
 
-        # Permute+reflect the irreps for the 'reverse' edges (the edge irreps are the same, but the order is different)
+        # # # Permute+reflect the irreps for the 'reverse' edges (the edge irreps are the same, but the order is different)
         # # NOTE: vectorize this later! 
         # if not (~edge_mask).any():              # if we are considering all the edges
         #     for i in range(len(edge_index[0])):
         #         source = edge_index[0][i]
         #         target = edge_index[1][i]
                 
-        #         # NOTE: we look at source > target because this uniquely defines the direction of the edge,
-        #         # if torch.sum(node_output[source]) > torch.sum(node_output[target]): 
-        #         if i != reverse_edge_map[i]: # if this is a backward edge
+        #         # NOTE: source > target uniquely defines the direction of the edge!!!
+        #         if torch.sum(node_output[source]) > torch.sum(node_output[target]): 
+        #         # if i != reverse_edge_map[i]: # if this is a backward edge
         #             edge_output[i] = edge_output[reverse_edge_map[i], self.edge_permutation] * self.edge_m_reflection
         #             # edge_output[i] = edge_output[i, self.edge_permutation] * self.edge_m_reflection
         
@@ -734,7 +756,7 @@ class Fock_Irreps_Head(nn.Module):
                     
                 pointer += irrep_len
 
-        print("edge_permutation: ", edge_permutation)
+        # print("edge_permutation: ", edge_permutation)
                 
         return edge_permutation
 
@@ -800,7 +822,7 @@ class Fock_Irreps_Head(nn.Module):
 
         return x_out
 
-    def process_doublegated(self, x, x_edge, edge_index):
+    def process_doublegated(self, x, x_edge, edge_index, node_or_edge):
 
         # 1. Extract the scalar components, which are the first # sphere_channels elements of this tensor
         x_scalars = x[:, :self.sphere_channels]
@@ -809,20 +831,29 @@ class Fock_Irreps_Head(nn.Module):
         # 2. Prepare some scalars for gating
         # gate with learnable scalars: the first 'sphere_channels' scalars are the l=0, and others are used for gating
         all_scalars = self.lin_scalars_learnable(x_scalars) 
-        transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
-        gating_scalars = all_scalars[:, self.sphere_channels:]
-
-        # second gating pass:
-        gating_scalars_2 = self.lin_scalars_learnable_2(x_scalars) 
 
         # 3. Gate the l>0 irreps:
+
+        # first gating pass:
+        gating_scalars = all_scalars[:, self.sphere_channels:]
         x_gated = self.gate(torch.cat([gating_scalars, x_nonscalars], dim=1))
-        x_gated_2 = self.gate(torch.cat([gating_scalars_2, x_gated], dim=1))
+
+        # second gating pass:
+        all_scalars_2 = self.lin_scalars_learnable_2(x_scalars)
+        gating_scalars_2 = all_scalars_2[:, self.sphere_channels:]  # these are the scalars used for gating the second pass
+        x_gated_2 = self.gate2(torch.cat([gating_scalars_2, x_gated], dim=1)) 
 
         # plug the l=0 components back into x_gated (currently they are zeros):
-        # x_gated = torch.cat([x_scalars, x_gated], dim=1)                # original scalars get plugged back in
-        x_gated = torch.cat([transformed_l0_scalars, x_gated_2], dim=1)   # use the transformed scalars
-        x_out = self.lin_out(x_gated)
+        transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
+        x_gated_out = torch.cat([transformed_l0_scalars, x_gated_2], dim=1)   # use the transformed scalars
+        
+        if not self.reduce_node:
+            x_out = self.lin_out(x_gated_out)
+        else:
+            if node_or_edge == 'node':
+                x_out = self.lin_out_node(x_gated_out)
+            if node_or_edge == 'edge':
+                x_out = self.lin_out_edge(x_gated_out)
 
         return x_out
 

@@ -12,22 +12,34 @@ from ase.db import connect
 from . import schnetpack_properties as structure
 
 class ASEDataset(Dataset):
-    def __init__(self, db_path, num_structures=None, dtype=torch.float32):
+    def __init__(self, db_path, dtype=torch.float32, world_size=1, rank=0, start_idx=0, end_idx=None):
+        
         print("Connecting to database...")
         self.db = ase.db.connect(db_path)
         print("connected.")
         total_rows = self.db.count()
         print(f"Total rows in database: {total_rows}")
 
-        if num_structures:
-            self.ids = [row.id for row in self.db.select(limit=num_structures)] # distribute this later
-        else:
-            self.ids = [row.id for row in self.db.select()]
-            
-        # self.ids = self._get_ids()
+        if end_idx is None:
+            end_idx = total_rows
+
+        if start_idx < 0 or end_idx > total_rows or start_idx >= end_idx:
+            end_idx = total_rows
+            print("Invalid start_idx or end_idx values (probably end_idx > num rows). Setting end_idx to total rows.")
+
+        self.ids = []
+        for i, row in enumerate(self.db.select(limit=end_idx - start_idx, offset=start_idx)):
+            # if start_idx <= i < end_idx:
+            self.ids.append(row.id)
+
         self.dtype = dtype
+
+        print("Rank", rank, "will read ids:", self.ids, flush=True)
     
     def _get_ids(self):
+        """
+        Not used, just required to have this function
+        """
         ids = []
         for row in self.db.select():
             print("Getting row..", flush=True)
@@ -44,6 +56,7 @@ class ASEDataset(Dataset):
 
         # Get structure by id
         structure = self.db.get(self.ids[idx])
+        # print("Getting row with id", self.ids[idx], flush=True)
         
         # Extract atom positions and atomic numbers
         atoms = structure.toatoms()

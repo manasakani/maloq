@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from e3nn.o3 import Irreps
 import wandb
+import matplotlib.pyplot as plt
 
 # note: removing amp to get better precision for now
 def disable_amp(func):
@@ -78,7 +79,7 @@ class SplitTrainer():
         else:
             rank = 0
         
-        scaler = GradScaler()  # for mixed precision training
+        # scaler = GradScaler()  # for mixed precision training
 
         # Ensure that the ranks have the same number of batches! - need to be careful of this due to the custom data distribution
         num_train_batches = len(train_loader)
@@ -118,53 +119,47 @@ class SplitTrainer():
                 # -- Forward -- 
                 forward_start = time.perf_counter()
                 batch = batch.to(device)
-                torch.cuda.reset_peak_memory_stats()
-                with autocast():
-                    backbone_out = self.backbone(batch) 
+                # torch.cuda.reset_peak_memory_stats()
+                # with autocast():
+                backbone_out = self.backbone(batch) 
 
-                    # zero_sum_check = torch.sum(backbone_out["edge_embeddings"])
-                    # print("Edge symmetry check! (if using all edges, this should be zero):", zero_sum_check)
-                    # assert torch.allclose(zero_sum_check, torch.tensor(0.0), atol=1e-12), f"Edge conservation check failed: {zero_sum_check.item()} is not close to zero!"
+                # zero_sum_check = torch.sum(backbone_out["edge_embeddings"])
+                # print("Edge symmetry check! (if using all edges, this should be zero):", zero_sum_check)
+                # assert torch.allclose(zero_sum_check, torch.tensor(0.0), atol=1e-12), f"Edge conservation check failed: {zero_sum_check.item()} is not close to zero!"
 
-                    if loss_target_string == 'fock_matrix':
-                        node_output, edge_output = self.head(backbone_out, batch)
-                        
-                        this_node_target = getattr(batch, node_target_name)
-                        this_edge_target = getattr(batch, edge_target_name)
-
-                        # print("edge diff 0: ", torch.round(edge_output[0, -50:] - this_edge_target[0, -50:], decimals=4))
-                        # print("real edge 0: ", torch.round(this_edge_target[0, 0:50], decimals=4))
-                        # print("real edge 3: ", torch.round(this_edge_target[3, 0:50], decimals=4))
-                        # exit()
-                        # print("edge diff 3: ", torch.round(edge_output[3] - this_edge_target[3], decimals=4))
-                        # exit()
-
-                        # do everything in the uncoupled basis:
-                        if compute_uncoupled_loss:
-                            node_output = basis_transform.get_H(node_output)
-                            edge_output = basis_transform.get_H(edge_output)
-                            this_node_target = basis_transform.get_H(this_node_target)
-                            this_edge_target = basis_transform.get_H(this_edge_target)
+                if loss_target_string == 'fock_matrix':
+                    node_output, edge_output = self.head(backbone_out, batch)
                     
-                        output = torch.cat([node_output, edge_output], dim=0)
-                        labels = torch.cat([this_node_target, this_edge_target], dim=0)
-                        loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
-                        loss_edge = loss_fxn(edge_output, this_edge_target, self.head_irreps) 
-                        loss = loss_fxn(output, labels, self.head_irreps)
+                    this_node_target = getattr(batch, node_target_name)
+                    this_edge_target = getattr(batch, edge_target_name)
 
-                        train_loss_node += loss_node
-                        train_loss_edge += loss_edge
 
-                    elif loss_target_string == 'forces':
-                        node_output = self.head(backbone_out, batch)
-                        this_node_target = getattr(batch, node_target_name)
+                    # do everything in the uncoupled basis:
+                    if compute_uncoupled_loss:
+                        node_output = basis_transform.get_H(node_output)
+                        edge_output = basis_transform.get_H(edge_output)
+                        this_node_target = basis_transform.get_H(this_node_target)
+                        this_edge_target = basis_transform.get_H(this_edge_target)
+                
+                    output = torch.cat([node_output, edge_output], dim=0)
+                    labels = torch.cat([this_node_target, this_edge_target], dim=0)
+                    loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
+                    loss_edge = loss_fxn(edge_output, this_edge_target, self.head_irreps) 
+                    loss = loss_fxn(output, labels, self.head_irreps)
 
-                        this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
-                        loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps) 
+                    train_loss_node += loss_node
+                    train_loss_edge += loss_edge
 
-                        train_loss_node += loss
-                    else:
-                        raise ValueError(f"Unknown loss target string: {loss_target_string}")
+                elif loss_target_string == 'forces':
+                    node_output = self.head(backbone_out, batch)
+                    this_node_target = getattr(batch, node_target_name)
+
+                    this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
+                    loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps) 
+
+                    train_loss_node += loss
+                else:
+                    raise ValueError(f"Unknown loss target string: {loss_target_string}")
 
                 forward_end = time.perf_counter()
 
@@ -173,9 +168,11 @@ class SplitTrainer():
                 #     print(f"Peak memory allocation: {peak_mem:.2f} MB")
 
                 # -- Backwards -- 
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                # scaler.scale(loss).backward()
+                loss.backward()
+                # scaler.step(optimizer)
+                optimizer.step()
+                # scaler.update()
                 backward_end = time.perf_counter()
 
                 # for name, param in self.backbone.named_parameters():
@@ -212,47 +209,47 @@ class SplitTrainer():
                     
                     # -- Forward --
                     batch = batch.to(device)
-                    with autocast():
-                        backbone_out = self.backbone(batch) 
+                    # with autocast():
+                    backbone_out = self.backbone(batch) 
+                    
+                    # -- Loss --
+                    if loss_target_string == 'fock_matrix':
+                        node_output, edge_output = self.head(backbone_out, batch)
                         
-                        # -- Loss --
-                        if loss_target_string == 'fock_matrix':
-                            node_output, edge_output = self.head(backbone_out, batch)
-                            
-                            this_node_target = getattr(batch, node_target_name)
-                            this_edge_target = getattr(batch, edge_target_name)
+                        this_node_target = getattr(batch, node_target_name)
+                        this_edge_target = getattr(batch, edge_target_name)
 
-                            # Fock matrix loss
-                            if compute_uncoupled_loss:
-                                node_output = basis_transform.get_H(node_output)
-                                edge_output = basis_transform.get_H(edge_output)
-                                this_node_target = basis_transform.get_H(this_node_target)
-                                this_edge_target = basis_transform.get_H(this_edge_target)
+                        # Fock matrix loss
+                        if compute_uncoupled_loss:
+                            node_output = basis_transform.get_H(node_output)
+                            edge_output = basis_transform.get_H(edge_output)
+                            this_node_target = basis_transform.get_H(this_node_target)
+                            this_edge_target = basis_transform.get_H(this_edge_target)
 
-                            output = torch.cat([node_output, edge_output], dim=0)
-                            labels = torch.cat([this_node_target, this_edge_target], dim=0)
-                            loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
-                            loss_edge = loss_fxn(edge_output, this_edge_target, self.head_irreps) 
-                            loss = loss_fxn(output, labels, self.head_irreps)
+                        output = torch.cat([node_output, edge_output], dim=0)
+                        labels = torch.cat([this_node_target, this_edge_target], dim=0)
+                        loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
+                        loss_edge = loss_fxn(edge_output, this_edge_target, self.head_irreps) 
+                        loss = loss_fxn(output, labels, self.head_irreps)
 
-                            val_loss_node += loss_node
-                            val_loss_edge += loss_edge
+                        val_loss_node += loss_node
+                        val_loss_edge += loss_edge
 
-                        elif loss_target_string == 'forces':
-                            node_output = self.head(backbone_out, batch)
-                            this_node_target = getattr(batch, node_target_name)
+                    elif loss_target_string == 'forces':
+                        node_output = self.head(backbone_out, batch)
+                        this_node_target = getattr(batch, node_target_name)
 
-                            if self.head_irreps == '1x1e':             # permute force vectors to match edge permutations
-                                this_node_target = this_node_target[:, [1, 2, 0]]
-                                loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps) 
-                            else:
-                                print("To be implemented!")  
-
-                            val_loss_node += loss
+                        if self.head_irreps == '1x1e':             # permute force vectors to match edge permutations
+                            this_node_target = this_node_target[:, [1, 2, 0]]
+                            loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps) 
                         else:
-                            raise ValueError(f"Unknown loss target string: {loss_target_string}")
+                            print("To be implemented!")  
 
-                        val_loss += loss.item()
+                        val_loss_node += loss
+                    else:
+                        raise ValueError(f"Unknown loss target string: {loss_target_string}")
+
+                    val_loss += loss.item()
             
             # -- Output dump -- 
             if loss_target_string == 'fock_matrix':
@@ -386,158 +383,146 @@ class SplitTrainer():
             track_loss_edge = []
         
         # -- Evaluate everything in the train_loader -- 
-        with torch.no_grad():  
+        # with torch.no_grad():  # NOTE: there is a bug with torch.no_grad() and e3nn_linear (used in the output head! This causes a hang)
 
-            # dictionaries to store the orbital blocks, they get rewritten by each batch
-            node_outputs = {}
-            node_labels = {}
-            eigenvalue_maes = []
-            if loss_target_string == 'fock_matrix':
-                edge_outputs = {}
-                edge_labels = {}
+        # dictionaries to store the orbital blocks, they get rewritten by each batch
+        node_outputs = {}
+        node_labels = {}
+        eigenvalue_maes = []
+        if loss_target_string == 'fock_matrix':
+            edge_outputs = {}
+            edge_labels = {}
+        
+        for index, batch in enumerate(eval_loader):
+            print(f"Processing molecule {index}...", flush=True)      
+
+            batch = batch.to(device)
+            backbone_out = self.backbone(batch) 
             
-            for index, batch in enumerate(eval_loader):
-                print(f"Processing molecule {index}...")                
+            # self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
+            # self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
 
-                batch = batch.to(device)
-                backbone_out = self.backbone(batch) 
+            # pass all the batches through:
+            if loss_target_string == 'fock_matrix':
 
-                # zero_sum_check = torch.sum(torch.sum(backbone_out["edge_embeddings"][0] + backbone_out["edge_embeddings"][3], dim=0) + torch.sum(backbone_out["edge_embeddings"][1] + backbone_out["edge_embeddings"][4], dim=0) + torch.sum(backbone_out["edge_embeddings"][2] + backbone_out["edge_embeddings"][5], dim=0), dim=0)
-                # print("zero_sum_check after backbone out:", zero_sum_check)
+                node_output, edge_output = self.head(backbone_out, batch)
+                this_node_target = getattr(batch, node_target_name)
+                this_edge_target = getattr(batch, edge_target_name)
+
+                # Undo scale/shift layers:
+                node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
+                this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target)
+
+                # Transform back to uncoupled basis:
+                print("Transforming to uncoupled basis...", flush=True)
+                uncoupled_node_outputs = basis_transform.get_H(node_output)
+                uncoupled_edge_outputs = basis_transform.get_H(edge_output)
+                uncoupled_node_labels = basis_transform.get_H(this_node_target)
+                uncoupled_edge_labels = basis_transform.get_H(this_edge_target)
+
+                # Unpad them into the hamiltonian orbital blocks
+                print("Unpadding orbital blocks...", flush=True)
+                node_orbital_blocks_output = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_outputs)
+                edge_orbital_blocks_output = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_outputs)
+                node_orbital_blocks_label = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_labels)
+                edge_orbital_blocks_label = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_labels)
                 
-                self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
-                self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
+                # reassemble the matrix 
+                print("Reconstructing matrices...", flush=True)
+                output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=True)
+                label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
 
-                # pass all the batches through:
-                if loss_target_string == 'fock_matrix':
+                # matrix_out = output_fock_matrix.cpu().detach().numpy()
+                # matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
+                # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
+                # print("Matrix symmetry error: ", matrix_symmetry_error)
+                # plt.colorbar()
+                # plt.savefig("predicted_fock_tranpose.png", dpi=300, bbox_inches='tight')
+                # plt.close()
 
-                    node_output, edge_output = self.head(backbone_out, batch)
+                # matrix_out = label_fock_matrix.cpu().detach().numpy()
+                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
+                # plt.colorbar()
+                # plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
+                # plt.close()
 
-                    this_node_target = getattr(batch, node_target_name)
-                    this_edge_target = getattr(batch, edge_target_name)
+                # matrix_out = np.abs(np.abs(label_fock_matrix.cpu().numpy()) - np.abs(output_fock_matrix.cpu().numpy()))
+                # plt.imshow(matrix_out)
+                # plt.colorbar()
+                # plt.savefig("diff_fock.png", dpi=300, bbox_inches='tight')
+                # plt.close()
 
-                    # Undo scale/shift layers:
-                    node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
-                    this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target)
+                # plt.figure(figsize=(4, 3))
+                # self.plot_eigenvalues(label_fock_matrix.cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
+                # self.plot_eigenvalues(output_fock_matrix.cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
 
-                    # Transform back to uncoupled basis:
-                    print("Transforming to uncoupled basis...")
-                    uncoupled_node_outputs = basis_transform.get_H(node_output)
-                    uncoupled_edge_outputs = basis_transform.get_H(edge_output)
-                    uncoupled_node_labels = basis_transform.get_H(this_node_target)
-                    uncoupled_edge_labels = basis_transform.get_H(this_edge_target)
+                # Compute the eigenvalues and eigenvalue error
+                print("Computing eigenvalues...", flush=True)
+                label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix.detach().cpu().numpy())
+                pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix.detach().cpu().numpy())
+                eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
+                eigenvalue_maes.append(eigenvalue_MAE)
+                print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
 
-                    # Unpad them into the hamiltonian orbital blocks
-                    print("Unpadding orbital blocks...")
-                    node_orbital_blocks_output = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_outputs)
-                    edge_orbital_blocks_output = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_outputs)
-                    node_orbital_blocks_label = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_labels)
-                    edge_orbital_blocks_label = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_labels)
+                # losstype = nn.L1Loss(reduction='mean') 
+                # print(losstype(label_eigenvalues, pred_eigenvalues))
+                # plt.xlabel('Eigenvalue #')
+                # plt.ylabel('Eigenvalue ($E_h$)')
+                # # plt.yscale('log')
+                # plt.legend()
+                # plt.grid(True)
+                # plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
+                # plt.close()
 
-                    # import matplotlib.pyplot as plt
-                    # matrix_out = edge_orbital_blocks_output[(0, 1)].reshape(14, 14)
-                    # plt.imshow(np.log(np.abs(matrix_out)))
-                    # plt.colorbar()
-                    # plt.savefig("edge_output.png", dpi=300, bbox_inches='tight')
-                    # plt.close()
+                node_outputs.update(node_orbital_blocks_output)
+                edge_outputs.update(edge_orbital_blocks_output)
+                node_labels.update(node_orbital_blocks_label)
+                edge_labels.update(edge_orbital_blocks_label)
 
-                    # reassemble the matrix 
-                    print("Reconstructing matrices...")
-                    output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=True)
-                    label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
+            else:
+                node_output = self.head(backbone_out, batch)
+                this_node_target = getattr(batch, node_target_name)
 
-                    # import matplotlib.pyplot as plt
-                    # matrix_out = output_fock_matrix.cpu().numpy()
-                    # matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                    # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
-                    # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
-                    # print("Matrix symmetry error: ", matrix_symmetry_error)
-
-                    # plt.colorbar()
-                    # plt.savefig("predicted_fock_tranpose.png", dpi=300, bbox_inches='tight')
-                    # plt.close()
-
-                    # matrix_out = label_fock_matrix.cpu().numpy()
-                    # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
-                    # plt.colorbar()
-                    # plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
-                    # plt.close()
-                    # exit()
-
-                    # matrix_out = np.abs(np.abs(label_fock_matrix.cpu().numpy()) - np.abs(output_fock_matrix.cpu().numpy()))
-                    # plt.imshow(matrix_out)
-                    # plt.colorbar()
-                    # plt.savefig("diff_fock.png", dpi=300, bbox_inches='tight')
-                    # plt.close()
-
-                    # plt.figure(figsize=(4, 3))
-                    # self.plot_eigenvalues(label_fock_matrix.cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
-                    # self.plot_eigenvalues(output_fock_matrix.cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
-
-                    # Compute the eigenvalues and eigenvalue error
-                    print("Computing eigenvalues...")
-                    label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix.cpu().numpy())
-                    pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix.cpu().numpy())
-                    eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
-                    eigenvalue_maes.append(eigenvalue_MAE)
-                    print("MAE error in eigenvalues: ", eigenvalue_MAE)
-
-                    # losstype = nn.L1Loss(reduction='mean') 
-                    # print(losstype(label_eigenvalues, pred_eigenvalues))
-                    # plt.xlabel('Eigenvalue #')
-                    # plt.ylabel('Eigenvalue ($E_h$)')
-                    # # plt.yscale('log')
-                    # plt.legend()
-                    # plt.grid(True)
-                    # plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
-                    # plt.close()
-
-                    node_outputs.update(node_orbital_blocks_output)
-                    edge_outputs.update(edge_orbital_blocks_output)
-                    node_labels.update(node_orbital_blocks_label)
-                    edge_labels.update(edge_orbital_blocks_label)
-
+                if self.head_irreps == '1x1e':             
+                    this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
+                    loss = loss_fxn(node_output['forces'], this_node_target) 
                 else:
-                    node_output = self.head(backbone_out, batch)
-                    this_node_target = getattr(batch, node_target_name)
+                    print("To be implemented!") 
 
-                    if self.head_irreps == '1x1e':             
-                        this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
-                        loss = loss_fxn(node_output['forces'], this_node_target) 
-                    else:
-                        print("To be implemented!") 
+            # -- Track -- 
+            if loss_target_string == 'fock_matrix':
 
-                # -- Track -- 
-                if loss_target_string == 'fock_matrix':
-    
-                    print("Tracking loss for batch ", index, flush=True)
-                    edge_multiplier = 2 if batch.fock_target_object[0].reflection_symmetry else 1
-                    total_node_element_loss = 0
-                    total_edge_element_loss = 0   
-                    num_node_block_elements = 0
-                    num_edge_block_elements = 0
+                print("Tracking loss for batch ", index, flush=True)
+                edge_multiplier = 2 if batch.fock_target_object[0].reflection_symmetry else 1
+                total_node_element_loss = 0
+                total_edge_element_loss = 0   
+                num_node_block_elements = 0
+                num_edge_block_elements = 0
 
-                    for node_out, node_label in zip(node_outputs.values(), node_labels.values()):
-                        total_node_element_loss += torch.abs(node_out - node_label).sum()
-                        num_node_block_elements += node_out.numel()
+                for node_out, node_label in zip(node_outputs.values(), node_labels.values()):
+                    total_node_element_loss += torch.abs(node_out - node_label).sum()
+                    num_node_block_elements += node_out.numel()
 
-                    for edge_out, edge_label in zip(edge_outputs.values(), edge_labels.values()):
-                        total_edge_element_loss += edge_multiplier*(torch.abs(edge_out - edge_label).sum())
-                        num_edge_block_elements += edge_multiplier*edge_out.numel()
-
-                    track_loss_node.append(total_node_element_loss / num_node_block_elements)
-                    track_loss_edge.append(total_edge_element_loss / num_edge_block_elements)
-                    track_loss.append((total_node_element_loss+total_edge_element_loss) / (num_node_block_elements+num_edge_block_elements))
-
-                else:
-                    track_loss.append(loss.cpu().detach().numpy()) 
+                for edge_out, edge_label in zip(edge_outputs.values(), edge_labels.values()):
+                    total_edge_element_loss += edge_multiplier*(torch.abs(edge_out - edge_label).sum())
+                    num_edge_block_elements += edge_multiplier*edge_out.numel()
                 
-                # remove from gpu
-                print("Removing batch from GPU memory")
-                del batch, node_output
-                if include_edges:
-                    del edge_output
-                torch.cuda.empty_cache()
+                total_matrix_mae_loss = torch.abs(output_fock_matrix - label_fock_matrix).sum() / output_fock_matrix.numel()
+                track_loss_node.append(total_node_element_loss / num_node_block_elements)
+                track_loss_edge.append(total_edge_element_loss / num_edge_block_elements)
+                track_loss.append(total_matrix_mae_loss)
+
+            else:
+                track_loss.append(loss.cpu().detach().numpy()) 
+            
+            # remove from gpu
+            print("Removing batch from GPU memory", flush=True)
+            del batch, node_output
+            if include_edges:
+                del edge_output
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
 
         # -- Output dump -- 
