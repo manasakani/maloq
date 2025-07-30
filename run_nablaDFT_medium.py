@@ -66,7 +66,7 @@ threshold = 1e-8                        # for scheduler
 
 loss_target = 'fock_matrix'
 head_type = 'gated'                     # linear or gated
-train_loss_fxn = loss.combined_padded_loss
+train_loss_fxn = loss.rmse_mse_padded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'

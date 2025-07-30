@@ -12,7 +12,7 @@ from dataset_utils.ASEDataset import ASEAtomsData
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
 # Models
-from esen.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head     
+from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Linear_Energy_Head     
 
 import_end = time.perf_counter()
 print("Time to do imports: ", import_end - import_start)
@@ -30,7 +30,7 @@ random.seed(42)
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_uracil.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_uracil_5MP'
+output_folder = 'outputs_QM7_uracil_test'
 # ---------------------------
 
 # --> Shuffle:
@@ -44,16 +44,16 @@ print("Not shuffling database, using the first molecule only for debugging")
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 5
-restart_backbone = True 
-restart_head = True
-restart_optimizer = True
+num_mp_layers = 3
+restart_backbone = False 
+restart_head = False
+restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 500                           # Number of validation structures
-num_train = 25000  
-num_test = 4500
+num_val = 1#500                           # Number of validation structures
+num_train = 1#5000#25000  
+num_test = 10 #500
 num_epochs = 50000
 batch_size = 1                          # for training (batch size is always 1 for eval) - small batch for multi-gpu!
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut_orbitals)
@@ -61,9 +61,9 @@ rcut_gaussian = 10.0                    # gaussian basis distance
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reflection_symmetry = True              # use only edges i,j where i<j (other edges are reflected)
-reduce_node = True                     # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = True               # intra-orbital interactions are enforced to have 0 odd degrees
+reflection_symmetry = False             # use only edges i,j where i<j (other edges are reflected)
+reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
@@ -75,11 +75,33 @@ patience = 20                           # for scheduler
 threshold = 1e-8                        # for scheduler
 
 loss_target = 'fock_matrix'
-train_loss_fxn = loss.combined_padded_loss
+train_loss_fxn = loss.rmse_padded_loss
 test_loss_fxn = loss.l1_padded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
+head_type = 'gated'                   # 'linear' or 'gated'
+
+scale_and_shift = False
+
+# Scale and shift the orbital self-interaction scalar components of the dataset
+if scale_and_shift:
+    print("Getting scale and shift factors...")
+    scale_shift_file = 'element_scale_shifts_uracil_' + dataset_name + '.pt'
+    if scale_shift_file not in os.listdir('./fock_datasets'):
+        print("[Computing element scale and shift factors for the dataset]")
+        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge)
+    else:
+        print("[Loading element scale and shift factors from file]")
+        scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
+        scale_shift_data = {
+            "element_scalar_means": scale_shift_data["element_scalar_means"],  # dict[int -> list[float]]
+            "element_scalar_stds": scale_shift_data["element_scalar_stds"],    # dict[int -> list[float]]
+            "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"]   # list[int]
+        }
+else:
+    print("Not scaling or shifting the dataset")
+    scale_shift_data = None
 
 # --------------------------------------------
 # Initialize compute environment 
@@ -94,6 +116,7 @@ if rank == 0:
     print(f"Dataset - Num molecules used for validation: {num_val}", flush=True)
     print(f"Dataset - Edge cutoff distance for orbital blocks: {2*rcut_orbitals}", flush=True)
     print(f"Dataset - Edge cutoff distance for gaussian basis: {rcut_gaussian}", flush=True)
+    print(f"Dataset - Scale and shift dataset: {scale_and_shift}", flush=True)
     print(f"Model - Num of Message Passing layers: {num_mp_layers}", flush=True)
     print(f"Model - Embedding dimension: {l_embedding_dim}", flush=True)
     print(f"Model - # Distance basis functions: {num_distance_basis}", flush=True)
@@ -136,14 +159,14 @@ test_end_mol += num_train+num_val
 ### DEBUG ###
 
 if train_or_eval == 'train':
-    train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
-    val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
+    train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry, scale_shift_data=scale_shift_data)
+    val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry, scale_shift_data=scale_shift_data)
     print("Size of train loader: ", len(train_loader))
     print("Size of val loader: ", len(val_loader))
 
 else:
     batch_size = 1
-    test_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry)
+    test_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry, scale_shift_data=scale_shift_data)
     print("Size of test loader: ", len(test_loader))
 
 data_load_end = time.perf_counter()
@@ -191,6 +214,7 @@ if loss_target == "fock_matrix":
                             irreps_out=output_irreps, 
                             lmax=required_irreps.lmax, 
                             sphere_channels=l_embedding_dim,
+                            head_type=head_type,
                             reduce_node=reduce_node,
                             reduce_node_intra=reduce_node_intra,
                             orbital_basis=orbital_basis)
@@ -262,8 +286,8 @@ scheduler = loss_scheduler(optimizer)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='QM7_uracil_antisym',
-                                    save_frequency=5)
+                                    run_name='QM7_uracil_Jul26',
+                                    save_frequency=100)
 if train_or_eval == "train":
     trainer.train(num_epochs, 
                     train_loss_fxn, 

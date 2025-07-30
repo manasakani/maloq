@@ -50,8 +50,8 @@ num_val = 8                             # Number of validation structures
 num_train = len(database) 
 num_epochs = 50000
 batch_size = 3                          # 1 for eval, 10 for train
-rcut_orbitals = 10.0                    # connectivity cutoff (=2xrcut)
-rcut_gaussian = 10.0                    # connectivity cutoff (=2xrcut)
+rcut_orbitals = 8.0                    # connectivity cutoff (=2xrcut)
+rcut_gaussian = 2*rcut_orbitals                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 reflection_symmetry=True                # use only edges i,j where i<j
 
@@ -66,7 +66,7 @@ threshold = 1e-8                        # for scheduler
 
 loss_target = 'fock_matrix'
 head_type = 'gated'                     # linear or gated
-train_loss_fxn = loss.combined_padded_loss
+train_loss_fxn = loss.rmse_mse_padded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
@@ -178,7 +178,7 @@ elif model_name == 'esen':
                     lmax=required_irreps.lmax,
                     mmax=required_irreps.lmax,
                     use_pbc=False,
-                    cutoff=2*rcut_gaussian,
+                    cutoff=rcut_gaussian,
                     edge_channels=l_embedding_dim,
                     num_layers=num_mp_layers,
                     act_type='gate',

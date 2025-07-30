@@ -6,12 +6,12 @@ import torch
 
 from fock_utils import utils_orca_out, fock_targets
 from train_utils import loss, utils_compute, splittrainer
-from dataset_utils import get_loader
+from dataset_utils import get_loader, dataset_analysis, get_scale_shift
 from dataset_utils.ASEDataset import ASEAtomsData
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
 # Models
-from esen.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head    
+from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Linear_Energy_Head    
 from e3nn.o3 import Irreps
 
 import_end = time.perf_counter()
@@ -30,17 +30,17 @@ random.seed(42)
 # --> NablaDFT (tiny)
 database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_tiny_edgereduce_5MP'
+output_folder = 'outputs_nablaDFT_tiny_unscaled'
 # ---------------------------
 
 # --> Model settings:
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 5 
+num_mp_layers = 3
 model_name = 'esen'
-restart_backbone = False
-restart_head = False
+restart_backbone = True
+restart_head = True
 restart_optimizer = False
 
 # --> Training settings:
@@ -50,30 +50,55 @@ num_train = len(database) - num_val
 num_epochs = 50000
 batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
-rcut_gaussian = 10.0                     # connectivity cutoff (=2xrcut)
+rcut_gaussian = 2*rcut_orbitals         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reduce_edge = True                      # use only edges i,j where i<j (other edges are reflected)
-reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_edge = False                      # use only edges i,j where i<j (other edges are reflected)
+reduce_node = False                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = False                # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-4
-patience = 500                          # for scheduler
+lr_init = 1e-5
+patience = 50                          # for scheduler
 threshold = 1e-8                        # for scheduler
 
 loss_target = 'fock_matrix'
 head_type = 'gated'                     # linear or gated
-train_loss_fxn = loss.combined_padded_loss
+train_loss_fxn = loss.rmse_mse_padded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
-include_edges = False if loss_target == 'forces' else True
+include_edges = True
+scale_and_shift = False
+
+# Scale and shift the orbital self-interaction scalar components of the dataset
+if scale_and_shift:
+    print("Getting scale and shift factors...", flush=True)
+    scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
+    print(f"Scale and shift file: {scale_shift_file}", flush=True)
+    if scale_shift_file not in os.listdir('./fock_datasets/'):
+        print("[Computing element scale and shift factors for the dataset]", flush=True)
+        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge)
+    else:
+        print("[Loading element scale and shift factors from file]", flush=True)
+        scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
+        scale_shift_data = {
+            "element_scalar_means": scale_shift_data["element_scalar_means"],  # dict[int -> list[float]]
+            "element_scalar_stds": scale_shift_data["element_scalar_stds"],    # dict[int -> list[float]]
+            "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"]   # list[int]
+        }
+else:
+    print("Not scaling or shifting the dataset")
+    scale_shift_data = None
+
+# dataset_analysis.dataset_analysis(database, dataset_name, rcut=rcut_orbitals, dtype=torch.float64, reduce_edge=False, scale_shift_data=scale_shift_data)
+# print("finished setting up shift/scale factors", flush=True)
+# exit()
 
 # --------------------------------------------
 # Initialize compute environment 
@@ -122,10 +147,12 @@ val_end_mol += num_train
 # train_end_mol = 23 
 # val_start_mol = 22
 # val_end_mol = 23
+# test_start_mol = 22
+# test_end_mol = 23
 ### DEBUG ###
 
-train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge)
-val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge)
+train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data)
+val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
