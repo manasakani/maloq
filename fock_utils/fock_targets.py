@@ -230,14 +230,12 @@ class Fock_Targets:
             std_vals = stds[z]
 
             for idx_offset, idx in enumerate(scalar_indices):
-                
-                if std_vals[idx_offset] == 0.0: # Only scale/unscale if std != 0.0, otherwise it means this element doesn't have that nonzero value
-                    continue
-
+                # Scale and shift the l=0 values in the node block
                 node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
 
             # Save back the updated block
             self.node_labels[i] = node_block
+            # print("maximum value in node block for element", z, ":", torch.max(node_block).item(), flush=True)
     
     def unscale_shift_node_blocks(self, node_blocks):
         """
@@ -285,8 +283,6 @@ class Fock_Targets:
         Returns the expected size of the targets which contain the maximum orbital interactions.
         This corresponds to max(Ns)x1 + max(Np)x3 + max(Nd)x5 + max(Nf)x7 + max(Ng)x9
         Searches for up to h-orbitals
-
-        = 6s + 6p + 3d + 1f = 6*1 + 6*3 + 3*5 + 1*7 = 46*46 = 2116
         """
 
         N = 0

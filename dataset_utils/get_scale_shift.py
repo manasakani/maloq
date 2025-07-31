@@ -1,10 +1,11 @@
 import torch
 import numpy as np
 
-from fock_utils import utils_orca_out, fock_targets, basis_sets
+from fock_utils import utils_orca_out, fock_targets, basis_sets, utils_tensor_decomp
 from ase import Atoms
 from .get_loader import orbital_basis_def2_svp_nabla, orbital_basis_def2_svp_QM7
 import matplotlib.pyplot as plt
+from e3nn.o3 import Irreps
 
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
@@ -23,41 +24,24 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
     elif dataset_name == "nablaDFT":
         orbital_basis = orbital_basis_def2_svp_nabla
     elif dataset_name == "omol":
-        # orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
-        orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in ['H', 'O']} # test
+        orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
         orbital_basis = {k: sorted(v) for k, v in orbital_basis.items()} # The basis must be in l-major
     else: 
         print("Unknown dataset name!")
-    orbital_basis = {k: torch.tensor(v) for k, v in orbital_basis.items()}
-    
-    ls_list = []
-    for l in range(5): # searching for up to g orbitals
-        counts = [torch.sum(orbital_basis[el] == l) for el in orbital_basis]
-        ls_list.append(torch.tensor(max(counts) * [l], dtype=torch.int))
 
-    ls_list = torch.cat(ls_list)        # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2]
-    print(f"ls_list: {ls_list}")
-
-    # get the indices of the scalar components within each node-block
+    # 0. Compute locations of scalars from required_irreps for this dataset's basis:
+    _, required_irreps, simplified_out_irreps = utils_tensor_decomp.make_output_irreps(orbital_basis) 
+    required_irreps = Irreps(required_irreps)
     scalar_indices = []
     irrep_track = 0
-    for i, l1 in enumerate(ls_list):
-        for j, l2 in enumerate(ls_list):
-            l3s = range(abs(l1 - l2), l1 + l2 + 1) 
-            len_l3s = sum([(2*l3+1) for l3 in l3s])
-
-            # print(f"l1: {l1}, l2: {l2}, l3s: {list(l3s)}, len_l3s: {len_l3s}, irrep_track: {irrep_track}")
-
-            # --> Consider all of the scalar components in the l1-l2 block
-            for l3 in l3s:
-                if l3 == 0: # found a scalar component
-                    scalar_indices.append(irrep_track)
-                irrep_track += (2 * l3 + 1)
-
-            # --> Consider only the orbital self-interactions. Then, the first l3 is always 0 (and that's what we want)
-            # if l1 == l2 and i == j:
-            #     scalar_indices.append(irrep_track)
-            # irrep_track += len_l3s
+    for mul, irrep in required_irreps:
+        if irrep.l == 0:
+            for _ in range(mul):
+                scalar_indices.append(irrep_track)
+                irrep_track += (2 * irrep.l + 1)
+        else:
+            irrep_track += mul * (2 * irrep.l + 1)
+    print(f"Scalar indices: {scalar_indices}")
 
     element_scalar_values = {}
     for i in range(num_molecules):
@@ -83,7 +67,8 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             edge_labels = mol.y
             energies = mol.energies
             forces = mol.forces
-            required_irreps = mol.required_irreps
+            # required_irreps = mol.required_irreps
+            # simplified_out_irreps = Irreps(required_irreps).sort()[0].simplify()
 
         else: 
             print("Unknown database!")
@@ -99,10 +84,11 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
                 hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate 
             
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, reflection_symmetry=reduce_edge)
-            required_irreps = graph_targets.req_output_irreps
+            # required_irreps = graph_targets.req_output_irreps
+            # simplified_out_irreps = Irreps(required_irreps).sort()[0].simplify()
 
             node_labels = graph_targets.node_labels
-
+        
         # 3. Compute the scale and shift for each atomic number
         for atomic_number, node_block in zip(atomic_numbers, node_labels):
             atomic_number = int(atomic_number.item())
@@ -113,7 +99,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             element_scalar_values[atomic_number].append(orbital_onsite_scalars)
 
     # print(f"Element scalar values: {element_scalar_values}")
-
+    
     # get the mean/std per element
     element_scalar_means = {}
     element_scalar_stds = {}
@@ -145,4 +131,4 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
         "element_scalar_stds": element_scalar_stds,    # dict[int -> list[float]]
         "scalar_irrep_indices": scalar_indices         # list[int]
     }
-    torch.save(scale_shift_data, "./fock_datasets/element_scale_shifts_water_" + dataset_name + ".pt")
+    torch.save(scale_shift_data, "./fock_datasets/element_scale_shifts_water_fullbasis" + dataset_name + ".pt")

@@ -146,7 +146,7 @@ class Edgewise(torch.nn.Module):
         x_target = x[edge_index[1][edge_mask]]
 
         # Create regular messages 
-        x_message = torch.cat((x_source, x_target), dim=2) - torch.cat((x_target, x_source), dim=2)
+        x_message = torch.cat((x_source, x_target), dim=2) #- torch.cat((x_target, x_source), dim=2)
         
         # Create antisymmetrized messages (according to the parity of the irreps)
         # x_message = torch.zeros((x_source.shape[0], x_source.shape[1], 2 * x_source.shape[2]), dtype=x_source.dtype, device=x_source.device)
@@ -169,7 +169,7 @@ class Edgewise(torch.nn.Module):
 
         # # Symmetrize the gating - COLLATE REVERSE EDGE MAP
         # if not (~edge_mask).any():
-        #     edges_ij = edge_index[0] < edge_index[1]
+        #     edges_ij = edge_index[0] < edge_index[1] # fix!!!
         #     for ind, g in enumerate(x_0_gating):
         #         if not edges_ij[ind]:
         #             reverse_ind = reverse_edge_map[ind]
@@ -222,7 +222,7 @@ class Edgewise(torch.nn.Module):
         x_target = x[edge_index[1][edge_mask]]
 
         # Create regular messages
-        x_message = torch.cat((x_source, x_target), dim=2) - torch.cat((x_target, x_source), dim=2)
+        x_message = torch.cat((x_source, x_target), dim=2) #- torch.cat((x_target, x_source), dim=2)
 
         # Create antisymmetrized messages (according to the parity of the irreps)
         # x_message = torch.zeros((x_source.shape[0], x_source.shape[1], 2 * x_source.shape[2]), dtype=x_source.dtype, device=x_source.device)

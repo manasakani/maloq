@@ -28,12 +28,15 @@ structure_folders = [f for f in os.listdir(structures_dir)
 orca_file = 'orca.out'
 cutoff = 5.0            
 num_local_structures = int(args.max_structures) # use to impose only making a subset
-scale_and_shift = True
 dataset_name = 'omol' 
+
+# --> whether to scale and shift scalar values in the node blocks of the dataset (scale_shift_file needs to be precomputed)
+scale_and_shift = True
+scale_shift_file = 'element_scale_shifts_water_fullbasis' + dataset_name + '.pt'
 
 # Orbital basis for the omol tzvpd dataset:
 full_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
-full_basis = {k: sorted(v) for k, v in full_basis.items()} # The basis must be in l-major
+full_basis = {k: sorted(v) for k, v in full_basis.items()} # The basis must be in l-major!!!
 
 # ----------------------------
 # --> Initialize compute setup
@@ -82,7 +85,7 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
     # Atomic and electronic structure:
     read_time_start = time.perf_counter()
     fock_matrix, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath) 
-    #NOTE: The basis returned by utils_orca_out (taken from the output file) is not in the right order for the diffuse functions!
+    #NOTE: The basis returned by utils_orca_out (taken from the output file) is not in the right order for the diffuse functions! So we don't use it directly.
 
     # Get basis (for this structure) in the correct l-order for rearranging matrix:
     basis = {element: basis_sets.def2_tzvpd[utils_orca_out.periodic_table_number[element]] for element in elements} # not in l-major order yet
@@ -90,15 +93,14 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
     fock_matrix = utils_orca_out.sort_by_l(fock_matrix, basis, np.array(elements))  # Shift into l-major (in case of diffuse functions)
     basis = {k: sorted(v) for k, v in basis.items()} # now the basis is in l-major order
 
-    # Display the fock matrix:
-    plt.imshow(fock_matrix, cmap='viridis', interpolation='nearest', vmin=-0.5, vmax=0.5)
-    plt.colorbar()
-    plt.savefig(f"fock_matrix_{structure_folder}.png", bbox_inches='tight', dpi=300)
-    plt.close()
-    ###
+    ### Display the fock matrix:
+    # plt.imshow(fock_matrix, cmap='viridis', interpolation='nearest', vmin=-0.5, vmax=0.5)
+    # plt.colorbar()
+    # plt.savefig(f"fock_matrix_{structure_folder}.png", bbox_inches='tight', dpi=300)
+    # plt.close()
 
-    # print("basis: ", basis)
-    # print("full basis: ", full_basis)
+    print("basis: ", basis)
+    print("full basis: ", full_basis)
 
     structure = Atoms(elements, positions=coordinates)  
     read_time_end = time.perf_counter()
@@ -109,7 +111,6 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
 
     if scale_and_shift:
         print("Getting scale and shift factors...", flush=True)
-        scale_shift_file = 'element_scale_shifts_water_' + dataset_name + '.pt'
         print(f"Scale and shift file: {scale_shift_file}", flush=True)
         if scale_shift_file not in os.listdir('./fock_datasets/'):
             print("[Computing element scale and shift factors for the dataset]", flush=True)
@@ -126,8 +127,8 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
         print("Not scaling or shifting the dataset")
         scale_shift_data = None
 
-    # structures.append(fock_targets.Fock_Targets(structure, cutoff, full_basis, fock_matrix, reflection_symmetry=False, scale_shift_data=scale_shift_data))
-    structures.append(fock_targets.Fock_Targets(structure, cutoff, basis, fock_matrix, reflection_symmetry=False, scale_shift_data=scale_shift_data)) # temp for water! Fix the full basis later
+    structures.append(fock_targets.Fock_Targets(structure, cutoff, full_basis, fock_matrix, reflection_symmetry=False, scale_shift_data=scale_shift_data))
+    # structures.append(fock_targets.Fock_Targets(structure, cutoff, basis, fock_matrix, reflection_symmetry=False, scale_shift_data=scale_shift_data)) # minibasis for water! Fix the full basis later
     target_time_end = time.perf_counter()
     print("Time to make targets: ", target_time_end - target_time_start, flush=True)
     
