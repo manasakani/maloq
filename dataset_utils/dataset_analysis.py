@@ -128,7 +128,7 @@ def dataset_analysis(database, dataset_name, rcut=5.0, dtype=torch.float64, redu
         
         # plt.yscale('log')
         plt.xticks(range(len(element_labels)), element_labels)
-        plt.savefig(f"{dataset_name}_node_block_values_scaled_rank_{rank}.png", bbox_inches='tight', dpi=300)
+        plt.savefig(f"{dataset_name}_node_block_values_rank_{rank}.png", bbox_inches='tight', dpi=300)
 
         # violin plot:
         plt.figure(figsize=(5, 4))
@@ -146,6 +146,6 @@ def dataset_analysis(database, dataset_name, rcut=5.0, dtype=torch.float64, redu
 
         plt.violinplot(data, showmeans=False, showmedians=True, widths=0.3, bw_method=0.1)
         plt.xticks(range(1, len(element_labels) + 1), element_labels)
-        plt.savefig(f"{dataset_name}_node_block_values_violin_scaled_rank_{rank}.png", bbox_inches='tight', dpi=300)
+        plt.savefig(f"{dataset_name}_node_block_values_violin_rank_{rank}.png", bbox_inches='tight', dpi=300)
     
     print("Done.")

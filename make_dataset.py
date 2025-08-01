@@ -32,7 +32,7 @@ dataset_name = 'omol'
 
 # --> whether to scale and shift scalar values in the node blocks of the dataset (scale_shift_file needs to be precomputed)
 scale_and_shift = True
-scale_shift_file = 'element_scale_shifts_water_fullbasis' + dataset_name + '.pt'
+scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
 
 # Orbital basis for the omol tzvpd dataset:
 full_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
@@ -66,6 +66,7 @@ print(f"Processing {total_num_folders} structures between {world_size} GPUs", fl
 # ----------------------------
 # --> Make the structures
 # ----------------------------
+local_folder_name_strings = []
 structures = []
 orca_output_list = []
 big_time_start = time.perf_counter()
@@ -77,6 +78,7 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
     print(f"Rank {rank} of {world_size} is working on folder {structure_folder}", flush=True)
     time_start = time.perf_counter()
     orca_output_filepath = os.path.join(structures_dir, structure_folder, orca_file)
+    local_folder_name_strings.append(structure_folder)
 
     # General ORCA output file elements:
     parsed_orca_output = utils_orca_out.parse_output(Path(orca_output_filepath), source='manasakani')
@@ -100,11 +102,12 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
     # plt.close()
 
     print("basis: ", basis)
-    print("full basis: ", full_basis)
+    # print("full basis: ", full_basis)
 
     structure = Atoms(elements, positions=coordinates)  
     read_time_end = time.perf_counter()
     print("Time to make atoms and get matrix: ", read_time_end - read_time_start, flush=True)
+    print("Structure: ", structure)
 
     # Create fock targets:
     target_time_start = time.perf_counter()
@@ -149,6 +152,7 @@ for current_rank in range(world_size):
             for i, (orca_output_dict, structure) in enumerate(zip(orca_output_list, structures)):
                 print(f"Writing structure {i}")
                 atoms = structure.atoms
+                local_folder_name = local_folder_name_strings[i]
 
                 data = {
                     "pos": structure.atoms.get_positions(),
@@ -170,6 +174,7 @@ for current_rank in range(world_size):
                     "cutoff": cutoff,
                     "required_irreps": str(structure.req_output_irreps),
                     "num_atoms_in_molecule": len(structure.atomic_numbers),
+                    "folder_name": local_folder_name
                 }
                 structure_db.write(atoms, data=data)
     dist.barrier()
