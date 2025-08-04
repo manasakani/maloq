@@ -30,7 +30,6 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> OMOL 
-# dataset_folder = './water_mol_fullbasis_scaled.db'
 dataset_folder = './water_element_ordered_basis.db'
 dtype = torch.float32
 database = ASEDataset(dataset_folder, dtype=dtype)
@@ -69,7 +68,7 @@ train_head = True
 
 torch.set_default_dtype(dtype)
 lr_init = 5e-3
-patience = 50                           # for scheduler
+patience = 25                           # for scheduler
 threshold = 1e-5                        # for scheduler
 
 loss_target = 'fock_matrix'
@@ -99,12 +98,6 @@ if scale_and_shift:
             "element_scalar_means": scale_shift_data["element_scalar_means"],  # dict[int -> list[float]]
             "element_scalar_stds": scale_shift_data["element_scalar_stds"],    # dict[int -> list[float]]
             "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"],  # list[int]
-            # "rank1_irrep_indices": scale_shift_data["rank1_irrep_indices"],    # list[list[int]]
-            # "rank2_irrep_indices": scale_shift_data["rank2_irrep_indices"],    # list[list[int]]
-            # "rank3_irrep_indices": scale_shift_data["rank3_irrep_indices"],    # list[list[int]]
-            # "element_rank1_stds": scale_shift_data["element_rank1_stds"],      # dict[int -> list[float]]
-            # "element_rank2_stds": scale_shift_data["element_rank2_stds"],      # dict[int -> list[float]]
-            # "element_rank3_stds": scale_shift_data["element_rank3_stds"]      # dict[int -> list[float]]
         }
 else:
     print("Not scaling or shifting the dataset", flush=True)
