@@ -212,8 +212,7 @@ class eSEN_Backbone(nn.Module):
         self.norm = get_normalization_layer(
             self.norm_type,
             lmax=self.lmax,
-            num_channels=self.sphere_channels,
-            affine=True, centering=True # false for antisymmetry, removes the bias!
+            num_channels=self.sphere_channels
         )
 
         # affine=True, centering=True # for antisymmetry, removes the bias!

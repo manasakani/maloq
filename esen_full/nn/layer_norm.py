@@ -21,7 +21,6 @@ def get_normalization_layer(
     eps: float = 1e-5,
     affine: bool = True,
     normalization: str = "component",
-    centering: bool = True,
 ):
     assert norm_type in ["layer_norm", "layer_norm_sh", "rms_norm_sh"]
     if norm_type == "layer_norm":
@@ -32,7 +31,7 @@ def get_normalization_layer(
         norm_class = EquivariantRMSNormArraySphericalHarmonicsV2
     else:
         raise ValueError
-    return norm_class(lmax, num_channels, eps, affine, normalization, centering) # centering false for antisym
+    return norm_class(lmax, num_channels, eps, affine, normalization)
 
 
 def get_l_to_all_m_expand_index(lmax: int):
