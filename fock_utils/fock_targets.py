@@ -103,11 +103,11 @@ class Fock_Targets:
         
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         # print(f'Simplified irreps: {self.simplified_out_irreps}')
+        self.scale_shift_data = scale_shift_data
 
         # If the fock targets should be computed on-the-fly rather than loaded from the db:
         self.node_labels = None
         self.edge_labels = None    
-        self.scale_shift_data = None
         if fock_matrix is not None:
 
             self.fock_matrix = torch.from_numpy(fock_matrix).to(self.device)
@@ -123,9 +123,8 @@ class Fock_Targets:
             # Decompose the Fock matrix into orbital blocks and insert them into the targets
             self.make_targets()
 
-            if scale_shift_data is not None:
-                self.scale_shift_data = scale_shift_data
-                self.scale_shift_node_blocks()
+            if self.scale_shift_data is not None:
+                self.node_labels = self.scale_shift_node_blocks(self.node_labels)  # scale and shift the node labels (l=0 irreps) in the targets
 
     def make_targets(self):
 
@@ -206,7 +205,8 @@ class Fock_Targets:
         self.edge_dist[:, 1:4] = torch.from_numpy(self.atoms.get_distances(indices1, indices0, vector=True))    # Vector components
         self.edge_dist[:, 0] = torch.linalg.norm(self.edge_dist[:, 1:4], dim=-1, keepdim=False)                 # Scalar distances
     
-    def scale_shift_node_blocks(self):
+    
+    def scale_shift_node_blocks(self, node_blocks):
         """
         Scale the l=0 values in the targets
         scales - a list of scaling factors for each l=0 irrep component
@@ -220,23 +220,19 @@ class Fock_Targets:
         stds = self.scale_shift_data['element_scalar_stds']
         scalar_indices = self.scale_shift_data['scalar_irrep_indices']
 
-        for i, (node_block, z) in enumerate(zip(self.node_labels, self.atomic_numbers)):
+        # Process each node block
+        for i, (node_block, z) in enumerate(zip(node_blocks, self.atomic_numbers)):
             z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
-
-            if z not in means or z not in stds:
-                raise ValueError(f"No scaling/shifting data found for atomic number {z}! Check /dataset.")
-
             mean_vals = means[z]
             std_vals = stds[z]
 
+            # Scale and shift the l=0 values in the node block
             for idx_offset, idx in enumerate(scalar_indices):
-                # Scale and shift the l=0 values in the node block
                 node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
-
-            # Save back the updated block
-            self.node_labels[i] = node_block
             # print("maximum value in node block for element", z, ":", torch.max(node_block).item(), flush=True)
-    
+
+        return node_blocks 
+
     def unscale_shift_node_blocks(self, node_blocks):
         """
         Undo the scaling and shifting applied to the l=0 values in the targets.

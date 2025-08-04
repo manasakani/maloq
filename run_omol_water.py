@@ -3,6 +3,7 @@ import_start = time.perf_counter()
 import os, sys, random
 import numpy as np
 import torch
+from ase import Atoms
 
 from fock_utils import utils_orca_out, fock_targets
 from train_utils import loss, utils_compute, splittrainer
@@ -29,20 +30,20 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> OMOL 
-# dataset_folder = './fock_datasets/omol/water_clusters_6.0_x64.db'
-dataset_folder = './water_test_nonscaled.db'
+# dataset_folder = './water_mol_fullbasis_scaled.db'
+dataset_folder = './water_element_ordered_basis.db'
 dtype = torch.float32
 database = ASEDataset(dataset_folder, dtype=dtype)
-output_folder = 'outputs_omol_water_single_fp32'
+output_folder = 'outputs_omol_water_single_scaled'
 dataset_name = 'omol'
 # ---------------------------
 assert not len(database) == 0
 
 # --> Model settings:
-l_embedding_dim = 128                    # sphere channels
+l_embedding_dim = 128                   # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 3 
+num_mp_layers = 3
 model_name = 'esen'
 restart_backbone = False
 restart_head = False
@@ -67,7 +68,7 @@ train_backbone = True
 train_head = True
 
 torch.set_default_dtype(dtype)
-lr_init = 1e-4
+lr_init = 5e-3
 patience = 50                           # for scheduler
 threshold = 1e-5                        # for scheduler
 
@@ -78,23 +79,32 @@ loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
 
-scale_and_shift = False
+scale_and_shift = True
+scale_shift_file = 'element_scale_shifts_water_test' + dataset_name + '.pt'
+# scale_shift_file = 'element_scale_shifts_water_scaletest' + dataset_name + '.pt'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
     print("Getting scale and shift factors...", flush=True)
-    scale_shift_file = 'element_scale_shifts_water_' + dataset_name + '.pt'
     print(f"Scale and shift file: {scale_shift_file}", flush=True)
     if scale_shift_file not in os.listdir('./fock_datasets/'):
         print("[Computing element scale and shift factors for the dataset]", flush=True)
-        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge)
+        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file)
+        scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
+        print("Done computing scale and shift factors", flush=True)
     else:
         print("[Loading element scale and shift factors from file]", flush=True)
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
         scale_shift_data = {
             "element_scalar_means": scale_shift_data["element_scalar_means"],  # dict[int -> list[float]]
             "element_scalar_stds": scale_shift_data["element_scalar_stds"],    # dict[int -> list[float]]
-            "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"]   # list[int]
+            "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"],  # list[int]
+            # "rank1_irrep_indices": scale_shift_data["rank1_irrep_indices"],    # list[list[int]]
+            # "rank2_irrep_indices": scale_shift_data["rank2_irrep_indices"],    # list[list[int]]
+            # "rank3_irrep_indices": scale_shift_data["rank3_irrep_indices"],    # list[list[int]]
+            # "element_rank1_stds": scale_shift_data["element_rank1_stds"],      # dict[int -> list[float]]
+            # "element_rank2_stds": scale_shift_data["element_rank2_stds"],      # dict[int -> list[float]]
+            # "element_rank3_stds": scale_shift_data["element_rank3_stds"]      # dict[int -> list[float]]
         }
 else:
     print("Not scaling or shifting the dataset", flush=True)
@@ -128,8 +138,8 @@ print("Time to setup distributed environment: ", compute_end - compute_start)
 if rank == 0 and not os.path.exists(output_folder):
     os.makedirs(output_folder)
 
-dataset_analysis.dataset_analysis(database, dataset_name, rcut=rcut_orbitals, dtype=dtype, reduce_edge=False, scale_shift_data=scale_shift_data, rank=rank)
-print("analyzed dataset element scaling factors")
+# dataset_analysis.dataset_analysis(database, dataset_name, rcut=rcut_orbitals, dtype=dtype, reduce_edge=False, scale_shift_data=scale_shift_data, rank=rank)
+# print("plotted dataset element scaling factors")
 # exit()
 
 # --------------------------------------------
@@ -145,18 +155,24 @@ val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(ran
 val_start_mol += num_train  # the validation molecules start after training ones
 val_end_mol += num_train
 
-# Create the dataloaders for each GPU's data
-train_loader = DataLoader([database[x] for x in range(train_start_mol, train_end_mol)], batch_size=batch_size, num_workers=0)
-val_loader = DataLoader([database[x] for x in range(val_start_mol, val_end_mol)], batch_size=batch_size, num_workers=0)
 required_irreps = Irreps(database[0].required_irreps)
-
 orbital_basis = database[0].orbital_basis
-orbital_basis = {k: torch.tensor(v) for k, v in orbital_basis.items()}
-
+orbital_basis = {int(k): v for k, v in orbital_basis.items()}
 print("orbital_basis: ", orbital_basis)
+print("required_irreps: ", required_irreps)
+print("simplified_out_irreps: ", Irreps(required_irreps).sort()[0].simplify())
 
-# make Fock targets object for each batch:
-basis_transformation = None
+# Create the fock target analysis objects for each molecule in the dataset, scale and shift the node labels if required
+print("Processing the dataset, creating fock analysis objects for every structure ...", flush=True)
+train_data = get_scale_shift.scale_shift_database(database, train_start_mol, train_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_and_shift=scale_and_shift)
+val_data = get_scale_shift.scale_shift_database(database, val_start_mol, val_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_and_shift=scale_and_shift)
+
+# Create the dataloaders for each GPU's data
+train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0)
+val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0)
+
+basis_transformation = train_data[0].fock_target_object.basis_transformation
+orbital_basis = {k: torch.tensor(v) for k, v in orbital_basis.items()}
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)

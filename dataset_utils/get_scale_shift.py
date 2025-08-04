@@ -7,12 +7,13 @@ from .get_loader import orbital_basis_def2_svp_nabla, orbital_basis_def2_svp_QM7
 import matplotlib.pyplot as plt
 from e3nn.o3 import Irreps
 import time
+import copy
 
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
 import torch.distributed as dist
 
-def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduce_edge=False, rank=0):
+def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduce_edge=False, rank=0, filename='scale_shifts.pt'):
     """
     Compute scaling and shifting factors for the scalar components of the hamiltonian datasets and save them to file
     """
@@ -27,24 +28,23 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
         orbital_basis = orbital_basis_def2_svp_nabla
     elif dataset_name == "omol":
         orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
-        orbital_basis = {k: sorted(v) for k, v in orbital_basis.items()} # The basis must be in l-major
     else: 
         print("Unknown dataset name!")
+    
+    orbital_basis = {k: sorted(v) for k, v in orbital_basis.items()} # The basis must be in l-major
+    orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first - this is important!!!
 
-    # 0. Compute locations of scalars from required_irreps for this dataset's basis:
+    # 0. Compute locations of scalars and higher ranks from required_irreps for this dataset's basis:
     _, required_irreps, simplified_out_irreps = utils_tensor_decomp.make_output_irreps(orbital_basis) 
     required_irreps = Irreps(required_irreps)
     scalar_indices = []
     irrep_track = 0
-    for mul, irrep in required_irreps:
+    for _, irrep in required_irreps:
         if irrep.l == 0:
-            for _ in range(mul):
-                scalar_indices.append(irrep_track)
-                irrep_track += (2 * irrep.l + 1)
-        else:
-            irrep_track += mul * (2 * irrep.l + 1)
-    print(f"Scalar indices: {scalar_indices}")
+            scalar_indices.append(irrep_track)
+        irrep_track += 2 * irrep.l + 1
 
+    # Extract the magnitudes of those irreps to make scaling/shifting factors
     element_scalar_values = {}
     for i in range(num_molecules):
         mol = database[i]
@@ -70,8 +70,6 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             edge_labels = mol.y
             energies = mol.energies
             forces = mol.forces
-            # required_irreps = mol.required_irreps
-            # simplified_out_irreps = Irreps(required_irreps).sort()[0].simplify()
 
         else: 
             print("Unknown database!")
@@ -87,8 +85,6 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
                 hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate 
             
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, reflection_symmetry=reduce_edge)
-            # required_irreps = graph_targets.req_output_irreps
-            # simplified_out_irreps = Irreps(required_irreps).sort()[0].simplify()
 
             node_labels = graph_targets.node_labels
         
@@ -110,9 +106,9 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
     element_scalar_values = {k: element_scalar_values[k] for k in sorted(element_scalar_values.keys())}
 
     # print keys on every rank:
-    dist.barrier()
+    # dist.barrier()
     print(f"Rank {rank} - Element scalar values keys: {list(element_scalar_values.keys())}", flush=True)
-    dist.barrier()
+    # dist.barrier()
 
     # if distributed, allgather the element_scalar_values dictionary 
     if dist.is_available() and dist.is_initialized():
@@ -136,6 +132,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
         combined_element_scalar_values = {k: combined_element_scalar_values[k] for k in sorted(combined_element_scalar_values.keys())}
     else:
         rank = 0
+        combined_element_scalar_values = element_scalar_values
     
     if rank == 0:
     
@@ -170,4 +167,28 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             "element_scalar_stds": element_scalar_stds,    # dict[int -> list[float]]
             "scalar_irrep_indices": scalar_indices         # list[int]
         }
-        torch.save(scale_shift_data, "./fock_datasets/element_scale_shifts_" + dataset_name + ".pt")
+        torch.save(scale_shift_data, "./fock_datasets/"+filename)
+        print("Saved scale_shift_data to ./fock_datasets/"+filename, flush=True)
+
+
+def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_and_shift=False):
+    """
+    Scale and shift the node labels in the database using the scale_shift_data
+    """
+    data_list = []
+    for i in range(start_mol, end_mol):
+        data_obj = database[i]
+        structure = Atoms(symbols=data_obj.atomic_numbers, positions=data_obj.pos)
+        fock_target_object = fock_targets.Fock_Targets(
+            structure, rcut_orbitals, orbital_basis, fock_matrix=None,
+            reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data
+        )
+        data_obj.fock_target_object = fock_target_object
+        if scale_and_shift:
+            print(f"Scaling and shifting the node labels in database[{i}]", flush=True)
+            scaled_data_obj = copy.deepcopy(data_obj)
+            scaled_data_obj.node_y = fock_target_object.scale_shift_node_blocks(data_obj.node_y)
+            data_obj = scaled_data_obj
+        data_list.append(data_obj)
+    
+    return data_list
