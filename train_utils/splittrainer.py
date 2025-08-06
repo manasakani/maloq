@@ -378,148 +378,148 @@ class SplitTrainer():
             track_loss_edge = []
         
         # -- Evaluate everything in the train_loader -- 
-        # with torch.no_grad():  # NOTE: there is a bug with torch.no_grad() and e3nn_linear (used in the output head! This causes a hang)
+        with torch.no_grad():  # NOTE: there is a bug with torch.no_grad() and e3nn_linear (used in the output head! This causes a hang)
 
-        # dictionaries to store the orbital blocks, they get rewritten by each batch
-        node_outputs = {}
-        node_labels = {}
-        eigenvalue_maes = []
-        if loss_target_string == 'fock_matrix':
-            edge_outputs = {}
-            edge_labels = {}
-        
-        for index, batch in enumerate(eval_loader):
-            print(f"Processing molecule {index}...", flush=True)      
-
-            batch = batch.to(device)
-            backbone_out = self.backbone(batch) 
-            
-            # self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
-            # self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
-
-            # pass all the batches through:
+            # dictionaries to store the orbital blocks, they get rewritten by each batch
+            node_outputs = {}
+            node_labels = {}
+            eigenvalue_maes = []
             if loss_target_string == 'fock_matrix':
+                edge_outputs = {}
+                edge_labels = {}
+            
+            for index, batch in enumerate(eval_loader):
+                print(f"Processing molecule {index}...", flush=True)      
 
-                node_output, edge_output = self.head(backbone_out, batch)
-                this_node_target = getattr(batch, node_target_name)
-                this_edge_target = getattr(batch, edge_target_name)
-
-                # Undo scale/shift layers:
-                node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
-                this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target)
-
-                # Transform back to uncoupled basis:
-                print("Transforming to uncoupled basis...", flush=True)
-                uncoupled_node_outputs = basis_transform.get_H(node_output)
-                uncoupled_edge_outputs = basis_transform.get_H(edge_output)
-                uncoupled_node_labels = basis_transform.get_H(this_node_target)
-                uncoupled_edge_labels = basis_transform.get_H(this_edge_target)
-
-                # Unpad them into the hamiltonian orbital blocks
-                print("Unpadding orbital blocks...", flush=True)
-                node_orbital_blocks_output = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_outputs)
-                edge_orbital_blocks_output = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_outputs)
-                node_orbital_blocks_label = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_labels)
-                edge_orbital_blocks_label = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_labels)
+                batch = batch.to(device)
+                backbone_out = self.backbone(batch) 
                 
-                # reassemble the matrix 
-                print("Reconstructing matrices...", flush=True)
-                output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=True)
-                label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
+                # self.visualize_embeddings(backbone_out["node_embeddings"][0:3], output_folder, keyword='node')
+                # self.visualize_embeddings(backbone_out["edge_embeddings"][0:5], output_folder, keyword='edge')
 
-                # matrix_out = output_fock_matrix.cpu().detach().numpy()
-                # # matrix_out[np.abs(matrix_out) < 1e-6] = 0.0
-                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
-                # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
-                # print("Matrix symmetry error: ", matrix_symmetry_error)
-                # plt.colorbar()
-                # plt.savefig("predicted_fock_tranpose.png", dpi=300, bbox_inches='tight')
-                # plt.close()
+                # pass all the batches through:
+                if loss_target_string == 'fock_matrix':
 
-                # matrix_out = label_fock_matrix.cpu().detach().numpy()
-                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
-                # plt.colorbar()
-                # plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
-                # plt.close()
+                    node_output, edge_output = self.head(backbone_out, batch)
+                    this_node_target = getattr(batch, node_target_name)
+                    this_edge_target = getattr(batch, edge_target_name)
 
-                # matrix_out = np.abs(np.abs(label_fock_matrix.detach().cpu().numpy()) - np.abs(output_fock_matrix.detach().cpu().numpy()))
-                # plt.imshow(matrix_out, vmin=0.0, vmax=0.002)
-                # plt.colorbar()
-                # plt.savefig("diff_fock.png", dpi=300, bbox_inches='tight')
-                # plt.close()
+                    # Undo scale/shift layers:
+                    node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
+                    this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target)
 
-                plt.figure(figsize=(4, 3))
-                self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
-                self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
-                # self.plot_eigenvalue_diff(label_fock_matrix.detach().cpu().numpy(), output_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
+                    # Transform back to uncoupled basis:
+                    print("Transforming to uncoupled basis...", flush=True)
+                    uncoupled_node_outputs = basis_transform.get_H(node_output)
+                    uncoupled_edge_outputs = basis_transform.get_H(edge_output)
+                    uncoupled_node_labels = basis_transform.get_H(this_node_target)
+                    uncoupled_edge_labels = basis_transform.get_H(this_edge_target)
 
-                # Compute the eigenvalues and eigenvalue error
-                print("Computing eigenvalues...", flush=True)
-                label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix.detach().cpu().numpy())
-                pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix.detach().cpu().numpy())
-                eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
-                eigenvalue_maes.append(eigenvalue_MAE)
-                print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
+                    # Unpad them into the hamiltonian orbital blocks
+                    print("Unpadding orbital blocks...", flush=True)
+                    node_orbital_blocks_output = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_outputs)
+                    edge_orbital_blocks_output = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_outputs)
+                    node_orbital_blocks_label = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_labels)
+                    edge_orbital_blocks_label = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_labels)
+                    
+                    # reassemble the matrix 
+                    print("Reconstructing matrices...", flush=True)
+                    output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=True)
+                    label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
 
-                plt.xlabel('Eigenvalue #')
-                plt.ylabel('Eigenvalue ($E_h$)')
-                plt.yscale('log')
-                plt.legend()
-                plt.grid(True)
-                plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
-                plt.close()
+                    # matrix_out = output_fock_matrix.cpu().detach().numpy()
+                    # # matrix_out[np.abs(matrix_out) < 1e-6] = 0.0
+                    # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
+                    # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
+                    # print("Matrix symmetry error: ", matrix_symmetry_error)
+                    # plt.colorbar()
+                    # plt.savefig("predicted_fock_tranpose.png", dpi=300, bbox_inches='tight')
+                    # plt.close()
 
-                node_outputs.update(node_orbital_blocks_output)
-                edge_outputs.update(edge_orbital_blocks_output)
-                node_labels.update(node_orbital_blocks_label)
-                edge_labels.update(edge_orbital_blocks_label)
+                    # matrix_out = label_fock_matrix.cpu().detach().numpy()
+                    # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
+                    # plt.colorbar()
+                    # plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
+                    # plt.close()
 
-            else:
-                node_output = self.head(backbone_out, batch)
-                this_node_target = getattr(batch, node_target_name)
+                    # matrix_out = np.abs(np.abs(label_fock_matrix.detach().cpu().numpy()) - np.abs(output_fock_matrix.detach().cpu().numpy()))
+                    # plt.imshow(matrix_out, vmin=0.0, vmax=0.002)
+                    # plt.colorbar()
+                    # plt.savefig("diff_fock.png", dpi=300, bbox_inches='tight')
+                    # plt.close()
 
-                if self.head_irreps == '1x1e':             
-                    this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
-                    loss = loss_fxn(node_output['forces'], this_node_target) 
+                    plt.figure(figsize=(4, 3))
+                    self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
+                    self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
+                    # self.plot_eigenvalue_diff(label_fock_matrix.detach().cpu().numpy(), output_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
+
+                    # Compute the eigenvalues and eigenvalue error
+                    print("Computing eigenvalues...", flush=True)
+                    label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix.detach().cpu().numpy())
+                    pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix.detach().cpu().numpy())
+                    eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
+                    eigenvalue_maes.append(eigenvalue_MAE)
+                    print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
+
+                    plt.xlabel('Eigenvalue #')
+                    plt.ylabel('Eigenvalue ($E_h$)')
+                    plt.yscale('log')
+                    plt.legend()
+                    plt.grid(True)
+                    plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
+                    plt.close()
+
+                    node_outputs.update(node_orbital_blocks_output)
+                    edge_outputs.update(edge_orbital_blocks_output)
+                    node_labels.update(node_orbital_blocks_label)
+                    edge_labels.update(edge_orbital_blocks_label)
+
                 else:
-                    print("To be implemented!") 
+                    node_output = self.head(backbone_out, batch)
+                    this_node_target = getattr(batch, node_target_name)
 
-            # -- Track -- 
-            if loss_target_string == 'fock_matrix':
+                    if self.head_irreps == '1x1e':             
+                        this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
+                        loss = loss_fxn(node_output['forces'], this_node_target) 
+                    else:
+                        print("To be implemented!") 
 
-                print("Tracking loss for batch ", index, flush=True)
-                edge_multiplier = 2 if batch.fock_target_object[0].reflection_symmetry else 1
-                total_node_element_loss = 0
-                total_edge_element_loss = 0   
-                num_node_block_elements = 0
-                num_edge_block_elements = 0
+                # -- Track -- 
+                if loss_target_string == 'fock_matrix':
 
-                for node_out, node_label in zip(node_outputs.values(), node_labels.values()):
-                    total_node_element_loss += torch.abs(node_out - node_label).sum()
-                    num_node_block_elements += node_out.numel()
+                    print("Tracking loss for batch ", index, flush=True)
+                    edge_multiplier = 2 if batch.fock_target_object[0].reflection_symmetry else 1
+                    total_node_element_loss = 0
+                    total_edge_element_loss = 0   
+                    num_node_block_elements = 0
+                    num_edge_block_elements = 0
 
-                for edge_out, edge_label in zip(edge_outputs.values(), edge_labels.values()):
-                    total_edge_element_loss += edge_multiplier*(torch.abs(edge_out - edge_label).sum())
-                    num_edge_block_elements += edge_multiplier*edge_out.numel()
+                    for node_out, node_label in zip(node_outputs.values(), node_labels.values()):
+                        total_node_element_loss += torch.abs(node_out - node_label).sum()
+                        num_node_block_elements += node_out.numel()
+
+                    for edge_out, edge_label in zip(edge_outputs.values(), edge_labels.values()):
+                        total_edge_element_loss += edge_multiplier*(torch.abs(edge_out - edge_label).sum())
+                        num_edge_block_elements += edge_multiplier*edge_out.numel()
+                    
+                    total_matrix_mae_loss = torch.abs(output_fock_matrix - label_fock_matrix).sum() / output_fock_matrix.numel()
+                    track_loss_node.append(total_node_element_loss / num_node_block_elements)
+                    track_loss_edge.append(total_edge_element_loss / num_edge_block_elements)
+                    track_loss.append(total_matrix_mae_loss)
+
+                else:
+                    track_loss.append(loss.cpu().detach().numpy()) 
                 
-                total_matrix_mae_loss = torch.abs(output_fock_matrix - label_fock_matrix).sum() / output_fock_matrix.numel()
-                track_loss_node.append(total_node_element_loss / num_node_block_elements)
-                track_loss_edge.append(total_edge_element_loss / num_edge_block_elements)
-                track_loss.append(total_matrix_mae_loss)
-
-            else:
-                track_loss.append(loss.cpu().detach().numpy()) 
-            
-            # remove from gpu
-            print("Removing batch from GPU memory", flush=True)
-            del batch, backbone_out, node_output, this_node_target
-            if include_edges:
-                del edge_output, this_edge_target, output_fock_matrix, label_fock_matrix, node_orbital_blocks_output, edge_orbital_blocks_output, node_orbital_blocks_label, edge_orbital_blocks_label
-            for param1, param2 in zip(self.backbone.parameters(), self.head.parameters()):
-                param1.grad = None 
-                param2.grad = None
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
+                # remove from gpu
+                print("Removing batch from GPU memory", flush=True)
+                del batch, backbone_out, node_output, this_node_target
+                if include_edges:
+                    del edge_output, this_edge_target, output_fock_matrix, label_fock_matrix, node_orbital_blocks_output, edge_orbital_blocks_output, node_orbital_blocks_label, edge_orbital_blocks_label
+                for param1, param2 in zip(self.backbone.parameters(), self.head.parameters()):
+                    param1.grad = None 
+                    param2.grad = None
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
 
 
         # -- Output dump -- 
