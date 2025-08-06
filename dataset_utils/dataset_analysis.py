@@ -112,40 +112,40 @@ def dataset_analysis(database, dataset_name, rcut=5.0, dtype=torch.float64, redu
         # save the dictionary to a file:
         np.save(f"{dataset_name}_element_node_block_values_scaled.npy", total_element_node_block_values)
 
-        # make a scatter plot of the node block values in each element, colored by element type:
-        plt.figure(figsize=(5, 4))
-        plt.xlabel("Element")
-        plt.ylabel("Node Block Values")
-        plt.grid(True)
-        index_track = 0
-        element_labels = []
-        for atomic_number, node_blocks in total_element_node_block_values.items():
-            node_block_values = np.concatenate(node_blocks)
-            element_name = utils_orca_out.periodic_table_number[atomic_number]
-            plt.scatter([index_track] * len(node_block_values), node_block_values, s=5.0, alpha=0.50)
-            index_track += 1
-            element_labels.append(element_name)
+        # # make a scatter plot of the node block values in each element, colored by element type:
+        # plt.figure(figsize=(5, 4))
+        # plt.xlabel("Element")
+        # plt.ylabel("Node Block Values")
+        # plt.grid(True)
+        # index_track = 0
+        # element_labels = []
+        # for atomic_number, node_blocks in total_element_node_block_values.items():
+        #     node_block_values = np.concatenate(node_blocks)
+        #     element_name = utils_orca_out.periodic_table_number[atomic_number]
+        #     plt.scatter([index_track] * len(node_block_values), node_block_values, s=5.0, alpha=0.50)
+        #     index_track += 1
+        #     element_labels.append(element_name)
         
-        # plt.yscale('log')
-        plt.xticks(range(len(element_labels)), element_labels)
-        plt.savefig(f"{dataset_name}_node_block_values_rank_{rank}.png", bbox_inches='tight', dpi=300)
+        # # plt.yscale('log')
+        # plt.xticks(range(len(element_labels)), element_labels)
+        # plt.savefig(f"{dataset_name}_node_block_values_rank_{rank}.png", bbox_inches='tight', dpi=300)
 
-        # violin plot:
-        plt.figure(figsize=(5, 4))
-        plt.xlabel("Element")
-        plt.ylabel("Node Block Values")
-        plt.grid(True)
+        # # violin plot:
+        # plt.figure(figsize=(5, 4))
+        # plt.xlabel("Element")
+        # plt.ylabel("Node Block Values")
+        # plt.grid(True)
 
-        data = []
-        element_labels = []
-        for atomic_number, node_blocks in total_element_node_block_values.items():
-            node_block_values = np.concatenate(node_blocks)
-            element_name = utils_orca_out.periodic_table_number[atomic_number]
-            data.append(node_block_values)
-            element_labels.append(element_name)
+        # data = []
+        # element_labels = []
+        # for atomic_number, node_blocks in total_element_node_block_values.items():
+        #     node_block_values = np.concatenate(node_blocks)
+        #     element_name = utils_orca_out.periodic_table_number[atomic_number]
+        #     data.append(node_block_values)
+        #     element_labels.append(element_name)
 
-        plt.violinplot(data, showmeans=False, showmedians=True, widths=0.3, bw_method=0.1)
-        plt.xticks(range(1, len(element_labels) + 1), element_labels)
-        plt.savefig(f"{dataset_name}_node_block_values_violin_rank_{rank}.png", bbox_inches='tight', dpi=300)
+        # plt.violinplot(data, showmeans=False, showmedians=True, widths=0.3, bw_method=0.1)
+        # plt.xticks(range(1, len(element_labels) + 1), element_labels)
+        # plt.savefig(f"{dataset_name}_node_block_values_violin_rank_{rank}.png", bbox_inches='tight', dpi=300)
     
-    print("Done.")
+    print("Done analysis of dataset:", dataset_name, flush=True)

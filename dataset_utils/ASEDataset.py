@@ -29,7 +29,6 @@ class ASEDataset(Dataset):
 
         self.ids = []
         for i, row in enumerate(self.db.select(limit=end_idx - start_idx, offset=start_idx)):
-            # if start_idx <= i < end_idx:
             self.ids.append(row.id)
 
         self.dtype = dtype

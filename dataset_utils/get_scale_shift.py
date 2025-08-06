@@ -171,24 +171,38 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
         print("Saved scale_shift_data to ./fock_datasets/"+filename, flush=True)
 
 
-def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_and_shift=False):
+def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_and_shift=False, train_or_eval='train'):
     """
     Scale and shift the node labels in the database using the scale_shift_data
     """
+
+    # For analysis, we need to create a sample structure and fock target object
+    sample_structure = Atoms(symbols=database[start_mol].atomic_numbers, positions=database[start_mol].pos)
+    sample_fock_target_object = fock_targets.Fock_Targets(
+        sample_structure, rcut_orbitals, orbital_basis, fock_matrix=None,
+        reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data
+    )
+
+    print("length of database:", len(database))
+    print("start_mol:", start_mol, "end_mol:", end_mol)
+
     data_list = []
     for i in range(start_mol, end_mol):
         data_obj = database[i]
-        structure = Atoms(symbols=data_obj.atomic_numbers, positions=data_obj.pos)
-        fock_target_object = fock_targets.Fock_Targets(
-            structure, rcut_orbitals, orbital_basis, fock_matrix=None,
-            reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data
-        )
-        data_obj.fock_target_object = fock_target_object
+        data_obj.fock_target_object = sample_fock_target_object
+        # if train_or_eval == 'eval':
+        #     structure = Atoms(symbols=data_obj.atomic_numbers, positions=data_obj.pos)
+        #     fock_target_object = fock_targets.Fock_Targets(
+        #         structure, rcut_orbitals, orbital_basis, fock_matrix=None,
+        #         reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data
+        #     )
+        #     data_obj.fock_target_object = fock_target_object
         if scale_and_shift:
-            print(f"Scaling and shifting the node labels in database[{i}]", flush=True)
+            # print(f"Scaling and shifting the node labels in database[{i}]", flush=True)
             scaled_data_obj = copy.deepcopy(data_obj)
-            scaled_data_obj.node_y = fock_target_object.scale_shift_node_blocks(data_obj.node_y)
+            scaled_data_obj.node_y = sample_fock_target_object.scale_shift_node_blocks(data_obj.node_y)
             data_obj = scaled_data_obj
+
         data_list.append(data_obj)
     
     return data_list

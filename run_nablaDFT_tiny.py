@@ -29,8 +29,9 @@ random.seed(42)
 # ---------------------------
 # --> NablaDFT (tiny)
 database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
+# database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/test_2k_conformers.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_tiny_unscaled'
+output_folder = 'outputs_nablaDFT_tiny_scaled_rcut10'
 # ---------------------------
 
 # --> Model settings:
@@ -41,7 +42,7 @@ num_mp_layers = 3
 model_name = 'esen'
 restart_backbone = True
 restart_head = True
-restart_optimizer = False
+restart_optimizer = True
 
 # --> Training settings:
 train_or_eval = "train"
@@ -49,8 +50,8 @@ num_val = 64                             # Number of validation structures
 num_train = len(database) - num_val
 num_epochs = 50000
 batch_size = 1                          # 1 for eval, 10 for train
-rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
-rcut_gaussian = 2*rcut_orbitals         # connectivity cutoff (=2xrcut)
+rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
+rcut_gaussian = rcut_orbitals*2                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
@@ -63,7 +64,7 @@ train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-5
+lr_init = 1e-4
 patience = 50                          # for scheduler
 threshold = 1e-8                        # for scheduler
 
@@ -74,16 +75,16 @@ loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
 include_edges = True
-scale_and_shift = False
+scale_and_shift = True
+scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
     print("Getting scale and shift factors...", flush=True)
-    scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
     print(f"Scale and shift file: {scale_shift_file}", flush=True)
     if scale_shift_file not in os.listdir('./fock_datasets/'):
         print("[Computing element scale and shift factors for the dataset]", flush=True)
-        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge)
+        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file)
     else:
         print("[Loading element scale and shift factors from file]", flush=True)
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
@@ -268,26 +269,38 @@ if restart_head:
 # Run Training or Evaluation
 # --------------------------------------------
 
-# scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
-scheduler = loss_scheduler(optimizer)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+# scheduler = loss_scheduler(optimizer)
 
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='nablaDFT_jul2',
+                                    run_name='nablaDFT_aug5',
                                     save_frequency=5)
 
-trainer.train(num_epochs, 
-                train_loss_fxn, 
-                optimizer,
-                scheduler, 
-                device,
-                train_loader=train_loader,
-                loss_target_string=loss_target,
-                node_target_name=node_target, 
-                edge_target_name=edge_target,
-                output_folder=output_folder,
-                val_loader=val_loader,
-                train_backbone=train_backbone,
-                train_head=train_head,
-                basis_transform=basis_transformation)
+if train_or_eval == "train":
+    trainer.train(num_epochs, 
+                    train_loss_fxn, 
+                    optimizer,
+                    scheduler, 
+                    device,
+                    train_loader=train_loader,
+                    loss_target_string=loss_target,
+                    node_target_name=node_target, 
+                    edge_target_name=edge_target,
+                    output_folder=output_folder,
+                    val_loader=val_loader,
+                    train_backbone=train_backbone,
+                    train_head=train_head,
+                    basis_transform=basis_transformation)
+
+else:
+    trainer.evaluate(train_loss_fxn,
+                    device,
+                    val_loader,
+                    loss_target_string=loss_target,
+                    node_target_name=node_target,
+                    edge_target_name=edge_target, 
+                    basis_transform=basis_transformation,
+                    output_folder=output_folder,
+                    )

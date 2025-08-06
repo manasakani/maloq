@@ -123,18 +123,13 @@ class SplitTrainer():
                 # with autocast():
                 backbone_out = self.backbone(batch) 
 
-                # zero_sum_check = torch.sum(backbone_out["edge_embeddings"])
-                # print("Edge symmetry check! (if using all edges, this should be zero):", zero_sum_check)
-                # assert torch.allclose(zero_sum_check, torch.tensor(0.0), atol=1e-12), f"Edge conservation check failed: {zero_sum_check.item()} is not close to zero!"
-
                 if loss_target_string == 'fock_matrix':
                     node_output, edge_output = self.head(backbone_out, batch)
                     
                     this_node_target = getattr(batch, node_target_name)
                     this_edge_target = getattr(batch, edge_target_name)
 
-
-                    # do everything in the uncoupled basis:
+                    # compute loss in the uncoupled basis:
                     if compute_uncoupled_loss:
                         node_output = basis_transform.get_H(node_output)
                         edge_output = basis_transform.get_H(edge_output)
@@ -433,7 +428,7 @@ class SplitTrainer():
                 label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
 
                 # matrix_out = output_fock_matrix.cpu().detach().numpy()
-                # matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                # # matrix_out[np.abs(matrix_out) < 1e-6] = 0.0
                 # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
                 # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
                 # print("Matrix symmetry error: ", matrix_symmetry_error)
@@ -447,15 +442,16 @@ class SplitTrainer():
                 # plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
                 # plt.close()
 
-                # matrix_out = np.abs(np.abs(label_fock_matrix.cpu().numpy()) - np.abs(output_fock_matrix.cpu().numpy()))
-                # plt.imshow(matrix_out)
+                # matrix_out = np.abs(np.abs(label_fock_matrix.detach().cpu().numpy()) - np.abs(output_fock_matrix.detach().cpu().numpy()))
+                # plt.imshow(matrix_out, vmin=0.0, vmax=0.002)
                 # plt.colorbar()
                 # plt.savefig("diff_fock.png", dpi=300, bbox_inches='tight')
                 # plt.close()
 
-                # plt.figure(figsize=(4, 3))
-                # self.plot_eigenvalues(label_fock_matrix.cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
-                # self.plot_eigenvalues(output_fock_matrix.cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
+                plt.figure(figsize=(4, 3))
+                self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
+                self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
+                # self.plot_eigenvalue_diff(label_fock_matrix.detach().cpu().numpy(), output_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
 
                 # Compute the eigenvalues and eigenvalue error
                 print("Computing eigenvalues...", flush=True)
@@ -465,15 +461,13 @@ class SplitTrainer():
                 eigenvalue_maes.append(eigenvalue_MAE)
                 print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
 
-                # losstype = nn.L1Loss(reduction='mean') 
-                # print(losstype(label_eigenvalues, pred_eigenvalues))
-                # plt.xlabel('Eigenvalue #')
-                # plt.ylabel('Eigenvalue ($E_h$)')
-                # # plt.yscale('log')
-                # plt.legend()
-                # plt.grid(True)
-                # plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
-                # plt.close()
+                plt.xlabel('Eigenvalue #')
+                plt.ylabel('Eigenvalue ($E_h$)')
+                plt.yscale('log')
+                plt.legend()
+                plt.grid(True)
+                plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
+                plt.close()
 
                 node_outputs.update(node_orbital_blocks_output)
                 edge_outputs.update(edge_orbital_blocks_output)
@@ -518,9 +512,12 @@ class SplitTrainer():
             
             # remove from gpu
             print("Removing batch from GPU memory", flush=True)
-            del batch, node_output
+            del batch, backbone_out, node_output, this_node_target
             if include_edges:
-                del edge_output
+                del edge_output, this_edge_target, output_fock_matrix, label_fock_matrix, node_orbital_blocks_output, edge_orbital_blocks_output, node_orbital_blocks_label, edge_orbital_blocks_label
+            for param1, param2 in zip(self.backbone.parameters(), self.head.parameters()):
+                param1.grad = None 
+                param2.grad = None
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 
@@ -569,6 +566,15 @@ class SplitTrainer():
         Here for convinience, just plots the eigenvalues of the matrix
         """
         eigenvalues = np.linalg.eigvalsh(matrix)
+        plt.scatter(range(len(eigenvalues)), eigenvalues, s=s, alpha=alpha, label=label, color=color, edgecolors='none')
+    
+    def plot_eigenvalue_diff(self, matrix1, matrix2, s=1, alpha=0.3, label='', color='blue'):
+        """
+        Here for convinience, just plots the eigenvalues of the matrix
+        """
+        eigenvalues_1 = np.linalg.eigvalsh(matrix1)
+        eigenvalues_2 = np.linalg.eigvalsh(matrix2)
+        eigenvalues = np.abs(eigenvalues_1 - eigenvalues_2)
         plt.scatter(range(len(eigenvalues)), eigenvalues, s=s, alpha=alpha, label=label, color=color, edgecolors='none')
 
     def save_training_state(self, step, model, optimizer, track_loss_node, track_validation_node, save_file, output_folder, track_loss_edge=None, track_validation_edge=None):

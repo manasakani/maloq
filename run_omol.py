@@ -35,7 +35,7 @@ random.seed(42)
 # dataset_folder = './fock_datasets/omol/omol_closedshell_25k_train_r5.0_x80.db'
 dataset_folder = './omol_closedshell_25k_train_r8.0_scaled_ordered.db'
 dtype = torch.float32
-output_folder = 'outputs_omol_closedshell_25k_scaled_ordered'
+output_folder = 'outputs_omol_closedshell_25k_scaled_ordered_4mp'
 dataset_name = 'omol'
 db = ase.db.connect(dataset_folder)
 total_rows = db.count()
@@ -46,18 +46,18 @@ total_rows = db.count()
 l_embedding_dim = 64                    # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 5 
+num_mp_layers = 4 
 model_name = 'esen'
 restart_backbone = True
 restart_head = True
-restart_optimizer = False
+restart_optimizer = True
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 128                             # Number of validation structures
-num_train = total_rows - num_val   # Number of training structures 
+num_val = 128                           # Number of validation structures
+num_train = total_rows - num_val        # Number of training structures 
 num_epochs = 50000
-batch_size = 1                          # 1 for eval, 10 for train
+batch_size = 5                          # 1 for eval, 10 for train
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -65,13 +65,13 @@ gaussian_width = 1.0                    # width of gaussians used to expand edge
 # Additional symmetries:
 reduce_edge = False                     # use only edges i,j where i<j (other edges are reflected)
 reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = False                # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
 
 torch.set_default_dtype(dtype)
-lr_init = 1e-4
+lr_init = 1e-3
 patience = 10                           # for scheduler
 threshold = 1e-4                        # for scheduler
 
@@ -82,7 +82,7 @@ loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
 
-scale_and_shift = True
+scale_and_shift = False
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
 
 # Compute scale and shift factors if required
@@ -152,11 +152,18 @@ train_database = ASEDataset(dataset_folder, dtype=dtype, world_size=world_size, 
 val_database = ASEDataset(dataset_folder, dtype=dtype, world_size=world_size, rank=rank, start_idx=val_start_mol, end_idx=val_end_mol)
 
 # Create the fock target analysis objects for each molecule in the dataset, scale and shift the node labels if required
-print("Processing the dataset, creating fock analysis objects for every structure ...", flush=True)
+print("Processing the dataset, creating fock analysis objects if needed ...", flush=True)
 orbital_basis = train_database[0].orbital_basis
 orbital_basis = {int(k): v for k, v in orbital_basis.items()}
-train_data = get_scale_shift.scale_shift_database(train_database, 0, num_train, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_and_shift=scale_and_shift)
-val_data = get_scale_shift.scale_shift_database(val_database, 0, num_val, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_and_shift=scale_and_shift)
+
+if scale_and_shift:
+    train_data = get_scale_shift.scale_shift_database(train_database, 0, num_train, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_and_shift=scale_and_shift, train_or_eval=train_or_eval)
+    val_data = get_scale_shift.scale_shift_database(val_database, 0, num_val, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_and_shift=scale_and_shift, train_or_eval=train_or_eval)
+    basis_transformation = train_data[0].fock_target_object.basis_transformation
+else:
+    train_data = [x for x in train_database]
+    val_data = [x for x in val_database]
+    basis_transformation = None
 
 # # analyze the node labels for this dataset
 # dataset_analysis.dataset_analysis(train_database, dataset_name, rcut=5.0, dtype=dtype, reduce_edge=False, scale_shift_data=None, rank=rank)
@@ -166,19 +173,12 @@ val_data = get_scale_shift.scale_shift_database(val_database, 0, num_val, rcut_o
 train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0)
 val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0)
 
-basis_transformation = train_data[0].fock_target_object.basis_transformation
 required_irreps = Irreps(train_data[0].required_irreps)
 orbital_basis = {k: torch.tensor(v) for k, v in orbital_basis.items()}
-
-# print the largest magnitude node label for each element in the dataset
-if rank == 0:
-    print("Largest node label for each element in the dataset:")
-    for element, labels in train_data[0].fock_target_object.node_labels.items():
-        print(f"Element, largest node label magnitude: {element}: {torch.max(torch.abs(labels)):.4f}", flush=True)
-
 print("Orbital basis: ", orbital_basis)
 
 data_load_end = time.perf_counter()
+
 print("Time to load dataset: ", data_load_end - data_load_start, flush=True)
 print("Size of train loader: ", len(train_loader), flush=True)
 print("Size of val loader: ", len(val_loader), flush=True)
@@ -297,8 +297,8 @@ print("Going to training or evaluation", flush=True)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='omol_25k_scaled_ordered_Aug4',
-                                    save_frequency=1)
+                                    run_name='omol_25k_scaled_ordered_Aug4_restart1',
+                                    save_frequency=3)
 
 if train_or_eval == "train":
     trainer.train(num_epochs, 
