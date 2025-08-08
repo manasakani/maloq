@@ -233,6 +233,8 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
     principle_quantum_number = 0
     for l in full_orb_list:
 
+        l = l % 10 # convention for diffuse functions, if needed
+
         if l != l_prev:
             principle_quantum_number = 0
         # print("principle_quantum_number: ", principle_quantum_number)
@@ -264,30 +266,6 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
     # permuted_hamiltonian = hamiltonian[permutation, :]
     # permuted_hamiltonian = permuted_hamiltonian[:, permutation]
     return permuted_hamiltonian
-
-# def sort_by_l(hamiltonian, orbital_basis, atomic_numbers):
-#     """
-#     Sorts the basis into l-major. If there are diffuse functions, this will sort those. 
-#     """
-#     num_cols = hamiltonian.shape[0]
-
-#     permutation = np.arange(0, num_cols)
-#     full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
-#     permuted_hamiltonian = hamiltonian.copy()
-
-#     print(full_orb_list, flush=True)
-
-#     for i, atom in enumerate(atomic_numbers):
-#         these_orbitals = orbital_basis[atomic_numbers[i]]
-#         print("these_orbitals: ", these_orbitals, flush=True)
-
-#         # check if these_orbitals are sorted:
-#         if these_orbitals != sorted(these_orbitals):
-#             print("Orbitals are not sorted, sorting them now", flush=True)
-           
-
-#     permuted_hamiltonian = hamiltonian[permutation, :]
-#     permuted_hamiltonian = permuted_hamiltonian[:, permutation]
 
 def sort_by_l(hamiltonian, orbital_basis, atomic_numbers):
     """

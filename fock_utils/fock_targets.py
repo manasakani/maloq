@@ -46,7 +46,8 @@ class Fock_Targets:
         self.orbitals_per_atom = ([ sum([(2*l+1)    
                                          for l in orbital_basis[atom_number]]) 
                                          for atom_number in self.atomic_numbers ])
-        
+        self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)]) # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
+
         # --> Helper variables for edge symmetry conditions
         # random_int = random.randint(0, 1000)    # randomly select whether to use forward or backwards edges in this graph
         # if random_int % 2 == 0:
@@ -101,8 +102,15 @@ class Fock_Targets:
                                                             if_sort=False,
                                                             device_torch=self.device)
         
+        # Shift back all the diffuse orbitals (which were incremented by 10 in utils_tensor_decomp.py)
+        for atom, orbitals in self.orbital_basis.items():
+            self.orbital_basis[atom] = [orb % 10 for orb in orbitals]
+
+        for atom, orbitals in orbital_basis.items():
+            orbital_basis[atom] = [orb % 10 for orb in orbitals]
+        
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
-        # print(f'Simplified irreps: {self.simplified_out_irreps}')
+        print(f'Simplified irreps: {self.simplified_out_irreps}')
         self.scale_shift_data = scale_shift_data
 
         # If the fock targets should be computed on-the-fly rather than loaded from the db:
@@ -117,7 +125,6 @@ class Fock_Targets:
                 self.eigenvalues = eigenvalues.to(self.device)                    # store eigenvalues
                 self.eigenvectors = eigenvectors.to(self.device)                  # store eigenvectors
 
-            self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)]) # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
             self.target_len = target_len if target_len != 0 else None                  
 
             # Decompose the Fock matrix into orbital blocks and insert them into the targets
@@ -142,13 +149,17 @@ class Fock_Targets:
         # // !!! do garbage cleanup for the fock matrix here !!! //
         
         flat_blocks = []
+        # Iterate over target blocks (each corresponding to an l1-l2 interaction)
         for index_target, equivariant_block in enumerate(self.equivariant_blocks):
+            # Collect all the atom-atom interactions which will use this target block
             for N_M_str, block_slice in equivariant_block.items():
-                condition_numbers = tuple(map(int, N_M_str.split()))
+                condition_numbers = tuple(map(int, N_M_str.split()))    # atomic numbers
                 slice_row = slice(block_slice[0], block_slice[1])
                 slice_col = slice(block_slice[2], block_slice[3])
                 slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
-                flat_blocks.append((condition_numbers, slice_row, slice_col, slice_out))
+                flat_blocks.append((condition_numbers, slice_row, slice_col, slice_out)) 
+                # ^ from the interaction between atomic numbers 'cond1 and cond2', we extract the block defined by slide_row, slice_col and insert 
+                # it into slice_out of the corresponding labels
         
 
         time_label_start = time.perf_counter()

@@ -269,6 +269,15 @@ class eSEN_Block(torch.nn.Module):
         self.lmax = lmax
         self.mmax = mmax
 
+        self.norm_1 = get_normalization_layer(
+            norm_type, lmax=self.lmax, num_channels=sphere_channels
+        )
+
+        self.norm_2 = get_normalization_layer(
+            norm_type, lmax=self.lmax, num_channels=sphere_channels 
+        )
+
+        # if node_or_edge == 'node':
         self.edge_wise = Edgewise(
             sphere_channels=sphere_channels,
             hidden_channels=hidden_channels,
@@ -281,30 +290,20 @@ class eSEN_Block(torch.nn.Module):
             act_type=act_type,
             include_edges=include_edges
         )
-
-        # if node_or_edge == 'node':
-        self.norm_1 = get_normalization_layer(
-            norm_type, lmax=self.lmax, num_channels=sphere_channels
+            # if node_or_edge == 'node':
+        self.atom_wise = SpectralAtomwise(
+            sphere_channels=sphere_channels,
+            hidden_channels=hidden_channels,
+            lmax=lmax,
+            mmax=mmax,
         )
-
-        self.norm_2 = get_normalization_layer(
-            norm_type, lmax=self.lmax, num_channels=sphere_channels 
-        )
-
-        if node_or_edge == 'node':
-            self.node_block_wise = SpectralAtomwise(
-                sphere_channels=sphere_channels,
-                hidden_channels=hidden_channels,
-                lmax=lmax,
-                mmax=mmax,
-            )
-        else:
-            self.edge_block_wise = SpectralAtomwise(
-                sphere_channels=sphere_channels,
-                hidden_channels=hidden_channels,
-                lmax=lmax,
-                mmax=mmax,
-            )
+        # else:
+        #     self.edge_block_wise = SpectralAtomwise(
+        #         sphere_channels=sphere_channels,
+        #         hidden_channels=hidden_channels,
+        #         lmax=lmax,
+        #         mmax=mmax,
+        #     )
 
     def forward(
         self,
@@ -343,7 +342,7 @@ class eSEN_Block(torch.nn.Module):
             x_res = x_message_node
 
             x_message_node = self.norm_2(x_message_node)
-            x_message_node = self.node_block_wise(x_message_node)
+            x_message_node = self.atom_wise(x_message_node)
             return x_message_node + x_res
             
         else:
@@ -367,6 +366,6 @@ class eSEN_Block(torch.nn.Module):
             x_res = x_message_edge 
 
             x_message_edge = self.norm_2(x_message_edge)
-            x_message_edge = self.edge_block_wise(x_message_edge)
+            x_message_edge = self.atom_wise(x_message_edge)
 
             return x_message_edge + x_res

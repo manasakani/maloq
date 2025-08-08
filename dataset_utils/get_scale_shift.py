@@ -31,8 +31,8 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
     else: 
         print("Unknown dataset name!")
     
-    orbital_basis = {k: sorted(v) for k, v in orbital_basis.items()} # The basis must be in l-major
-    orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first - this is important!!!
+    # orbital_basis = {k: sorted(v) for k, v in orbital_basis.items()} # If need to sort by l (but this is not needed)
+    orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
 
     # 0. Compute locations of scalars and higher ranks from required_irreps for this dataset's basis:
     _, required_irreps, simplified_out_irreps = utils_tensor_decomp.make_output_irreps(orbital_basis) 
@@ -183,8 +183,6 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
         reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data
     )
 
-    print("length of database:", len(database))
-    print("start_mol:", start_mol, "end_mol:", end_mol)
 
     data_list = []
     for i in range(start_mol, end_mol):

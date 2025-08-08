@@ -989,11 +989,8 @@ class Seperable_Linear_Fock_Head(nn.Module):
 class Linear_Energy_Head(nn.Module):
     def __init__(self, backbone, include_edges=True):
         super().__init__()
-        # self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=0)
-        # self.linear = nn.Linear(backbone.sphere_channels, 1, bias=True)  
 
         self.include_edges = include_edges
-
         self.linear = nn.Sequential(
             nn.Linear(backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
             nn.SiLU(),
@@ -1010,8 +1007,7 @@ class Linear_Energy_Head(nn.Module):
     def forward(self, emb: dict[str, torch.Tensor], batch):
 
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
-        enegies_for_linear = emb["node_embeddings"].narrow(1, 0, 1)
-        edge_mask = batch.edge_mask
+        # enegies_for_linear = emb["node_embeddings"].narrow(1, 0, 1)
 
         # aggregate the edges onto every node:
         if self.include_edges:
@@ -1021,16 +1017,7 @@ class Linear_Energy_Head(nn.Module):
                 device=emb["node_embeddings"].device,
             )
 
-            agg_embedding.index_add_(0, edge_index[1][edge_mask], emb["edge_embeddings"]) 
-            if (~edge_mask).any():                                              # if we are ignoring half the edges, need to now add the other half
-                l_start = 0
-                for l in range(self.lmax + 1): 
-                    l_end = l_start + (2 * l + 1) 
-                    parity = 1 if l % 2 == 0 else -1
-                    agg_embedding[:, l_start:l_end, :].index_add_(
-                        0, edge_index[0][edge_mask], parity * emb["edge_embeddings"][:, l_start:l_end, :]
-                    )
-                    l_start = l_end
+            agg_embedding.index_add_(0, edge_index[1], emb["edge_embeddings"]) 
         else:
             agg_embedding = emb["node_embeddings"]
 
@@ -1149,106 +1136,3 @@ class Convolution_Force_Head(nn.Module):
         assert torch.allclose(torch.sum(aggregated_forces), torch.tensor(0.0), atol=1e-8), f"Force conservation check failed! Edge sum: {torch.sum(aggregated_forces)}"
 
         return {"forces": aggregated_forces}
-
-
-@registry.register_model("gated_force_head")
-class Gated_Force_Head(nn.Module):
-
-    def __init__(self, backbone, irreps_in):
-        super().__init__()
-
-        self.sphere_channels = 2*backbone.sphere_channels
-        self.lmax = backbone.lmax
-        irreps_out = '1x1e'
-
-        irreps_scalars, irreps_gated = self.split_irreps(irreps_in)
-        irreps_gates = Irreps(f"{irreps_gated.num_irreps}x0e")
-        print("num ofirreps_gates: ", irreps_gates.num_irreps)
-
-        # 1. Apply a linear layer to convert the number of input scalars to the number of required gating scalars
-        # the number of input scalars is equal to sphere_channels
-        # the output 'irreps_gates' are the gating scalars
-        # --> gate with learnable parameters by outputting more random scalars:
-        input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
-        combined_output_scalars = Irreps(f"{irreps_scalars.num_irreps + irreps_gated.num_irreps}x0e")
-        self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars)
-        # this returns the irreps_gates
-
-        # 2. Apply the gating to the other ls (need to pass in a stack of [l=0, l~=0])
-        self.gate = Gate(irreps_scalars=Irreps(),
-                            act_scalars=[],
-                            irreps_gates=irreps_gates,
-                            act_gates=[torch.sigmoid] * len(irreps_gates),
-                            irreps_gated=irreps_gated
-                        )
-
-        # 3. Now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
-        self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=False) 
-
-    
-    def split_irreps(self, irreps):
-        scalars = []
-        gated = []
-        for mul, ir in irreps:
-            if ir.l == 0:
-                scalars.append((mul, ir))
-            else:
-                gated.append((mul, ir))
-        return Irreps(scalars), Irreps(gated)
-
-    def forward(self, emb, batch):
-
-        x_edge = emb["x_edge"]
-        edge_index = torch.tensor(batch.edge_index, dtype=torch.long).squeeze(0).reshape(2, -1)
-
-        aggregated_emb = torch.zeros_like(emb["node_embeddings"])
-        aggregated_emb.index_add_(0, edge_index[1], emb["edge_embeddings"])
-        node_plus_edges = torch.cat((emb["node_embeddings"], aggregated_emb), 2)       
-
-        node_embeddings = self.stack_irreps(node_plus_edges)
-        node_output = self.process(node_embeddings, x_edge, edge_index)
-
-        return node_output, edge_output
-
-    def stack_irreps(self, x_message):   
-        # input = x_message = [num_atoms/edges (batch_size), (lmax+1)**2, sphere_channels]
-
-        x_message_T = x_message.transpose(-1,-2) # rearrange dimensions from [l, E] to [E, l] 
-        batch_size = x_message_T.shape[0]
-
-        # group all the different ls so l_sorted output looks like sphere_channels*0e + sphere_channels*1e + sphere_channels*2e ...
-        l_sorted_output = torch.zeros(batch_size, self.sphere_channels*((self.lmax+1)**2), device=x_message.device)
-        for l in range(self.lmax+1):
-            start = (l**2)*self.sphere_channels
-            end = (l**2)*self.sphere_channels + self.sphere_channels*(2*l+1)
-            l_sorted_output[:,start:end] = torch.squeeze(x_message_T[:, :, (l**2):(l**2)+(2*l+1)].reshape(batch_size, 1, -1))
-
-        return l_sorted_output
-
-    def process(self, x, x_edge, edge_index):
-
-        # 1. Extract the scalar components, which are the first # sphere_channels elements of this tensor
-        x_scalars = x[:, :self.sphere_channels]
-        x_nonscalars = x[:, self.sphere_channels:]
-
-        # 2. Prepare some scalars for gating
-
-        # gate with learnable scalars: the first 'sphere_channels' scalars are the l=0, and others are used for gating
-        all_scalars = self.lin_scalars_learnable(x_scalars) 
-        transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
-        gating_scalars = all_scalars[:, self.sphere_channels:]
-
-        print(transformed_l0_scalars.shape)
-        print(gating_scalars.shape)
-        print(x_nonscalars.shape)
-        exit()
-
-        # 3. Gate the l>0 irreps:
-        x_gated = self.gate(torch.cat([gating_scalars, x_nonscalars], dim=1))
-
-        # plug the l=0 components back into x_gated (currently they are zeros):
-        # x_gated = torch.cat([x_scalars, x_gated], dim=1)              # original scalars get plugged back in
-        x_gated = torch.cat([transformed_l0_scalars, x_gated], dim=1)   # use the transformed scalars
-        x_out = self.lin_out(x_gated)
-
-        return x_out

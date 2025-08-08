@@ -32,11 +32,10 @@ dataset_name = 'omol'
 
 # --> whether to scale and shift scalar values in the node blocks of the dataset (scale_shift_file needs to be precomputed)
 scale_and_shift = False
-scale_shift_file = 'element_scale_shifts_water_test' + dataset_name + '.pt'
+scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
 
 # Collect and process orbital basis for the omol tzvpd dataset:
 full_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
-full_basis = {k: sorted(v) for k, v in full_basis.items()} # The basis must be in l-major!!!
 full_basis = dict(sorted(full_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first - this is important!!!
 
 # ----------------------------
@@ -90,11 +89,9 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
     fock_matrix, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath) 
     #NOTE: The basis returned by utils_orca_out (taken from the output file) is not in the right order for the diffuse functions! So we don't use it directly.
 
-    # Get basis (for this structure) in the correct l-order for rearranging matrix:
-    basis = {element: basis_sets.def2_tzvpd[utils_orca_out.periodic_table_number[element]] for element in elements} # not in l-major order yet
+    # Get basis (for this structure) for rearranging the matrix:
+    basis = {element: full_basis[element] for element in elements} 
     fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
-    fock_matrix = utils_orca_out.sort_by_l(fock_matrix, basis, np.array(elements))  # Shift into l-major (in case of diffuse functions)
-    basis = {k: sorted(v) for k, v in basis.items()} # now the basis is in l-major order (but we use the full_basis later)
 
     ### Display the fock matrix:
     # plt.imshow(fock_matrix, cmap='viridis', interpolation='nearest', vmin=-0.5, vmax=0.5)
@@ -133,6 +130,10 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
     # structures.append(fock_targets.Fock_Targets(structure, cutoff, basis, fock_matrix, reflection_symmetry=False, scale_shift_data=scale_shift_data)) # minibasis for water! 
     target_time_end = time.perf_counter()
     print("Time to make targets: ", target_time_end - target_time_start, flush=True)
+
+    # Shift back all the diffuse orbitals (which were incremented by 10 in utils_tensor_decomp.py)
+    for atom, orbitals in full_basis.items():
+        full_basis[atom] = [orb % 10 for orb in orbitals]
     
     time_end = time.perf_counter()
     print("Total time for one structure: ", time_end - time_start, flush=True)

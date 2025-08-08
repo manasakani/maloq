@@ -378,7 +378,7 @@ class SplitTrainer():
             track_loss_edge = []
         
         # -- Evaluate everything in the train_loader -- 
-        with torch.no_grad():  # NOTE: there is a bug with torch.no_grad() and e3nn_linear (used in the output head! This causes a hang)
+        with torch.no_grad():  # NOTE: there is a bug with torch.no_grad() and e3nn_linear (used in the output head!) for e3nn v. 0.5.6. Using 0.5.5 instead.
 
             # dictionaries to store the orbital blocks, they get rewritten by each batch
             node_outputs = {}
@@ -448,9 +448,9 @@ class SplitTrainer():
                     # plt.savefig("diff_fock.png", dpi=300, bbox_inches='tight')
                     # plt.close()
 
-                    plt.figure(figsize=(4, 3))
-                    self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
-                    self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
+                    # plt.figure(figsize=(4, 3))
+                    # self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
+                    # self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
                     # self.plot_eigenvalue_diff(label_fock_matrix.detach().cpu().numpy(), output_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
 
                     # Compute the eigenvalues and eigenvalue error
@@ -461,13 +461,13 @@ class SplitTrainer():
                     eigenvalue_maes.append(eigenvalue_MAE)
                     print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
 
-                    plt.xlabel('Eigenvalue #')
-                    plt.ylabel('Eigenvalue ($E_h$)')
-                    plt.yscale('log')
-                    plt.legend()
-                    plt.grid(True)
-                    plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
-                    plt.close()
+                    # plt.xlabel('Eigenvalue #')
+                    # plt.ylabel('Eigenvalue ($E_h$)')
+                    # plt.yscale('log')
+                    # plt.legend()
+                    # plt.grid(True)
+                    # plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
+                    # plt.close()
 
                     node_outputs.update(node_orbital_blocks_output)
                     edge_outputs.update(edge_orbital_blocks_output)
@@ -521,6 +521,7 @@ class SplitTrainer():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
 
+        print(f"Writing eval outputs to file in {output_folder}...", flush=True)
 
         # -- Output dump -- 
         if loss_target_string == 'fock_matrix':

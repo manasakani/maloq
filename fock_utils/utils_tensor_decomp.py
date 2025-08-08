@@ -6,6 +6,10 @@ import numpy as np
 # functions in this file are adapted from: https://github.com/Xiaoxun-Gong/DeepH-E3
 
 def l1l2_to_l3s(l1, l2):
+
+    # handle convention for diffuse functions
+    l1 = l1 % 10
+    l2 = l2 % 10
         
     m = 1   # multiplicity
     p = 1   # even parity only (real-valued Fock matrix)
@@ -60,6 +64,10 @@ class e3TensorDecomp:
             
         for H_l1, H_l2 in out_js_list:
             
+            # Handle convention for diffuse functions
+            H_l1 = H_l1 % 10
+            H_l2 = H_l2 % 10
+            
             # = construct required_irreps_out =
             mul = 1
             required_irreps_out_single = l1l2_to_l3s(H_l1, H_l2)
@@ -100,7 +108,7 @@ class e3TensorDecomp:
 
         self.sort = None
         if if_sort:
-            self.sort = sort_irreps(required_irreps_out) # TODO: check effect of sort and add the implementation here
+            self.sort = sort_irreps(required_irreps_out) 
         
         if self.sort is not None:
             self.required_irreps_out = self.sort.irreps_out
@@ -129,6 +137,10 @@ class e3TensorDecomp:
         for i in range(len(self.out_js_list)):
             H_slice = slice(self.H_slices[i], self.H_slices[i + 1])
             l1, l2 = self.out_js_list[i]
+
+            l1 = l1 % 10  # handle convention for diffuse functions
+            l2 = l2 % 10
+            
             H_block = H[:, H_slice].reshape(-1, 2 * l1 + 1, 2 * l2 + 1)
             net_out_block = torch.sum(self.wms_H[i][None, :, :, :] * H_block[:, None, :, :], dim=(-1, -2))
             out.append(net_out_block)
@@ -146,6 +158,18 @@ def make_output_irreps(orbital_basis):
     il_list = [l1, idx_l1, l2, idx_l2] # hopping term from idx_l1's l1 orbital to the idx_l2's l2 orbital on the corresponding atoms in hoppings_list 
     '''
 
+    # add 10 to all diffuse orbitals to distinguish them from core orbitals
+    def find_diffuse_start(orbitals):
+        for i in range(1, len(orbitals)):
+            if orbitals[i] < orbitals[i-1]:
+                return i
+        return len(orbitals)  
+
+    for atom1, orbitals in orbital_basis.items():
+        diffuse_start = find_diffuse_start(orbitals)
+        orbitals[diffuse_start:] = [l + 10 for l in orbitals[diffuse_start:]]
+
+    # Collect all the orbital interactions for every possible pair of atoms in the orbital basis:
     hoppings_list = [] 
     for atom1, orbitals1 in orbital_basis.items():
         for atom2, orbitals2 in orbital_basis.items():
@@ -202,7 +226,7 @@ def process_targets(orbital_basis, targets):
         
     orbital_types = list(map(lambda x: np.array(x, dtype=np.int32), orbital_types))
     orbital_types_cumsum = list(map(lambda x: np.concatenate([np.zeros(1, dtype=np.int32), 
-                                                                np.cumsum(2 * x + 1)]), orbital_types))
+                                                                np.cumsum(2 * (x % 10) + 1)]), orbital_types))
 
     # = process the orbital indices into block slices =
     equivariant_blocks, out_js_list = [], []
@@ -225,6 +249,6 @@ def process_targets(orbital_basis, targets):
                 assert out_js == (orbital_types[i][block_indices[0]], orbital_types[j][block_indices[1]])
         equivariant_blocks.append(equivariant_block)
         out_js_list.append(tuple(map(int, out_js)))
-        out_slices.append(out_slices[-1] + (2 * out_js[0] + 1) * (2 * out_js[1] + 1))
+        out_slices.append(out_slices[-1] + (2 * (out_js[0]%10) + 1) * (2 * (out_js[1]%10) + 1))
     
     return equivariant_blocks, out_js_list, out_slices
