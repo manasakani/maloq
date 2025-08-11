@@ -28,10 +28,9 @@ random.seed(42)
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
-database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
-# database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/test_2k_conformers.db")
+database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_10k.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_tiny_scaled_rcut10'
+output_folder = 'outputs_nablaDFT_tiny_scaled_rcut10_10k'
 # ---------------------------
 
 # --> Model settings:
@@ -42,13 +41,13 @@ num_mp_layers = 3
 model_name = 'esen'
 restart_backbone = True
 restart_head = True
-restart_optimizer = True
+restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
 num_val = 64                             # Number of validation structures
 num_train = len(database) - num_val
-num_epochs = 50000
+num_epochs = 400
 batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2                    # connectivity cutoff (=2xrcut)
@@ -64,17 +63,19 @@ train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-4
-patience = 50                          # for scheduler
-threshold = 1e-8                        # for scheduler
+lr_init = 1e-5
+patience = 10                          # for scheduler
+threshold = 1e-5                        # for scheduler
 
-loss_target = 'fock_matrix'
+loss_target = 'fock_matrix'  
 head_type = 'gated'                     # linear or gated
 train_loss_fxn = loss.rmse_mse_padded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
 include_edges = True
+make_fock_targets = True
+
 scale_and_shift = True
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
 
@@ -152,8 +153,8 @@ val_end_mol += num_train
 # test_end_mol = 23
 ### DEBUG ###
 
-train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data)
-val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data)
+train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
+val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
@@ -172,7 +173,7 @@ elif loss_target == "forces":
     edge_target = None
 else:
     output_irreps = '1x0e'
-    node_target = 'energy'
+    node_target = 'energies'
     edge_target = None
 
 # --------------------------------------------
@@ -209,8 +210,8 @@ if loss_target == "fock_matrix":
 elif loss_target == "forces":
     head = Linear_Force_Head(backbone)
 
-elif loss_target == "energy":
-    print("To be implemented!")
+elif loss_target == "energies":
+    head = Linear_Energy_Head(backbone, include_edges=include_edges)
 
 
 backbone = backbone.to(device)
@@ -275,8 +276,8 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', fa
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='nablaDFT_aug5',
-                                    save_frequency=5)
+                                    run_name='nablaDFT_train10k_new_scaled',
+                                    save_frequency=10)
 
 if train_or_eval == "train":
     trainer.train(num_epochs, 

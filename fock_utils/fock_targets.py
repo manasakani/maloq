@@ -8,6 +8,10 @@ import random
 
 class Fock_Targets:
     """
+    Consists of two main components:
+    1. Atomic graph and connectivity list for the input structure
+    2. Fock target analysis components for a given atomic basis (this is the same for any structure sharing the same atomic basis)
+    3. If fock_matrix input is not None, computes the fock matrix decomposition into orbital blocks (for each pair of atoms)
     Sets up inputs/targets for supervised (atomic_structure -> Fock matrix) training for an set of atoms.
     Input target shape to standardize across molecules with different elements
     """
@@ -46,19 +50,9 @@ class Fock_Targets:
         self.orbitals_per_atom = ([ sum([(2*l+1)    
                                          for l in orbital_basis[atom_number]]) 
                                          for atom_number in self.atomic_numbers ])
-        self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)]) # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
-
-        # --> Helper variables for edge symmetry conditions
-        # random_int = random.randint(0, 1000)    # randomly select whether to use forward or backwards edges in this graph
-        # if random_int % 2 == 0:
-        #     print("using forward edges (i < j) for the graph")
-        #     self.edge_type = "i < j"            
-        # else:
-        #     print("using backward edges (i > j) for the graph")
-        #     self.edge_type = "i > j"            
+        self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)]) # start index of atom i in the matrix (and block_starts[-1] is the matrix size)         
 
         self.edge_type = "i < j"              # keep edges i, j where i < j or i > j
-
         if self.reflection_symmetry:
             if self.edge_type == "i < j":
                 self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]    
@@ -82,17 +76,6 @@ class Fock_Targets:
             else:
                 self.reverse_edge_map[ind] = edge_dict.get((j.item(), i.item()), None)
 
-        # TEST: randomly flip one of the true/false pairs in the forward_edge_mask corresponding to the same edges:
-        # print("forward edge mask: ", self.forward_edge_mask, flush=True)
-        # print("reverse edge map: ", self.reverse_edge_map, flush=True)
-        # for i in range(len(self.forward_edge_mask)):
-        #     random_int = random.randint(0, 1000)   
-        #     if not self.forward_edge_mask[i] and random_int % 2 == 0:
-        #         self.forward_edge_mask[i] = True
-        #         self.forward_edge_mask[self.reverse_edge_map[i]] = False  # flip the corresponding backward edge 
-        # self.reverse_edge_map = [0, 4, 5, 0, 4, 5]
-        # TEST: randomly flip one of the true/false pairs in the forward_edge_mask corresponding to the same edges:
-    
         # --> Analyze structure of orbital interactions
         targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions
         self.equivariant_blocks, out_js_list, self.orbital_starts = utils_tensor_decomp.process_targets(self.orbital_basis, targets)
@@ -110,7 +93,7 @@ class Fock_Targets:
             orbital_basis[atom] = [orb % 10 for orb in orbitals]
         
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
-        print(f'Simplified irreps: {self.simplified_out_irreps}')
+        # print(f'Simplified irreps: {self.simplified_out_irreps}')
         self.scale_shift_data = scale_shift_data
 
         # If the fock targets should be computed on-the-fly rather than loaded from the db:
@@ -330,21 +313,23 @@ class Fock_Targets:
 
         return orbital_blocks
     
-    def unpad_node_blocks(self, H_pred):
+    def unpad_node_blocks(self, H_pred, atomic_numbers=None):
         
         atom_orbitals = self.orbital_basis
+        if atomic_numbers is None:
+            atomic_numbers = self.atomic_numbers
 
         # Precompute number of orbitals for each atom
         atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
         
         H_prev = {}
         
-        for atom_ind in range(len(self.atomic_numbers)):
+        for atom_ind in range(len(atomic_numbers)):
             
             key_term = (atom_ind, atom_ind)  # node key
 
             # Precompute number of orbitals for atoms i and j
-            num_orbitals_i = atom_orbitals_count[self.atomic_numbers[atom_ind].item()]
+            num_orbitals_i = atom_orbitals_count[atomic_numbers[atom_ind].item()]
 
             # Initialize H_prev for this edge
             H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_i), dtype=float)
@@ -363,15 +348,18 @@ class Fock_Targets:
                     
                     condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
 
-                    if self.atomic_numbers[atom_ind].item() == int(condition_atomic_number_i) and self.atomic_numbers[atom_ind].item() == int(condition_atomic_number_j):
+                    if atomic_numbers[atom_ind].item() == int(condition_atomic_number_i) and atomic_numbers[atom_ind].item() == int(condition_atomic_number_j):
                         H_prev_edge[slice_row, slice_col] = H_pred[atom_ind][slice_out].reshape(len_row, len_col)
 
         return H_prev
     
-    def unpad_edge_blocks(self, H_pred):
+    def unpad_edge_blocks(self, H_pred, atomic_numbers=None):
         
         edge_index = self.neighbour_list
         atom_orbitals = self.orbital_basis
+
+        if atomic_numbers is None:
+            atomic_numbers = self.atomic_numbers
 
         # Precompute number of orbitals for each atom
         atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
@@ -388,8 +376,8 @@ class Fock_Targets:
                 key_term = (i, j)  # edge key term 
 
                 # Precompute number of orbitals for atoms i and j
-                num_orbitals_i = atom_orbitals_count[self.atomic_numbers[i].item()]
-                num_orbitals_j = atom_orbitals_count[self.atomic_numbers[j].item()]
+                num_orbitals_i = atom_orbitals_count[atomic_numbers[i].item()]
+                num_orbitals_j = atom_orbitals_count[atomic_numbers[j].item()]
 
                 # Initialize H_prev for this edge
                 H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_j), dtype=float)
@@ -407,7 +395,7 @@ class Fock_Targets:
                         
                         condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
 
-                        if self.atomic_numbers[i].item() == int(condition_atomic_number_i) and self.atomic_numbers[j].item() == int(condition_atomic_number_j):
+                        if atomic_numbers[i].item() == int(condition_atomic_number_i) and atomic_numbers[j].item() == int(condition_atomic_number_j):
                             H_prev_edge[slice_row, slice_col] = H_pred[edge_counter][slice_out].reshape(len_row, len_col)
                 
                 edge_counter += 1

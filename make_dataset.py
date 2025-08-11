@@ -31,12 +31,12 @@ num_local_structures = int(args.max_structures) # use to impose only making a su
 dataset_name = 'omol' 
 
 # --> whether to scale and shift scalar values in the node blocks of the dataset (scale_shift_file needs to be precomputed)
-scale_and_shift = False
+scale_and_shift = True
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
 
 # Collect and process orbital basis for the omol tzvpd dataset:
 full_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
-full_basis = dict(sorted(full_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first - this is important!!!
+full_basis = dict(sorted(full_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
 
 # ----------------------------
 # --> Initialize compute setup

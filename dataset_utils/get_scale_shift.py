@@ -171,32 +171,35 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
         print("Saved scale_shift_data to ./fock_datasets/"+filename, flush=True)
 
 
-def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_and_shift=False, train_or_eval='train'):
+def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=False, train_or_eval='train'):
     """
     Scale and shift the node labels in the database using the scale_shift_data
     """
 
-    # For analysis, we need to create a sample structure and fock target object
+    # For analysis only (not reconstruction of the matrix), we just create a sample structure and fock target object
+    print("Making analysis fock target object for the first molecule in the database", flush=True)
     sample_structure = Atoms(symbols=database[start_mol].atomic_numbers, positions=database[start_mol].pos)
     sample_fock_target_object = fock_targets.Fock_Targets(
         sample_structure, rcut_orbitals, orbital_basis, fock_matrix=None,
         reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data
     )
 
-
     data_list = []
     for i in range(start_mol, end_mol):
         data_obj = database[i]
         data_obj.fock_target_object = sample_fock_target_object
-        # if train_or_eval == 'eval':
-        #     structure = Atoms(symbols=data_obj.atomic_numbers, positions=data_obj.pos)
-        #     fock_target_object = fock_targets.Fock_Targets(
-        #         structure, rcut_orbitals, orbital_basis, fock_matrix=None,
-        #         reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data
-        #     )
-        #     data_obj.fock_target_object = fock_target_object
-        if scale_and_shift:
-            # print(f"Scaling and shifting the node labels in database[{i}]", flush=True)
+
+        if train_or_eval == 'eval':
+            print("Making fock analysis object for molecule", i, flush=True)
+            structure = Atoms(symbols=data_obj.atomic_numbers, positions=data_obj.pos)
+            fock_target_object = fock_targets.Fock_Targets(
+                structure, rcut_orbitals, orbital_basis, fock_matrix=None,
+                reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data
+            )
+            data_obj.fock_target_object = fock_target_object
+
+        if scale_nodes:
+            print(f"Scaling and shifting the node labels in database[{i}]", flush=True)
             scaled_data_obj = copy.deepcopy(data_obj)
             scaled_data_obj.node_y = sample_fock_target_object.scale_shift_node_blocks(data_obj.node_y)
             data_obj = scaled_data_obj
@@ -204,3 +207,79 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
         data_list.append(data_obj)
     
     return data_list
+
+
+# --------------------------------------------
+# Energy reference functions
+# --------------------------------------------
+
+def compute_energy_references(batch, tensor, elem_refs, operation="subtract"):
+    """
+    Apply element-wise energy references to molecular energies.
+    
+    Args:
+        batch: Batch object containing atomic_numbers and batch indices
+        tensor: Energy tensor to modify (shape: [num_molecules] or [num_molecules, 1])
+        elem_refs: Element reference tensor (shape: [max_atomic_number])
+        operation: "subtract" or "add"
+    
+    Returns:
+        Modified energy tensor
+    """
+    assert tensor.shape[0] == len(torch.unique(batch.batch))
+    
+    with torch.autocast(elem_refs.device.type, enabled=False):
+        # Ensure all tensors are on the same device
+        device = tensor.device
+        elem_refs = elem_refs.to(device)
+        batch_indices = batch.batch.to(device)
+        atomic_numbers = batch.atomic_numbers.to(device)
+        
+        # Get atom references - this is the source tensor
+        atom_refs = elem_refs[atomic_numbers]
+        
+        # Create refs tensor with same shape as input tensor
+        refs = torch.zeros(tensor.shape, dtype=elem_refs.dtype, device=device)
+        
+        # Handle dimension mismatch if atom_refs is 2D but batch_indices is 1D
+        if atom_refs.dim() > batch_indices.dim():
+            # Flatten atom_refs to match batch_indices dimension
+            atom_refs = atom_refs.flatten()
+        
+        refs = refs.scatter_reduce(
+            0,
+            batch_indices,  # Maps atoms to molecules
+            atom_refs,      # Reference for each atom
+            reduce="sum",
+        )
+        
+        if operation == "subtract":
+            return tensor - refs
+        elif operation == "add":
+            return tensor + refs
+        else:
+            raise ValueError(f"Unknown operation: {operation}")
+
+def apply_energy_refs(batch, tensor, element_references):
+    """Apply energy reference subtraction to a batch of energies."""
+    if element_references is None:
+        return tensor
+    
+    # Print statistics before scaling
+    original_energies = tensor.clone()
+    print(f"Before energy reference scaling:")
+    print(f"  Average energy: {original_energies.mean().item():.6f} Hartree")
+    print(f"  Energy std: {original_energies.std().item():.6f} Hartree")
+    print(f"  Energy range: [{original_energies.min().item():.6f}, {original_energies.max().item():.6f}] Hartree")
+    
+    # Apply scaling
+    scaled_energies = compute_energy_references(batch, tensor, element_references, operation="subtract")
+    
+    # Print statistics after scaling
+    print(f"After energy reference scaling:")
+    print(f"  Average energy: {scaled_energies.mean().item():.6f} Hartree")
+    print(f"  Energy std: {scaled_energies.std().item():.6f} Hartree")
+    print(f"  Energy range: [{scaled_energies.min().item():.6f}, {scaled_energies.max().item():.6f}] Hartree")
+    print(f"  Energy change: {(scaled_energies.mean() - original_energies.mean()).item():.6f} Hartree")
+    
+    return scaled_energies

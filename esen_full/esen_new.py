@@ -41,7 +41,9 @@ from .nn.layer_norm import (
     get_normalization_layer,
 )
 from .nn.radial import EnvelopedBesselBasis, GaussianSmearing
+from .nn.so2_layers import SO2_Convolution
 from .nn.so3_layers import SO3_Linear
+from .nn.activation import GateActivation
 
 @registry.register_model("esen_backbone")
 class eSEN_Backbone(nn.Module):
@@ -991,37 +993,141 @@ class Linear_Energy_Head(nn.Module):
         super().__init__()
 
         self.include_edges = include_edges
-        self.linear = nn.Sequential(
-            nn.Linear(backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
-            nn.SiLU(),
-            nn.Linear(2*backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
-            nn.SiLU(),
-            nn.Linear(2*backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
-            nn.SiLU(),
-            nn.Linear(2*backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
-            nn.SiLU(),
-            nn.Linear(2*backbone.sphere_channels, 1, bias=True),
+        self.sphere_channels = backbone.sphere_channels
+        self.hidden_channels = backbone.hidden_channels
+        self.lmax = backbone.lmax
+        self.mmax = backbone.mmax
+        self.mappingReduced = CoefficientMapping(self.lmax, self.mmax)  # need to re-create mapping reduced to avoid inplace modification error!
+        self.edge_channels_list = backbone.edge_channels_list
+        extra_m0_output_channels = self.lmax * self.hidden_channels
+
+        # self.conv = eSEN_Block(
+        #                             backbone.sphere_channels,
+        #                             backbone.hidden_channels,
+        #                             backbone.lmax,
+        #                             backbone.mmax,
+        #                             backbone.mappingReduced,
+        #                             backbone.SO3_grid,
+        #                             backbone.edge_channels_list,
+        #                             backbone.cutoff,
+        #                             backbone.norm_type,
+        #                             backbone.act_type,
+        #                             backbone.mlp_type,
+        #                             include_edges=include_edges,
+        #                             node_or_edge='node'
+        #                         )
+
+        # self.linear = nn.Sequential(
+        #     nn.Linear(backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
+        #     nn.SiLU(),
+        #     # nn.Linear(2*backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
+        #     # nn.SiLU(),
+        #     # nn.Linear(2*backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
+        #     # nn.SiLU(),
+        #     # nn.Linear(2*backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
+        #     # nn.SiLU(),
+        #     nn.Linear(2*backbone.sphere_channels, 1, bias=True),
+        # )
+
+        # Convolution method:
+        self.act = GateActivation(
+                lmax=self.lmax, mmax=self.mmax, num_channels=self.hidden_channels
+            )
+        self.so2_conv_1 = SO2_Convolution(
+            2*self.sphere_channels,  
+            self.hidden_channels,
+            self.lmax,
+            self.mmax,
+            self.mappingReduced,
+            internal_weights=False,
+            edge_channels_list=self.edge_channels_list,
+            extra_m0_output_channels=extra_m0_output_channels,
         )
+
+        self.so2_conv_2 = SO2_Convolution(
+            self.hidden_channels,
+            self.sphere_channels,
+            self.lmax,
+            self.mmax,
+            self.mappingReduced,
+            internal_weights=True,
+            edge_channels_list=None,
+            extra_m0_output_channels=None,
+        )
+
+        # self.norm = get_normalization_layer(
+        #     norm_type, lmax=self.lmax, num_channels=sphere_channels
+        # )
+
+        # self.so2_conv_2 = SO2_Convolution(
+        #     self.sphere_channels,
+        #     self.sphere_channels,
+        #     self.lmax,
+        #     self.mmax,
+        #     self.mappingReduced,
+        #     internal_weights=True,
+        #     edge_channels_list=None,
+        #     extra_m0_output_channels=None,
+        # )
+        
+        self.linear = nn.Linear(backbone.sphere_channels, 1, bias=True)
+
         self.lmax = backbone.lmax
 
     def forward(self, emb: dict[str, torch.Tensor], batch):
 
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
-        # enegies_for_linear = emb["node_embeddings"].narrow(1, 0, 1)
+        edge_mask = batch.edge_mask
+        
+        nodes = emb["node_embeddings"]
+        edges = emb["edge_embeddings"]
+        x_edge = emb["x_edge"]
+        wigner = emb["wigner"]
+        wigner_inv = emb["wigner_inv"]
 
-        # aggregate the edges onto every node:
+        x_target = nodes[edge_index[1][edge_mask]]
         if self.include_edges:
-            agg_embedding = torch.zeros(
-                (emb["node_embeddings"].shape[0],) + emb["edge_embeddings"].shape[1:],
-                dtype=emb["node_embeddings"].dtype,
-                device=emb["node_embeddings"].device,
-            )
-
-            agg_embedding.index_add_(0, edge_index[1], emb["edge_embeddings"]) 
+            x_message = torch.cat((x_target, edges), dim=2) 
         else:
-            agg_embedding = emb["node_embeddings"]
+            x_source = nodes[edge_index[0][edge_mask]]
+            x_message = torch.cat((x_source, x_target), dim=2) 
 
-        energies = self.linear(agg_embedding.narrow(1, 0, 1))
+        # Edge Attention:
+        # -----------------
+        # Rotate the irreps
+        x_message = torch.bmm(emb["wigner"], x_message)
+
+        # Apply the SO2 convolution to the messages
+        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge) 
+        x_message = self.act(x_0_gating, x_message)
+        x_message = self.so2_conv_2(x_message, x_edge)
+
+        # Rotate back the irreps
+        x_message = torch.bmm(wigner_inv, x_message)
+
+        # Compute the sum of the incoming neighboring messages for each target node
+        new_embedding = torch.zeros(
+            (nodes.shape[0],) + x_message.shape[1:],
+            dtype=x_message.dtype,
+            device=x_message.device,
+        )
+
+        # aggregate messages
+        new_embedding.index_add_(0, edge_index[1][edge_mask], x_message)
+        nodes = self.linear(new_embedding) 
+        energies = nodes.narrow(1, 0, 1)
+        # -----------------
+
+        # Edge convolution:
+        # -----------------
+
+        # edges = torch.bmm(emb["wigner"], edges)
+        # edges = self.so2_conv_2(edges, x_edge)
+        # edges = torch.bmm(wigner_inv, edges)
+        # x.index_add_(0, edge_index[1][edge_mask], edges)  # aggregate the transformed edges onto the target nodes
+        # x = self.linear(x)                                # apply the linear layer to the node embeddings
+        # energies = x.narrow(1, 0, 1)                      # take the first channel as the energy
+
         energies = energies.squeeze(-1).squeeze(-1)  # remove the last two dimensions
 
         molecule_indices = torch.cat([
@@ -1035,6 +1141,35 @@ class Linear_Energy_Head(nn.Module):
         energies_per_molecule = energies_per_molecule.scatter_add(0, molecule_indices, energies)
 
         return {"energies": energies_per_molecule}
+
+        # aggregate the edges onto every node:
+        # if self.include_edges:
+        #     agg_embedding = torch.zeros(
+        #         (emb["node_embeddings"].shape[0],) + emb["edge_embeddings"].shape[1:],
+        #         dtype=emb["node_embeddings"].dtype,
+        #         device=emb["node_embeddings"].device,
+        #     )
+
+        #     agg_embedding.index_add_(0, edge_index[1], emb["node_embeddings"]) 
+        # else:
+        #     agg_embedding = emb["node_embeddings"]
+        # energies = self.linear(agg_embedding.narrow(1, 0, 1))
+
+        # final_node_output = self.conv(
+        #                         emb["node_embeddings"],
+        #                         emb["edge_embeddings"],
+        #                         emb["x_edge"],
+        #                         forward_edges,
+        #                         edge_distance,
+        #                         edge_index,
+        #                         edge_mask,
+        #                         reverse_edge_map,
+        #                         emb["wigner"],
+        #                         emb["wigner_inv"],
+        #                         node_or_edge='node', 
+        #                     )
+        # energies = self.linear(final_node_output.narrow(1, 0, 1))
+
 
 @registry.register_model("esen_linear_force_head")
 class Linear_Force_Head(nn.Module):
