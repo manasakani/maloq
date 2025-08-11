@@ -30,7 +30,7 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> OMOL 
-dataset_folder = './water_element_ordered_basis.db'
+dataset_folder = './water_fixed_diffuse.db'
 dtype = torch.float32
 database = ASEDataset(dataset_folder, dtype=dtype)
 output_folder = 'outputs_omol_water_single_scaled'
@@ -54,7 +54,7 @@ num_val = 1                             # Number of validation structures
 num_train = 1 
 num_epochs = 50000
 batch_size = 1                          # 1 for eval, 10 for train
-rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
+rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
@@ -68,8 +68,8 @@ train_head = True
 
 torch.set_default_dtype(dtype)
 lr_init = 5e-3
-patience = 25                           # for scheduler
-threshold = 1e-5                        # for scheduler
+patience = 100                           # for scheduler
+threshold = 1e-4                        # for scheduler
 
 loss_target = 'fock_matrix'
 head_type = 'gated'                     # linear or gated 
@@ -79,8 +79,7 @@ backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
 
 scale_and_shift = True
-scale_shift_file = 'element_scale_shifts_water_test' + dataset_name + '.pt'
-# scale_shift_file = 'element_scale_shifts_water_scaletest' + dataset_name + '.pt'
+scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:

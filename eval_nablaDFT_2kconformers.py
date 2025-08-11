@@ -27,9 +27,10 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> NablaDFT (tiny conformers)
-database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/test_2k_conformers.db")
-dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_tiny'
+database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/test_5k_conformers.db")
+# database = HamiltonianDatabase("./fock_datasets/test_structures.db")
+dataset_name = 'nablaDFT' 
+output_folder = 'outputs_nablaDFT_tiny_scaled_rcut10_10k'
 # ---------------------------
 
 # --> Model settings:
@@ -45,12 +46,12 @@ restart_optimizer = False
 # --> Training settings:
 train_or_eval = "eval"
 num_val = 8                             # Number of validation structures
-num_train = 2000 #len(database) 
-num_test = 10 #000# len(database)
+num_train = len(database) 
+num_test = len(database)
 num_epochs = 50000
 batch_size = 1                          # 1 for eval, 10 for train
-rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
-rcut_gaussian = 2*rcut_orbitals         # connectivity cutoff (=2xrcut)
+rcut_orbitals = 9.0                     # connectivity cutoff (=2xrcut)
+rcut_gaussian = 2*10.0         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
@@ -75,7 +76,7 @@ loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
 include_edges = False if loss_target == 'forces' else True
-scale_and_shift = False
+scale_and_shift = True
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
@@ -181,7 +182,7 @@ backbone = eSEN_Backbone(
                 lmax=required_irreps.lmax,
                 mmax=required_irreps.lmax,
                 use_pbc=False,
-                cutoff=2*rcut_gaussian,
+                cutoff=rcut_gaussian,
                 edge_channels=l_embedding_dim,
                 num_layers=num_mp_layers,
                 act_type='gate',
