@@ -39,16 +39,16 @@ num_distance_basis = l_embedding_dim    # number of gaussian basis functions use
 hidden_dim = l_embedding_dim
 num_mp_layers = 3
 model_name = 'esen'
-restart_backbone = True
-restart_head = True
-restart_optimizer = True
+restart_backbone = False
+restart_head = False
+restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = int(len(database)/2)                             # Number of validation structures
+num_val = int(len(database)/3)                             # Number of validation structures
 num_train = len(database) - num_val
-num_epochs = 1000
-batch_size = 10                           # 1 for eval, 10 for train
+num_epochs = 100000
+batch_size = 1                           # 1 for eval, 10 for train
 rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                     # width of gaussians used to expand edge distance
@@ -64,8 +64,8 @@ train_head = True
 dtype = torch.float64
 torch.set_default_dtype(dtype)
 lr_init = 1e-3
-patience = 50                          # for scheduler
-threshold = 1e-5                        # for scheduler
+patience = 500                          # for scheduler
+threshold = 1e-4                        # for scheduler
 
 loss_target = 'energies'
 head_type = 'gated'                     # linear or gated
@@ -177,18 +177,22 @@ if loss_target == "energies":
         for z in nonzero_elements:
             print(f"  Element Z={z.item()}: {element_references[z].item():.6f} Hartree")
             
-        # Apply energy reference subtraction to all batches in train and val loaders
-        print("Applying energy reference subtraction to training data...")
-        for batch in train_loader:
-            if hasattr(batch, 'energies') and batch.energies is not None:
-                batch.energies = get_scale_shift.apply_energy_refs(batch, batch.energies, element_references)
+        # Apply energy reference subtraction to the underlying datasets
+        print("Applying energy reference subtraction to training dataset...")
+        train_dataset = train_loader.dataset
+        for i, batch in enumerate(train_loader):
+            data = train_dataset[i]
+            if hasattr(data, 'energies') and data.energies is not None:
+                data.energies = get_scale_shift.apply_energy_refs(batch, data.energies, element_references)
         
-        print("Applying energy reference subtraction to validation data...")
-        for batch in val_loader:
-            if hasattr(batch, 'energies') and batch.energies is not None:
-                batch.energies = get_scale_shift.apply_energy_refs(batch, batch.energies, element_references)
+        print("Applying energy reference subtraction to validation dataset...")
+        val_dataset = val_loader.dataset
+        for i, batch in enumerate(val_loader):
+            data = val_dataset[i]
+            if hasattr(data, 'energies') and data.energies is not None:
+                data.energies = get_scale_shift.apply_energy_refs(batch, data.energies, element_references)
 
-        print("Energy reference subtraction applied to all batches")
+        print("Energy reference subtraction applied to all datasets")
     else:
         print(f"Warning: Energy reference file {energy_ref_file} not found!")
         print("Proceeding without energy reference subtraction.")
