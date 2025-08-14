@@ -145,7 +145,7 @@ class Edgewise(torch.nn.Module):
         x_source = x[edge_index[0][edge_mask]]
         x_target = x[edge_index[1][edge_mask]]
 
-        # Create regular messages 
+        # Create messages 
         x_message = torch.cat((x_source, x_target), dim=2) 
 
         # Rotate the irreps to align with the edge
@@ -277,7 +277,6 @@ class eSEN_Block(torch.nn.Module):
             norm_type, lmax=self.lmax, num_channels=sphere_channels 
         )
 
-        # if node_or_edge == 'node':
         self.edge_wise = Edgewise(
             sphere_channels=sphere_channels,
             hidden_channels=hidden_channels,
@@ -290,20 +289,13 @@ class eSEN_Block(torch.nn.Module):
             act_type=act_type,
             include_edges=include_edges
         )
-            # if node_or_edge == 'node':
+
         self.atom_wise = SpectralAtomwise(
             sphere_channels=sphere_channels,
             hidden_channels=hidden_channels,
             lmax=lmax,
             mmax=mmax,
         )
-        # else:
-        #     self.edge_block_wise = SpectralAtomwise(
-        #         sphere_channels=sphere_channels,
-        #         hidden_channels=hidden_channels,
-        #         lmax=lmax,
-        #         mmax=mmax,
-        #     )
 
     def forward(
         self,

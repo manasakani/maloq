@@ -9,6 +9,7 @@ from e3nn.o3 import Irreps
 import wandb
 import matplotlib.pyplot as plt
 import os
+from dataset_utils import get_scale_shift
 
 # note: removing amp to get better precision for now
 def disable_amp(func):
@@ -61,7 +62,8 @@ class SplitTrainer():
             train_head=True,
             basis_transform=None,
             compute_uncoupled_loss=True,
-            min_lr=1e-15):
+            element_references=None,
+            min_lr=1e-10):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}", flush=True)
         # torch.autograd.set_detect_anomaly(True)
@@ -157,8 +159,9 @@ class SplitTrainer():
                     
                 elif loss_target_string == 'energies':
                     node_output = self.head(backbone_out, batch)
-                    this_node_target = getattr(batch, node_target_name)
-                    loss = loss_fxn(node_output['energies'], this_node_target, self.head_irreps)
+                    scaled_energies = get_scale_shift.apply_energy_refs(batch, batch.energies, element_references) # Apply energy reference scaling:
+                    loss = loss_fxn(node_output['energies'], scaled_energies, self.head_irreps)
+                    # print("predicted and reference energies for last train batch: ", node_output['energies'].tolist(), ref_energies.tolist())
 
                     train_loss_node += loss
 
@@ -182,7 +185,8 @@ class SplitTrainer():
                 # if rank == 0:
                 #     print("Time per forward pass: ", forward_end - forward_start)
                 #     print("Time for both forward and backward pass: ", backward_end - forward_start)
-                
+        
+
             # -- Output dump -- 
             if loss_target_string == 'fock_matrix':
                 track_loss_node.append(train_loss_node.cpu().detach().numpy()/num_train_batches) 
@@ -248,16 +252,17 @@ class SplitTrainer():
                         val_loss_node += loss
                     elif loss_target_string == 'energies':
                         node_output = self.head(backbone_out, batch)
-                        this_node_target = getattr(batch, node_target_name)
+                        scaled_energies = get_scale_shift.apply_energy_refs(batch, batch.energies, element_references)
+                        loss = loss_fxn(node_output['energies'], scaled_energies, self.head_irreps)
+                        # print("predicted and reference energies for last val batch: ", node_output['energies'].tolist(), ref_energies.tolist())
 
-                        loss = loss_fxn(node_output['energies'], this_node_target, self.head_irreps)
                         val_loss_node += loss
 
                     else:
                         raise ValueError(f"Unknown loss target string: {loss_target_string}")
 
                     val_loss += loss.item()
-            
+
             # -- Output dump -- 
             if loss_target_string == 'fock_matrix':
                 track_loss_node_val.append(val_loss_node.cpu().detach().numpy()/num_val_batches) 
@@ -286,7 +291,11 @@ class SplitTrainer():
                 val_loss_edge = val_loss_edge_tensor.item() / world_size
 
             # -- Scheduler -- 
-            scheduler.step(val_loss)
+            # Different schedulers require different step() calls
+            if hasattr(scheduler, 'patience'):  # ReduceLROnPlateau
+                scheduler.step(val_loss)
+            else:  # CosineAnnealingLR or other epoch-based schedulers
+                scheduler.step()
             current_lr = optimizer.param_groups[0]['lr']
             if rank == 0:
                 print("Current learning rate: ", current_lr)
@@ -400,32 +409,33 @@ class SplitTrainer():
             edge_labels = {}
         
         for index, batch in enumerate(eval_loader):
-            print(f"Processing molecule {index}...", flush=True)      
+            print(f"Processing molecule {index}...", flush=True)   
+            print(f"Number of atoms in molecule {index}: {batch.num_nodes}", flush=True)
 
             batch = batch.to(device)
             backbone_out = self.backbone(batch) 
 
-            print("Writing embeddings to file...", flush=True)
-            if rank == 0:
-                # Save as binary .npy files (most efficient and preserves full precision)
-                np.save(os.path.join(output_folder, 'node_embeddings_' + str(index) + '.npy'),
-                        backbone_out['node_embeddings'].cpu().detach().numpy())
-                np.save(os.path.join(output_folder, 'edge_embeddings_' + str(index) + '.npy'),
-                        backbone_out['edge_embeddings'].cpu().detach().numpy())
-                np.save(os.path.join(output_folder, 'edge_distances_' + str(index) + '.npy'),
-                        batch.edge_attr.cpu().detach().numpy())
+            # print("Writing embeddings to file...", flush=True)
+            # if rank == 0:
+            #     # Save as binary .npy files (most efficient and preserves full precision)
+            #     np.save(os.path.join(output_folder, 'node_embeddings_' + str(index) + '.npy'),
+            #             backbone_out['node_embeddings'].cpu().detach().numpy())
+            #     np.save(os.path.join(output_folder, 'edge_embeddings_' + str(index) + '.npy'),
+            #             backbone_out['edge_embeddings'].cpu().detach().numpy())
+            #     np.save(os.path.join(output_folder, 'edge_distances_' + str(index) + '.npy'),
+            #             batch.edge_attr.cpu().detach().numpy())
 
-                # save positions and elements ("pos": structure.atoms.get_positions(),"atomic_numbers": structure.atomic_numbers,):
-                np.save(os.path.join(output_folder, 'positions_' + str(index) + '.npy'),
-                        batch.pos.cpu().detach().numpy())
-                np.save(os.path.join(output_folder, 'atomic_numbers_' + str(index) + '.npy'),
-                        batch.atomic_numbers.cpu().detach().numpy())
+            #     # save positions and elements ("pos": structure.atoms.get_positions(),"atomic_numbers": structure.atomic_numbers,):
+            #     np.save(os.path.join(output_folder, 'positions_' + str(index) + '.npy'),
+            #             batch.pos.cpu().detach().numpy())
+            #     np.save(os.path.join(output_folder, 'atomic_numbers_' + str(index) + '.npy'),
+            #             batch.atomic_numbers.cpu().detach().numpy())
 
-                # Also save shapes and metadata as text
-                with open(os.path.join(output_folder, 'embeddings_metadata.txt'), 'w') as f:
-                    f.write(f"Node embeddings shape: {backbone_out['node_embeddings'].shape}\n")
-                    f.write(f"Edge embeddings shape: {backbone_out['edge_embeddings'].shape}\n")
-                    f.write(f"Edge distances shape: {batch.edge_attr.shape}\n")
+            #     # Also save shapes and metadata as text
+            #     with open(os.path.join(output_folder, 'embeddings_metadata.txt'), 'w') as f:
+            #         f.write(f"Node embeddings shape: {backbone_out['node_embeddings'].shape}\n")
+            #         f.write(f"Edge embeddings shape: {backbone_out['edge_embeddings'].shape}\n")
+            #         f.write(f"Edge distances shape: {batch.edge_attr.shape}\n")
 
             # self.visualize_embeddings(backbone_out["node_embeddings"], output_folder, keyword='node')
             # self.visualize_embeddings(backbone_out["edge_embeddings"], output_folder, keyword='edge')
@@ -441,19 +451,19 @@ class SplitTrainer():
                 node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
                 this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target)
 
-                # write the corresponding node and edge outputs and targets to file:
-                if rank == 0:
-                    np.save(os.path.join(output_folder, 'node_outputs_' + str(index) + '.npy'),
-                            node_output.cpu().detach().numpy())
-                    np.save(os.path.join(output_folder, 'edge_outputs_' + str(index) + '.npy'),
-                            edge_output.cpu().detach().numpy())
-                    np.save(os.path.join(output_folder, 'node_targets_' + str(index) + '.npy'),
-                            this_node_target.cpu().detach().numpy())
-                    np.save(os.path.join(output_folder, 'edge_targets_' + str(index) + '.npy'),
-                            this_edge_target.cpu().detach().numpy())
-                    # write the required irreps to file:    
-                    with open(os.path.join(output_folder, 'irreps.txt'), 'w') as f:
-                        f.write(f"Head irreps: {self.head_irreps}\n")
+                # # write the corresponding node and edge outputs and targets to file:
+                # if rank == 0:
+                #     np.save(os.path.join(output_folder, 'node_outputs_' + str(index) + '.npy'),
+                #             node_output.cpu().detach().numpy())
+                #     np.save(os.path.join(output_folder, 'edge_outputs_' + str(index) + '.npy'),
+                #             edge_output.cpu().detach().numpy())
+                #     np.save(os.path.join(output_folder, 'node_targets_' + str(index) + '.npy'),
+                #             this_node_target.cpu().detach().numpy())
+                #     np.save(os.path.join(output_folder, 'edge_targets_' + str(index) + '.npy'),
+                #             this_edge_target.cpu().detach().numpy())
+                #     # write the required irreps to file:    
+                #     with open(os.path.join(output_folder, 'irreps.txt'), 'w') as f:
+                #         f.write(f"Head irreps: {self.head_irreps}\n")
 
                 # Transform back to uncoupled basis:
                 print("Transforming to uncoupled basis...", flush=True)
@@ -473,7 +483,8 @@ class SplitTrainer():
                 # reassemble the matrix 
                 print("Reconstructing matrices...", flush=True)
                 output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=True)
-                label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
+                # label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
+                label_fock_matrix = batch.fock_target_object[0].fock_matrix
 
                 matrix_out = output_fock_matrix.cpu().detach().numpy()
                 # matrix_out[np.abs(matrix_out) < 1e-6] = 0.0
@@ -491,14 +502,14 @@ class SplitTrainer():
                 plt.close()
 
                 matrix_out = np.abs(np.abs(label_fock_matrix.detach().cpu().numpy()) - np.abs(output_fock_matrix.detach().cpu().numpy()))
-                plt.imshow(matrix_out, vmin=0.0, vmax=0.002)
+                plt.imshow(matrix_out, vmin=0.0, vmax=0.0001)
                 plt.colorbar()
-                plt.savefig("diff_fock.png", dpi=300, bbox_inches='tight')
+                plt.savefig("diff_fock_"+str(index)+".png", dpi=300, bbox_inches='tight')
                 plt.close()
 
-                plt.figure(figsize=(4, 3))
-                self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
-                self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
+                # plt.figure(figsize=(4, 3))
+                # self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
+                # self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
                 # self.plot_eigenvalue_diff(label_fock_matrix.detach().cpu().numpy(), output_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
 
                 # Compute the eigenvalues and eigenvalue error
@@ -509,13 +520,13 @@ class SplitTrainer():
                 eigenvalue_maes.append(eigenvalue_MAE)
                 print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
 
-                plt.xlabel('Eigenvalue #')
-                plt.ylabel('Eigenvalue ($E_h$)')
-                plt.yscale('log')
-                plt.legend()
-                plt.grid(True)
-                plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
-                plt.close()
+                # plt.xlabel('Eigenvalue #')
+                # plt.ylabel('Eigenvalue ($E_h$)')
+                # plt.yscale('log')
+                # plt.legend()
+                # plt.grid(True)
+                # plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
+                # plt.close()
 
                 node_outputs.update(node_orbital_blocks_output)
                 edge_outputs.update(edge_orbital_blocks_output)

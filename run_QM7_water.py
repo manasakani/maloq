@@ -12,7 +12,7 @@ from dataset_utils.ASEDataset import ASEAtomsData
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
 # Models
-from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Convolution_Force_Head, Gated_Force_Head, Linear_Energy_Head
+from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Energy_Head
 
 import_end = time.perf_counter()
 print("Time to do imports: ", import_end - import_start)
@@ -30,34 +30,34 @@ random.seed(42)
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_water.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_water'
+output_folder = 'outputs_QM7_water_cosine'
 # ---------------------------
 
 # --> Shuffle:
-# print("Not shuffling database, using the first molecule only for debugging")
-print("Shuffling database...")
-indices = list(range(len(database)))
-random.shuffle(indices)
-database = [database[i] for i in indices]
+print("Not shuffling database, using the first molecule only for debugging")
+# print("Shuffling database...")
+# indices = list(range(len(database)))
+# random.shuffle(indices)
+# database = [database[i] for i in indices]
 
 # --> Model settings:
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 3
-restart_backbone = True
-restart_head = True
-restart_optimizer = True
+restart_backbone = False
+restart_head = False
+restart_optimizer = False
 
 # --> Training settings:
-train_or_eval = "eval"
+train_or_eval = "train"
 num_val = 500                           # Number of validation structures
 num_train = 500 
-num_test = 4#500
-num_epochs = 200000
-batch_size = 1                          # 1 for eval, 10 for train
+num_test = len(database) - num_train - num_val  # Number of test structures
+num_epochs = 1000
+batch_size = 10                          # 1 for eval, 10 for train
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
-rcut_gaussian = rcut_orbitals*2                    # connectivity cutoff (=2xrcut)
+rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Symmetry reduction settings:
@@ -71,8 +71,11 @@ train_head = True
 dtype = torch.float64
 torch.set_default_dtype(dtype)
 lr_init = 1e-4
-patience = 100                          # if ReduceLROnPlateau scheduler
+patience = 500                          # if ReduceLROnPlateau scheduler
 threshold = 1e-5                        # if ReduceLROnPlateau scheduler
+scheduler_type = 'cosine'               # 'plateau' or 'cosine'
+T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
+eta_min = 1e-8                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
 train_loss_fxn = loss.rmse_mse_padded_loss
@@ -83,17 +86,18 @@ head_checkpoint = 'head.pt'
 head_type = 'gated'                   # 'linear' or 'gated'
 include_edges = True
 
-# dataset_analysis.dataset_analysis(database, dataset_name, rcut=5.0, dtype=torch.float64, reduce_edge=False)
+# dataset_analysis.dataset_analysis(database, dataset_name, rcut=rcut_orbitals, dtype=torch.float64, reduce_edge=False)
 
 scale_and_shift = False
+scale_shift_file = 'element_scale_shifts_water_' + dataset_name + '.pt'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
     print("Getting scale and shift factors...")
-    scale_shift_file = 'element_scale_shifts_water_' + dataset_name + '.pt'
     if scale_shift_file not in os.listdir('./fock_datasets'):
         print("[Computing element scale and shift factors for the dataset]")
         get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge)
+        print("Done computing scale and shift factors, saving to file:", scale_shift_file)
     else:
         print("[Loading element scale and shift factors from file]")
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
@@ -130,6 +134,7 @@ if rank == 0:
     print(f"Training - Loss target: {loss_target}", flush=True)
     print(f"Training - Loss function: {train_loss_fxn}", flush=True)
     print(f"Training - Initial learning rate: {lr_init}", flush=True)
+    print(f"Training - Scheduler type: {scheduler_type}", flush=True)
 
 compute_start = time.perf_counter()
 device = utils_compute.setup_env(rank, world_size)
@@ -161,6 +166,8 @@ test_end_mol += num_train+num_val
 # train_end_mol = 1
 # val_start_mol = 0
 # val_end_mol = 1
+# test_start_mol = 0
+# test_end_mol = 1
 ### DEBUG ###
 
 if train_or_eval == 'train':
@@ -288,13 +295,19 @@ if restart_head:
 # Run Training or Evaluation
 # --------------------------------------------
 
-# scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
-scheduler = loss_scheduler(optimizer)
+if scheduler_type == 'plateau':
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+elif scheduler_type == 'cosine':
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min, verbose=True)
+else:
+    raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
+    
+# scheduler = loss_scheduler(optimizer)
 
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='water_Jul26',
+                                    run_name='water_final',
                                     save_frequency=10)
 
 if train_or_eval == "train":

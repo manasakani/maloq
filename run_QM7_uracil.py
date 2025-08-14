@@ -12,7 +12,7 @@ from dataset_utils.ASEDataset import ASEAtomsData
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
 # Models
-from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Linear_Energy_Head     
+from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Energy_Head     
 
 import_end = time.perf_counter()
 print("Time to do imports: ", import_end - import_start)
@@ -30,7 +30,7 @@ random.seed(42)
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_uracil.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_uracil_test'
+output_folder = 'outputs_QM7_uracil_final'
 # ---------------------------
 
 # --> Shuffle:
@@ -51,13 +51,13 @@ restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 1#500                           # Number of validation structures
-num_train = 1#5000#25000  
-num_test = 10 #500
-num_epochs = 50000
+num_val = 500                           # Number of validation structures
+num_train = 25000  
+num_test = len(database) - num_train - num_val  # Number of test structures
+num_epochs = 1000
 batch_size = 1                          # for training (batch size is always 1 for eval) - small batch for multi-gpu!
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut_orbitals)
-rcut_gaussian = 10.0                    # gaussian basis distance 
+rcut_gaussian = rcut_orbitals*2         # gaussian basis distance 
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
@@ -70,12 +70,15 @@ train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 8e-5 #8e-5
-patience = 20                           # for scheduler
-threshold = 1e-8                        # for scheduler
+lr_init = 1e-4
+patience = 100                           # for ReduceLROnPlateau scheduler
+threshold = 1e-5                        # for ReduceLROnPlateau scheduler
+scheduler_type = 'cosine'               # 'plateau' or 'cosine'
+T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
+eta_min = 1e-9                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
-train_loss_fxn = loss.rmse_padded_loss
+train_loss_fxn = loss.rmse_mse_padded_loss
 test_loss_fxn = loss.l1_padded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
@@ -126,6 +129,7 @@ if rank == 0:
     print(f"Training - Loss target: {loss_target}", flush=True)
     print(f"Training - Loss function for training: {train_loss_fxn}", flush=True)
     print(f"Training - Initial learning rate: {lr_init}", flush=True)
+    print(f"Training - Scheduler type: {scheduler_type}", flush=True)
 
 compute_start = time.perf_counter()
 device = utils_compute.setup_env(rank, world_size)
@@ -281,13 +285,19 @@ if restart_head:
 # Run Training or Evaluation
 # --------------------------------------------
 
-# scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
-scheduler = loss_scheduler(optimizer)
+if scheduler_type == 'plateau':
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+elif scheduler_type == 'cosine':
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min, verbose=True)
+else:
+    raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
+    
+# scheduler = loss_scheduler(optimizer)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='QM7_uracil_Jul26',
-                                    save_frequency=100)
+                                    run_name='uracil_final',
+                                    save_frequency=10)
 if train_or_eval == "train":
     trainer.train(num_epochs, 
                     train_loss_fxn, 

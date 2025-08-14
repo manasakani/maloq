@@ -28,9 +28,9 @@ random.seed(42)
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
-database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_10k.db")
+database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_tiny_scaled_rcut10_10k'
+output_folder = 'outputs_nablaDFT_tiny_final'
 # ---------------------------
 
 # --> Model settings:
@@ -41,13 +41,13 @@ num_mp_layers = 3
 model_name = 'esen'
 restart_backbone = True
 restart_head = True
-restart_optimizer = False
+restart_optimizer = True
 
 # --> Training settings:
 train_or_eval = "train"
 num_val = 64                             # Number of validation structures
 num_train = len(database) - num_val
-num_epochs = 400
+num_epochs = 1000
 batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2                    # connectivity cutoff (=2xrcut)
@@ -63,9 +63,12 @@ train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-5
-patience = 10                          # for scheduler
-threshold = 1e-5                        # for scheduler
+lr_init = 1e-4
+patience = 10                           # if ReduceLROnPlateau scheduler
+threshold = 1e-5                        # if ReduceLROnPlateau scheduler
+scheduler_type = 'cosine'               # 'plateau' or 'cosine'
+T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
+eta_min = 1e-8                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'  
 head_type = 'gated'                     # linear or gated
@@ -269,9 +272,14 @@ if restart_head:
 # --------------------------------------------
 # Run Training or Evaluation
 # --------------------------------------------
-
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
-# scheduler = loss_scheduler(optimizer)
+if scheduler_type == 'plateau':
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+elif scheduler_type == 'cosine':
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min, verbose=True)
+else:
+    raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
+ 
+ # scheduler = loss_scheduler(optimizer)
 
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
