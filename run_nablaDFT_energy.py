@@ -39,7 +39,7 @@ num_distance_basis = l_embedding_dim    # number of gaussian basis functions use
 hidden_dim = l_embedding_dim
 num_mp_layers = 3
 model_name = 'esen'
-restart_backbone = False
+restart_backbone = True
 restart_head = False
 restart_optimizer = False
 
@@ -48,7 +48,7 @@ train_or_eval = "train"
 num_val = int(len(database)/3)                             # Number of validation structures
 num_train = len(database) - num_val
 num_epochs = 100000
-batch_size = 1                           # 1 for eval, 10 for train
+batch_size = 10                           # 1 for eval, 10 for train
 rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                     # width of gaussians used to expand edge distance
@@ -73,7 +73,7 @@ train_loss_fxn = loss.rmse_mse_padded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
-include_edges = True
+include_edges = False
 make_fock_targets = False
 
 scale_and_shift = False
@@ -156,7 +156,7 @@ val_end_mol += num_train
 train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
 val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
 
-# Apply node energy reference subtraction
+# Get element references for energy scaling
 if loss_target == "energies":
 
     # Load linear reference coefficients computed from nablaDFT dataset
@@ -177,22 +177,22 @@ if loss_target == "energies":
         for z in nonzero_elements:
             print(f"  Element Z={z.item()}: {element_references[z].item():.6f} Hartree")
             
-        # Apply energy reference subtraction to the underlying datasets
-        print("Applying energy reference subtraction to training dataset...")
-        train_dataset = train_loader.dataset
-        for i, batch in enumerate(train_loader):
-            data = train_dataset[i]
-            if hasattr(data, 'energies') and data.energies is not None:
-                data.energies = get_scale_shift.apply_energy_refs(batch, data.energies, element_references)
+        # # Apply energy reference subtraction to the underlying datasets
+        # print("Applying energy reference subtraction to training dataset...")
+        # train_dataset = train_loader.dataset
+        # for i, batch in enumerate(train_loader):
+        #     data = train_dataset[i]
+        #     if hasattr(data, 'energies') and data.energies is not None:
+        #         batch.energies = get_scale_shift.apply_energy_refs(batch, batch.energies, element_references)
         
-        print("Applying energy reference subtraction to validation dataset...")
-        val_dataset = val_loader.dataset
-        for i, batch in enumerate(val_loader):
-            data = val_dataset[i]
-            if hasattr(data, 'energies') and data.energies is not None:
-                data.energies = get_scale_shift.apply_energy_refs(batch, data.energies, element_references)
+        # print("Applying energy reference subtraction to validation dataset...")
+        # val_dataset = val_loader.dataset
+        # for i, batch in enumerate(val_loader):
+        #     data = val_dataset[i]
+        #     if hasattr(data, 'energies') and data.energies is not None:
+        #         data.energies = get_scale_shift.apply_energy_refs(batch, data.energies, element_references)
 
-        print("Energy reference subtraction applied to all datasets")
+        # print("Energy reference subtraction applied to all datasets")
     else:
         print(f"Warning: Energy reference file {energy_ref_file} not found!")
         print("Proceeding without energy reference subtraction.")
@@ -292,7 +292,7 @@ if restart_backbone:
     for key, value in state_dict.items():
         new_key = key.replace('module.', '')  
         new_state_dict[new_key] = value
-    backbone.load_state_dict(new_state_dict)
+    backbone.load_state_dict(new_state_dict, strict=False)
 
 if restart_head:
     restart_file = output_folder + '/' + head_checkpoint
@@ -308,7 +308,7 @@ if restart_head:
     for key, value in state_dict.items():
         new_key = key.replace('module.', '')  
         new_state_dict[new_key] = value
-    head.load_state_dict(new_state_dict)
+    head.load_state_dict(new_state_dict, strict=False)
     
 
 # --------------------------------------------
@@ -338,7 +338,8 @@ if train_or_eval == "train":
                     val_loader=val_loader,
                     train_backbone=train_backbone,
                     train_head=train_head,
-                    basis_transform=basis_transformation)
+                    basis_transform=basis_transformation,
+                    element_references=element_references)
 
 else:
     trainer.evaluate(train_loss_fxn,

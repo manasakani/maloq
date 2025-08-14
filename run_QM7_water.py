@@ -55,7 +55,7 @@ num_val = 500                           # Number of validation structures
 num_train = 500 
 num_test = len(database) - num_train - num_val  # Number of test structures
 num_epochs = 1000
-batch_size = 10                          # 1 for eval, 10 for train
+batch_size = 5                          # 1 for eval, 10 for train
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -70,12 +70,12 @@ train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-4
+lr_init = 1e-5
 patience = 500                          # if ReduceLROnPlateau scheduler
 threshold = 1e-5                        # if ReduceLROnPlateau scheduler
 scheduler_type = 'cosine'               # 'plateau' or 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
-eta_min = 1e-8                          # for cosine scheduler - minimum learning rate
+eta_min = 1e-10                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
 train_loss_fxn = loss.rmse_mse_padded_loss

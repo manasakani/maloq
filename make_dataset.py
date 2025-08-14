@@ -156,23 +156,19 @@ for current_rank in range(world_size):
 
                 data = {
                     "pos": structure.atoms.get_positions(),
-                    "orbital_basis": structure.orbital_basis,
-                    "req_output_irreps": structure.req_output_irreps,
+                    "atomic_numbers": structure.atomic_numbers,
                     "edge_index": structure.neighbour_list,
                     "edge_mask": structure.forward_edge_mask,
                     "reverse_edge_map": structure.reverse_edge_map,
                     "edge_dist": structure.edge_dist.detach().cpu().numpy(),
-                    "nedges": len(structure.neighbour_list),
-                    "natoms": len(structure.atoms.get_positions()),
-                    "atomic_numbers": structure.atomic_numbers,
                     "node_labels": structure.node_labels.detach().cpu().numpy(),
                     "edge_labels": structure.edge_labels.detach().cpu().numpy(),
                     "total_energy [Eh]": orca_output_dict["total_energy [Eh]"],
                     "gradient [Eh/bohr]": orca_output_dict["gradient [Eh/bohr]"],
-                    "total_charge": orca_output_dict["total_charge"],
-                    "multipoles": orca_output_dict["multipoles"],
+                    # "total_charge": orca_output_dict["total_charge"],
+                    # "multipoles": orca_output_dict["multipoles"],
                     "cutoff": cutoff,
-                    "required_irreps": str(structure.req_output_irreps),
+                    # "required_irreps": str(structure.req_output_irreps),
                     "num_atoms_in_molecule": len(structure.atomic_numbers),
                     "folder_name": local_folder_name
                 }

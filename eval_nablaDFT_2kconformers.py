@@ -47,11 +47,11 @@ restart_optimizer = False
 train_or_eval = "eval"
 num_val = 8                             # Number of validation structures
 num_train = len(database) 
-num_test = len(database)
+num_test = 1 #len(database)
 num_epochs = 50000
 batch_size = 1                          # 1 for eval, 10 for train
-rcut_orbitals = 9.0                     # connectivity cutoff (=2xrcut)
-rcut_gaussian = 2*10.0         # connectivity cutoff (=2xrcut)
+rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
+rcut_gaussian = 2*10.0                  # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
@@ -138,8 +138,9 @@ data_load_start = time.perf_counter()
 test_start_mol, test_end_mol, test_local_num_mol = utils_compute.split_indices(rank, world_size, num_test)
 
 ## DEBUG ### - 22 is the first molecule with a Br atom
+# print("Starting molecule for test!!: ", test_start_mol, flush=True)
 # test_start_mol = 22 
-# test_end_mol = 23 
+# test_end_mol = test_start_mol + test_local_num_mol
 ## DEBUG ###
 
 if train_or_eval == 'train':

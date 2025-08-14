@@ -226,6 +226,7 @@ def compute_energy_references(batch, tensor, elem_refs, operation="subtract"):
     Returns:
         Modified energy tensor
     """
+
     assert tensor.shape[0] == len(torch.unique(batch.batch))
     
     with torch.autocast(elem_refs.device.type, enabled=False):
@@ -245,7 +246,7 @@ def compute_energy_references(batch, tensor, elem_refs, operation="subtract"):
         if atom_refs.dim() > batch_indices.dim():
             # Flatten atom_refs to match batch_indices dimension
             atom_refs = atom_refs.flatten()
-        
+       
         refs = refs.scatter_reduce(
             0,
             batch_indices,  # Maps atoms to molecules
@@ -266,20 +267,20 @@ def apply_energy_refs(batch, tensor, element_references):
         return tensor
     
     # Print statistics before scaling
-    original_energies = tensor.clone()
-    print(f"Before energy reference scaling:")
-    print(f"  Average energy: {original_energies.mean().item():.6f} Hartree")
-    print(f"  Energy std: {original_energies.std().item():.6f} Hartree")
-    print(f"  Energy range: [{original_energies.min().item():.6f}, {original_energies.max().item():.6f}] Hartree")
+    # original_energies = tensor.clone()
+    # print(f"Before energy reference scaling:")
+    # print(f"  Average energy: {original_energies.mean().item():.6f} Hartree")
+    # print(f"  Energy std: {original_energies.std().item():.6f} Hartree")
+    # print(f"  Energy range: [{original_energies.min().item():.6f}, {original_energies.max().item():.6f}] Hartree")
     
     # Apply scaling
     scaled_energies = compute_energy_references(batch, tensor, element_references, operation="subtract")
     
     # Print statistics after scaling
-    print(f"After energy reference scaling:")
-    print(f"  Average energy: {scaled_energies.mean().item():.6f} Hartree")
-    print(f"  Energy std: {scaled_energies.std().item():.6f} Hartree")
-    print(f"  Energy range: [{scaled_energies.min().item():.6f}, {scaled_energies.max().item():.6f}] Hartree")
-    print(f"  Energy change: {(scaled_energies.mean() - original_energies.mean()).item():.6f} Hartree")
+    # print(f"After energy reference scaling:")
+    # print(f"  Average energy: {scaled_energies.mean().item():.6f} Hartree")
+    # print(f"  Energy std: {scaled_energies.std().item():.6f} Hartree")
+    # print(f"  Energy range: [{scaled_energies.min().item():.6f}, {scaled_energies.max().item():.6f}] Hartree")
+    # print(f"  Energy change: {(scaled_energies.mean() - original_energies.mean()).item():.6f} Hartree")
     
     return scaled_energies

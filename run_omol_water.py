@@ -156,8 +156,8 @@ print("simplified_out_irreps: ", Irreps(required_irreps).sort()[0].simplify())
 
 # Create the fock target analysis objects for each molecule in the dataset, scale and shift the node labels if required
 print("Processing the dataset, creating fock analysis objects ...", flush=True)
-train_data = get_scale_shift.scale_shift_database(database, train_start_mol, train_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_and_shift=scale_and_shift, train_or_eval=train_or_eval)
-val_data = get_scale_shift.scale_shift_database(database, val_start_mol, val_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_and_shift=scale_and_shift, train_or_eval=train_or_eval)
+train_data = get_scale_shift.scale_shift_database(database, train_start_mol, train_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=True, train_or_eval=train_or_eval)
+val_data = get_scale_shift.scale_shift_database(database, val_start_mol, val_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=True, train_or_eval=train_or_eval)
 
 # Create the dataloaders for each GPU's data
 train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0)

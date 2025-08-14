@@ -57,7 +57,7 @@ train_or_eval = "train"
 num_val = 128                           # Number of validation structures
 num_train = total_rows - num_val        # Number of training structures 
 num_epochs = 50000
-batch_size = 2                          # 2 for not oom
+batch_size = 1                          # 1 for not oom
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -295,7 +295,7 @@ trainer = splittrainer.SplitTrainer(backbone=backbone,
                                     head=head,
                                     head_irreps=output_irreps,
                                     run_name='omol_25k_now_scaled',
-                                    save_frequency=3)
+                                    save_frequency=2)
 
 if train_or_eval == "train":
     trainer.train(num_epochs, 

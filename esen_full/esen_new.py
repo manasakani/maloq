@@ -287,28 +287,8 @@ class eSEN_Backbone(nn.Module):
             graph_dict["edge_distance_vec"]
         )
 
-        # NOTE: The rotation matrices for opposite edges need to be symmetric for the antisymmetrization to work correctly.
-        # Note that if we set the wigner D matrices for opposite edges equal, half the edges will point to the -z axis
         forward_edges = None
 
-        # edges_ij = data_dict["edge_index"][0] < data_dict["edge_index"][1]  
-
-        # COLLATE REVERSE_EDGE_MAP!
-        # if not (~forward_edge_mask).any(): # if we are considering all the edges
-        #     for ind, w in enumerate(wigner):
-        #         if ind != reverse_edge_map[ind]: # if this is a backward edge
-        #             # wigner[ind] = -1*wigner[data_dict["reverse_edge_map"][ind]]            
-        #             # wigner_inv[ind] = -1*wigner_inv[data_dict["reverse_edge_map"][ind]] 
-
-        #             # The even irreps share the same wigner matrix, the odd irreps have a sign flip
-        #             start_l = 0
-        #             for l in range(self.lmax + 1):
-        #                 end_l = start_l + (2 * l + 1)
-        #                 l_parity = (-1)**l
-        #                 wigner[ind, start_l:end_l, start_l:end_l] = l_parity * wigner[data_dict["reverse_edge_map"][ind], start_l:end_l, start_l:end_l]
-        #                 wigner_inv[ind, start_l:end_l, start_l:end_l] = l_parity * wigner_inv[data_dict["reverse_edge_map"][ind], start_l:end_l, start_l:end_l]
-        #                 start_l = end_l
-        
         # --> Rotation test:
         # rotated_edges_to_z_axis = torch.bmm(edge_rot_mat, graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
         # rotated_edges_to_z_axis = torch.bmm(wigner[:, 1:4, 1:4], graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
@@ -631,25 +611,6 @@ class Fock_Irreps_Head(nn.Module):
 
         reverse_edge_map = batch.reverse_edge_map if "reverse_edge_map" in batch else None
         edge_mask = batch.edge_mask if "edge_mask" in batch else None
-
-        # *** TEST: Symmetrize the edges
-        # for ind, w in enumerate(edge_embeddings):
-        #     if ind != reverse_edge_map[ind]: # if this is a 'backward' edge
-        #         rev_ind = reverse_edge_map[ind]
-
-        #         start_l = 0
-        #         for l in range(self.lmax + 1):
-        #             end_l = start_l + (2 * l + 1)
-        #             if l % 2 == 0:  # even l: symmetric combination of edge irreps
-        #                 sym = edge_embeddings[ind, start_l:end_l, :] + edge_embeddings[rev_ind, start_l:end_l, :]
-        #                 edge_embeddings[ind, start_l:end_l, :] = sym
-        #                 edge_embeddings[rev_ind, start_l:end_l, :] = sym
-        #             else:           # odd l: antisymmetric combination of edge irreps
-        #                 asym = edge_embeddings[ind, start_l:end_l, :] - edge_embeddings[rev_ind, start_l:end_l, :]
-        #                 edge_embeddings[ind, start_l:end_l, :] = asym
-        #                 edge_embeddings[rev_ind, start_l:end_l, :] = -asym
-        #             start_l = end_l
-        # *** TEST: Symmetrize the edges
 
         if self.head_type == 'linear':
             node_embeddings = self.stack_irreps(node_embeddings)
@@ -1001,40 +962,15 @@ class Linear_Energy_Head(nn.Module):
         self.edge_channels_list = backbone.edge_channels_list
         extra_m0_output_channels = self.lmax * self.hidden_channels
 
-        # self.conv = eSEN_Block(
-        #                             backbone.sphere_channels,
-        #                             backbone.hidden_channels,
-        #                             backbone.lmax,
-        #                             backbone.mmax,
-        #                             backbone.mappingReduced,
-        #                             backbone.SO3_grid,
-        #                             backbone.edge_channels_list,
-        #                             backbone.cutoff,
-        #                             backbone.norm_type,
-        #                             backbone.act_type,
-        #                             backbone.mlp_type,
-        #                             include_edges=include_edges,
-        #                             node_or_edge='node'
-        #                         )
-
-        # self.linear = nn.Sequential(
-        #     nn.Linear(backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
-        #     nn.SiLU(),
-        #     # nn.Linear(2*backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
-        #     # nn.SiLU(),
-        #     # nn.Linear(2*backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
-        #     # nn.SiLU(),
-        #     # nn.Linear(2*backbone.sphere_channels, 2*backbone.sphere_channels, bias=True),
-        #     # nn.SiLU(),
-        #     nn.Linear(2*backbone.sphere_channels, 1, bias=True),
-        # )
-
         # Convolution method:
         self.act = GateActivation(
                 lmax=self.lmax, mmax=self.mmax, num_channels=self.hidden_channels
             )
+        
+        multiplier = 2 #3 if self.include_edges else 2
+
         self.so2_conv_1 = SO2_Convolution(
-            2*self.sphere_channels,  
+            multiplier*self.sphere_channels,  
             self.hidden_channels,
             self.lmax,
             self.mmax,
@@ -1054,48 +990,49 @@ class Linear_Energy_Head(nn.Module):
             edge_channels_list=None,
             extra_m0_output_channels=None,
         )
-
-        # self.norm = get_normalization_layer(
-        #     norm_type, lmax=self.lmax, num_channels=sphere_channels
-        # )
-
-        # self.so2_conv_2 = SO2_Convolution(
-        #     self.sphere_channels,
-        #     self.sphere_channels,
-        #     self.lmax,
-        #     self.mmax,
-        #     self.mappingReduced,
-        #     internal_weights=True,
-        #     edge_channels_list=None,
-        #     extra_m0_output_channels=None,
-        # )
         
-        self.linear = nn.Linear(backbone.sphere_channels, 1, bias=True)
+        # self.linear = nn.Linear(backbone.sphere_channels, 1, bias=True)
 
-        self.lmax = backbone.lmax
+        # make this a two linear layers with nonlinearity in between:
+        # self.linear = nn.Sequential(
+        #     nn.Linear(self.sphere_channels, 2*self.sphere_channels, bias=True),
+        #     nn.SiLU(),
+        #     nn.Linear(2*self.sphere_channels, 2*self.sphere_channels, bias=True),
+        #     nn.SiLU(),
+        #     nn.Linear(2*self.sphere_channels, 1, bias=True),
+        # )
+        h = 2*self.sphere_channels
+        self.linear = nn.Sequential(
+            nn.Linear(self.sphere_channels, h, bias=True),
+            nn.SiLU(),
+            nn.Linear(h, 1, bias=True),
+        )
+
 
     def forward(self, emb: dict[str, torch.Tensor], batch):
 
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
         edge_mask = batch.edge_mask
         
-        nodes = emb["node_embeddings"]
-        edges = emb["edge_embeddings"]
+        # Trim the embeddings to the chosen lmax:
+        nodes = emb["node_embeddings"]#[:, :(self.lmax+1)**2, :]
+        edges = emb["edge_embeddings"]#[:, :(self.lmax+1)**2, :]
         x_edge = emb["x_edge"]
-        wigner = emb["wigner"]
-        wigner_inv = emb["wigner_inv"]
+        wigner = emb["wigner"]#[:, :(self.lmax+1)**2, :(self.lmax+1)**2]
+        wigner_inv = emb["wigner_inv"]#[:, :(self.lmax+1)**2, :(self.lmax+1)**2]
 
+        # Create the messages for the last convolution:
+        x_source = nodes[edge_index[0][edge_mask]]
         x_target = nodes[edge_index[1][edge_mask]]
         if self.include_edges:
-            x_message = torch.cat((x_target, edges), dim=2) 
+            # x_message = torch.cat((x_source, x_target, edges), dim=2) 
+            x_message = torch.cat((x_source, x_target), dim=2) 
         else:
-            x_source = nodes[edge_index[0][edge_mask]]
             x_message = torch.cat((x_source, x_target), dim=2) 
 
-        # Edge Attention:
         # -----------------
         # Rotate the irreps
-        x_message = torch.bmm(emb["wigner"], x_message)
+        x_message = torch.bmm(wigner, x_message)
 
         # Apply the SO2 convolution to the messages
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge) 
@@ -1113,9 +1050,10 @@ class Linear_Energy_Head(nn.Module):
         )
 
         # aggregate messages
-        new_embedding.index_add_(0, edge_index[1][edge_mask], x_message)
-        nodes = self.linear(new_embedding) 
-        energies = nodes.narrow(1, 0, 1)
+        new_embedding.index_add_(0, edge_index[1][edge_mask], x_message) # do this only for the first row
+        energies = new_embedding.narrow(1, 0, 1)
+        energies = self.linear(energies) 
+
         # -----------------
 
         # Edge convolution:

@@ -473,6 +473,9 @@ def plot_comprehensive_analysis(output_folder, lmax=6, molecule_index=0):
         
         ax.set_xlabel('Inter-atomic Distance (Å)')
         ax.set_ylabel('$H_{ij}$ ($E_h$)')
+        # xaxis limits from -1 to 20:
+        # ax.set_xlim(-1, 20)
+
         ax.set_title('Outputs vs Targets (by l)\nOutputs=circles, Targets=x')
         ax.legend(fontsize=7, ncol=1, frameon=False)
         ax.grid(True, alpha=0.3)
@@ -633,8 +636,9 @@ def plot_individual_l_components_with_nodes(output_folder, lmax=6, molecule_inde
 if __name__ == "__main__":
     # output_folder = "outputs_omol_closedshell_25k_scaled_pt2"
     # output_folder = './iclr_2025_data/outputs_nablaDFT_tiny_scaled_rcut10_10k'
-    output_folder = 'outputs_nablaDFT_tiny_scaled_rcut10_10k'
-    molecule_index = 0 # Which molecule to analyze (0 for first saved molecule)
+    # output_folder = 'outputs_nablaDFT_tiny_scaled_rcut10_10k'
+    output_folder = 'outputs_QM7_water'
+    molecule_index = 2 # Which molecule to analyze (0 for first saved molecule)
     lmax = 4
     
     if not os.path.exists(output_folder):

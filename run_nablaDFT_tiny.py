@@ -39,9 +39,9 @@ num_distance_basis = l_embedding_dim    # number of gaussian basis functions use
 hidden_dim = l_embedding_dim
 num_mp_layers = 3
 model_name = 'esen'
-restart_backbone = True
-restart_head = True
-restart_optimizer = True
+restart_backbone = False
+restart_head = False
+restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
