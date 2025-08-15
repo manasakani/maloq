@@ -4,7 +4,7 @@ import torch
 import numpy as np
 import re
 
-# functions in this file are adapted from: https://github.com/Xiaoxun-Gong/DeepH-E3
+# the e3TensorDecomp class is adapted from: https://github.com/Xiaoxun-Gong/DeepH-E3 and modified to account for diffuse functions
 
 def l1l2_to_l3s(l1, l2):
 
@@ -223,7 +223,7 @@ def make_output_irreps(orbital_basis):
     il_list = [l1, idx_l1, l2, idx_l2] # hopping term from idx_l1's l1 orbital to the idx_l2's l2 orbital on the corresponding atoms in hoppings_list 
     '''
 
-    orbital_type_dict = {0: 's_', 1: 'p_', 2: 'd_', 3: 'f_', 4: 'g_', 10: 'sd_', 11: 'pd_', 12: 'dd_'}
+    orbital_type_dict = {0: 's_', 1: 'p_', 2: 'd_', 3: 'f_', 4: 'g_', 10: 'sd_', 11: 'pd_', 12: 'dd_'} # the last are diffuse functions
 
     # add 10 to any diffuse orbitals to distinguish them from core orbitals
     def find_diffuse_start(orbitals):
@@ -243,9 +243,9 @@ def make_output_irreps(orbital_basis):
         max_count = max(counts).item() 
         ls_list.append(torch.tensor(max_count * [l], dtype=torch.int))          
     ls_list = torch.cat(ls_list).tolist()        # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2].
-    print("ls_list: ", ls_list)                  # for OMOL: tensor([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 10, 11, 12]
+    # print("ls_list: ", ls_list)                  # for OMOL: tensor([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 10, 11, 12]
 
-    # Compute all the irreps required to describe this set of orbital interactions:
+    # Compute the full direct sum of irreps required to describe this set of orbital interactions:
     req_output_irreps = Irreps('')
     out_slices = [0]
     for i, l1 in enumerate(ls_list):
@@ -255,9 +255,7 @@ def make_output_irreps(orbital_basis):
             req_output_irreps += Irreps(product_irreps)
             out_slices.append(np.int32(out_slices[-1] + irrep_len))
 
-    # total number of orbital targets is the length of ls_list squared:
-    # total_orbital_targets = len(ls_list) ** 2
-
+    # We make a dict of the form 'atom#1 atom#1': s0-p1', etc
     atomic_interactions = {}
     # # Iterate through the orbital interactions of every atom:
     for atom1, orbitals1 in orbital_basis.items():
@@ -277,10 +275,9 @@ def make_output_irreps(orbital_basis):
                     orbital_interaction_keys.append(orbital1_type + '-' + orbital2_type)        # e.g. 's0-p1', 'p1-d2', etc.
 
             atomic_interactions.update({atom_interaction_key: orbital_interaction_keys})
-                
     # print("atomic_interactions: ", atomic_interactions)
 
-    # now iterate over all possible interactions in the ls_list:
+    # This will contain the specific orbital interaction (eg 's0-p1') for every block of the target
     full_orb_interaction_list = []
     for i, orb1 in enumerate(ls_list):
         orbital1_type = orbital_type_dict[orb1]  
@@ -291,10 +288,10 @@ def make_output_irreps(orbital_basis):
             orbital_multiplicity2 = sum(1 for j in range(k) if ls_list[j] == orb2)
             orbital2_type = orbital2_type + str(orbital_multiplicity2)
             full_orb_interaction_list.append(orbital1_type + '-' + orbital2_type)  # e.g. 's0-p1', 'p1-d2', etc.
-    
     # print("full_orb_interaction_list: ", full_orb_interaction_list)
 
-    # Now, for every block in full_orb_list, find all the atomic interaction keys that contain this block:
+    # Now, for every block in full_orb_interaction_list, find all the atomic interaction keys that contain this block
+    # out_js just contains tuples which describes the l-orbital interaction for every target block (eg, [(0, 0), (0, 1) ...])
     len_ls_list = len(ls_list)
     targets = []
     out_js_list = []
@@ -315,10 +312,9 @@ def make_output_irreps(orbital_basis):
         if target:
             targets.append(target)
 
-    # print("---")
     # print("targets: ", targets)
     # print("out_js_list: ", out_js_list)
-
+    # Each element of 'targets' is a set of orbital interactions between different atoms, which can be inserted into that targer.
     # each target in targets represent a specific group of similar orbital interactions, between the nth l1 orbital of atom 1 and the mth l2 orbital of atom 2
     # the number of targets is the number of orbital interaction blocks, or (Norb_1 + N_orb_2 + ...)^3 over the different atomic species 
     return targets, req_output_irreps, req_output_irreps.sort()[0].simplify(), ls_list, out_js_list, out_slices, full_orb_interaction_list
@@ -342,13 +338,10 @@ def process_targets(orbital_basis, targets, ls_list=None, out_js_list=None, full
 
         # l1, l2 = out_js_list[target_ind]  # the interaction is defined by the out_js, which gives us the l1 and l2
         target_orb_interaction = full_orb_interaction_list[target_ind].split('-')
-        # print("target_orb_interaction: ", target_orb_interaction)
-        # print("----")
 
         equivariant_block = dict()
         for N_M_str, block_indices in target.items():
             i, j = map(lambda x: Z_to_index[int(x)], N_M_str.split())
-            # print("nm string and block indices and ij: ", N_M_str, block_indices, i, j)
 
             # now we need to find the block of the matrix that corresponds to the interaction between
             # the target_orb_interaction[0] orbital of atom i and the target_orb_interaction[1] orbital of atom j
@@ -361,13 +354,10 @@ def process_targets(orbital_basis, targets, ls_list=None, out_js_list=None, full
             l2_type = parts2[0]  # orbital type (e.g., 's_', 'p_')  
             l2_level = int(parts2[1])  # multiplicity number
 
-            # print("l1_type, l2_type, l1_level, l2_level: ", l1_type, l2_type, l1_level, l2_level)
-
             atom1_basis = np.array(orbital_types[i], dtype=np.int32)
             atom2_basis = np.array(orbital_types[j], dtype=np.int32)
             
             # find the index of l1_type, l1_level in the atom1_basis
-            # print(reverse_orbital_type_dict[l1_type])
             l1_indices = np.where(atom1_basis == reverse_orbital_type_dict[l1_type])[0]
             l1_index = l1_indices[l1_level]  # Use level as index into matching orbitals
             
@@ -388,10 +378,8 @@ def process_targets(orbital_basis, targets, ls_list=None, out_js_list=None, full
                 atom2_start_col = np.cumsum([2 * (atom2_basis[:l2_index] % 10) + 1])[-1]
             atom2_end_col = atom2_start_col + (2 * (atom2_basis[l2_index] % 10) + 1)
 
-            # --> Record it into the block slice for this 'atom 1 atom2' for this target.
+            # --> Record the start/end row/col into the block slice for this 'atom 1 atom2' for this target.
             block_slice = [int(atom1_start_row), int(atom1_end_row), int(atom2_start_col), int(atom2_end_col)]
-
-            # print("atom1_start_row, atom1_end_row, atom2_start_col, atom2_end_col: ", atom1_start_row, atom1_end_row, atom2_start_col, atom2_end_col)
 
             equivariant_block.update({N_M_str: block_slice})
     
