@@ -16,13 +16,13 @@ class Fock_Targets:
     Input target shape to standardize across molecules with different elements
     """
 
-    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix=None, target_len=0, dtype=torch.float32, reflection_symmetry=False, compute_fock_eigenvalues=False, scale_shift_data=None):
+    def __init__(self, atoms, cutoff, orbital_basis, fock_matrix=None, target_len=0, dtype=torch.float32, half_edges=False, compute_fock_eigenvalues=False, scale_shift_data=None):
         """
         atoms - ASE atoms object of the atomic structure
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]] 
         orbital_basis - H2O: {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]} (ex. dzvp)
         fock_matrix - Norb x Norb fock matrix (dense)
-        reflection_symmetry - when True, only considers forward edge blocks (backward edges are constructed as the reflected forward ones)
+        half_edges - when True, only considers 'forward' edge blocks (backward edges are constructed as the transpose of the forward ones)
         """
 
         if torch.cuda.is_available():
@@ -33,7 +33,7 @@ class Fock_Targets:
         self.atoms = atoms                          
         self.orbital_basis = orbital_basis          
         self.dtype = dtype
-        self.reflection_symmetry = reflection_symmetry
+        self.half_edges = half_edges
 
         # --> Atoms and connectivity list:
         num_atoms = len(atoms)
@@ -53,11 +53,8 @@ class Fock_Targets:
         self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)]) # start index of atom i in the matrix (and block_starts[-1] is the matrix size)         
 
         self.edge_type = "i < j"              # keep edges i, j where i < j or i > j
-        if self.reflection_symmetry:
-            if self.edge_type == "i < j":
-                self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]    
-            elif self.edge_type == "i > j":
-                self.forward_edge_mask = self.neighbour_list[0] > self.neighbour_list[1]
+        if self.half_edges:
+            self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]    
         else:
             self.forward_edge_mask = [True]*len(self.neighbour_list[0])                 # keep all edges
         
@@ -65,32 +62,42 @@ class Fock_Targets:
         self.reverse_edge_map = [-1] * len(self.neighbour_list[0])  # Initialize with -1 for safety
         edge_dict = {(i.item(), j.item()): idx for idx, (i, j) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1]))}
         for ind, (i, j) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1])):
-
-            if self.edge_type == "i < j":
-                edge_condition = i < j
-            elif self.edge_type == "i > j":
-                edge_condition = i > j
-
-            if edge_condition:
+            if i < j:
                 self.reverse_edge_map[ind] = ind
             else:
                 self.reverse_edge_map[ind] = edge_dict.get((j.item(), i.item()), None)
 
         # --> Analyze structure of orbital interactions
-        targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions
-        self.equivariant_blocks, out_js_list, self.orbital_starts = utils_tensor_decomp.process_targets(self.orbital_basis, targets)
+        # targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps_old(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions
+        targets, self.req_output_irreps, self.simplified_out_irreps, ls_list, out_js_list, self.orbital_starts, full_orb_interaction_list = utils_tensor_decomp.make_output_irreps(self.orbital_basis)     # list of all possible irreps required to capture the orbital interactions
+        
+        # self.equivariant_blocks, out_js_list, self.orbital_starts = utils_tensor_decomp.process_targets_old(self.orbital_basis, targets)
+        self.equivariant_blocks = utils_tensor_decomp.process_targets(self.orbital_basis, targets, ls_list, out_js_list, full_orb_interaction_list)
+        
         self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
                                                             out_js_list,
                                                             default_dtype_torch=dtype,
                                                             if_sort=False,
                                                             device_torch=self.device)
         
+        # print("out_js_list: ", out_js_list)
+        # print("self.orbital_starts: ", self.orbital_starts)
+        
+        ls_list = []
+        for l in range(20): # large to account for possible diffuse functions which are incremented by 10
+            counts = [torch.sum(torch.tensor(self.orbital_basis[el]) == l) for el in self.orbital_basis]
+            max_count = max(counts).item() 
+            ls_list.append(torch.tensor(max_count * [l], dtype=torch.int))
+
         # Shift back all the diffuse orbitals (which were incremented by 10 in utils_tensor_decomp.py)
         for atom, orbitals in self.orbital_basis.items():
             self.orbital_basis[atom] = [orb % 10 for orb in orbitals]
 
         for atom, orbitals in orbital_basis.items():
             orbital_basis[atom] = [orb % 10 for orb in orbitals]
+
+        self.ls_list = torch.cat(ls_list)        # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2].
+        self.ls_list = self.ls_list % 10         # for OMOL: tensor([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 0, 1, 2]
         
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         # print(f'Simplified irreps: {self.simplified_out_irreps}')
@@ -141,7 +148,7 @@ class Fock_Targets:
                 slice_col = slice(block_slice[2], block_slice[3])
                 slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
                 flat_blocks.append((condition_numbers, slice_row, slice_col, slice_out)) 
-                # ^ from the interaction between atomic numbers 'cond1 and cond2', we extract the block defined by slide_row, slice_col and insert 
+                # ^ from the interaction between atomic numbers 'cond1 and cond2', we extract the block defined by slice_row, slice_col and insert 
                 # it into slice_out of the corresponding labels
         
 
@@ -160,6 +167,9 @@ class Fock_Targets:
                 # only collect from forward edges if we are using reflected edges, the other edge_orbital_blocks are None
                 if self.forward_edge_mask[edge_idx]:
 
+                    # print("edge_idx: ", edge_idx, "slice_out: ", slice_out, "slice_row: ", slice_row, "slice_col: ", slice_col)
+                    # print("shape of edge_labels[edge_idx, slice_out]: ", edge_labels[edge_idx, slice_out].shape)
+                    # print("shape of edge_orbital_blocks[edge_idx][slice_row, slice_col]: ", edge_orbital_blocks[edge_idx][slice_row, slice_col].shape)
                     edge_labels[edge_idx, slice_out] += torch.squeeze(
                         edge_orbital_blocks[edge_idx][slice_row, slice_col].reshape(1, -1)
                     )
@@ -442,7 +452,7 @@ class Fock_Targets:
                 reconstructed_matrix[starting_i:starting_i+num_orbitals_i, starting_j:starting_j+num_orbitals_j] = edge
 
                 # If reflection symmetry is used, insert the backward edge as the transpose
-                if self.reflection_symmetry:
+                if self.half_edges:
                     reconstructed_matrix[starting_j:starting_j+num_orbitals_j, starting_i:starting_i+num_orbitals_i] = edge.T
 
                 edge_counter += 1
@@ -453,3 +463,5 @@ class Fock_Targets:
             reconstructed_matrix = (reconstructed_matrix + reconstructed_matrix.T) / 2
 
         return reconstructed_matrix
+    
+    # Compute reverse edg

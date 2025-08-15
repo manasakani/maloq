@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from ase import Atoms
 
-from fock_utils import utils_orca_out, fock_targets
+from fock_utils import utils_orca_out, fock_targets, basis_sets
 from train_utils import loss, utils_compute, splittrainer
 from dataset_utils import get_loader, dataset_analysis, get_scale_shift
 from dataset_utils.ASEDataset import ASEAtomsData, ASEDataset
@@ -30,10 +30,14 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> OMOL 
-dataset_folder = './water_fixed_diffuse.db'
+dataset_folder = './water_test_halfedge.db'
 dtype = torch.float32
-database = ASEDataset(dataset_folder, dtype=dtype)
-output_folder = 'outputs_omol_water_single_scaled'
+orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
+orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
+orbital_basis = {int(k): v for k, v in orbital_basis.items()}
+
+database = ASEDataset(dataset_folder, orbital_basis, dtype=dtype)
+output_folder = 'outputs_omol_water_halfedge'
 dataset_name = 'omol'
 # ---------------------------
 assert not len(database) == 0
@@ -59,7 +63,7 @@ rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reduce_edge = False                     # use only edges i,j where i<j (other edges are reflected)
+reduce_edge = True                      # use only edges i,j where i<j (other edge labels will not be computed/stored)
 reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
 reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
 
@@ -68,7 +72,7 @@ train_head = True
 
 torch.set_default_dtype(dtype)
 lr_init = 5e-3
-patience = 100                           # for scheduler
+patience = 100                          # for scheduler
 threshold = 1e-4                        # for scheduler
 
 loss_target = 'fock_matrix'
@@ -78,7 +82,7 @@ loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
 
-scale_and_shift = True
+scale_and_shift = False
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
@@ -117,7 +121,7 @@ if rank == 0:
     print(f"Dataset - Edge cutoff distance for gaussian basis: {rcut_gaussian}", flush=True)
     print(f"Model - Num of Message Passing layers: {num_mp_layers}", flush=True)
     print(f"Model - Embedding dimension: {l_embedding_dim}", flush=True)
-    print(f"Model - Edge reflections: {reduce_edge}")    
+    print(f"Model - Using half edges?: {reduce_edge}", flush=True)
     print(f"Training - Loss target: {loss_target}", flush=True)
     print(f"Training - Loss function: {train_loss_fxn}", flush=True)
     print(f"Training - Initial learning rate: {lr_init}", flush=True)
@@ -147,29 +151,30 @@ val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(ran
 val_start_mol += num_train  # the validation molecules start after training ones
 val_end_mol += num_train
 
-required_irreps = Irreps(database[0].required_irreps)
-orbital_basis = database[0].orbital_basis
-orbital_basis = {int(k): v for k, v in orbital_basis.items()}
-print("orbital_basis: ", orbital_basis)
-print("required_irreps: ", required_irreps)
-print("simplified_out_irreps: ", Irreps(required_irreps).sort()[0].simplify())
-
 # Create the fock target analysis objects for each molecule in the dataset, scale and shift the node labels if required
 print("Processing the dataset, creating fock analysis objects ...", flush=True)
-train_data = get_scale_shift.scale_shift_database(database, train_start_mol, train_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=True, train_or_eval=train_or_eval)
-val_data = get_scale_shift.scale_shift_database(database, val_start_mol, val_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=True, train_or_eval=train_or_eval)
+train_data = get_scale_shift.scale_shift_database(database, train_start_mol, train_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
+val_data = get_scale_shift.scale_shift_database(database, val_start_mol, val_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
 
 # Create the dataloaders for each GPU's data
 train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0)
 val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0)
 
-basis_transformation = train_data[0].fock_target_object.basis_transformation
-orbital_basis = {k: torch.tensor(v) for k, v in orbital_basis.items()}
-
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
 print("Size of train loader: ", len(train_loader))
 print("Size of val loader: ", len(val_loader))
+
+
+# --> Irrep information for the targets
+required_irreps = train_data[0].fock_target_object.req_output_irreps
+ls_list = train_data[0].fock_target_object.ls_list
+basis_transformation = train_data[0].fock_target_object.basis_transformation
+orbital_basis = {k: torch.tensor(v) for k, v in orbital_basis.items()}
+
+print("orbital_basis: ", orbital_basis)
+print("required_irreps: ", required_irreps)
+print("simplified_out_irreps: ", Irreps(required_irreps).sort()[0].simplify())
 
 irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
 
@@ -213,6 +218,8 @@ if loss_target == "fock_matrix":
                             irreps_out=output_irreps, 
                             lmax=required_irreps.lmax, 
                             sphere_channels=l_embedding_dim,
+                            half_edges=reduce_edge,
+                            ls_list=ls_list,
                             reduce_node=reduce_node,
                             reduce_node_intra=reduce_node_intra,
                             orbital_basis=orbital_basis)

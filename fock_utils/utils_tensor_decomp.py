@@ -2,6 +2,7 @@ from e3nn.o3 import Irreps, wigner_3j
 from e3nn.nn import Extract
 import torch
 import numpy as np
+import re
 
 # functions in this file are adapted from: https://github.com/Xiaoxun-Gong/DeepH-E3
 
@@ -152,7 +153,7 @@ class e3TensorDecomp:
         return out
         
 
-def make_output_irreps(orbital_basis):
+def make_output_irreps_old(orbital_basis):
     '''
     hoppings_list = {'atomic#1, atomic#2': [orb_idx1, orb_idx2], ...}
     il_list = [l1, idx_l1, l2, idx_l2] # hopping term from idx_l1's l1 orbital to the idx_l2's l2 orbital on the corresponding atoms in hoppings_list 
@@ -178,7 +179,7 @@ def make_output_irreps(orbital_basis):
                 for orbital2 in range(len(orbitals2)):
                     hopping_orbital = [orbital1, orbital2]
                     hoppings_list.append({hopping_key: hopping_orbital}) 
-    
+
     il_list = [] 
     for hopping in hoppings_list:
         for N_M_str, block in hopping.items():
@@ -216,7 +217,189 @@ def make_output_irreps(orbital_basis):
     return targets, net_out_irreps, net_out_irreps.sort()[0].simplify()
     
 
-def process_targets(orbital_basis, targets): 
+def make_output_irreps(orbital_basis):
+    '''
+    hoppings_list = {'atomic#1, atomic#2': [orb_idx1, orb_idx2], ...}
+    il_list = [l1, idx_l1, l2, idx_l2] # hopping term from idx_l1's l1 orbital to the idx_l2's l2 orbital on the corresponding atoms in hoppings_list 
+    '''
+
+    orbital_type_dict = {0: 's_', 1: 'p_', 2: 'd_', 3: 'f_', 4: 'g_', 10: 'sd_', 11: 'pd_', 12: 'dd_'}
+
+    # add 10 to any diffuse orbitals to distinguish them from core orbitals
+    def find_diffuse_start(orbitals):
+        for i in range(1, len(orbitals)):
+            if orbitals[i] < orbitals[i-1]:
+                return i
+        return len(orbitals)  
+
+    for atom1, orbitals in orbital_basis.items():
+        diffuse_start = find_diffuse_start(orbitals)
+        orbitals[diffuse_start:] = [l + 10 for l in orbitals[diffuse_start:]]
+
+    # Find the maximum target size needed to accommodate all orbital interactions
+    ls_list = []
+    for l in range(20): # large to account for possible diffuse functions which are incremented by 10
+        counts = [torch.sum(torch.tensor(orbital_basis[el]) == l) for el in orbital_basis]
+        max_count = max(counts).item() 
+        ls_list.append(torch.tensor(max_count * [l], dtype=torch.int))          
+    ls_list = torch.cat(ls_list).tolist()        # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2].
+    print("ls_list: ", ls_list)                  # for OMOL: tensor([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 10, 11, 12]
+
+    # Compute all the irreps required to describe this set of orbital interactions:
+    req_output_irreps = Irreps('')
+    out_slices = [0]
+    for i, l1 in enumerate(ls_list):
+        for j, l2 in enumerate(ls_list):
+            product_irreps = l1l2_to_l3s(l1, l2)
+            irrep_len = sum([2*l + 1 for l in Irreps(product_irreps).ls])
+            req_output_irreps += Irreps(product_irreps)
+            out_slices.append(np.int32(out_slices[-1] + irrep_len))
+
+    # total number of orbital targets is the length of ls_list squared:
+    # total_orbital_targets = len(ls_list) ** 2
+
+    atomic_interactions = {}
+    # # Iterate through the orbital interactions of every atom:
+    for atom1, orbitals1 in orbital_basis.items():
+        for atom2, orbitals2 in orbital_basis.items():
+            atom_interaction_key = str(atom1) + ' ' + str(atom2)
+
+            orbital_interaction_keys = []
+            for i, orbital1 in enumerate(orbitals1):
+                orbital_type_string = orbital_type_dict[orbital1]  
+                orbital_multiplicity = sum(1 for j in range(i) if orbitals1[j] == orbital1)  # Count how many orbitals of the same l value come before this
+                orbital1_type = orbital_type_string + str(orbital_multiplicity)  # e.g. 's0', 'p1', 'd2', etc.
+                
+                for k, orbital2 in enumerate(orbitals2):
+                    orbital_type_string = orbital_type_dict[orbital2]
+                    orbital_multiplicity = sum(1 for j in range(k) if orbitals2[j] == orbital2)  # Count how many orbitals of the same l value come before this
+                    orbital2_type = orbital_type_string + str(orbital_multiplicity)  
+                    orbital_interaction_keys.append(orbital1_type + '-' + orbital2_type)        # e.g. 's0-p1', 'p1-d2', etc.
+
+            atomic_interactions.update({atom_interaction_key: orbital_interaction_keys})
+                
+    # print("atomic_interactions: ", atomic_interactions)
+
+    # now iterate over all possible interactions in the ls_list:
+    full_orb_interaction_list = []
+    for i, orb1 in enumerate(ls_list):
+        orbital1_type = orbital_type_dict[orb1]  
+        orbital_multiplicity1 = sum(1 for j in range(i) if ls_list[j] == orb1)
+        orbital1_type = orbital1_type + str(orbital_multiplicity1)
+        for k, orb2 in enumerate(ls_list):
+            orbital2_type = orbital_type_dict[orb2]  
+            orbital_multiplicity2 = sum(1 for j in range(k) if ls_list[j] == orb2)
+            orbital2_type = orbital2_type + str(orbital_multiplicity2)
+            full_orb_interaction_list.append(orbital1_type + '-' + orbital2_type)  # e.g. 's0-p1', 'p1-d2', etc.
+    
+    # print("full_orb_interaction_list: ", full_orb_interaction_list)
+
+    # Now, for every block in full_orb_list, find all the atomic interaction keys that contain this block:
+    len_ls_list = len(ls_list)
+    targets = []
+    out_js_list = []
+    for block_ind, block in enumerate(full_orb_interaction_list):
+        target = {}
+        for atom_interaction_key, orbital_interaction_keys in atomic_interactions.items():
+            if block in orbital_interaction_keys:
+                # Find the indices of the orbitals in the ls_list (row and column of the targets matrix)
+                idx1 = orbital_interaction_keys.index(block) // len_ls_list # row
+                idx2 = orbital_interaction_keys.index(block) % len_ls_list # col
+                
+                N_M_str = f"{atom_interaction_key}"
+                target.update({N_M_str: [idx1, idx2]})
+
+        out_js = (ls_list[block_ind // len_ls_list], ls_list[block_ind % len_ls_list])
+        out_js_list.append(out_js)
+
+        if target:
+            targets.append(target)
+
+    # print("---")
+    # print("targets: ", targets)
+    # print("out_js_list: ", out_js_list)
+
+    # each target in targets represent a specific group of similar orbital interactions, between the nth l1 orbital of atom 1 and the mth l2 orbital of atom 2
+    # the number of targets is the number of orbital interaction blocks, or (Norb_1 + N_orb_2 + ...)^3 over the different atomic species 
+    return targets, req_output_irreps, req_output_irreps.sort()[0].simplify(), ls_list, out_js_list, out_slices, full_orb_interaction_list
+    
+
+def process_targets(orbital_basis, targets, ls_list=None, out_js_list=None, full_orb_interaction_list=None): 
+
+    orbital_type_dict = {0: 's_', 1: 'p_', 2: 'd_', 3: 'f_', 4: 'g_', 10: 'sd_', 11: 'pd_', 12: 'dd_'}
+    reverse_orbital_type_dict = {v: k for k, v in orbital_type_dict.items()}
+
+    orbital_types = [orbital_basis[atom] for atom in orbital_basis.keys()]
+    index_to_Z = list(orbital_basis.keys())
+
+    Z_to_index = torch.full((100,), -1, dtype=torch.int64)
+    Z_to_index[index_to_Z] = torch.arange(len(index_to_Z))
+
+    # Record where each orbital block starts in the corresponding atom-pair's interaction matrix
+    equivariant_blocks = []
+    out_slices = [0]
+    for target_ind, target in enumerate(targets):
+
+        # l1, l2 = out_js_list[target_ind]  # the interaction is defined by the out_js, which gives us the l1 and l2
+        target_orb_interaction = full_orb_interaction_list[target_ind].split('-')
+        # print("target_orb_interaction: ", target_orb_interaction)
+        # print("----")
+
+        equivariant_block = dict()
+        for N_M_str, block_indices in target.items():
+            i, j = map(lambda x: Z_to_index[int(x)], N_M_str.split())
+            # print("nm string and block indices and ij: ", N_M_str, block_indices, i, j)
+
+            # now we need to find the block of the matrix that corresponds to the interaction between
+            # the target_orb_interaction[0] orbital of atom i and the target_orb_interaction[1] orbital of atom j
+
+            # reverse orbital type dict needs 's', 'p' .. etc but we have 's0', 'p1', 'd2' etc.
+            parts1 = re.split(r'(\d+)', target_orb_interaction[0])
+            parts2 = re.split(r'(\d+)', target_orb_interaction[1])
+            l1_type = parts1[0]  # orbital type (e.g., 's_', 'p_')
+            l1_level = int(parts1[1])  # multiplicity number
+            l2_type = parts2[0]  # orbital type (e.g., 's_', 'p_')  
+            l2_level = int(parts2[1])  # multiplicity number
+
+            # print("l1_type, l2_type, l1_level, l2_level: ", l1_type, l2_type, l1_level, l2_level)
+
+            atom1_basis = np.array(orbital_types[i], dtype=np.int32)
+            atom2_basis = np.array(orbital_types[j], dtype=np.int32)
+            
+            # find the index of l1_type, l1_level in the atom1_basis
+            # print(reverse_orbital_type_dict[l1_type])
+            l1_indices = np.where(atom1_basis == reverse_orbital_type_dict[l1_type])[0]
+            l1_index = l1_indices[l1_level]  # Use level as index into matching orbitals
+            
+            # find the index of l2_type, l2_level in the atom2_basis
+            l2_indices = np.where(atom2_basis == reverse_orbital_type_dict[l2_type])[0]
+            l2_index = l2_indices[l2_level]  # Use level as index into matching orbitals
+
+            # --> Calculate the start and end positions of the row/column in the interaction matrix for this orbital pair
+            if l1_index == 0:
+                atom1_start_row = 0
+            else:
+                atom1_start_row = np.cumsum([2 * (atom1_basis[:l1_index] % 10) + 1])[-1]
+            atom1_end_row = atom1_start_row + (2 * (atom1_basis[l1_index] % 10) + 1)
+            
+            if l2_index == 0:
+                atom2_start_col = 0
+            else:
+                atom2_start_col = np.cumsum([2 * (atom2_basis[:l2_index] % 10) + 1])[-1]
+            atom2_end_col = atom2_start_col + (2 * (atom2_basis[l2_index] % 10) + 1)
+
+            # --> Record it into the block slice for this 'atom 1 atom2' for this target.
+            block_slice = [int(atom1_start_row), int(atom1_end_row), int(atom2_start_col), int(atom2_end_col)]
+
+            # print("atom1_start_row, atom1_end_row, atom2_start_col, atom2_end_col: ", atom1_start_row, atom1_end_row, atom2_start_col, atom2_end_col)
+
+            equivariant_block.update({N_M_str: block_slice})
+    
+        equivariant_blocks.append(equivariant_block)
+
+    return equivariant_blocks #, out_js_list#, out_slices
+
+def process_targets_old(orbital_basis, targets): 
 
     orbital_types = [orbital_basis[atom] for atom in orbital_basis.keys()]
     index_to_Z = list(orbital_basis.keys())

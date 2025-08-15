@@ -109,12 +109,8 @@ class EdgeDegreeEmbedding(torch.nn.Module):
             x_edge_embedding = x_edge_embedding.to(x.dtype)
 
             x.index_add_(
-                0, edge_index[1][forward_edge_mask], x_edge_embedding / self.rescale_factor
+                0, edge_index[1], x_edge_embedding / self.rescale_factor
             )
-            # if (~forward_edge_mask).any():  # if we are ignoring half the edges, add the other half
-            #     x.index_add_(
-            #     0, edge_index[0][forward_edge_mask], -1*x_edge_embedding / self.rescale_factor
-            # )
 
             return x
         else:

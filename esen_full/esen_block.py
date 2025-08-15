@@ -142,8 +142,8 @@ class Edgewise(torch.nn.Module):
         wigner_inv
     ):
 
-        x_source = x[edge_index[0][edge_mask]]
-        x_target = x[edge_index[1][edge_mask]]
+        x_source = x[edge_index[0]]
+        x_target = x[edge_index[1]]
 
         # Create messages 
         x_message = torch.cat((x_source, x_target), dim=2) 
@@ -167,7 +167,7 @@ class Edgewise(torch.nn.Module):
         )
 
         # aggregate messages
-        new_embedding.index_add_(0, edge_index[1][edge_mask], x_message)    # if using the same, can just skip the if below
+        new_embedding.index_add_(0, edge_index[1], x_message)    # if using the same, can just skip the if below
 
         return new_embedding
     
@@ -184,8 +184,8 @@ class Edgewise(torch.nn.Module):
         wigner_inv
     ):
         
-        x_source = x[edge_index[0][edge_mask]]
-        x_target = x[edge_index[1][edge_mask]]
+        x_source = x[edge_index[0]]
+        x_target = x[edge_index[1]]
 
         # Create regular messages
         x_message = torch.cat((x_source, x_target), dim=2) 

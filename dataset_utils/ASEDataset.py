@@ -12,13 +12,15 @@ from ase.db import connect
 from . import schnetpack_properties as structure
 
 class ASEDataset(Dataset):
-    def __init__(self, db_path, dtype=torch.float32, world_size=1, rank=0, start_idx=0, end_idx=None):
+    def __init__(self, db_path, orbital_basis, dtype=torch.float32, world_size=1, rank=0, start_idx=0, end_idx=None):
         
         print("Connecting to database...")
         self.db = ase.db.connect(db_path)
         print("connected.")
         total_rows = self.db.count()
         print(f"Total rows in database: {total_rows}")
+
+        self.orbital_basis = orbital_basis
 
         if end_idx is None:
             end_idx = total_rows
@@ -33,7 +35,7 @@ class ASEDataset(Dataset):
 
         self.dtype = dtype
 
-        print("Rank", rank, "will read ids:", self.ids, flush=True)
+        print("Rank", rank, "will read structure IDs:", self.ids, flush=True)
     
     def _get_ids(self):
         """
@@ -64,7 +66,6 @@ class ASEDataset(Dataset):
         
         # Convert numpy arrays from structure.data to PyTorch tensors
         neighbour_list = structure.data['edge_index']
-        orbital_basis = structure.data['orbital_basis']
         edge_dist = torch.tensor(structure.data['edge_dist'], dtype=self.dtype)
         edge_index = torch.tensor(neighbour_list, dtype=torch.long)
         edge_mask = torch.tensor(structure.data['edge_mask']) if 'edge_mask' in structure.data else None
@@ -76,8 +77,8 @@ class ASEDataset(Dataset):
         edge_labels = torch.tensor(structure.data['edge_labels'], dtype=self.dtype)
         energies = torch.tensor(structure.data['total_energy [Eh]'])
         forces = torch.tensor(structure.data['gradient [Eh/bohr]'])
-        dipole = torch.tensor(structure.data['multipoles'][1])  # XX, YY, ZZ components
-        quadrupole = torch.tensor(structure.data['multipoles'][2])  # XY, XZ, YZ components     
+        # dipole = torch.tensor(structure.data['multipoles'][1])  # XX, YY, ZZ components
+        # quadrupole = torch.tensor(structure.data['multipoles'][2])  # XY, XZ, YZ components     
             
         # Create PyTorch Geometric Data object
         data = Data(
@@ -94,13 +95,13 @@ class ASEDataset(Dataset):
             natoms=len(atomic_numbers), 
             energies=energies,
             forces=forces,
-            dipole=dipole,
-            quadrupole=quadrupole
+            # dipole=dipole,
+            # quadrupole=quadrupole
         )
 
         # Store orbital basis (dictionary)
-        data.orbital_basis = orbital_basis
-        data.required_irreps = structure.data["required_irreps"]
+        data.orbital_basis = self.orbital_basis
+        # data.required_irreps = structure.data["required_irreps"]
         
         return data
 

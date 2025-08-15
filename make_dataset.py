@@ -126,8 +126,7 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
         print("Not scaling or shifting the dataset for now", flush=True)
         scale_shift_data = None
 
-    structures.append(fock_targets.Fock_Targets(structure, cutoff, full_basis, fock_matrix, reflection_symmetry=False, scale_shift_data=scale_shift_data))
-    # structures.append(fock_targets.Fock_Targets(structure, cutoff, basis, fock_matrix, reflection_symmetry=False, scale_shift_data=scale_shift_data)) # minibasis for water! 
+    structures.append(fock_targets.Fock_Targets(structure, cutoff, full_basis, fock_matrix, half_edges=True, scale_shift_data=scale_shift_data))
     target_time_end = time.perf_counter()
     print("Time to make targets: ", target_time_end - target_time_start, flush=True)
 
@@ -165,10 +164,10 @@ for current_rank in range(world_size):
                     "edge_labels": structure.edge_labels.detach().cpu().numpy(),
                     "total_energy [Eh]": orca_output_dict["total_energy [Eh]"],
                     "gradient [Eh/bohr]": orca_output_dict["gradient [Eh/bohr]"],
+                    "half_edges": structure.halfedges,
                     # "total_charge": orca_output_dict["total_charge"],
                     # "multipoles": orca_output_dict["multipoles"],
                     "cutoff": cutoff,
-                    # "required_irreps": str(structure.req_output_irreps),
                     "num_atoms_in_molecule": len(structure.atomic_numbers),
                     "folder_name": local_folder_name
                 }
