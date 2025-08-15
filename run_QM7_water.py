@@ -30,15 +30,15 @@ random.seed(42)
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_water.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_water_cosine'
+output_folder = 'outputs_QM7_water_halfedge_nodereduce'
 # ---------------------------
 
 # --> Shuffle:
-print("Not shuffling database, using the first molecule only for debugging")
-# print("Shuffling database...")
-# indices = list(range(len(database)))
-# random.shuffle(indices)
-# database = [database[i] for i in indices]
+# print("Not shuffling database, using the first molecule only for debugging")
+print("Shuffling database...")
+indices = list(range(len(database)))
+random.shuffle(indices)
+database = [database[i] for i in indices]
 
 # --> Model settings:
 l_embedding_dim = 128                   # sphere channels
@@ -52,18 +52,18 @@ restart_optimizer = False
 # --> Training settings:
 train_or_eval = "train"
 num_val = 500                           # Number of validation structures
-num_train = 500 
+num_train = 500
 num_test = len(database) - num_train - num_val  # Number of test structures
-num_epochs = 1000
-batch_size = 5                          # 1 for eval, 10 for train
+num_epochs = 5000
+batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Symmetry reduction settings:
-reduce_edge = False                     # use only edge orbital blocks for edge i,j where i<j (other edges are reflected)
-reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_edge = True                      # use only edge orbital blocks for edge i,j where i<j as labels (edges will be symmetrized in the output head)
+reduce_node = True                     # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True               # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
@@ -73,9 +73,9 @@ torch.set_default_dtype(dtype)
 lr_init = 1e-5
 patience = 500                          # if ReduceLROnPlateau scheduler
 threshold = 1e-5                        # if ReduceLROnPlateau scheduler
-scheduler_type = 'cosine'               # 'plateau' or 'cosine'
+scheduler_type = 'cosine'               # 'plateau', 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
-eta_min = 1e-10                          # for cosine scheduler - minimum learning rate
+eta_min = 1e-7                         # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
 train_loss_fxn = loss.rmse_mse_padded_loss
@@ -85,6 +85,9 @@ backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
 head_type = 'gated'                   # 'linear' or 'gated'
 include_edges = True
+
+if reduce_edge and batch_size != 1:
+    raise ValueError("If using reduce_edge, batch size must be 1! Reverse_edge map is not collated.")
 
 # dataset_analysis.dataset_analysis(database, dataset_name, rcut=rcut_orbitals, dtype=torch.float64, reduce_edge=False)
 
@@ -171,18 +174,19 @@ test_end_mol += num_train+num_val
 ### DEBUG ###
 
 if train_or_eval == 'train':
-    train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data)
-    val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data)
+    train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
+    val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
     print("Size of train loader: ", len(train_loader), flush=True)
     print("Size of val loader: ", len(val_loader), flush=True)
 else:
     batch_size = 1
-    test_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data)
+    test_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
     print("Size of test loader: ", len(test_loader), flush=True)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start, flush=True)
 
+ls_list = train_loader.dataset[0].fock_target_object.ls_list
 irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
 
 # determine output irreps from target type:
@@ -226,7 +230,9 @@ if loss_target == "fock_matrix":
                             irreps_out=output_irreps, 
                             lmax=required_irreps.lmax, 
                             sphere_channels=l_embedding_dim,
+                            half_edges=reduce_edge,
                             head_type=head_type,
+                            ls_list=ls_list,
                             reduce_node=reduce_node,
                             reduce_node_intra=reduce_node_intra,
                             orbital_basis=orbital_basis)

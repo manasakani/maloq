@@ -87,6 +87,9 @@ head_type = 'gated'                   # 'linear' or 'gated'
 
 scale_and_shift = False
 
+if reduce_edge and batch_size != 1:
+    raise ValueError("If using reduce_edge, batch size must be 1! Reverse_edge map is not collated.")
+
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
     print("Getting scale and shift factors...")

@@ -56,7 +56,7 @@ restart_optimizer = False
 train_or_eval = "train"
 num_val = 1                             # Number of validation structures
 num_train = 1 
-num_epochs = 1000
+num_epochs = 3000
 batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
@@ -64,8 +64,8 @@ gaussian_width = 1.0                    # width of gaussians used to expand edge
 
 # Additional symmetries:
 reduce_edge = True                      # use only edges i,j where i<j (other edge labels will not be computed/stored)
-reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_node = True                     # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True               # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
@@ -76,7 +76,7 @@ patience = 100                          # for scheduler
 threshold = 1e-4                        # for scheduler
 scheduler_type = 'cosine'               # 'plateau' or 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
-eta_min = 1e-10                          # for cosine scheduler - minimum learning rate
+eta_min = 1e-7                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
 head_type = 'gated'                     # linear or gated 

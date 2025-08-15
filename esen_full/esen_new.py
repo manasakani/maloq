@@ -491,7 +491,6 @@ class Fock_Irreps_Head(nn.Module):
                         self.backward_irrep_track[(j, i)] = [irrep_pointer, irrep_pointer+irrep_len]
                         irrep_pointer += irrep_len
 
-            
             # Now we can project to this reduced set of irreps, and expand it out later
             self.irreps_nodereduced = Irreps('+'.join(irreps_nodereduced))
 
@@ -616,36 +615,35 @@ class Fock_Irreps_Head(nn.Module):
         if self.reduce_node:
             node_output = self.expand_reduced_node(node_output, edge_output)
 
-        # --> Symmetrize the edges so we only need to return the forward edges
-        # for loop over the 'true' elements of edge_mask:
+        # # --> Symmetrize the edges so we only need to return the forward edges
+        # # for loop over the 'true' elements of edge_mask:
+        # if self.half_edges:
+        #     # print("Using half edges, symmetrizing the edge outputs!")
+        #     assert edge_mask is not None, "edge_mask must be provided when using half_edges=True!"
+        #     assert edge_mask.any(), "only half the edges need to be created when half_edges=True!"
+        #     # need reflection on same device, could not access device from within constructor functions
+        #     self.edge_m_reflection = torch.tensor(self.edge_m_reflection, dtype=edge_output.dtype, device=edge_output.device)
+
+        #     # Iterate through the edges which will not have a corresponding label (~edge_exists)
+        #     for i, edge_exists in enumerate(edge_mask):
+        #         if not edge_exists: 
+        #             # find the forward edge index, this will have a label of it's own:
+        #             forward_edge_index = reverse_edge_map[i]
+        #             # we need to convert the backward edge to the forward edge order
+        #             transposed_backward_edge = edge_output[i, self.edge_permutation] * self.edge_m_reflection
+        #             # now we can average the transposed backward edge with the forward edge output
+        #             edge_output[forward_edge_index] = (edge_output[forward_edge_index] + transposed_backward_edge) / 2.0
+        #             # and it will be accounted for when computing the loss over the edges with labels
+
+        #     edge_output = edge_output[edge_mask]  # only return the edges that will have a label
+
         if self.half_edges:
-            # print("Using half edges, symmetrizing the edge outputs!")
-            assert edge_mask is not None, "edge_mask must be provided when using half_edges=True!"
-            assert edge_mask.any(), "only half the edges need to be created when half_edges=True!"
-            # need reflection on same device, could not access device from within constructor functions
             self.edge_m_reflection = torch.tensor(self.edge_m_reflection, dtype=edge_output.dtype, device=edge_output.device)
+            return node_output, edge_output[edge_mask], edge_output[~edge_mask], self.edge_permutation, self.edge_m_reflection
+        else:
+            return node_output, edge_output, None, None, None
 
-            # Iterate through the edges which will not have a corresponding label (~edge_exists)
-            for i, edge_exists in enumerate(edge_mask):
-                if not edge_exists: 
-                    # find the forward edge index, this will have a label of it's own:
-                    forward_edge_index = reverse_edge_map[i]
-                    # we need to convert the backward edge to the forward edge order
-                    transposed_backward_edge = edge_output[i, self.edge_permutation] * self.edge_m_reflection
-                    # now we can average the transposed backward edge with the forward edge output
-                    edge_output[forward_edge_index] = (edge_output[forward_edge_index] + transposed_backward_edge) / 2.0
-                    # and it will be accounted for when computing the loss over the edges with labels
-
-                    # set values below 1e-4 to zero:
-                    edge_output[forward_edge_index][torch.abs(edge_output[forward_edge_index]) < 1e-4] = 0.0
-                    transposed_backward_edge[torch.abs(transposed_backward_edge) < 1e-4] = 0.0
-                    # print("transposed_backward_edge: ", transposed_backward_edge)
-                    # print("forward edge: ", edge_output[forward_edge_index])
-                    # exit()
-
-            edge_output = edge_output[edge_mask]  # only return the edges that will have a label
-
-        return node_output, edge_output
+        # return node_output, edge_output[edge_mask], edge_output[~edge_mask], self.edge_permutation, self.edge_m_reflection
 
     def get_edge_permutation(self):
         """

@@ -4,7 +4,7 @@ import os, sys, random
 import numpy as np
 import torch
 
-from fock_utils import utils_orca_out, fock_targets
+from fock_utils import utils_orca_out, fock_targets, basis_sets
 from train_utils import loss, utils_compute, splittrainer
 from dataset_utils import get_loader, dataset_analysis, get_scale_shift
 from dataset_utils.ASEDataset import ASEAtomsData, ASEDataset
@@ -37,6 +37,10 @@ dataset_folder = './omol_closedshell_25k_train_r8.0_scaled.db'
 dtype = torch.float32
 output_folder = 'outputs_omol_closedshell_25k_scaled_pt2'
 dataset_name = 'omol'
+orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
+orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
+orbital_basis = {int(k): v for k, v in orbital_basis.items()}
+
 db = ase.db.connect(dataset_folder)
 total_rows = db.count()
 # ---------------------------
@@ -81,6 +85,9 @@ train_loss_fxn = loss.rmse_mse_padded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
+
+if reduce_edge and batch_size != 1:
+    raise ValueError("If using reduce_edge, batch size must be 1! Reverse_edge map is not collated.")
 
 scale_and_shift = True
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
@@ -128,8 +135,8 @@ val_start_mol += num_train  # the validation molecules start after training ones
 val_end_mol += num_train
 
 # Query this rank's molecules from the database
-train_database = ASEDataset(dataset_folder, dtype=dtype, world_size=world_size, rank=rank, start_idx=train_start_mol, end_idx=train_end_mol)
-val_database = ASEDataset(dataset_folder, dtype=dtype, world_size=world_size, rank=rank, start_idx=val_start_mol, end_idx=val_end_mol)
+train_database = ASEDataset(dataset_folder, orbital_basis, dtype=dtype, world_size=world_size, rank=rank, start_idx=train_start_mol, end_idx=train_end_mol)
+val_database = ASEDataset(dataset_folder, orbital_basis, dtype=dtype, world_size=world_size, rank=rank, start_idx=val_start_mol, end_idx=val_end_mol)
 
 # Compute scale and shift factors if required
 if scale_and_shift:
@@ -155,8 +162,8 @@ else:
 
 # Create the fock target analysis objects for each molecule in the dataset, scale and shift the node labels if required
 print("Processing the dataset, creating fock analysis objects if needed ...", flush=True)
-orbital_basis = train_database[0].orbital_basis
-orbital_basis = {int(k): v for k, v in orbital_basis.items()}
+# orbital_basis = train_database[0].orbital_basis
+# orbital_basis = {int(k): v for k, v in orbital_basis.items()}
 
 train_data = get_scale_shift.scale_shift_database(train_database, 0, train_local_num_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=False, train_or_eval=train_or_eval)
 val_data = get_scale_shift.scale_shift_database(val_database, 0, val_local_num_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=False, train_or_eval=train_or_eval)

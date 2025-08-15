@@ -44,7 +44,7 @@ class SplitTrainer():
                    entity='manasakani')
         
     # -- Train model --
-    @disable_amp
+    # @disable_amp
     def train(self, 
             num_epochs, 
             loss_fxn, 
@@ -82,8 +82,6 @@ class SplitTrainer():
         else:
             rank = 0
         
-        # scaler = GradScaler()  # for mixed precision training
-
         # Ensure that the ranks have the same number of batches! - need to be careful of this due to the custom data distribution
         num_train_batches = len(train_loader)
         num_val_batches = len(val_loader)
@@ -115,6 +113,7 @@ class SplitTrainer():
 
             train_loss_node = 0.0
             train_loss_edge = 0.0
+            torch.cuda.reset_peak_memory_stats()
             for batch in train_loader:
 
                 optimizer.zero_grad()
@@ -122,29 +121,21 @@ class SplitTrainer():
                 # -- Forward -- 
                 forward_start = time.perf_counter()
                 batch = batch.to(device)
-                # torch.cuda.reset_peak_memory_stats()
-                # with autocast():
+
                 backbone_out = self.backbone(batch) 
 
                 if loss_target_string == 'fock_matrix':
-                    node_output, edge_output = self.head(backbone_out, batch)
+                    node_output, edge_output_fwd, edge_output_bwd, edge_perm, edge_refl = self.head(backbone_out, batch)
                     
                     this_node_target = getattr(batch, node_target_name)
                     this_edge_target = getattr(batch, edge_target_name)
 
-                    # compute loss in the uncoupled basis:
-                    if compute_uncoupled_loss:
-                        node_output = basis_transform.get_H(node_output)
-                        edge_output = basis_transform.get_H(edge_output)
-                        this_node_target = basis_transform.get_H(this_node_target)
-                        this_edge_target = basis_transform.get_H(this_edge_target)
-                
-                    output = torch.cat([node_output, edge_output], dim=0)
-                    labels = torch.cat([this_node_target, this_edge_target], dim=0)
-                    loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
-                    loss_edge = loss_fxn(edge_output, this_edge_target, self.head_irreps) 
-                    loss = loss_fxn(output, labels, self.head_irreps)
-
+                    loss_node, loss_edge, loss = self.compute_fock_loss(
+                        node_output, edge_output_fwd, edge_output_bwd,
+                        this_node_target, this_edge_target,
+                        edge_perm, edge_refl, loss_fxn, self.head_irreps,
+                        basis_transform, compute_uncoupled_loss
+                    )
                     train_loss_node += loss_node
                     train_loss_edge += loss_edge
 
@@ -170,22 +161,14 @@ class SplitTrainer():
 
                 forward_end = time.perf_counter()
 
-                # if rank == 0:
-                #     peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024) 
-                #     print(f"Peak memory allocation: {peak_mem:.2f} MB")
-
                 # -- Backwards -- 
-                # scaler.scale(loss).backward()
                 loss.backward()
-                # scaler.step(optimizer)
                 optimizer.step()
-                # scaler.update()
                 backward_end = time.perf_counter()
 
                 # if rank == 0:
                 #     print("Time per forward pass: ", forward_end - forward_start)
                 #     print("Time for both forward and backward pass: ", backward_end - forward_start)
-        
 
             # -- Output dump -- 
             if loss_target_string == 'fock_matrix':
@@ -218,23 +201,17 @@ class SplitTrainer():
                     
                     # -- Loss --
                     if loss_target_string == 'fock_matrix':
-                        node_output, edge_output = self.head(backbone_out, batch)
+                        node_output, edge_output_fwd, edge_output_bwd, edge_perm, edge_refl = self.head(backbone_out, batch)
                         
                         this_node_target = getattr(batch, node_target_name)
                         this_edge_target = getattr(batch, edge_target_name)
 
-                        # Fock matrix loss
-                        if compute_uncoupled_loss:
-                            node_output = basis_transform.get_H(node_output)
-                            edge_output = basis_transform.get_H(edge_output)
-                            this_node_target = basis_transform.get_H(this_node_target)
-                            this_edge_target = basis_transform.get_H(this_edge_target)
-
-                        output = torch.cat([node_output, edge_output], dim=0)
-                        labels = torch.cat([this_node_target, this_edge_target], dim=0)
-                        loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
-                        loss_edge = loss_fxn(edge_output, this_edge_target, self.head_irreps) 
-                        loss = loss_fxn(output, labels, self.head_irreps)
+                        loss_node, loss_edge, loss = self.compute_fock_loss(
+                            node_output, edge_output_fwd, edge_output_bwd,
+                            this_node_target, this_edge_target,
+                            edge_perm, edge_refl, loss_fxn, self.head_irreps,
+                            basis_transform, compute_uncoupled_loss
+                        )
 
                         val_loss_node += loss_node
                         val_loss_edge += loss_edge
@@ -275,6 +252,8 @@ class SplitTrainer():
                     print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)    
                 else:
                     print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]}", flush=True)   
+                peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024) 
+                print(f"Peak memory allocation: {peak_mem:.2f} MB")
             
             if dist.is_initialized():
                 val_loss_tensor = torch.tensor(val_loss, device=device)
@@ -291,7 +270,6 @@ class SplitTrainer():
                 val_loss_edge = val_loss_edge_tensor.item() / world_size
 
             # -- Scheduler -- 
-            # Different schedulers require different step() calls
             if hasattr(scheduler, 'patience'):  # ReduceLROnPlateau
                 scheduler.step(val_loss)
             else:  # CosineAnnealingLR or other epoch-based schedulers
@@ -335,33 +313,6 @@ class SplitTrainer():
                     self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder)
                 return
 
-    def check_batch_consistency(self, num_train_batches, num_val_batches, device):
-
-        if dist.is_available() and dist.is_initialized():
-            train_batches_tensor = torch.tensor([num_train_batches], device=device)
-            val_batches_tensor = torch.tensor([num_val_batches], device=device)
-            train_batches_list = [torch.zeros_like(train_batches_tensor) for _ in range(dist.get_world_size())]
-            val_batches_list = [torch.zeros_like(val_batches_tensor) for _ in range(dist.get_world_size())]
-            dist.all_gather(train_batches_list, train_batches_tensor)
-            dist.all_gather(val_batches_list, val_batches_tensor)
-
-            dist.barrier()
-
-            if not all(train_batches_list[0] == tb for tb in train_batches_list):
-                print("Mismatch in number of training batches across ranks!", flush=True)
-                raise ValueError("Mismatch in number of training batches across ranks!", flush=True)
-            if not all(val_batches_list[0] == vb for vb in val_batches_list):
-                print("Mismatch in number of validation batches across ranks!", flush=True)
-                raise ValueError("Mismatch in number of validation batches across ranks!", flush=True)
-
-    def adjust_learning_rate(self, optimizer, epoch, warmup_epochs, initial_lr, final_lr):
-        """Adjusts the learning rate linearly during the warmup phase."""
-        if epoch < warmup_epochs:
-            lr = initial_lr + (final_lr - initial_lr) * (epoch / warmup_epochs)
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr
-            print(f"Warmup epoch {epoch+1}: setting learning rate to {lr}")
-    
     # -- Evaluate model --
     def evaluate(self, 
                 loss_fxn, 
@@ -597,6 +548,76 @@ class SplitTrainer():
                     for node in track_loss:
                         f.write(f"{node:.10f}\n")
     
+    # -- Helper functions for training and evaluation --
+    def check_batch_consistency(self, num_train_batches, num_val_batches, device):
+
+        if dist.is_available() and dist.is_initialized():
+            train_batches_tensor = torch.tensor([num_train_batches], device=device)
+            val_batches_tensor = torch.tensor([num_val_batches], device=device)
+            train_batches_list = [torch.zeros_like(train_batches_tensor) for _ in range(dist.get_world_size())]
+            val_batches_list = [torch.zeros_like(val_batches_tensor) for _ in range(dist.get_world_size())]
+            dist.all_gather(train_batches_list, train_batches_tensor)
+            dist.all_gather(val_batches_list, val_batches_tensor)
+
+            dist.barrier()
+
+            if not all(train_batches_list[0] == tb for tb in train_batches_list):
+                print("Mismatch in number of training batches across ranks!", flush=True)
+                raise ValueError("Mismatch in number of training batches across ranks!", flush=True)
+            if not all(val_batches_list[0] == vb for vb in val_batches_list):
+                print("Mismatch in number of validation batches across ranks!", flush=True)
+                raise ValueError("Mismatch in number of validation batches across ranks!", flush=True)
+
+    def compute_fock_loss(self, node_output, edge_output_fwd, edge_output_bwd, this_node_target, this_edge_target, edge_perm, edge_refl, loss_fxn, head_irreps, basis_transform, compute_uncoupled_loss):
+        """Computes the Fock loss for the given outputs and targets."""
+        
+        # In this case, we only have labels for half the edges (edge_mask), so we need to construct the other half using parity rules + permutation
+        # the required transformation is pre-computed in the output head as edge_perm and edge_refl
+        if edge_perm is not None:
+
+            edge_target_fwd = this_edge_target
+            edge_target_bwd = edge_target_fwd[:, edge_perm] * edge_refl # construct the backward edge targets
+
+            output = torch.cat([node_output, edge_output_fwd, edge_output_bwd], dim=0)
+            labels = torch.cat([this_node_target, edge_target_fwd, edge_target_bwd], dim=0)
+
+            # Transform from direct sum of irreps to matrix elements
+            if compute_uncoupled_loss:
+                output = basis_transform.get_H(output)
+                labels = basis_transform.get_H(labels)
+
+            loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
+            edge_output = torch.cat([edge_output_fwd, edge_output_bwd], dim=0)
+            edge_labels = torch.cat([edge_target_fwd, edge_target_bwd], dim=0)
+            loss_edge = loss_fxn(edge_output, edge_labels, self.head_irreps) 
+
+            loss = loss_fxn(output, labels, self.head_irreps)
+
+        # otherwise, edge_output_fwd has all the edges and we can use it directly
+        else:
+            output = torch.cat([node_output, edge_output_fwd], dim=0)
+            labels = torch.cat([this_node_target, this_edge_target], dim=0)
+
+            # Transform from direct sum of irreps to matrix elements
+            if compute_uncoupled_loss:
+                output = basis_transform.get_H(output)
+                labels = basis_transform.get_H(labels)
+
+            loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
+            loss_edge = loss_fxn(edge_output_fwd, this_edge_target, self.head_irreps) 
+            loss = loss_fxn(output, labels, self.head_irreps)
+
+        return loss_node, loss_edge, loss
+
+    def adjust_learning_rate(self, optimizer, epoch, warmup_epochs, initial_lr, final_lr):
+        """Adjusts the learning rate linearly during the warmup phase."""
+        if epoch < warmup_epochs:
+            lr = initial_lr + (final_lr - initial_lr) * (epoch / warmup_epochs)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+            print(f"Warmup epoch {epoch+1}: setting learning rate to {lr}")
+    
+
     def get_orbital(self, tensor, irreps_list, l):
         """
         Extract and return all irreps of type l from the tensor

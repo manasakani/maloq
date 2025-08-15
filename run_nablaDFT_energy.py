@@ -78,6 +78,7 @@ make_fock_targets = False
 
 scale_and_shift = False
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
+energy_ref_file = './fock_datasets/nabla2DFT/lin_ref_coeffs_nablaDFT.npz'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
@@ -160,7 +161,6 @@ val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol
 if loss_target == "energies":
 
     # Load linear reference coefficients computed from nablaDFT dataset
-    energy_ref_file = './stats_nablaDFT/lin_ref_coeffs_nablaDFT.npz'
     if os.path.exists(energy_ref_file):
         print(f"Loading energy reference coefficients from {energy_ref_file}")
         lin_ref_data = np.load(energy_ref_file)
