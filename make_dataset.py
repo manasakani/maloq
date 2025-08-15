@@ -31,12 +31,18 @@ num_local_structures = int(args.max_structures) # use to impose only making a su
 dataset_name = 'omol' 
 
 # --> whether to scale and shift scalar values in the node blocks of the dataset (scale_shift_file needs to be precomputed)
-scale_and_shift = True
+scale_and_shift = False
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
+half_edges = False
 
 # Collect and process orbital basis for the omol tzvpd dataset:
 full_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
 full_basis = dict(sorted(full_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
+
+# Fock matrix analysis parameters:
+equivariant_blocks = None
+orbital_starts = None
+basis_transformation = None
 
 # ----------------------------
 # --> Initialize compute setup
@@ -102,8 +108,7 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
     structure = Atoms(elements, positions=coordinates)  
     read_time_end = time.perf_counter()
     print("Time to make atoms and get matrix: ", read_time_end - read_time_start, flush=True)
-    print("Structure and local basis: ", structure, " local basis: ", basis, flush=True)
-    # print("full basis: ", full_basis)
+    print("Structure: ", structure, flush=True)
 
     # Create fock targets:
     target_time_start = time.perf_counter()
@@ -126,7 +131,17 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
         print("Not scaling or shifting the dataset for now", flush=True)
         scale_shift_data = None
 
-    structures.append(fock_targets.Fock_Targets(structure, cutoff, full_basis, fock_matrix, half_edges=True, scale_shift_data=scale_shift_data))
+    structures.append(fock_targets.Fock_Targets(structure, cutoff, full_basis, fock_matrix, half_edges=half_edges, scale_shift_data=scale_shift_data, 
+                                                dtype=torch.float32, 
+                                                equivariant_blocks=equivariant_blocks,
+                                                orbital_starts=orbital_starts,
+                                                basis_transformation=basis_transformation))
+
+    # Save the analysis objects to use for the next structure (these depend only on the basis)
+    equivariant_blocks = structures[-1].equivariant_blocks
+    orbital_starts = structures[-1].orbital_starts
+    basis_transformation = structures[-1].basis_transformation
+
     target_time_end = time.perf_counter()
     print("Time to make targets: ", target_time_end - target_time_start, flush=True)
 
@@ -164,7 +179,7 @@ for current_rank in range(world_size):
                     "edge_labels": structure.edge_labels.detach().cpu().numpy(),
                     "total_energy [Eh]": orca_output_dict["total_energy [Eh]"],
                     "gradient [Eh/bohr]": orca_output_dict["gradient [Eh/bohr]"],
-                    "half_edges": structure.halfedges,
+                    "half_edges": structure.half_edges,
                     # "total_charge": orca_output_dict["total_charge"],
                     # "multipoles": orca_output_dict["multipoles"],
                     "cutoff": cutoff,

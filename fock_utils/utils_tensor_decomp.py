@@ -251,7 +251,7 @@ def make_output_irreps(orbital_basis):
     for i, l1 in enumerate(ls_list):
         for j, l2 in enumerate(ls_list):
             product_irreps = l1l2_to_l3s(l1, l2)
-            irrep_len = sum([2*l + 1 for l in Irreps(product_irreps).ls])
+            irrep_len = sum([2*(l%10) + 1 for l in Irreps(product_irreps).ls])
             req_output_irreps += Irreps(product_irreps)
             out_slices.append(np.int32(out_slices[-1] + irrep_len))
 
@@ -397,7 +397,7 @@ def process_targets(orbital_basis, targets, ls_list=None, out_js_list=None, full
     
         equivariant_blocks.append(equivariant_block)
 
-    return equivariant_blocks #, out_js_list#, out_slices
+    return equivariant_blocks
 
 def process_targets_old(orbital_basis, targets): 
 

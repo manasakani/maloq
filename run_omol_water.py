@@ -30,7 +30,7 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> OMOL 
-dataset_folder = './water_test_halfedge.db'
+dataset_folder = './water_halfedge.db'
 dtype = torch.float32
 orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
 orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
@@ -56,7 +56,7 @@ restart_optimizer = False
 train_or_eval = "train"
 num_val = 1                             # Number of validation structures
 num_train = 1 
-num_epochs = 50000
+num_epochs = 1000
 batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
@@ -74,6 +74,9 @@ torch.set_default_dtype(dtype)
 lr_init = 5e-3
 patience = 100                          # for scheduler
 threshold = 1e-4                        # for scheduler
+scheduler_type = 'cosine'               # 'plateau' or 'cosine'
+T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
+eta_min = 1e-10                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
 head_type = 'gated'                     # linear or gated 
@@ -286,7 +289,13 @@ if restart_head:
 # Run Training or Evaluation
 # --------------------------------------------
 
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+if scheduler_type == 'plateau':
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+elif scheduler_type == 'cosine':
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min, verbose=True)
+else:
+    raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
+ 
 print("Going to training or evaluation", flush=True)
 # scheduler = loss_scheduler(optimizer, lag_epochs=100)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
