@@ -658,7 +658,7 @@ class Fock_Irreps_Head(nn.Module):
         forward_irrep_track = {}
         pointer = 0
 
-        # total_irreps = Irreps('')
+        total_irreps = Irreps('')
 
         for i, l1 in enumerate(self.ls_list):
             for j, l2 in enumerate(self.ls_list):
@@ -668,7 +668,7 @@ class Fock_Irreps_Head(nn.Module):
                 irrep_len = sum([2*l + 1 for l in Irreps(product_irreps).ls])
 
                 # add to total irreps
-                # total_irreps += Irreps(product_irreps)
+                total_irreps += Irreps(product_irreps)
 
                 # if it's the same orbital interaction going backward and forward (eg, p1A-p1B vs. p1B-p1A), we keep the same irreps
                 if i == j:
@@ -716,10 +716,8 @@ class Fock_Irreps_Head(nn.Module):
                     
                 pointer += irrep_len
 
-        # print("edge_permutation: ", edge_permutation)
-        # print("total_irreps: ", total_irreps)
-        # print(total_irreps.sort()[0].simplify())
-        # exit()
+        # assert that total_irreps is the same as the output irreps
+        assert total_irreps == self.irreps_out, f"Error! Total irreps in the Hamiltonian output head {total_irreps} do not match the provided output irreps {self.irreps_out}!"
                 
         return edge_permutation
 

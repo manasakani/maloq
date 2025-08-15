@@ -30,7 +30,7 @@ random.seed(42)
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_uracil.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_uracil_final'
+output_folder = 'outputs_QM7_uracil_halfedge_nodereduce'
 # ---------------------------
 
 # --> Shuffle:
@@ -54,16 +54,16 @@ train_or_eval = "train"
 num_val = 500                           # Number of validation structures
 num_train = 25000  
 num_test = len(database) - num_train - num_val  # Number of test structures
-num_epochs = 1000
+num_epochs = 100
 batch_size = 1                          # for training (batch size is always 1 for eval) - small batch for multi-gpu!
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut_orbitals)
 rcut_gaussian = rcut_orbitals*2         # gaussian basis distance 
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reflection_symmetry = False             # use only edges i,j where i<j (other edges are reflected)
-reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_edge = True             # use only edges i,j where i<j (other edges are reflected)
+reduce_node = True                     # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True               # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
@@ -75,7 +75,7 @@ patience = 100                           # for ReduceLROnPlateau scheduler
 threshold = 1e-5                        # for ReduceLROnPlateau scheduler
 scheduler_type = 'cosine'               # 'plateau' or 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
-eta_min = 1e-9                          # for cosine scheduler - minimum learning rate
+eta_min = 1e-7                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
 train_loss_fxn = loss.rmse_mse_padded_loss
@@ -126,7 +126,7 @@ if rank == 0:
     print(f"Model - Num of Message Passing layers: {num_mp_layers}", flush=True)
     print(f"Model - Embedding dimension: {l_embedding_dim}", flush=True)
     print(f"Model - # Distance basis functions: {num_distance_basis}", flush=True)
-    print(f"Model - Edge reduction: {reflection_symmetry}")
+    print(f"Model - Edge reduction: {reduce_edge}")
     print(f"Model - Node reduction - interorbital: {reduce_node}")
     print(f"Model - Node reduction - intraorbital: {reduce_node_intra}")
     print(f"Training - Loss target: {loss_target}", flush=True)
@@ -166,14 +166,14 @@ test_end_mol += num_train+num_val
 ### DEBUG ###
 
 if train_or_eval == 'train':
-    train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry, scale_shift_data=scale_shift_data)
-    val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry, scale_shift_data=scale_shift_data)
+    train_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
+    val_loader, _, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
     print("Size of train loader: ", len(train_loader))
     print("Size of val loader: ", len(val_loader))
 
 else:
     batch_size = 1
-    test_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry, scale_shift_data=scale_shift_data)
+    test_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
     print("Size of test loader: ", len(test_loader))
 
 data_load_end = time.perf_counter()
@@ -221,6 +221,8 @@ if loss_target == "fock_matrix":
                             irreps_out=output_irreps, 
                             lmax=required_irreps.lmax, 
                             sphere_channels=l_embedding_dim,
+                            half_edges=reduce_edge,
+                            ls_list=ls_list,
                             head_type=head_type,
                             reduce_node=reduce_node,
                             reduce_node_intra=reduce_node_intra,
@@ -300,7 +302,7 @@ trainer = splittrainer.SplitTrainer(backbone=backbone,
                                     head=head,
                                     head_irreps=output_irreps,
                                     run_name='uracil_final',
-                                    save_frequency=10)
+                                    save_frequency=5)
 if train_or_eval == "train":
     trainer.train(num_epochs, 
                     train_loss_fxn, 

@@ -89,6 +89,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         datalist.append(data)
 
     orbital_basis = {k: torch.tensor(v) for k, v in graph_targets.orbital_basis.items()}
+    ls_list = graph_targets.ls_list
     required_irreps = graph_targets.req_output_irreps
     print("required irreps: ", required_irreps)
 
@@ -97,4 +98,4 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     dataset = sampleDataset(datalist)
     data_loader = DataLoader(dataset, batch_size=batch_size)
 
-    return data_loader, required_irreps, basis_transform, orbital_basis
+    return data_loader, required_irreps, basis_transform, orbital_basis, ls_list

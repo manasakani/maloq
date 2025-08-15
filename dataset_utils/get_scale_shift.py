@@ -35,7 +35,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
     orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
 
     # 0. Compute locations of scalars and higher ranks from required_irreps for this dataset's basis:
-    _, required_irreps, simplified_out_irreps = utils_tensor_decomp.make_output_irreps(orbital_basis) 
+    _, required_irreps, simplified_out_irreps, _, _, _, _ = utils_tensor_decomp.make_output_irreps(orbital_basis)  
     required_irreps = Irreps(required_irreps)
     scalar_indices = []
     irrep_track = 0
@@ -43,6 +43,11 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
         if irrep.l == 0:
             scalar_indices.append(irrep_track)
         irrep_track += 2 * irrep.l + 1
+    
+    # Fock matrix analysis parameters:
+    equivariant_blocks = None
+    orbital_starts = None
+    basis_transformation = None
 
     # Extract the magnitudes of those irreps to make scaling/shifting factors
     element_scalar_values = {}
@@ -84,7 +89,15 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             if dataset_name == "QM7":                 
                 hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate 
             
-            graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, half_edges=reduce_edge)
+            graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, half_edges=reduce_edge, 
+                                                    equivariant_blocks=equivariant_blocks,
+                                                    orbital_starts=orbital_starts,
+                                                    basis_transformation=basis_transformation)
+
+            # Save the analysis objects to use for the next structure (these depend only on the basis)
+            equivariant_blocks = graph_targets.equivariant_blocks
+            orbital_starts = graph_targets.orbital_starts
+            basis_transformation = graph_targets.basis_transformation
 
             node_labels = graph_targets.node_labels
         

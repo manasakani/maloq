@@ -30,7 +30,7 @@ random.seed(42)
 # --> NablaDFT (tiny)
 database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_tiny_final'
+output_folder = 'outputs_nablaDFT_tiny_halfedge_nodereduce'
 # ---------------------------
 
 # --> Model settings:
@@ -47,23 +47,23 @@ restart_optimizer = False
 train_or_eval = "train"
 num_val = 64                             # Number of validation structures
 num_train = len(database) - num_val
-num_epochs = 1000
+num_epochs = 500
 batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reduce_edge = False                      # use only edges i,j where i<j (other edges are reflected)
-reduce_node = False                      # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = False                # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_edge = True                      # use only edges i,j where i<j (other edges are reflected)
+reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-4
+lr_init = 1e-5
 patience = 10                           # if ReduceLROnPlateau scheduler
 threshold = 1e-5                        # if ReduceLROnPlateau scheduler
 scheduler_type = 'cosine'               # 'plateau' or 'cosine'
@@ -79,7 +79,10 @@ head_checkpoint = 'head.pt'
 include_edges = True
 make_fock_targets = True
 
-scale_and_shift = True
+if reduce_edge and batch_size != 1:
+    raise ValueError("If using reduce_edge, batch size must be 1! Reverse_edge map is not collated.")
+
+scale_and_shift = False
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
@@ -89,6 +92,7 @@ if scale_and_shift:
     if scale_shift_file not in os.listdir('./fock_datasets/'):
         print("[Computing element scale and shift factors for the dataset]", flush=True)
         get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file)
+        scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
     else:
         print("[Loading element scale and shift factors from file]", flush=True)
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
@@ -102,7 +106,7 @@ else:
     scale_shift_data = None
 
 # dataset_analysis.dataset_analysis(database, dataset_name, rcut=rcut_orbitals, dtype=torch.float64, reduce_edge=False, scale_shift_data=scale_shift_data)
-# print("finished setting up shift/scale factors", flush=True)
+# print("finished setting up shift/scale factors", flush=True) # need to change!
 # exit()
 
 # --------------------------------------------
@@ -156,8 +160,8 @@ val_end_mol += num_train
 # test_end_mol = 23
 ### DEBUG ###
 
-train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
-val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
+train_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
+val_loader, _, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
@@ -205,6 +209,8 @@ if loss_target == "fock_matrix":
                             irreps_out=output_irreps, 
                             lmax=required_irreps.lmax, 
                             sphere_channels=l_embedding_dim,
+                            half_edges=reduce_edge,
+                            ls_list=ls_list,
                             head_type=head_type,
                             reduce_node=reduce_node,
                             reduce_node_intra=reduce_node_intra,
@@ -284,7 +290,7 @@ else:
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='nablaDFT_train10k_new_scaled',
+                                    run_name='nablaDFT_Aug15',
                                     save_frequency=10)
 
 if train_or_eval == "train":

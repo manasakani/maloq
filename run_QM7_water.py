@@ -54,7 +54,7 @@ train_or_eval = "train"
 num_val = 500                           # Number of validation structures
 num_train = 500
 num_test = len(database) - num_train - num_val  # Number of test structures
-num_epochs = 5000
+num_epochs = 100
 batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
@@ -174,19 +174,19 @@ test_end_mol += num_train+num_val
 ### DEBUG ###
 
 if train_or_eval == 'train':
-    train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
-    val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
+    train_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
+    val_loader, _, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
     print("Size of train loader: ", len(train_loader), flush=True)
     print("Size of val loader: ", len(val_loader), flush=True)
 else:
     batch_size = 1
-    test_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
+    test_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
     print("Size of test loader: ", len(test_loader), flush=True)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start, flush=True)
 
-ls_list = train_loader.dataset[0].fock_target_object.ls_list
+# ls_list = train_loader.dataset[0].fock_target_object.ls_list
 irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
 
 # determine output irreps from target type:
