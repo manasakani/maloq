@@ -32,10 +32,9 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> OMOL 
-# dataset_folder = './fock_datasets/omol/omol_closedshell_25k_train_r5.0_x80.db'
-dataset_folder = './omol_closedshell_25k_train_r8.0_scaled.db'
+dataset_folder = './omol_closedshell_25k_train_r8.0.db' # Note: created with half-edges
 dtype = torch.float32
-output_folder = 'outputs_omol_closedshell_25k_scaled_pt2'
+output_folder = 'outputs_omol_closedshell_25k_unscaled'
 dataset_name = 'omol'
 orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
 orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
@@ -44,30 +43,29 @@ orbital_basis = {int(k): v for k, v in orbital_basis.items()}
 db = ase.db.connect(dataset_folder)
 total_rows = db.count()
 # ---------------------------
-# assert not len(database) == 0
 
 # --> Model settings:
-l_embedding_dim = 80                    # sphere channels
+l_embedding_dim = 64                    # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 3 
 model_name = 'esen'
-restart_backbone = True
-restart_head = True
-restart_optimizer = True
+restart_backbone = False
+restart_head = False
+restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 128                           # Number of validation structures
+num_val = 64                           # Number of validation structures
 num_train = total_rows - num_val        # Number of training structures 
-num_epochs = 50000
+num_epochs = 150
 batch_size = 1                          # 1 for not oom
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reduce_edge = False                     # use only edges i,j where i<j (other edges are reflected)
+reduce_edge = True                     # use only edges i,j where i<j (other edges are reflected)
 reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
 reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
 
@@ -78,6 +76,9 @@ torch.set_default_dtype(dtype)
 lr_init = 1e-4
 patience = 10                           # for scheduler
 threshold = 1e-4                        # for scheduler
+scheduler_type = 'cosine'               # 'plateau' or 'cosine'
+T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
+eta_min = 1e-7                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
 head_type = 'gated'                     # linear or gated 
@@ -146,8 +147,7 @@ if scale_and_shift:
         print("[Computing element scale and shift factors for the dataset]", flush=True)
         get_scale_shift.get_scale_shift(train_database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file)
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
-        print("Done computing scale and shift factors, exiting", flush=True)
-        exit()
+        print("Done computing scale and shift factors", flush=True)
     else:
         print("[Loading element scale and shift factors from file]", flush=True)
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
@@ -177,15 +177,21 @@ basis_transformation = train_data[0].fock_target_object.basis_transformation
 train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0)
 val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0)
 
-required_irreps = Irreps(train_data[0].required_irreps)
-orbital_basis = {k: torch.tensor(v) for k, v in orbital_basis.items()}
-print("Orbital basis: ", orbital_basis)
-
 data_load_end = time.perf_counter()
 
 print("Time to load dataset: ", data_load_end - data_load_start, flush=True)
 print("Size of train loader: ", len(train_loader), flush=True)
 print("Size of val loader: ", len(val_loader), flush=True)
+
+# --> Irrep information for the targets
+required_irreps = train_data[0].fock_target_object.req_output_irreps
+ls_list = train_data[0].fock_target_object.ls_list
+basis_transformation = train_data[0].fock_target_object.basis_transformation
+orbital_basis = {k: torch.tensor(v) for k, v in orbital_basis.items()}
+
+print("orbital_basis: ", orbital_basis)
+print("required_irreps: ", required_irreps)
+print("simplified_out_irreps: ", Irreps(required_irreps).sort()[0].simplify())
 
 irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
 
@@ -229,6 +235,8 @@ if loss_target == "fock_matrix":
                             irreps_out=output_irreps, 
                             lmax=required_irreps.lmax, 
                             sphere_channels=l_embedding_dim,
+                            half_edges=reduce_edge,
+                            ls_list=ls_list,
                             reduce_node=reduce_node,
                             reduce_node_intra=reduce_node_intra,
                             orbital_basis=orbital_basis)
@@ -295,8 +303,15 @@ if restart_head:
 # Run Training or Evaluation
 # --------------------------------------------
 
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+if scheduler_type == 'plateau':
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+elif scheduler_type == 'cosine':
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min, verbose=True)
+else:
+    raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
+ 
 print("Going to training or evaluation", flush=True)
+
 # scheduler = loss_scheduler(optimizer, lag_epochs=100)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,

@@ -54,7 +54,7 @@ train_or_eval = "train"
 num_val = 500                           # Number of validation structures
 num_train = 25000  
 num_test = len(database) - num_train - num_val  # Number of test structures
-num_epochs = 120
+num_epochs = 150
 batch_size = 1                          # for training (batch size is always 1 for eval) - small batch for multi-gpu!
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut_orbitals)
 rcut_gaussian = rcut_orbitals*2         # gaussian basis distance 
@@ -62,8 +62,8 @@ gaussian_width = 1.0                    # width of gaussians used to expand edge
 
 # Additional symmetries:
 reduce_edge = True             # use only edges i,j where i<j (other edges are reflected)
-reduce_node = True                     # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = True               # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True

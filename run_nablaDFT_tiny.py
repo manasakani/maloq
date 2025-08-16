@@ -30,7 +30,7 @@ random.seed(42)
 # --> NablaDFT (tiny)
 database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_tiny_halfedge_nodereduce'
+output_folder = 'outputs_nablaDFT_tiny_halfedge'
 # ---------------------------
 
 # --> Model settings:
@@ -82,7 +82,7 @@ make_fock_targets = True
 if reduce_edge and batch_size != 1:
     raise ValueError("If using reduce_edge, batch size must be 1! Reverse_edge map is not collated.")
 
-scale_and_shift = False
+scale_and_shift = True
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
@@ -93,6 +93,7 @@ if scale_and_shift:
         print("[Computing element scale and shift factors for the dataset]", flush=True)
         get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file)
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
+        print("Scale and shift factors computed and saved to file.", flush=True)
     else:
         print("[Loading element scale and shift factors from file]", flush=True)
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
@@ -290,7 +291,7 @@ else:
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='nablaDFT_Aug15',
+                                    run_name='nablaDFT_Aug15_unscaled',
                                     save_frequency=10)
 
 if train_or_eval == "train":
