@@ -221,7 +221,7 @@ class Fock_Targets:
         self.edge_dist[:, 0] = torch.linalg.norm(self.edge_dist[:, 1:4], dim=-1, keepdim=False)                 # Scalar distances
     
     
-    def scale_shift_node_blocks(self, node_blocks):
+    def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers=None):
         """
         Scale the l=0 values in the targets
         scales - a list of scaling factors for each l=0 irrep component
@@ -231,12 +231,15 @@ class Fock_Targets:
         NOTE: if an element does not have that scalar value, the corresponding mean is 0.0 and std is 1.0
         """
 
+        if node_atomic_numbers is None:
+            node_atomic_numbers = self.atomic_numbers
+
         means = self.scale_shift_data['element_scalar_means']
         stds = self.scale_shift_data['element_scalar_stds']
         scalar_indices = self.scale_shift_data['scalar_irrep_indices']
 
         # Process each node block
-        for i, (node_block, z) in enumerate(zip(node_blocks, self.atomic_numbers)):
+        for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
             z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
             mean_vals = means[z]
             std_vals = stds[z]

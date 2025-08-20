@@ -99,6 +99,10 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             orbital_starts = graph_targets.orbital_starts
             basis_transformation = graph_targets.basis_transformation
 
+            # Shift back all the diffuse orbitals (which were incremented by 10 in utils_tensor_decomp.py)
+            for atom, orbitals in orbital_basis.items():
+                orbital_basis[atom] = [orb % 10 for orb in orbitals]
+
             node_labels = graph_targets.node_labels
         
         # 3. Compute the scale and shift for each atomic number
@@ -111,7 +115,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             element_scalar_values[atomic_number].append(orbital_onsite_scalars)
         
         time_end = time.perf_counter()
-        print(f"Time to scale nodes for molecule {i}: {time_end - time_start} seconds", flush=True)
+        print(f"Time to extract node scalars for molecule {i}: {time_end - time_start} seconds", flush=True)
 
     # print(f"Element scalar values: {element_scalar_values}")
 
@@ -214,9 +218,17 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
 
         if scale_nodes:
             print(f"Scaling and shifting the node labels in database[{i}]", flush=True)
+
+            max_node_block = data_obj.node_y.max().item()
+            print(f"Maximum node block element before scaling: {max_node_block:.6f}", flush=True)
+
             scaled_data_obj = copy.deepcopy(data_obj)
-            scaled_data_obj.node_y = data_obj.fock_target_object.scale_shift_node_blocks(data_obj.node_y)
+            scaled_data_obj.node_y = data_obj.fock_target_object.scale_shift_node_blocks(data_obj.node_y,
+                                                                                         data_obj.atomic_numbers)
             data_obj = scaled_data_obj
+
+            max_node_block = data_obj.node_y.max().item()
+            print(f"Maximum node block element after scaling: {max_node_block:.6f}", flush=True)
 
         data_list.append(data_obj)
     
