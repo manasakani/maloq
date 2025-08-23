@@ -3,16 +3,20 @@ import_start = time.perf_counter()
 import os, sys, random
 import numpy as np
 import torch
-from e3nn.o3 import Irreps
 
-from fock_utils import utils_orca_out, fock_targets
+from fock_utils import utils_orca_out, fock_targets, basis_sets
 from train_utils import loss, utils_compute, splittrainer
-from dataset_utils import get_loader
-from dataset_utils.ASEDataset import ASEAtomsData
+from dataset_utils import get_loader, dataset_analysis, get_scale_shift
+from dataset_utils.ASEDataset import ASEAtomsData, ASEDataset
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
+from torch_geometric.loader import DataLoader
+import ase.db
+from ase.db import connect
+from ase import Atoms
 
 # Models
-from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Energy_Head     
+from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Linear_Energy_Head     
+from e3nn.o3 import Irreps
 
 import_end = time.perf_counter()
 print("Time to do imports: ", import_end - import_start)
@@ -21,93 +25,8 @@ print("Time to do imports: ", import_end - import_start)
 torch.manual_seed(42)
 np.random.seed(42)
 random.seed(42)
+# torch.autograd.set_detect_anomaly(True)
 
-# -----------------------------------------------
-# Settings (just dumping everything here for now)
-# -----------------------------------------------
-# ---------------------------
-# --> QM7
-dbpath = './fock_datasets/QM7/schnorb_hamiltonian_uracil.db'
-database = ASEAtomsData(dbpath)
-dataset_name = 'QM7'
-output_folder = 'outputs_QM7_uracil'
-# ---------------------------
-
-# --> Shuffle:
-print("Not shuffling database, using the first molecule only for debugging")
-# print("Shuffling database...")
-# indices = list(range(len(database)))
-# random.shuffle(indices)
-# database = [database[i] for i in indices]
-
-# --> Model settings:
-l_embedding_dim = 128                   # sphere channels
-num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
-hidden_dim = l_embedding_dim
-num_mp_layers = 3
-restart_backbone = True 
-restart_head = True
-restart_optimizer = True
-
-# --> Training settings:
-train_or_eval = "eval"
-num_val = 500                           # Number of validation structures
-num_train = 25000  
-num_test = len(database) - num_train - num_val  # Number of test structures
-num_epochs = 300
-batch_size = 1                          # for training (batch size is always 1 for eval) - small batch for multi-gpu!
-rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut_orbitals)
-rcut_gaussian = rcut_orbitals*2         # gaussian basis distance 
-gaussian_width = 1.0                    # width of gaussians used to expand edge distance
-
-# Additional symmetries:
-reduce_edge = False             # use only edges i,j where i<j (other edges are reflected)
-reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
-
-train_backbone = True
-train_head = True
-
-dtype = torch.float64
-torch.set_default_dtype(dtype)
-lr_init = 1e-4
-patience = 10                           # for ReduceLROnPlateau scheduler
-threshold = 1e-6                        # for ReduceLROnPlateau scheduler
-scheduler_type = 'plateau'               # 'plateau' or 'cosine'
-T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
-eta_min = 1e-8                          # for cosine scheduler - minimum learning rate
-
-loss_target = 'fock_matrix'
-train_loss_fxn = loss.rmse_mse_padded_loss
-test_loss_fxn = loss.l1_padded_loss
-loss_scheduler = loss.MonotonicDecreaseScheduler
-backbone_checkpoint = 'backbone.pt'
-head_checkpoint = 'head.pt'
-head_type = 'gated'                   # 'linear' or 'gated'
-
-scale_and_shift = False
-
-if reduce_edge and batch_size != 1:
-    raise ValueError("If using reduce_edge, batch size must be 1! Reverse_edge map is not collated.")
-
-# Scale and shift the orbital self-interaction scalar components of the dataset
-if scale_and_shift:
-    print("Getting scale and shift factors...")
-    scale_shift_file = 'element_scale_shifts_uracil_' + dataset_name + '.pt'
-    if scale_shift_file not in os.listdir('./fock_datasets'):
-        print("[Computing element scale and shift factors for the dataset]")
-        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge)
-    else:
-        print("[Loading element scale and shift factors from file]")
-        scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
-        scale_shift_data = {
-            "element_scalar_means": scale_shift_data["element_scalar_means"],  # dict[int -> list[float]]
-            "element_scalar_stds": scale_shift_data["element_scalar_stds"],    # dict[int -> list[float]]
-            "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"]   # list[int]
-        }
-else:
-    print("Not scaling or shifting the dataset")
-    scale_shift_data = None
 
 # --------------------------------------------
 # Initialize compute environment 
@@ -116,28 +35,92 @@ else:
 rank = int(os.environ['SLURM_PROCID'])
 world_size = int(os.environ['SLURM_NTASKS'])
 
+compute_start = time.perf_counter()
+device = utils_compute.setup_env(rank, world_size)
+compute_end = time.perf_counter()
+print("Time to setup distributed environment: ", compute_end - compute_start)
+
+# -----------------------------------------------
+# Settings (just dumping everything here for now)
+# -----------------------------------------------
+
+# ---------------------------
+# --> OMOL 
+dataset_folder = '/checkpoint/ocp/manasakani/omol_50k_Aug23/omol_closedshell_10k_train_8.0_alledge_job_'+str(rank)+'.db'
+dtype = torch.float32
+output_folder = 'outputs_omol_closedshell_50k'
+dataset_name = 'omol'
+orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
+orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
+orbital_basis = {int(k): v for k, v in orbital_basis.items()}
+
+db = ase.db.connect(dataset_folder)
+total_rows = db.count()
+# ---------------------------
+
+# --> Model settings:
+l_embedding_dim = 64                    # sphere channels
+num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
+hidden_dim = l_embedding_dim
+num_mp_layers = 3 
+model_name = 'esen'
+restart_backbone = False
+restart_head = False
+restart_optimizer = False
+
+# --> Training settings:
+train_or_eval = "train"
+num_val = 5                             # Number of validation structures
+num_train = total_rows - num_val        # Number of training structures 
+num_epochs = 10000
+batch_size = 1                          # 1 for not oom
+rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
+rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
+gaussian_width = 1.0                    # width of gaussians used to expand edge distance
+
+# Additional symmetries:
+reduce_edge = False                     # use only edges i,j where i<j (other edges are reflected)
+reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
+
+train_backbone = True
+train_head = True
+
+torch.set_default_dtype(dtype)
+lr_init = 5e-3
+patience = 10                           # for scheduler
+threshold = 1e-5                        # for scheduler
+scheduler_type = 'plateau'               # 'plateau' or 'cosine'
+T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
+eta_min = 1e-7                          # for cosine scheduler - minimum learning rate
+
+loss_target = 'fock_matrix'
+head_type = 'gated'                     # linear or gated 
+train_loss_fxn = loss.rmse_mse_padded_loss   
+loss_scheduler = loss.MonotonicDecreaseScheduler
+backbone_checkpoint = 'backbone.pt'
+head_checkpoint = 'head.pt'
+
+if reduce_edge and batch_size != 1:
+    raise ValueError("If using reduce_edge, batch size must be 1! Reverse_edge map is not collated.")
+
+scale_and_shift = True
+scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
+
+# Dump all settings to the output file
 if rank == 0:
     print(f"Dataset: {dataset_name}, writing results to {output_folder}", flush=True)
     print(f"Dataset - Num molecules used for training: {num_train}", flush=True)
     print(f"Dataset - Num molecules used for validation: {num_val}", flush=True)
     print(f"Dataset - Edge cutoff distance for orbital blocks: {2*rcut_orbitals}", flush=True)
     print(f"Dataset - Edge cutoff distance for gaussian basis: {rcut_gaussian}", flush=True)
-    print(f"Dataset - Scale and shift dataset: {scale_and_shift}", flush=True)
+    print(f"Dataset - Scaling/shifting data: {scale_and_shift}", flush=True)
     print(f"Model - Num of Message Passing layers: {num_mp_layers}", flush=True)
     print(f"Model - Embedding dimension: {l_embedding_dim}", flush=True)
-    print(f"Model - # Distance basis functions: {num_distance_basis}", flush=True)
-    print(f"Model - Edge reduction: {reduce_edge}")
-    print(f"Model - Node reduction - interorbital: {reduce_node}")
-    print(f"Model - Node reduction - intraorbital: {reduce_node_intra}")
+    print(f"Model - Edge reflections: {reduce_edge}")    
     print(f"Training - Loss target: {loss_target}", flush=True)
-    print(f"Training - Loss function for training: {train_loss_fxn}", flush=True)
+    print(f"Training - Loss function: {train_loss_fxn}", flush=True)
     print(f"Training - Initial learning rate: {lr_init}", flush=True)
-    print(f"Training - Scheduler type: {scheduler_type}", flush=True)
-
-compute_start = time.perf_counter()
-device = utils_compute.setup_env(rank, world_size)
-compute_end = time.perf_counter()
-print("Time to setup distributed environment: ", compute_end - compute_start)
 
 if rank == 0 and not os.path.exists(output_folder):
     os.makedirs(output_folder)
@@ -148,36 +131,74 @@ if rank == 0 and not os.path.exists(output_folder):
 
 data_load_start = time.perf_counter()
 
-train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
-val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
-test_start_mol, test_end_mol, test_local_num_mol = utils_compute.split_indices(rank, world_size, num_test)
+# Split data between GPUs - each rank has it's own DB now!
+# train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
+# val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
+train_start_mol = 0
+train_end_mol = num_train
+train_local_num_mol = num_train
 
-val_start_mol += num_train  # the validation molecules start after training ones
-val_end_mol += num_train
+val_start_mol = num_train  # the validation molecules start after training ones
+val_end_mol = num_train + num_val
+val_local_num_mol = num_val
 
-test_start_mol += num_train+num_val
-test_end_mol += num_train+num_val
+# Query this rank's molecules from the database
+train_database = ASEDataset(dataset_folder, orbital_basis, dtype=dtype, world_size=world_size, rank=rank, start_idx=train_start_mol, end_idx=train_end_mol)
+val_database = ASEDataset(dataset_folder, orbital_basis, dtype=dtype, world_size=world_size, rank=rank, start_idx=val_start_mol, end_idx=val_end_mol)
 
-### DEBUG ###
-# train_start_mol = 0
-# train_end_mol = 1
-# val_start_mol = 0
-# val_end_mol = 1
-### DEBUG ###
-
-if train_or_eval == 'train':
-    train_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
-    val_loader, _, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
-    print("Size of train loader: ", len(train_loader))
-    print("Size of val loader: ", len(val_loader))
-
+# Compute scale and shift factors if required
+if scale_and_shift:
+    print("Getting scale and shift factors...", flush=True)
+    print(f"Scale and shift file: {scale_shift_file}", flush=True)
+    if scale_shift_file not in os.listdir('./fock_datasets/'):
+        print("[Computing element scale and shift factors for the dataset]", flush=True)
+        get_scale_shift.get_scale_shift(train_database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file)
+        scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
+        print("Done computing scale and shift factors", flush=True)
+    else:
+        print("[Loading element scale and shift factors from file]", flush=True)
+        scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
+        scale_shift_data = {
+            "element_scalar_means": scale_shift_data["element_scalar_means"],  # dict[int -> list[float]]
+            "element_scalar_stds": scale_shift_data["element_scalar_stds"],    # dict[int -> list[float]]
+            "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"]   # list[int]
+        }
 else:
-    batch_size = 1
-    test_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
-    print("Size of test loader: ", len(test_loader))
+    print("Not scaling or shifting the dataset", flush=True)
+    scale_shift_data = None
+
+# Create the fock target analysis objects for each molecule in the dataset, scale and shift the node labels if required
+print("Processing the dataset, creating fock analysis objects if needed ...", flush=True)
+# orbital_basis = train_database[0].orbital_basis
+# orbital_basis = {int(k): v for k, v in orbital_basis.items()}
+
+train_data = get_scale_shift.scale_shift_database(train_database, 0, train_local_num_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
+val_data = get_scale_shift.scale_shift_database(val_database, 0, val_local_num_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
+basis_transformation = train_data[0].fock_target_object.basis_transformation
+
+# # analyze the node labels for this dataset
+# dataset_analysis.dataset_analysis(train_database, dataset_name, rcut=5.0, dtype=dtype, reduce_edge=False, scale_shift_data=None, rank=rank)
+# print("Dataset analysis done, exiting", flush=True)
+
+# Create the dataloaders for each GPU's data
+train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0)
+val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0)
 
 data_load_end = time.perf_counter()
-print("Time to load dataset: ", data_load_end - data_load_start)
+
+print("Time to load dataset: ", data_load_end - data_load_start, flush=True)
+print("Size of train loader: ", len(train_loader), flush=True)
+print("Size of val loader: ", len(val_loader), flush=True)
+
+# --> Irrep information for the targets
+required_irreps = train_data[0].fock_target_object.req_output_irreps
+ls_list = train_data[0].fock_target_object.ls_list
+basis_transformation = train_data[0].fock_target_object.basis_transformation
+orbital_basis = {k: torch.tensor(v) for k, v in orbital_basis.items()}
+
+print("orbital_basis: ", orbital_basis)
+print("required_irreps: ", required_irreps)
+print("simplified_out_irreps: ", Irreps(required_irreps).sort()[0].simplify())
 
 irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
 
@@ -223,7 +244,6 @@ if loss_target == "fock_matrix":
                             sphere_channels=l_embedding_dim,
                             half_edges=reduce_edge,
                             ls_list=ls_list,
-                            head_type=head_type,
                             reduce_node=reduce_node,
                             reduce_node_intra=reduce_node_intra,
                             orbital_basis=orbital_basis)
@@ -253,8 +273,8 @@ elif train_backbone:                        # freeze output head
 else:
     print("Running evaluation")
 
-print("Number of parameters in backbone: ", sum(p.numel() for p in backbone.parameters()))
-print("Number of parameters in output head: ", sum(p.numel() for p in head.parameters()))
+print("Number of parameters in backbone: ", sum(p.numel() for p in backbone.parameters()), flush=True)
+print("Number of parameters in output head: ", sum(p.numel() for p in head.parameters()), flush=True)
 
 if restart_backbone:
     restart_file = output_folder + '/' + backbone_checkpoint
@@ -296,13 +316,16 @@ elif scheduler_type == 'cosine':
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min, verbose=True)
 else:
     raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
-    
-# scheduler = loss_scheduler(optimizer)
+ 
+print("Going to training or evaluation", flush=True)
+
+# scheduler = loss_scheduler(optimizer, lag_epochs=100)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='uracil_final',
+                                    run_name='omol_50k_Aug23',
                                     save_frequency=5)
+
 if train_or_eval == "train":
     trainer.train(num_epochs, 
                     train_loss_fxn, 
@@ -315,17 +338,17 @@ if train_or_eval == "train":
                     edge_target_name=edge_target,
                     output_folder=output_folder,
                     val_loader=val_loader,
+                    basis_transform=basis_transformation,
                     train_backbone=train_backbone,
                     train_head=train_head,
-                    basis_transform=basis_transformation)
+                    compute_uncoupled_loss=True)
 else:
-    trainer.evaluate(test_loss_fxn,
+    trainer.evaluate(train_loss_fxn,
                     device,
-                    test_loader,
+                    val_loader,
                     loss_target_string=loss_target,
                     node_target_name=node_target,
                     edge_target_name=edge_target, 
                     basis_transform=basis_transformation,
                     output_folder=output_folder,
                     )
-        

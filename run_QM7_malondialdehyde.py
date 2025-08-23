@@ -27,10 +27,10 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> QM7
-dbpath = './fock_datasets/QM7/schnorb_hamiltonian_uracil.db'
+dbpath = './fock_datasets/QM7/schnorb_hamiltonian_malondialdehyde.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_uracil'
+output_folder = 'outputs_QM7_malondialdehyde'
 # ---------------------------
 
 # --> Shuffle:
@@ -45,12 +45,12 @@ l_embedding_dim = 128                   # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 3
-restart_backbone = True 
-restart_head = True
-restart_optimizer = True
+restart_backbone = False 
+restart_head = False
+restart_optimizer = False
 
 # --> Training settings:
-train_or_eval = "eval"
+train_or_eval = "train"
 num_val = 500                           # Number of validation structures
 num_train = 25000  
 num_test = len(database) - num_train - num_val  # Number of test structures
@@ -93,7 +93,7 @@ if reduce_edge and batch_size != 1:
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
     print("Getting scale and shift factors...")
-    scale_shift_file = 'element_scale_shifts_uracil_' + dataset_name + '.pt'
+    scale_shift_file = 'element_scale_shifts_malondialdehyde_' + dataset_name + '.pt'
     if scale_shift_file not in os.listdir('./fock_datasets'):
         print("[Computing element scale and shift factors for the dataset]")
         get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge)
@@ -301,7 +301,7 @@ else:
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='uracil_final',
+                                    run_name='malondialdehyde_final',
                                     save_frequency=5)
 if train_or_eval == "train":
     trainer.train(num_epochs, 

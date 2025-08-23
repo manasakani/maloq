@@ -30,7 +30,7 @@ random.seed(42)
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_water.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_water_halfedge'
+output_folder = 'outputs_QM7_water'
 # ---------------------------
 
 # --> Shuffle:
@@ -54,14 +54,15 @@ train_or_eval = "train"
 num_val = 500                           # Number of validation structures
 num_train = 500
 num_test = len(database) - num_train - num_val  # Number of test structures
-num_epochs = 500
-batch_size = 1                          # 1 for eval, 10 for train
+num_epochs = 5000
+batch_size = 5                          # 1 for eval, 10 for train
+optimizer_type = "adam"                # "adam" or "adamw"
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Symmetry reduction settings:
-reduce_edge = True                      # use only edge orbital blocks for edge i,j where i<j as labels (edges will be symmetrized in the output head)
+reduce_edge = False                      # use only edge orbital blocks for edge i,j where i<j as labels (edges will be symmetrized in the output head)
 reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
 reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
 
@@ -70,12 +71,13 @@ train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-5
-patience = 500                          # if ReduceLROnPlateau scheduler
-threshold = 1e-5                        # if ReduceLROnPlateau scheduler
-scheduler_type = 'cosine'               # 'plateau', 'cosine'
+lr_init = 1e-4
+weight_decay = 1e-4                     # weight decay for AdamW (L2 regularization)
+patience = 100                          # if ReduceLROnPlateau scheduler
+threshold = 1e-6                        # if ReduceLROnPlateau scheduler
+scheduler_type = 'plateau'               # 'plateau', 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
-eta_min = 1e-7                         # for cosine scheduler - minimum learning rate
+eta_min = 1e-8                         # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
 train_loss_fxn = loss.rmse_mse_padded_loss
@@ -99,8 +101,9 @@ if scale_and_shift:
     print("Getting scale and shift factors...")
     if scale_shift_file not in os.listdir('./fock_datasets'):
         print("[Computing element scale and shift factors for the dataset]")
-        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge)
+        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file)
         print("Done computing scale and shift factors, saving to file:", scale_shift_file)
+        scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
     else:
         print("[Loading element scale and shift factors from file]")
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
@@ -136,7 +139,10 @@ if rank == 0:
     print(f"Model - Node reduction - intraorbital: {reduce_node_intra}")
     print(f"Training - Loss target: {loss_target}", flush=True)
     print(f"Training - Loss function: {train_loss_fxn}", flush=True)
+    print(f"Training - Optimizer: {optimizer_type.upper()}", flush=True)
     print(f"Training - Initial learning rate: {lr_init}", flush=True)
+    if optimizer_type.lower() == "adamw":
+        print(f"Training - Weight decay: {weight_decay}", flush=True)
     print(f"Training - Scheduler type: {scheduler_type}", flush=True)
 
 compute_start = time.perf_counter()
@@ -249,17 +255,26 @@ backbone = backbone.to(device)
 head = head.to(device)
 
 if train_backbone and train_head:
-    optimizer = torch.optim.Adam(list(backbone.parameters()) + list(head.parameters()), lr=lr_init)
+    if optimizer_type.lower() == "adamw":
+        optimizer = torch.optim.AdamW(list(backbone.parameters()) + list(head.parameters()), lr=lr_init, weight_decay=weight_decay)
+    else:
+        optimizer = torch.optim.Adam(list(backbone.parameters()) + list(head.parameters()), lr=lr_init)
 
 elif train_head:                            # freeze backbone model
     for param in backbone.parameters(): 
         param.requires_grad = False
-    optimizer = torch.optim.Adam(head.parameters(), lr=lr_init)
+    if optimizer_type.lower() == "adamw":
+        optimizer = torch.optim.AdamW(head.parameters(), lr=lr_init, weight_decay=weight_decay)
+    else:
+        optimizer = torch.optim.Adam(head.parameters(), lr=lr_init)
 
 elif train_backbone:                        # freeze output head
     for param in head.parameters():     
         param.requires_grad = False
-    optimizer = torch.optim.Adam(backbone.parameters(), lr=lr_init)
+    if optimizer_type.lower() == "adamw":
+        optimizer = torch.optim.AdamW(backbone.parameters(), lr=lr_init, weight_decay=weight_decay)
+    else:
+        optimizer = torch.optim.Adam(backbone.parameters(), lr=lr_init)
 
 else:
     print("Running evaluation")

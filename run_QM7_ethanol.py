@@ -27,10 +27,10 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> QM7
-dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_ethanol_dft.db'
+dbpath = './fock_datasets/QM7/schnorb_hamiltonian_ethanol_dft.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_ethanol_halfedge_nodereduce'
+output_folder = 'outputs_QM7_ethanol'
 # ---------------------------
 
 # --> Shuffle:
@@ -45,23 +45,23 @@ l_embedding_dim = 128                   # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 3
-restart_backbone = False 
-restart_head = False
-restart_optimizer = False
+restart_backbone = True 
+restart_head = True
+restart_optimizer = True
 
 # --> Training settings:
-train_or_eval = "train"
+train_or_eval = "eval"
 num_val = 500                           # Number of validation structures
 num_train = 25000  
 num_test = len(database) - num_train - num_val  # Number of test structures
-num_epochs = 150
+num_epochs = 500
 batch_size = 1                          # for training (batch size is always 1 for eval) - small batch for multi-gpu!
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut_orbitals)
 rcut_gaussian = rcut_orbitals*2         # gaussian basis distance 
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reduce_edge = True             # use only edges i,j where i<j (other edges are reflected)
+reduce_edge = False             # use only edges i,j where i<j (other edges are reflected)
 reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
 reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
 
@@ -71,11 +71,11 @@ train_head = True
 dtype = torch.float64
 torch.set_default_dtype(dtype)
 lr_init = 1e-4
-patience = 100                           # for ReduceLROnPlateau scheduler
-threshold = 1e-5                        # for ReduceLROnPlateau scheduler
-scheduler_type = 'cosine'               # 'plateau' or 'cosine'
+patience = 5                           # for ReduceLROnPlateau scheduler
+threshold = 1e-6                        # for ReduceLROnPlateau scheduler
+scheduler_type = 'plateau'               # 'plateau' or 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
-eta_min = 1e-9                          # for cosine scheduler - minimum learning rate
+eta_min = 1e-8                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
 train_loss_fxn = loss.rmse_mse_padded_loss
@@ -166,14 +166,14 @@ test_end_mol += num_train+num_val
 ### DEBUG ###
 
 if train_or_eval == 'train':
-    train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
-    val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
+    train_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
+    val_loader, _, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
     print("Size of train loader: ", len(train_loader))
     print("Size of val loader: ", len(val_loader))
 
 else:
     batch_size = 1
-    test_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
+    test_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
     print("Size of test loader: ", len(test_loader))
 
 data_load_end = time.perf_counter()
@@ -302,7 +302,7 @@ trainer = splittrainer.SplitTrainer(backbone=backbone,
                                     head=head,
                                     head_irreps=output_irreps,
                                     run_name='ethanol_final',
-                                    save_frequency=10)
+                                    save_frequency=5)
 if train_or_eval == "train":
     trainer.train(num_epochs, 
                     train_loss_fxn, 

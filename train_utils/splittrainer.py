@@ -394,7 +394,7 @@ class SplitTrainer():
             # pass all the batches through:
             if loss_target_string == 'fock_matrix':
 
-                node_output, edge_output = self.head(backbone_out, batch)
+                node_output, edge_output, edge_output_bwd, edge_perm, edge_refl  = self.head(backbone_out, batch)
                 this_node_target = getattr(batch, node_target_name)
                 this_edge_target = getattr(batch, edge_target_name)
 
@@ -437,26 +437,26 @@ class SplitTrainer():
                 # label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
                 label_fock_matrix = batch.fock_target_object[0].fock_matrix
 
-                matrix_out = output_fock_matrix.cpu().detach().numpy()
-                # matrix_out[np.abs(matrix_out) < 1e-6] = 0.0
-                plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
-                matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
-                print("Matrix symmetry error: ", matrix_symmetry_error)
-                plt.colorbar()
-                plt.savefig("predicted_fock_tranpose.png", dpi=300, bbox_inches='tight')
-                plt.close()
+                # matrix_out = output_fock_matrix.cpu().detach().numpy()
+                # # matrix_out[np.abs(matrix_out) < 1e-6] = 0.0
+                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
+                # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
+                # print("Matrix symmetry error: ", matrix_symmetry_error)
+                # plt.colorbar()
+                # plt.savefig("predicted_fock_tranpose.png", dpi=300, bbox_inches='tight')
+                # plt.close()
 
-                matrix_out = label_fock_matrix.cpu().detach().numpy()
-                plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
-                plt.colorbar()
-                plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
-                plt.close()
+                # matrix_out = label_fock_matrix.cpu().detach().numpy()
+                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
+                # plt.colorbar()
+                # plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
+                # plt.close()
 
-                matrix_out = np.abs(np.abs(label_fock_matrix.detach().cpu().numpy()) - np.abs(output_fock_matrix.detach().cpu().numpy()))
-                plt.imshow(matrix_out, vmin=0.0, vmax=0.0001)
-                plt.colorbar()
-                plt.savefig("diff_fock_"+str(index)+".png", dpi=300, bbox_inches='tight')
-                plt.close()
+                # matrix_out = np.abs(np.abs(label_fock_matrix.detach().cpu().numpy()) - np.abs(output_fock_matrix.detach().cpu().numpy()))
+                # plt.imshow(matrix_out, vmin=0.0, vmax=0.0001)
+                # plt.colorbar()
+                # plt.savefig("diff_fock_"+str(index)+".png", dpi=300, bbox_inches='tight')
+                # plt.close()
 
                 # plt.figure(figsize=(4, 3))
                 # self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
@@ -498,7 +498,7 @@ class SplitTrainer():
             if loss_target_string == 'fock_matrix':
 
                 print("Tracking loss for batch ", index, flush=True)
-                edge_multiplier = 2 if batch.fock_target_object[0].reflection_symmetry else 1
+                edge_multiplier = 2 if batch.fock_target_object[0].half_edges else 1
                 total_node_element_loss = 0
                 total_edge_element_loss = 0   
                 num_node_block_elements = 0
