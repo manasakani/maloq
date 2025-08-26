@@ -72,6 +72,7 @@ class SplitTrainer():
             print("Note: using training dataset for scheduler updates")
             val_loader = train_loader
 
+        dist.barrier()
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank() 
             world_size = dist.get_world_size()
@@ -136,8 +137,8 @@ class SplitTrainer():
                         edge_perm, edge_refl, loss_fxn, self.head_irreps,
                         basis_transform, compute_uncoupled_loss
                     )
-                    train_loss_node += loss_node
-                    train_loss_edge += loss_edge
+                    train_loss_node += loss_node.item()
+                    train_loss_edge += loss_edge.item()
 
                 elif loss_target_string == 'forces':
                     node_output = self.head(backbone_out, batch)
@@ -146,7 +147,7 @@ class SplitTrainer():
                     this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
                     loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps) 
 
-                    train_loss_node += loss
+                    train_loss_node += loss.item()
                     
                 elif loss_target_string == 'energies':
                     node_output = self.head(backbone_out, batch)
@@ -154,7 +155,7 @@ class SplitTrainer():
                     loss = loss_fxn(node_output['energies'], scaled_energies, self.head_irreps)
                     # print("predicted and reference energies for last train batch: ", node_output['energies'].tolist(), ref_energies.tolist())
 
-                    train_loss_node += loss
+                    train_loss_node += loss.item()
 
                 else:
                     raise ValueError(f"Unknown loss target string: {loss_target_string}")
@@ -172,10 +173,10 @@ class SplitTrainer():
 
             # -- Output dump -- 
             if loss_target_string == 'fock_matrix':
-                track_loss_node.append(train_loss_node.cpu().detach().numpy()/num_train_batches) 
-                track_loss_edge.append(train_loss_edge.cpu().detach().numpy()/num_train_batches)
+                track_loss_node.append(train_loss_node/num_train_batches) 
+                track_loss_edge.append(train_loss_edge/num_train_batches)
             else:
-                track_loss_node.append(train_loss_node.cpu().detach().numpy()/num_train_batches) 
+                track_loss_node.append(train_loss_node/num_train_batches) 
 
             if rank == 0:
                 if loss_target_string == 'fock_matrix':
@@ -213,8 +214,8 @@ class SplitTrainer():
                             basis_transform, compute_uncoupled_loss
                         )
 
-                        val_loss_node += loss_node
-                        val_loss_edge += loss_edge
+                        val_loss_node += loss_node.item()
+                        val_loss_edge += loss_edge.item()
 
                     elif loss_target_string == 'forces':
                         node_output = self.head(backbone_out, batch)
@@ -226,14 +227,14 @@ class SplitTrainer():
                         else:
                             print("To be implemented!")  
 
-                        val_loss_node += loss
+                        val_loss_node += loss.item()
                     elif loss_target_string == 'energies':
                         node_output = self.head(backbone_out, batch)
                         scaled_energies = get_scale_shift.apply_energy_refs(batch, batch.energies, element_references)
                         loss = loss_fxn(node_output['energies'], scaled_energies, self.head_irreps)
                         # print("predicted and reference energies for last val batch: ", node_output['energies'].tolist(), ref_energies.tolist())
 
-                        val_loss_node += loss
+                        val_loss_node += loss.item()
 
                     else:
                         raise ValueError(f"Unknown loss target string: {loss_target_string}")
@@ -242,10 +243,10 @@ class SplitTrainer():
 
             # -- Output dump -- 
             if loss_target_string == 'fock_matrix':
-                track_loss_node_val.append(val_loss_node.cpu().detach().numpy()/num_val_batches) 
-                track_loss_edge_val.append(val_loss_edge.cpu().detach().numpy()/num_val_batches)
+                track_loss_node_val.append(val_loss_node/num_val_batches) 
+                track_loss_edge_val.append(val_loss_edge/num_val_batches)
             else:
-                track_loss_node_val.append(val_loss_node.cpu().detach().numpy()/num_val_batches) 
+                track_loss_node_val.append(val_loss_node/num_val_batches) 
 
             if rank == 0:
                 if loss_target_string == 'fock_matrix':
@@ -524,17 +525,25 @@ class SplitTrainer():
             if loss_target_string == 'fock_matrix':
                 with open(output_folder + "/" + 'model_fock_' + '_eval_' + str(rank) + '.txt', 'a') as f:
                     f.write(f"{track_loss_edge[-1]:.10f}\t{track_loss_node[-1]:.10f}\t{track_loss[-1]:.10f}\t{eigenvalue_maes[-1]:.10f}\n")
-            
-            # remove from gpu
+
+            # remove from gpu memory
             print("Removing batch from GPU memory", flush=True)
             del batch, backbone_out, node_output, this_node_target
             if include_edges:
                 del edge_output, this_edge_target, output_fock_matrix, label_fock_matrix, node_orbital_blocks_output, edge_orbital_blocks_output, node_orbital_blocks_label, edge_orbital_blocks_label
+            
+            node_outputs.clear()
+            node_labels.clear()
+            if loss_target_string == 'fock_matrix':
+                edge_outputs.clear()
+                edge_labels.clear()
+                
             for param1, param2 in zip(self.backbone.parameters(), self.head.parameters()):
                 param1.grad = None 
                 param2.grad = None
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
+            
 
         print(f"Writing eval outputs to file in {output_folder}...", flush=True)
 
