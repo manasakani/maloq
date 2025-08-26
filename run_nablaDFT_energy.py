@@ -47,7 +47,7 @@ restart_optimizer = False
 train_or_eval = "train"
 num_val = int(len(database)/3)                             # Number of validation structures
 num_train = len(database) - num_val
-num_epochs = 100000
+num_epochs = 5000
 batch_size = 10                           # 1 for eval, 10 for train
 rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2                    # connectivity cutoff (=2xrcut)
@@ -63,9 +63,12 @@ train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-3
-patience = 500                          # for scheduler
-threshold = 1e-4                        # for scheduler
+lr_init = 1e-5
+patience = 50                          # for scheduler
+threshold = 1e-5                        # for scheduler
+scheduler_type = 'cosine'               # 'plateau' or 'cosine'
+T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
+eta_min = 1e-8                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'energies'
 head_type = 'gated'                     # linear or gated
@@ -78,7 +81,7 @@ make_fock_targets = False
 
 scale_and_shift = False
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
-energy_ref_file = './fock_datasets/nabla2DFT/lin_ref_coeffs_nablaDFT.npz'
+energy_ref_file = './fock_datasets/nabla2_DFT/lin_ref_coeffs_nablaDFT.npz'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
@@ -154,8 +157,8 @@ val_end_mol += num_train
 # test_end_mol = 23
 ### DEBUG ###
 
-train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
-val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
+train_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
+val_loader, _, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
 
 # Get element references for energy scaling
 if loss_target == "energies":
@@ -315,9 +318,13 @@ if restart_head:
 # Run Training or Evaluation
 # --------------------------------------------
 
-# scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
-scheduler = loss_scheduler(optimizer)
-
+if scheduler_type == 'plateau':
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+elif scheduler_type == 'cosine':
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min, verbose=True)
+else:
+    raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
+ 
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,

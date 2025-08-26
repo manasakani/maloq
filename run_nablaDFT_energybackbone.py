@@ -30,14 +30,14 @@ random.seed(42)
 # --> NablaDFT (tiny)
 database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_energies_energybackbone_scaled'
+output_folder = 'outputs_nablaDFT_energy_only'
 # ---------------------------
 
 # --> Model settings:
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
-num_mp_layers = 6
+num_mp_layers = 3
 model_name = 'esen'
 restart_backbone = False
 restart_head = False
@@ -47,8 +47,8 @@ restart_optimizer = False
 train_or_eval = "train"
 num_val = int(len(database)/3)                             # Number of validation structures
 num_train = len(database) - num_val
-num_epochs = 1000
-batch_size = 1                           # 1 for eval, 10 for train
+num_epochs = 5000
+batch_size = 10                           # 1 for eval, 10 for train
 rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2          # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                     # width of gaussians used to expand edge distance
@@ -63,9 +63,12 @@ train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-3
+lr_init = 1e-5
 patience = 50                          # for scheduler
 threshold = 1e-5                        # for scheduler
+scheduler_type = 'cosine'               # 'plateau' or 'cosine'
+T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
+eta_min = 1e-8                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'energies'
 head_type = 'gated'                     # linear or gated
@@ -78,6 +81,7 @@ make_fock_targets = False
 
 scale_and_shift = False
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
+energy_ref_file = './fock_datasets/nabla2_DFT/lin_ref_coeffs_nablaDFT.npz'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
@@ -153,14 +157,13 @@ val_end_mol += num_train
 # test_end_mol = 23
 ### DEBUG ###
 
-train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
-val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
+train_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
+val_loader, _, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
 
 # Apply node energy reference subtraction
 if loss_target == "energies":
 
     # Load linear reference coefficients computed from nablaDFT dataset
-    energy_ref_file = './stats_nablaDFT/lin_ref_coeffs_nablaDFT.npz'
     if os.path.exists(energy_ref_file):
         print(f"Loading energy reference coefficients from {energy_ref_file}")
         lin_ref_data = np.load(energy_ref_file)
@@ -177,22 +180,22 @@ if loss_target == "energies":
         for z in nonzero_elements:
             print(f"  Element Z={z.item()}: {element_references[z].item():.6f} Hartree")
             
-        # Apply energy reference subtraction to the underlying datasets
-        print("Applying energy reference subtraction to training dataset...")
-        train_dataset = train_loader.dataset
-        for i, batch in enumerate(train_loader):
-            data = train_dataset[i]
-            if hasattr(data, 'energies') and data.energies is not None:
-                data.energies = get_scale_shift.apply_energy_refs(batch, data.energies, element_references)
+        # # Apply energy reference subtraction to the underlying datasets
+        # print("Applying energy reference subtraction to training dataset...")
+        # train_dataset = train_loader.dataset
+        # for i, batch in enumerate(train_loader):
+        #     data = train_dataset[i]
+        #     if hasattr(data, 'energies') and data.energies is not None:
+        #         data.energies = get_scale_shift.apply_energy_refs(batch, data.energies, element_references)
         
-        print("Applying energy reference subtraction to validation dataset...")
-        val_dataset = val_loader.dataset
-        for i, batch in enumerate(val_loader):
-            data = val_dataset[i]
-            if hasattr(data, 'energies') and data.energies is not None:
-                data.energies = get_scale_shift.apply_energy_refs(batch, data.energies, element_references)
+        # print("Applying energy reference subtraction to validation dataset...")
+        # val_dataset = val_loader.dataset
+        # for i, batch in enumerate(val_loader):
+        #     data = val_dataset[i]
+        #     if hasattr(data, 'energies') and data.energies is not None:
+        #         data.energies = get_scale_shift.apply_energy_refs(batch, data.energies, element_references)
 
-        print("Energy reference subtraction applied to all datasets")
+        # print("Energy reference subtraction applied to all datasets")
     else:
         print(f"Warning: Energy reference file {energy_ref_file} not found!")
         print("Proceeding without energy reference subtraction.")
@@ -291,7 +294,7 @@ if restart_backbone:
     for key, value in state_dict.items():
         new_key = key.replace('module.', '')  
         new_state_dict[new_key] = value
-    backbone.load_state_dict(new_state_dict)
+    backbone.load_state_dict(new_state_dict, strict=False)
 
 if restart_head:
     restart_file = output_folder + '/' + head_checkpoint
@@ -307,16 +310,20 @@ if restart_head:
     for key, value in state_dict.items():
         new_key = key.replace('module.', '')  
         new_state_dict[new_key] = value
-    head.load_state_dict(new_state_dict)
+    head.load_state_dict(new_state_dict, strict=False)
     
 
 # --------------------------------------------
 # Run Training or Evaluation
 # --------------------------------------------
 
-# scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
-scheduler = loss_scheduler(optimizer)
-
+if scheduler_type == 'plateau':
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+elif scheduler_type == 'cosine':
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min, verbose=True)
+else:
+    raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
+ 
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
@@ -337,7 +344,8 @@ if train_or_eval == "train":
                     val_loader=val_loader,
                     train_backbone=train_backbone,
                     train_head=train_head,
-                    basis_transform=basis_transformation)
+                    basis_transform=basis_transformation,
+                    element_references=element_references)
 
 else:
     trainer.evaluate(train_loss_fxn,
