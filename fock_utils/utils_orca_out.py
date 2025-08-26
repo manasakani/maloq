@@ -41,12 +41,12 @@ def parse_output(
 
     # Try to parse NBO data. We can proceed if this fails for some reason.
     # Just assume the data doesn't exist.
-    try:
-        nbo_props = NBO(str(orca_output_path)).parse()
-        nbo_props.listify()
-    except Exception:
-        logging.exception(f"Failed to parse nbo data from {source}")
-        nbo_props = None
+    # try:
+    #     nbo_props = NBO(str(orca_output_path)).parse()
+    #     nbo_props.listify()
+    # except Exception:
+    #     logging.exception(f"Failed to parse nbo data from {source}")
+    nbo_props = None
 
     # Extract important data into a dictionary
     desired_data = {}
