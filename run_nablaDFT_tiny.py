@@ -28,9 +28,9 @@ random.seed(42)
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
-database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/train_2k.db")
+database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/train_2k.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_tiny_halfedge'
+output_folder = 'outputs_nablaDFT_tiny'
 # ---------------------------
 
 # --> Model settings:
@@ -47,26 +47,26 @@ restart_optimizer = False
 train_or_eval = "train"
 num_val = 64                             # Number of validation structures
 num_train = len(database) - num_val
-num_epochs = 500
+num_epochs = 1000
 batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reduce_edge = True                      # use only edges i,j where i<j (other edges are reflected)
-reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_edge = False                      # use only edges i,j where i<j (other edges are reflected)
+reduce_node = False                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = False                # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-5
-patience = 10                           # if ReduceLROnPlateau scheduler
+lr_init = 1e-4
+patience = 100                           # if ReduceLROnPlateau scheduler
 threshold = 1e-5                        # if ReduceLROnPlateau scheduler
-scheduler_type = 'cosine'               # 'plateau' or 'cosine'
+scheduler_type = 'plateau'              # 'plateau' or 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
 eta_min = 1e-8                          # for cosine scheduler - minimum learning rate
 
@@ -291,7 +291,7 @@ else:
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='nablaDFT_Aug15_unscaled',
+                                    run_name='nablaDFTtiny_Aug23_final',
                                     save_frequency=10)
 
 if train_or_eval == "train":

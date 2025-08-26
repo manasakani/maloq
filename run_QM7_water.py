@@ -45,12 +45,12 @@ l_embedding_dim = 128                   # sphere channels
 num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 3
-restart_backbone = False
-restart_head = False
-restart_optimizer = False
+restart_backbone = True
+restart_head = True
+restart_optimizer = True
 
 # --> Training settings:
-train_or_eval = "train"
+train_or_eval = "eval"
 num_val = 500                           # Number of validation structures
 num_train = 500
 num_test = len(database) - num_train - num_val  # Number of test structures
