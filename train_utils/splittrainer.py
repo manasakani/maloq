@@ -323,6 +323,7 @@ class SplitTrainer():
                 node_target_name, 
                 edge_target_name=None, 
                 basis_transform=None,
+                element_references=None,
                 output_folder='outputs'):
         
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
@@ -368,27 +369,7 @@ class SplitTrainer():
             backbone_out = self.backbone(batch) 
 
             # print("Writing embeddings to file...", flush=True)
-            # if rank == 0:
-            #     # Save as binary .npy files (most efficient and preserves full precision)
-            #     np.save(os.path.join(output_folder, 'node_embeddings_' + str(index) + '.npy'),
-            #             backbone_out['node_embeddings'].cpu().detach().numpy())
-            #     np.save(os.path.join(output_folder, 'edge_embeddings_' + str(index) + '.npy'),
-            #             backbone_out['edge_embeddings'].cpu().detach().numpy())
-            #     np.save(os.path.join(output_folder, 'edge_distances_' + str(index) + '.npy'),
-            #             batch.edge_attr.cpu().detach().numpy())
-
-            #     # save positions and elements ("pos": structure.atoms.get_positions(),"atomic_numbers": structure.atomic_numbers,):
-            #     np.save(os.path.join(output_folder, 'positions_' + str(index) + '.npy'),
-            #             batch.pos.cpu().detach().numpy())
-            #     np.save(os.path.join(output_folder, 'atomic_numbers_' + str(index) + '.npy'),
-            #             batch.atomic_numbers.cpu().detach().numpy())
-
-            #     # Also save shapes and metadata as text
-            #     with open(os.path.join(output_folder, 'embeddings_metadata.txt'), 'w') as f:
-            #         f.write(f"Node embeddings shape: {backbone_out['node_embeddings'].shape}\n")
-            #         f.write(f"Edge embeddings shape: {backbone_out['edge_embeddings'].shape}\n")
-            #         f.write(f"Edge distances shape: {batch.edge_attr.shape}\n")
-
+            # self.write_embeddings_to_file(backbone_out, batch, index, output_folder, rank)
             # self.visualize_embeddings(backbone_out["node_embeddings"], output_folder, keyword='node')
             # self.visualize_embeddings(backbone_out["edge_embeddings"], output_folder, keyword='edge')
 
@@ -432,37 +413,29 @@ class SplitTrainer():
                 node_orbital_blocks_label = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_labels, atomic_numbers=atomic_numbers)
                 edge_orbital_blocks_label = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_labels, atomic_numbers=atomic_numbers)
                 
-                # reassemble the matrix 
+                # reassemble the matrix (use the model output for the predicted matrix, and reconstruct the label matrix from the orbital blocks if needed)
                 print("Reconstructing matrices...", flush=True)
                 output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=True)
-                # label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
-                label_fock_matrix = batch.fock_target_object[0].fock_matrix
 
-                # matrix_out = output_fock_matrix.cpu().detach().numpy()
-                # # matrix_out[np.abs(matrix_out) < 1e-6] = 0.0
-                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
-                # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
-                # print("Matrix symmetry error: ", matrix_symmetry_error)
-                # plt.colorbar()
-                # plt.savefig("predicted_fock_tranpose.png", dpi=300, bbox_inches='tight')
-                # plt.close()
+                # if batch.fock_target_object[0].fock_matrix is not None:
+                #     label_fock_matrix = batch.fock_target_object[0].fock_matrix
+                # else:
+                label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
 
-                # matrix_out = label_fock_matrix.cpu().detach().numpy()
-                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
-                # plt.colorbar()
-                # plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
-                # plt.close()
+                matrix_out = output_fock_matrix.cpu().detach().numpy()
+                # matrix_out[np.abs(matrix_out) < 1e-6] = 0.0
+                plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
+                matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
+                print("Matrix symmetry error: ", matrix_symmetry_error)
+                plt.colorbar()
+                plt.savefig("predicted_fock.png", dpi=300, bbox_inches='tight')
+                plt.close()
 
-                # matrix_out = np.abs(np.abs(label_fock_matrix.detach().cpu().numpy()) - np.abs(output_fock_matrix.detach().cpu().numpy()))
-                # plt.imshow(matrix_out, vmin=0.0, vmax=0.0001)
-                # plt.colorbar()
-                # plt.savefig("diff_fock_"+str(index)+".png", dpi=300, bbox_inches='tight')
-                # plt.close()
-
-                # plt.figure(figsize=(4, 3))
-                # self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
-                # self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
-                # self.plot_eigenvalue_diff(label_fock_matrix.detach().cpu().numpy(), output_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
+                matrix_out = label_fock_matrix.cpu().detach().numpy()
+                plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
+                plt.colorbar()
+                plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
+                plt.close()
 
                 # Compute the eigenvalues and eigenvalue error
                 print("Computing eigenvalues...", flush=True)
@@ -471,6 +444,11 @@ class SplitTrainer():
                 eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
                 eigenvalue_maes.append(eigenvalue_MAE)
                 print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
+
+                # plt.figure(figsize=(4, 3))
+                # self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
+                # self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
+                # self.plot_eigenvalue_diff(label_fock_matrix.detach().cpu().numpy(), output_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
 
                 # plt.xlabel('Eigenvalue #')
                 # plt.ylabel('Eigenvalue ($E_h$)')
@@ -485,6 +463,23 @@ class SplitTrainer():
                 node_labels.update(node_orbital_blocks_label)
                 edge_labels.update(edge_orbital_blocks_label)
 
+            elif loss_target_string == 'energies':
+                node_output = self.head(backbone_out, batch)
+                ref_energies = batch.energies
+
+                # undo energy referencing:
+                unscaled_energies = get_scale_shift.apply_energy_refs(batch, node_output['energies'], element_references, operation="add")
+
+                # divide by number of atoms to get per-atom MAE:
+                unscaled_energies /= batch.num_atoms_in_molecule
+                ref_energies /= batch.num_atoms_in_molecule
+
+                # loss = loss_fxn(unscaled_energies, ref_energies, self.head_irreps)
+                loss = torch.abs(unscaled_energies - ref_energies).mean()  # use MAE for eval                
+
+                # print("predicted and reference energies for last val batch: ", unscaled_energies.tolist(), ref_energies.tolist())
+                # exit()
+                
             else:
                 node_output = self.head(backbone_out, batch)
                 this_node_target = getattr(batch, node_target_name)
@@ -519,16 +514,22 @@ class SplitTrainer():
                 track_loss.append(total_matrix_mae_loss)
 
             else:
-                track_loss.append(loss.cpu().detach().numpy()) 
+                track_loss.append(loss.item())
 
             # do output dump in append mode:
             if loss_target_string == 'fock_matrix':
                 with open(output_folder + "/" + 'model_fock_' + '_eval_' + str(rank) + '.txt', 'a') as f:
                     f.write(f"{track_loss_edge[-1]:.10f}\t{track_loss_node[-1]:.10f}\t{track_loss[-1]:.10f}\t{eigenvalue_maes[-1]:.10f}\n")
+            elif loss_target_string == 'energies':
+                with open(output_folder + "/" + 'model_energies_' + '_eval_' + str(rank) + '.txt', 'a') as f:
+                    # f.write(f"{track_loss[-1]:.10f}\n")
+                    f.write(f"{unscaled_energies.item():.10f}\t{ref_energies.item():.10f}\t{track_loss[-1]:.10f}\n")
+            else:
+                raise ValueError(f"Unknown loss target string: {loss_target_string}")
 
             # remove from gpu memory
             print("Removing batch from GPU memory", flush=True)
-            del batch, backbone_out, node_output, this_node_target
+            del batch, backbone_out, node_output
             if include_edges:
                 del edge_output, this_edge_target, output_fock_matrix, label_fock_matrix, node_orbital_blocks_output, edge_orbital_blocks_output, node_orbital_blocks_label, edge_orbital_blocks_label
             
@@ -617,6 +618,39 @@ class SplitTrainer():
             loss = loss_fxn(output, labels, self.head_irreps)
 
         return loss_node, loss_edge, loss
+    
+    def write_embeddings_to_file(self, backbone_out, batch, index, output_folder, rank):
+        """
+        Write the embeddings to file for later analysis
+        """
+
+        if rank == 0:
+            if not os.path.exists(os.path.join(output_folder, 'embeddings')):
+                os.makedirs(os.path.join(output_folder, 'embeddings'))
+        dist.barrier()
+
+        # Save as binary .npy files (most efficient and preserves full precision)
+        np.save(os.path.join(output_folder, 'embeddings/node_embeddings_' + str(index) + '.npy'),
+                backbone_out['node_embeddings'].cpu().detach().numpy())
+        if backbone_out['edge_embeddings'] is not None:
+            np.save(os.path.join(output_folder, 'embeddings/edge_embeddings_' + str(index) + '.npy'),
+                    backbone_out['edge_embeddings'].cpu().detach().numpy())
+        np.save(os.path.join(output_folder, 'embeddings/edge_distances_' + str(index) + '.npy'),
+                batch.edge_attr.cpu().detach().numpy())
+
+        # save positions and elements ("pos": structure.atoms.get_positions(),"atomic_numbers": structure.atomic_numbers,):
+        np.save(os.path.join(output_folder, 'embeddings/positions_' + str(index) + '.npy'),
+                batch.pos.cpu().detach().numpy())
+        np.save(os.path.join(output_folder, 'embeddings/atomic_numbers_' + str(index) + '.npy'),
+                batch.atomic_numbers.cpu().detach().numpy())
+
+        # Also save shapes and metadata as text
+        with open(os.path.join(output_folder, 'embeddings/embeddings_metadata.txt'), 'w') as f:
+            f.write(f"Node embeddings shape: {backbone_out['node_embeddings'].shape}\n")
+            if backbone_out['edge_embeddings'] is not None:
+                f.write(f"Edge embeddings shape: {backbone_out['edge_embeddings'].shape}\n")
+            f.write(f"Edge distances shape: {batch.edge_attr.shape}\n")
+
 
     def adjust_learning_rate(self, optimizer, epoch, warmup_epochs, initial_lr, final_lr):
         """Adjusts the learning rate linearly during the warmup phase."""
@@ -645,7 +679,9 @@ class SplitTrainer():
                 
     def visualize_embeddings(self, embs, output_folder, keyword, plot_log=True):
 
-        for i, emb in enumerate(embs):
+        # for i, emb in enumerate(embs):
+        for i in range(embs.shape[0]):
+            emb = embs[i, :, :]
 
             if not plot_log:
                 plt.imshow(emb.cpu().detach().numpy(), cmap='RdBu', vmin=-0.5, vmax=0.5)
