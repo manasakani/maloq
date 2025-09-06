@@ -28,11 +28,12 @@ random.seed(42)
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
-# database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/train_5k.db")
-database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/test_10k_conformers.db")
+database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/train_2k.db")
+# database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/test_10k_conformers.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_energytrained_small'
-run_name = 'nablaDFT_energytraining_notfrom_fock_small'
+output_folder = 'outputs_nablaDFT_focktrained_energyfinetuned_tiny'
+run_name = 'nablaDFT_energytraining_from_fock_energyfinetuned_tiny'
+
 # ---------------------------
 
 # --> Model settings:
@@ -42,17 +43,17 @@ hidden_dim = l_embedding_dim
 num_mp_layers = 3
 model_name = 'esen'
 restart_backbone = True
-restart_head = True
+restart_head = False
 restart_optimizer = False
 
 # --> Training settings:
-train_or_eval = "eval"
-num_val = 4 #int(len(database)/3)                             # Number of validation structures
+train_or_eval = "train"
+num_val = int(len(database)/3)                             # Number of validation structures
 num_train = len(database) - num_val
-num_epochs = 5000
-batch_size = 1#0                         # 1 for eval, 10 for train
+num_epochs = 10000
+batch_size = 10                           # 1 for eval, 10 for train
 rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
-rcut_gaussian = rcut_orbitals*2          # connectivity cutoff (=2xrcut)
+rcut_gaussian = rcut_orbitals*2                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                     # width of gaussians used to expand edge distance
 
 # Additional symmetries:
@@ -162,7 +163,7 @@ val_end_mol += num_train
 train_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
 val_loader, _, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, make_fock_targets=make_fock_targets, scale_shift_data=scale_shift_data)
 
-# Apply node energy reference subtraction
+# Get element references for energy scaling
 if loss_target == "energies":
 
     # Load linear reference coefficients computed from nablaDFT dataset
@@ -188,7 +189,7 @@ if loss_target == "energies":
         # for i, batch in enumerate(train_loader):
         #     data = train_dataset[i]
         #     if hasattr(data, 'energies') and data.energies is not None:
-        #         data.energies = get_scale_shift.apply_energy_refs(batch, data.energies, element_references)
+        #         batch.energies = get_scale_shift.apply_energy_refs(batch, batch.energies, element_references)
         
         # print("Applying energy reference subtraction to validation dataset...")
         # val_dataset = val_loader.dataset
@@ -204,6 +205,7 @@ if loss_target == "energies":
         element_references = None
 else:
     element_references = None
+
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)

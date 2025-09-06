@@ -543,7 +543,7 @@ def plot_umap_analysis(embeddings, atomic_numbers, molecule_indices, output_fold
     l_components_2d = reducer_decomposed.fit_transform(combined_l_data)
     
     # Create plots for the decomposed data
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     
     # Plot 1: Colored by l-component
     l_colors = plt.cm.viridis(np.linspace(0, 1, len(np.unique(l_component_labels))))
@@ -1143,7 +1143,7 @@ def main(output_folder=None, max_molecules=10, start_molecule=0, lmax=4):
 
 if __name__ == "__main__":
     # Configuration - modify these values directly
-    output_folder = 'outputs_nablaDFT_energytrained_tiny/embeddings'  # Change this to your output folder
+    output_folder = 'outputs_nablaDFT_energytrained_medium/embeddings'  # Change this to your output folder
     max_molecules = 100  # Number of molecules to load
     start_molecule = 0  # Starting molecule index
     lmax = 4  # Maximum l value for spherical harmonic analysis
