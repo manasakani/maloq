@@ -73,7 +73,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             atomic_numbers = mol.atomic_numbers
             node_labels = mol.node_y
             edge_labels = mol.y
-            energies = mol.energies
+            # energies = mol.energies
             forces = mol.forces
 
         else: 
@@ -186,6 +186,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
         }
         torch.save(scale_shift_data, "./fock_datasets/"+filename)
         print("Saved scale_shift_data to ./fock_datasets/"+filename, flush=True)
+    dist.barrier()
 
 
 def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=False, train_or_eval='train'):
@@ -203,8 +204,18 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
 
     data_list = []
     for i in range(start_mol, end_mol):
+        # if i % 100 == 0:
+        #     import gc
+        #     gc.collect()
+        #     if torch.cuda.is_available():
+        #         torch.cuda.empty_cache()
+        #     print(f"Processed {i-start_mol}/{end_mol-start_mol} molecules, cleared cache", flush=True)
+        
         data_obj = database[i]
         data_obj.fock_target_object = sample_fock_target_object
+
+        # print number of atoms in the molecule
+        print(f"Molecule {i} has {data_obj.natoms} atoms", flush=True)
 
         # If running evaluation, we need to create a structure-dependent fock target object
         if train_or_eval == 'eval':
@@ -218,17 +229,24 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
 
         if scale_nodes:
             print(f"Scaling and shifting the node labels in database[{i}]", flush=True)
+            start_time = time.perf_counter()
 
-            max_node_block = data_obj.node_y.max().item()
-            print(f"Maximum node block element before scaling: {max_node_block:.6f}", flush=True)
+            print(f"Node labels before scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)
 
-            scaled_data_obj = copy.deepcopy(data_obj)
-            scaled_data_obj.node_y = data_obj.fock_target_object.scale_shift_node_blocks(data_obj.node_y,
-                                                                                         data_obj.atomic_numbers)
-            data_obj = scaled_data_obj
+            # scaled_data_obj = copy.deepcopy(data_obj)
+            # scaled_data_obj.node_y = data_obj.fock_target_object.scale_shift_node_blocks(data_obj.node_y,
+            #                                                                              data_obj.atomic_numbers)
+            # data_obj = scaled_data_obj
+            
+            original_node_y = data_obj.node_y
+            scaled_node_y = data_obj.fock_target_object.scale_shift_node_blocks(
+                data_obj.node_y, data_obj.atomic_numbers
+            )
+            data_obj.node_y = scaled_node_y
 
-            max_node_block = data_obj.node_y.max().item()
-            print(f"Maximum node block element after scaling: {max_node_block:.6f}", flush=True)
+            end_time = time.perf_counter()
+            print(f"Time to scale and shift node labels for molecule {i}: {end_time - start_time} seconds", flush=True)
+            print(f"Node labels after scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)
 
         data_list.append(data_obj)
     
@@ -287,7 +305,7 @@ def compute_energy_references(batch, tensor, elem_refs, operation="subtract"):
         else:
             raise ValueError(f"Unknown operation: {operation}")
 
-def apply_energy_refs(batch, tensor, element_references):
+def apply_energy_refs(batch, tensor, element_references, operation="subtract"):
     """Apply energy reference subtraction to a batch of energies."""
     if element_references is None:
         return tensor
@@ -300,7 +318,7 @@ def apply_energy_refs(batch, tensor, element_references):
     # print(f"  Energy range: [{original_energies.min().item():.6f}, {original_energies.max().item():.6f}] Hartree")
     
     # Apply scaling
-    scaled_energies = compute_energy_references(batch, tensor, element_references, operation="subtract")
+    scaled_energies = compute_energy_references(batch, tensor, element_references, operation=operation)
     
     # Print statistics after scaling
     # print(f"After energy reference scaling:")
