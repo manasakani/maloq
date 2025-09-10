@@ -115,7 +115,7 @@ class SplitTrainer():
             train_loss_node = 0.0
             train_loss_edge = 0.0
             torch.cuda.reset_peak_memory_stats()
-            for batch in train_loader:
+            for batch_idx, batch in enumerate(train_loader):
 
                 optimizer.zero_grad()
 
@@ -139,6 +139,8 @@ class SplitTrainer():
                     )
                     train_loss_node += loss_node.item()
                     train_loss_edge += loss_edge.item()
+                    if rank == 0:
+                        print(f"--> Rank {rank} batch {batch_idx} loss: ", loss.item(), flush=True)
 
                 elif loss_target_string == 'forces':
                     node_output = self.head(backbone_out, batch)
@@ -163,13 +165,25 @@ class SplitTrainer():
                 forward_end = time.perf_counter()
 
                 # -- Backwards -- 
+                backward_start = time.perf_counter()
                 loss.backward()
                 optimizer.step()
                 backward_end = time.perf_counter()
 
+                # Garbage collection - very important..
+                if loss_target_string == 'fock_matrix':
+                    del node_output, edge_output_fwd, edge_output_bwd, this_node_target, this_edge_target
+                    del loss_node, loss_edge, loss
+                else:
+                    del node_output, this_node_target, loss
+
+                del batch, backbone_out
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
                 # if rank == 0:
-                #     print("Time per forward pass: ", forward_end - forward_start)
-                #     print("Time for both forward and backward pass: ", backward_end - forward_start)
+                #     print("Time per forward pass: ", forward_end - forward_start, flush=True)
+                #     print("Time for backward pass: ", backward_end - backward_start, flush=True)
 
             # -- Output dump -- 
             if loss_target_string == 'fock_matrix':
@@ -253,8 +267,9 @@ class SplitTrainer():
                     print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)    
                 else:
                     print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]}", flush=True)   
+                current_mem = torch.cuda.memory_allocated() / (1024 * 1024)   
                 peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024) 
-                print(f"Peak memory allocation: {peak_mem:.2f} MB")
+                print(f"Current: {current_mem:.2f} MB, Peak: {peak_mem:.2f} MB")
             
             if dist.is_initialized():
                 val_loss_tensor = torch.tensor(val_loss, device=device)
@@ -573,6 +588,7 @@ class SplitTrainer():
 
             if not all(train_batches_list[0] == tb for tb in train_batches_list):
                 print("Mismatch in number of training batches across ranks!", flush=True)
+                print(train_batches_list, flush=True)
                 raise ValueError("Mismatch in number of training batches across ranks!", flush=True)
             if not all(val_batches_list[0] == vb for vb in val_batches_list):
                 print("Mismatch in number of validation batches across ranks!", flush=True)
