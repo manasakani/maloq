@@ -24,6 +24,29 @@ periodic_table = {'Ac': 89, 'Ag': 47, 'Al': 13, 'Am': 95, 'Ar': 18, 'As': 33, 'A
 
 periodic_table_number = {value: key for key, value in periodic_table.items()}
 
+# Manual extraction of total energy fro orca.out 6.0 if cclib didn't find it
+def extract_total_energy_manual(file_path):
+    """Extract total energy manually from ORCA output file"""
+    try:
+        with open(file_path, 'r') as f:
+            lines = f.readlines()
+        
+        for i, line in enumerate(lines):
+            if "TOTAL SCF ENERGY" in line:
+                # Look for the "Total Energy" line in the next few lines
+                for j in range(i + 1, min(i + 10, len(lines))):
+                    if "Total Energy" in lines[j] and "Eh" in lines[j]:
+                        # Extract the energy value
+                        # Format: "Total Energy       :      -2436.18793915151446 Eh          -66292.04405 eV"
+                        parts = lines[j].split()
+                        for k, part in enumerate(parts):
+                            if part == "Eh" and k > 0:
+                                return float(parts[k-1])
+        return None
+    except Exception as e:
+        print(f"Error extracting total energy manually: {e}")
+        return None
+
 # from https://github.com/facebookexternal/ocp-modeling-dev/blob/master/foundation_models/data/omol/process/orca_parsing.py#L295
 def parse_output(
     orca_output_path: Path,
@@ -66,6 +89,14 @@ def parse_output(
     )
     if (total_energy := orca_props.metadata.get("total_energy")) is not None:
         total_energy = float(total_energy)
+    else:
+        # manual extraction
+        total_energy = extract_total_energy_manual(orca_output_path)
+        if total_energy is not None:
+            print(f"Manually extracted total energy: {total_energy} Eh")
+        else:
+            print(f"Warning: Could not extract total energy for file at {orca_output_path}")
+    
     desired_data["total_energy [Eh]"] = total_energy
     desired_data["gradient [Eh/bohr]"] = orca_props.grads[0]
     desired_data["s_squared"] = getattr(orca_props, "s_squared", 0.0)
