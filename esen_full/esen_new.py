@@ -18,6 +18,7 @@ from e3nn.nn import Gate
 from torch.nn import Linear
 import numpy as np
 from abc import ABCMeta, abstractmethod
+from torch.utils.checkpoint import checkpoint
 
 # Fix this later!:
 # sys.path.append('/home/manasakani/fairchem/src/')
@@ -778,8 +779,48 @@ class Fock_Irreps_Head(nn.Module):
         else:
             if node_or_edge == 'node':
                 x_out = self.lin_out_node(x_gated)
+        
             if node_or_edge == 'edge':
-                x_out = self.lin_out_edge(x_gated)
+                # chunk lin_out_edge because the number of edges can be quite large:
+                # print("memory allocated before lin_out_edge: ", torch.cuda.memory_allocated()/1e9, " GB")
+                chunk_size = 10000  # Manasa: this is set for h100 memory
+                if x_gated.shape[0] > chunk_size:
+                    chunks = torch.split(x_gated, chunk_size, dim=0)
+                    chunk_outputs = [self.lin_out_edge(chunk) for chunk in chunks]
+                    x_out = torch.cat(chunk_outputs, dim=0)
+                else:
+                    x_out = self.lin_out_edge(x_gated)
+
+            # if node_or_edge == 'edge':
+            #     chunk_size = 5000 
+            #     if x_gated.shape[0] > chunk_size:
+
+            #         # Manual chunking to allow for garbage cleanup
+            #         chunk_outputs = []
+            #         for i in range(0, x_gated.shape[0], chunk_size):
+            #             end_idx = min(i + chunk_size, x_gated.shape[0])
+            #             chunk = x_gated[i:end_idx]
+            #             print("chunk size: ", chunk.shape)
+            #             print("memory allocated before lin_out_edge for this chunk: ", torch.cuda.memory_allocated()/1e9, " GB")
+                                                
+            #             chunk_output = self.lin_out_edge(chunk)
+            #             chunk_outputs.append(chunk_output.cpu())  # Move to CPU immediately
+            #             # chunk_outputs.append(chunk_output)  # Keep on GPU
+                        
+            #             # Clear GPU memory of chunk
+            #             del chunk, chunk_output
+            #             torch.cuda.empty_cache()
+                    
+            #         # Move results back to GPU and concatenate
+            #         chunk_outputs_gpu = [chunk.cuda() for chunk in chunk_outputs]
+            #         x_out = torch.cat(chunk_outputs_gpu, dim=0)
+            #         # x_out = torch.cat(chunk_outputs, dim=0)
+                    
+            #         # Clean up
+            #         # del chunk_outputs, chunk_outputs_gpu
+            #         # torch.cuda.empty_cache()
+            #     else:
+            #         x_out = self.lin_out_edge(x_gated)
 
         return x_out
 
@@ -837,7 +878,7 @@ class Fock_Irreps_Head(nn.Module):
         for i, l1 in enumerate(self.ls_list):
             for j, l2 in enumerate(self.ls_list):
                 
-                # if it's a node, need to slot in only the even irrep components
+                # if it's an orbital self-interaction, need to slot in only the even irrep components
                 if i == j and l1 == l2 and self.reduce_node_intra:
 
                     even_irreps = self.get_product_irreps(l1, l2, 'even')
@@ -1012,7 +1053,7 @@ class Linear_Energy_Head(nn.Module):
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
         edge_mask = batch.edge_mask
         
-        # Trim the embeddings to the chosen lmax:
+        # Trim the embeddings to the chosen lmax (not used)
         nodes = emb["node_embeddings"]#[:, :(self.lmax+1)**2, :]
         edges = emb["edge_embeddings"]#[:, :(self.lmax+1)**2, :]
         x_edge = emb["x_edge"]
@@ -1022,11 +1063,7 @@ class Linear_Energy_Head(nn.Module):
         # Create the messages for the last convolution:
         x_source = nodes[edge_index[0][edge_mask]]
         x_target = nodes[edge_index[1][edge_mask]]
-        if self.include_edges:
-            # x_message = torch.cat((x_source, x_target, edges), dim=2) 
-            x_message = torch.cat((x_source, x_target), dim=2) 
-        else:
-            x_message = torch.cat((x_source, x_target), dim=2) 
+        x_message = torch.cat((x_source, x_target), dim=2) 
 
         # -----------------
         # Rotate the irreps
@@ -1048,23 +1085,11 @@ class Linear_Energy_Head(nn.Module):
         )
 
         # aggregate messages
-        new_embedding.index_add_(0, edge_index[1][edge_mask], x_message) # do this only for the first row
+        new_embedding.index_add_(0, edge_index[1][edge_mask], x_message) # only for the first row
         energies = new_embedding.narrow(1, 0, 1)
         energies = self.linear(energies) 
 
-        # -----------------
-
-        # Edge convolution:
-        # -----------------
-
-        # edges = torch.bmm(emb["wigner"], edges)
-        # edges = self.so2_conv_2(edges, x_edge)
-        # edges = torch.bmm(wigner_inv, edges)
-        # x.index_add_(0, edge_index[1][edge_mask], edges)  # aggregate the transformed edges onto the target nodes
-        # x = self.linear(x)                                # apply the linear layer to the node embeddings
-        # energies = x.narrow(1, 0, 1)                      # take the first channel as the energy
-
-        energies = energies.squeeze(-1).squeeze(-1)  # remove the last two dimensions
+        energies = energies.squeeze(-1).squeeze(-1)  
 
         molecule_indices = torch.cat([
             torch.full((num_atoms,), i, dtype=torch.long, device=energies.device)
