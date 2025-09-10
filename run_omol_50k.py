@@ -46,10 +46,11 @@ print("Time to setup distributed environment: ", compute_end - compute_start)
 
 # ---------------------------
 # --> OMOL 
-dataset_folder = '/checkpoint/ocp/manasakani/omol_50k_Aug23/omol_closedshell_10k_train_8.0_alledge_job_'+str(rank)+'.db'
+dataset_folder = '/checkpoint/ocp/manasakani/omol_58k_Aug26/omol_closedshell_58k_train_6.0_alledge_job_'+str(rank)+'.db' 
 dtype = torch.float32
-output_folder = 'outputs_omol_closedshell_50k'
+output_folder = 'outputs_omol_58k_batched_E128'
 dataset_name = 'omol'
+run_name = 'omol_58k_Aug26_E80_3mp_nodereduce_E128'
 orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
 orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
 orbital_basis = {int(k): v for k, v in orbital_basis.items()}
@@ -59,7 +60,7 @@ total_rows = db.count()
 # ---------------------------
 
 # --> Model settings:
-l_embedding_dim = 64                    # sphere channels
+l_embedding_dim = 90                    # sphere channels 
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 3 
@@ -70,31 +71,34 @@ restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 5                             # Number of validation structures
-num_train = total_rows - num_val        # Number of training structures 
-num_epochs = 10000
-batch_size = 1                          # 1 for not oom
-rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
+num_val = 1                             # Number of validation structures
+num_train = total_rows - num_val        # Number of training structures - need equal batches on every gpu (use 840 molecules per gpu if doing a mol-wise split)
+num_epochs = 300
+batch_size = 1                          # 1 for not oom (molecule-wise batching for evals)
+target_atoms_per_batch = 130            # if not using batch_size (atom-wise batching for train)
+target_edges_per_batch = 15000
+rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
 reduce_edge = False                     # use only edges i,j where i<j (other edges are reflected)
-reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
 
 torch.set_default_dtype(dtype)
-lr_init = 5e-3
+lr_init = 1e-3
 patience = 10                           # for scheduler
 threshold = 1e-5                        # for scheduler
-scheduler_type = 'plateau'               # 'plateau' or 'cosine'
+scheduler_type = 'cosine'               # 'plateau' or 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
-eta_min = 1e-7                          # for cosine scheduler - minimum learning rate
+eta_min = 1e-8                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
+compute_uncoupled_loss = True          
 head_type = 'gated'                     # linear or gated 
 train_loss_fxn = loss.rmse_mse_padded_loss   
 loss_scheduler = loss.MonotonicDecreaseScheduler
@@ -139,7 +143,7 @@ train_end_mol = num_train
 train_local_num_mol = num_train
 
 val_start_mol = num_train  # the validation molecules start after training ones
-val_end_mol = num_train + num_val
+val_end_mol = val_start_mol + num_val
 val_local_num_mol = num_val
 
 # Query this rank's molecules from the database
@@ -168,32 +172,63 @@ else:
     scale_shift_data = None
 
 # Create the fock target analysis objects for each molecule in the dataset, scale and shift the node labels if required
-print("Processing the dataset, creating fock analysis objects if needed ...", flush=True)
-# orbital_basis = train_database[0].orbital_basis
-# orbital_basis = {int(k): v for k, v in orbital_basis.items()}
+print("Creating data loaders, making fock analysis objects if needed ...", flush=True)
 
-train_data = get_scale_shift.scale_shift_database(train_database, 0, train_local_num_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
-val_data = get_scale_shift.scale_shift_database(val_database, 0, val_local_num_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
-basis_transformation = train_data[0].fock_target_object.basis_transformation
+# Create the dataloaders for each GPU's data (if eval, we use the val set)
+if train_or_eval == "train":
+    train_data = get_scale_shift.scale_shift_database(train_database, 0, train_local_num_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
+    # train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0)
+    train_loader = get_scale_shift.create_edge_balanced_dataloader(
+        train_data, 
+        target_edges_per_batch=target_edges_per_batch, 
+        tolerance=0.15,   
+        shuffle=True,
+        num_workers=0
+    )
+    # trim train_loader to have min_train_loader_size batches - train_loader is a SimpleBatchIterator, so we can directly slice its batches
+    # communicate between gpus to find min_train_loader_size:
+
+    if world_size > 1:
+        torch.distributed.barrier()
+        local_size = torch.tensor(len(train_loader), dtype=torch.long).cuda()
+        all_sizes = [torch.zeros_like(local_size) for _ in range(world_size)]
+        torch.distributed.all_gather(all_sizes, local_size)
+        
+        min_train_loader_size = min([size.item() for size in all_sizes])
+        
+        if len(train_loader) > min_train_loader_size:
+            train_loader.batches = train_loader.batches[:min_train_loader_size]
+        print(f"NOTE: Trimming train loader size on rank {rank} (for batch consistency across ranks) from {local_size.item()} to {min_train_loader_size}", flush=True)
+
+    print(f"Size of train loader: {len(train_loader)}", flush=True)
+
+    val_data = get_scale_shift.scale_shift_database(val_database, 0, val_local_num_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
+    # val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0)
+    val_loader = get_scale_shift.create_atom_balanced_dataloader(
+        val_data,
+        target_atoms_per_batch=target_atoms_per_batch,
+        tolerance=0.1,
+        shuffle=False,
+        num_workers=0
+    )
+else: # molecule-wise batching for evals, only make the val dataloader since that's what evaluated
+    val_data = get_scale_shift.scale_shift_database(val_database, 0, val_local_num_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
+    val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0)
+
+print("Size of val loader: ", len(val_loader), flush=True)
+basis_transformation = val_data[0].fock_target_object.basis_transformation
 
 # # analyze the node labels for this dataset
 # dataset_analysis.dataset_analysis(train_database, dataset_name, rcut=5.0, dtype=dtype, reduce_edge=False, scale_shift_data=None, rank=rank)
 # print("Dataset analysis done, exiting", flush=True)
 
-# Create the dataloaders for each GPU's data
-train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0)
-val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0)
-
 data_load_end = time.perf_counter()
-
 print("Time to load dataset: ", data_load_end - data_load_start, flush=True)
-print("Size of train loader: ", len(train_loader), flush=True)
-print("Size of val loader: ", len(val_loader), flush=True)
 
 # --> Irrep information for the targets
-required_irreps = train_data[0].fock_target_object.req_output_irreps
-ls_list = train_data[0].fock_target_object.ls_list
-basis_transformation = train_data[0].fock_target_object.basis_transformation
+required_irreps = val_data[0].fock_target_object.req_output_irreps
+ls_list = val_data[0].fock_target_object.ls_list
+basis_transformation = val_data[0].fock_target_object.basis_transformation
 orbital_basis = {k: torch.tensor(v) for k, v in orbital_basis.items()}
 
 print("orbital_basis: ", orbital_basis)
@@ -323,8 +358,8 @@ print("Going to training or evaluation", flush=True)
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='omol_50k_Aug23',
-                                    save_frequency=5)
+                                    run_name=run_name,
+                                    save_frequency=3)
 
 if train_or_eval == "train":
     trainer.train(num_epochs, 
@@ -341,7 +376,7 @@ if train_or_eval == "train":
                     basis_transform=basis_transformation,
                     train_backbone=train_backbone,
                     train_head=train_head,
-                    compute_uncoupled_loss=True)
+                    compute_uncoupled_loss=compute_uncoupled_loss)
 else:
     trainer.evaluate(train_loss_fxn,
                     device,
