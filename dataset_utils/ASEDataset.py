@@ -94,7 +94,8 @@ class ASEDataset(Dataset):
             nedges=len(edge_index[0]), 
             natoms=len(atomic_numbers), 
             energies=energies,
-            forces=forces,
+            num_atoms_in_molecule=len(atomic_numbers),
+            # forces=forces,
             # dipole=dipole,
             # quadrupole=quadrupole
         )
