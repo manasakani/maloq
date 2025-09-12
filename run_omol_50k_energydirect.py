@@ -3,6 +3,7 @@ import_start = time.perf_counter()
 import os, sys, random
 import numpy as np
 import torch
+import yaml
 
 from fock_utils import utils_orca_out, fock_targets, basis_sets
 from train_utils import loss, utils_compute, splittrainer
@@ -48,9 +49,9 @@ print("Time to setup distributed environment: ", compute_end - compute_start)
 # --> OMOL 
 dataset_folder = '/checkpoint/ocp/manasakani/omol_58k_Sep11/omol_closedshell_58k_train_6.0_alledge_job_'+str(rank)+'.db' 
 dtype = torch.float32
-output_folder = 'outputs_omol_58k_E90'
+output_folder = 'outputs_omol_58k_energydirect'
 dataset_name = 'omol'
-run_name = 'omol_58k_Aug26_E100'
+run_name = 'omol_58k_energydirect'
 orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
 orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
 orbital_basis = {int(k): v for k, v in orbital_basis.items()}
@@ -60,7 +61,7 @@ total_rows = db.count()
 # ---------------------------
 
 # --> Model settings:
-l_embedding_dim = 100 #64                # sphere channels 
+l_embedding_dim = 64 #64                    # sphere channels 
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 3 
@@ -71,10 +72,10 @@ restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 1                             # Number of validation structures
+num_val = 100                             # Number of validation structures
 num_train = total_rows - num_val        # Number of training structures - need equal batches on every gpu (use 840 molecules per gpu if doing a mol-wise split)
 num_epochs = 3000
-batch_size = 1                          # 1 for not oom (molecule-wise batching for evals)
+batch_size = 10                          # 1 for not oom (molecule-wise batching for evals)
 target_atoms_per_batch = 130            # if not using batch_size (atom-wise batching for train)
 target_edges_per_batch = 17000
 rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
@@ -90,26 +91,28 @@ train_backbone = True
 train_head = True
 
 torch.set_default_dtype(dtype)
-lr_init = 1e-4 
-patience = 5                           # for scheduler
+lr_init = 1e-5 
+patience = 50                           # for scheduler
 threshold = 1e-5                        # for scheduler
-scheduler_type = 'plateau'               # 'plateau' or 'cosine'
+scheduler_type = 'cosine'               # 'plateau' or 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
 eta_min = 1e-8                          # for cosine scheduler - minimum learning rate
 
-loss_target = 'fock_matrix'
-compute_uncoupled_loss = False          
+loss_target = 'energies'
+compute_uncoupled_loss = True          
 head_type = 'gated'                     # linear or gated 
 train_loss_fxn = loss.rmse_mse_padded_loss   
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
+include_edges = False
 
 if reduce_edge and batch_size != 1:
     raise ValueError("If using reduce_edge, batch size must be 1! Reverse_edge map is not collated.")
 
-scale_and_shift = True
+scale_and_shift = False
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
+energy_ref_file = './fock_datasets/uma_v1_hof_lin_refs.yaml'  
 
 # Dump all settings to the output file
 if rank == 0:
@@ -211,6 +214,19 @@ if train_or_eval == "train":
         shuffle=False,
         num_workers=0
     )
+
+    if world_size > 1:
+        torch.distributed.barrier()
+        local_size = torch.tensor(len(val_loader), dtype=torch.long).cuda()
+        all_sizes = [torch.zeros_like(local_size) for _ in range(world_size)]
+        torch.distributed.all_gather(all_sizes, local_size)
+        
+        min_val_loader_size = min([size.item() for size in all_sizes])
+        
+        if len(val_loader) > min_val_loader_size:
+            val_loader.batches = val_loader.batches[:min_val_loader_size]
+        print(f"NOTE: Trimming val loader size on rank {rank} (for batch consistency across ranks) from {local_size.item()} to {min_val_loader_size}", flush=True)
+
 else: # molecule-wise batching for evals, only make the val dataloader since that's what evaluated
     val_data = get_scale_shift.scale_shift_database(val_database, 0, val_local_num_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
     val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0)
@@ -221,6 +237,62 @@ basis_transformation = val_data[0].fock_target_object.basis_transformation
 # # analyze the node labels for this dataset
 # dataset_analysis.dataset_analysis(train_database, dataset_name, rcut=5.0, dtype=dtype, reduce_edge=False, scale_shift_data=None, rank=rank)
 # print("Dataset analysis done, exiting", flush=True)
+
+
+# Apply node energy reference subtraction
+if loss_target == "energies":
+
+    # Load linear reference coefficients from YAML for OMOL dataset
+    if energy_ref_file is not None:
+        if os.path.exists(energy_ref_file):
+            print(f"Loading energy reference coefficients from {energy_ref_file}")
+            
+            # Load YAML file
+            with open(energy_ref_file, 'r') as f:
+                yaml_data = yaml.safe_load(f)
+            
+            # Extract OMOL element references
+            if 'omol_elem_refs' in yaml_data:
+                element_references_list = yaml_data['omol_elem_refs']
+                
+                # Convert list to numpy array
+                element_references_np = np.array(element_references_list)
+
+                # convert from eV to hartree (the references are in eV)
+                eV_TO_HARTREE = 27.211386245988
+                element_references_np = element_references_np / eV_TO_HARTREE
+                
+                # Create a tensor with proper indexing (Z=0 gets value 0, Z=1+ get YAML values)
+                # The YAML list starts at Z=1, so we need to pad with a zero at index 0
+                padded_references = np.zeros(len(element_references_list) + 1)
+                padded_references[1:] = element_references_np  # Z=1,2,3... get the YAML values
+                
+                element_references = torch.tensor(padded_references, dtype=dtype, device=device)
+                
+                print(f"Loaded energy references for elements Z=1 to Z={len(element_references_list)}")
+                
+                # Print non-zero references for verification
+                nonzero_mask = torch.tensor([True]*len(element_references_list))
+                nonzero_elements = torch.where(nonzero_mask)[0]
+                print("Energy references:")
+                for z in nonzero_elements:
+                    print(f"  Element Z={z.item()}: {element_references[z].item():.6f} Hartree")
+                    
+            else:
+                print(f"Warning: 'omol_elem_refs' not found in {energy_ref_file}!")
+                print("Available keys:", list(yaml_data.keys()))
+                element_references = None
+                
+        else:
+            print(f"Warning: Energy reference file {energy_ref_file} not found!")
+            print("Proceeding without energy reference subtraction.")
+            element_references = None
+    else:
+        print("No energy reference file specified.")
+        element_references = None
+else:
+    element_references = None
+
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start, flush=True)
@@ -269,7 +341,8 @@ backbone = eSEN_Backbone(
                 act_type='gate',
                 mlp_type = 'spectral',
                 num_distance_basis=num_distance_basis,
-                gaussian_width=gaussian_width
+                gaussian_width=gaussian_width,
+                include_edges=include_edges
             )
 
 if loss_target == "fock_matrix":
@@ -285,8 +358,9 @@ if loss_target == "fock_matrix":
 elif loss_target == "forces":
     head = Linear_Force_Head(backbone)
 
-elif loss_target == "energy":
-    print("To be implemented!")
+elif loss_target == "energies":
+    print("Using energy direct head")
+    head = Linear_Energy_Head(backbone, include_edges=include_edges)
 
 
 backbone = backbone.to(device)
@@ -376,7 +450,8 @@ if train_or_eval == "train":
                     basis_transform=basis_transformation,
                     train_backbone=train_backbone,
                     train_head=train_head,
-                    compute_uncoupled_loss=compute_uncoupled_loss)
+                    compute_uncoupled_loss=compute_uncoupled_loss,
+                    element_references=element_references)
 else:
     trainer.evaluate(train_loss_fxn,
                     device,
@@ -385,5 +460,6 @@ else:
                     node_target_name=node_target,
                     edge_target_name=edge_target, 
                     basis_transform=basis_transformation,
+                    element_references=element_references,
                     output_folder=output_folder,
                     )
