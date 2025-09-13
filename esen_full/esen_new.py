@@ -12,18 +12,23 @@ import os, sys
 import torch
 import math
 import torch.nn as nn
+import e3nn
 from e3nn.o3 import Irreps, Irrep 
 from e3nn.o3 import Linear as e3nn_Linear
+from cuequivariance_torch import Linear as cuet_Linear
 from e3nn.nn import Gate
 from torch.nn import Linear
 import numpy as np
 from abc import ABCMeta, abstractmethod
 from torch.utils.checkpoint import checkpoint
+import time
+from .nn.so3_layers import SO3_Linear
 
 # Fix this later!:
 # sys.path.append('/home/manasakani/fairchem/src/')
 from fairchem.core.common.registry import registry
 from fairchem.core.common.utils import conditional_grad
+e3nn.set_optimization_defaults(jit_script_fx=False)
 
 from .common.rotation import (
     init_edge_rot_mat,
@@ -289,6 +294,9 @@ class eSEN_Backbone(nn.Module):
             graph_dict["edge_distance_vec"]
         )
 
+        # delete edge_rot_mat! This is huge and not needed and it saves memory
+        del edge_rot_mat
+
         # --> Rotation test:
         # rotated_edges_to_z_axis = torch.bmm(edge_rot_mat, graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
         # rotated_edges_to_z_axis = torch.bmm(wigner[:, 1:4, 1:4], graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
@@ -402,13 +410,19 @@ class eSEN_Backbone(nn.Module):
             x_message_edge = self.norm(x_message_edge)
 
         # Return the output
-        out = {
-                "node_embeddings": x_message_node,
-                "edge_embeddings": x_message_edge,
-                "x_edge": x_edge,
-                "wigner": wigner,
-                "wigner_inv": wigner_inv
-              }
+        if self.include_edges: # all we need for the fock output head
+            out = {
+                    "node_embeddings": x_message_node,
+                    "edge_embeddings": x_message_edge,
+                }
+        else:
+            out = {
+                    "node_embeddings": x_message_node,
+                    "edge_embeddings": x_message_edge,
+                    "x_edge": x_edge,
+                    "wigner": wigner,
+                    "wigner_inv": wigner_inv
+                }
         out.update(graph_dict)
         return out
 
@@ -533,21 +547,89 @@ class Fock_Irreps_Head(nn.Module):
                                 act_gates=[torch.sigmoid] * len(irreps_gates),
                                 irreps_gated=irreps_gated
                             )
-            # self.gate2 = Gate(irreps_scalars=Irreps(),
-            #                     act_scalars=[],
-            #                     irreps_gates=irreps_gates,
-            #                     act_gates=[torch.sigmoid] * len(irreps_gates),
-            #                     irreps_gated=irreps_gated
-            #                 )
-            # print("gate irreps out (simplified): ", self.gate.irreps_out.sort()[0].simplify() ) 
-            # print("irreps out (simplified): ", irreps_out.sort()[0].simplify() ) 
-
+            
             # now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
+            irreps_in_simplified = (irreps_scalars + self.gate.irreps_out).simplify()
+            assert irreps_in_simplified == (irreps_scalars+self.gate.irreps_out), "The irreps_in for the output linear layer should not change when simplified!"
             if reduce_node:
                 self.lin_out_node = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_nodereduced, biases=True)
                 self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=True) 
             else:
-                self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=True) 
+                print("Irreps in: ", irreps_in_simplified, flush=True)
+                # self.lin_out = e3nn_Linear(irreps_in=irreps_in_simplified, irreps_out=irreps_out, biases=True) 
+                # self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=False) 
+                # self.lin_out = cuet_Linear(irreps_in=irreps_in_simplified, irreps_out=irreps_out) 
+
+                # create single linear layers up to lmax:
+                self.lin_out_layers = nn.ModuleList()
+                for l in range(0, self.lmax+1):
+                    mul_in = self.sphere_channels
+                    mul_out = irreps_out.count('{}e'.format(l))
+                    irreps_in_l = f"{mul_in}x{l}e"  
+                    irreps_out_l = f"{mul_out}x{l}e"
+                    # print("Creating e3nn_Linear layer for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out = ", irreps_out_l, flush=True)
+                    self.lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=False))
+
+                    # Attempt at using SO3_Linear - not working well
+                    # mul_in = self.sphere_channels
+                    # mul_out = irreps_out.count('{}e'.format(l))
+                    # print("Creating SO3_Linear layer for l = ", l, " with mul_in = ", mul_in, " and mul_out = ", mul_out, flush=True)
+                    # self.lin_out_layers.append(SO3_Linear(mul_in, mul_out, l, single=True))
+
+                self.output_permutation = self.get_output_permutation(irreps_out)
+                self.register_buffer("output_permutation", self.output_permutation)
+                
+                # self.compiled_lin_out = torch.compile(self.lin_out, fullgraph=True)
+                # self.lin_out2 = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=True)
+
+    def get_output_permutation(self, output_irreps):
+        """
+        Get the permutation that reorders irreps from sorted-by-l order to irreps_out order.
+        Initially, we have the output irreps in sorted order: (omol) 114x0e+ 229x1e+239x2e+161x3e+73x4e+24x5e+4x6e
+        We want to permute them to the order they appear in irreps_out. 
+        """
+        input_irreps_simplified = output_irreps.sort()[0].simplify()
+        total_dim = sum(mul * (2 * ir.l + 1) for mul, ir in input_irreps_simplified)
+        # print("Total output dim: ", total_dim, flush=True)
+
+        sorted_irreps, permutation, inverse_permutation = output_irreps.sort()
+        # Inverse permutation: output irreps -> sorted irreps
+        # Permutation: sorted irreps -> output irreps
+
+        # print("Sorted output irreps: ", sorted_irreps, flush=True)
+        # print("output irreps (unsorted): ", output_irreps, flush=True)
+        # print("Permutation : ", permutation)
+        # print("Inverse permutation : ", inverse_permutation)
+
+        req_permutation = list(inverse_permutation)
+
+        # augment each element of permutation by the total dimension of all previous irreps:
+        tensor_inverse_permutation = torch.zeros(total_dim, dtype=torch.long)
+        sorted_tensor_pos = 0
+
+        # For each irrep in sorted order, find where it should go in original order
+        for sorted_irrep_idx, (_, ir) in enumerate(sorted_irreps):
+            ir_dim = 2 * ir.l + 1
+            # print("Handling irrep: ", ir, " of dim ", ir_dim, "in sorted position ", sorted_irrep_idx, flush=True)
+            # print("This should go to unsorted position ", req_permutation[sorted_irrep_idx], flush=True)
+            
+            # Find which original irrep this corresponds to in the output_irreps
+            original_irrep_idx = req_permutation[sorted_irrep_idx]
+            
+            # Calculate tensor position in original order for this irrep
+            original_tensor_pos = 0
+            for i in range(original_irrep_idx):
+                _, orig_ir = output_irreps[i]
+                original_tensor_pos += 2 * orig_ir.l + 1
+            
+            # Map tensor elements: original[orig_pos] = sorted[sorted_pos]
+            for j in range(ir_dim):
+                tensor_inverse_permutation[original_tensor_pos + j] = sorted_tensor_pos + j
+            
+            sorted_tensor_pos += ir_dim
+        
+        # print("tensor_inverse_permutation: ", [tensor_inverse_permutation[i].item() for i in range(len(tensor_inverse_permutation))], flush=True)
+        return tensor_inverse_permutation
 
 
     def split_irreps(self, irreps):
@@ -588,7 +670,6 @@ class Fock_Irreps_Head(nn.Module):
 
         node_embeddings = emb["node_embeddings"]
         edge_embeddings = emb["edge_embeddings"]
-        x_edge = emb["x_edge"]
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
 
         reverse_edge_map = batch.reverse_edge_map if "reverse_edge_map" in batch else None
@@ -603,8 +684,8 @@ class Fock_Irreps_Head(nn.Module):
         elif self.head_type == 'gated':
             node_embeddings = self.stack_irreps(node_embeddings)
             edge_embeddings = self.stack_irreps(edge_embeddings)
-            node_output = self.process(node_embeddings, x_edge, edge_index, 'node')
-            edge_output = self.process(edge_embeddings, x_edge, edge_index, 'edge')
+            node_output = self.process(node_embeddings, edge_index, 'node')
+            edge_output = self.process(edge_embeddings, edge_index, 'edge')
             # node_output = self.process_doublegated(node_embeddings, x_edge, edge_index, 'node')
             # edge_output = self.process_doublegated(edge_embeddings, x_edge, edge_index, 'edge')
         
@@ -738,28 +819,13 @@ class Fock_Irreps_Head(nn.Module):
 
         return l_sorted_output
 
-    def process(self, x, x_edge, edge_index, node_or_edge):
+    def process(self, x, edge_index, node_or_edge):
 
         # 1. Extract the scalar components, which are the first # sphere_channels elements of this tensor
         x_scalars = x[:, :self.sphere_channels]
         x_nonscalars = x[:, self.sphere_channels:]
 
         # 2. Prepare some scalars for gating
-
-        # x_for_gating = torch.zeros(
-        #     (x.shape[0],) + x_edge.shape[1:],
-        #     dtype=x.dtype,
-        #     device=x.device,
-        # )
-
-        # # in case this is a node-block (x_edge is initially the edges, so it needs to be reduced from # edges to # nodes)
-        # if x_edge.shape[0] != x.shape[0]:
-        #     x_for_gating.index_add_(0, edge_index[1], x_edge)
-        # else:
-        #     x_for_gating = x_edge
-
-        # gating_scalars = self.lin_scalars(x_scalars)                  # gate with the l=0 components
-        # gating_scalars = self.lin_scalars_x_edge(x_for_gating)        # gate with x_edge
 
         # gate with learnable scalars: the first 'sphere_channels' scalars are the l=0, and others are used for gating
         all_scalars = self.lin_scalars_learnable(x_scalars) 
@@ -774,53 +840,62 @@ class Fock_Irreps_Head(nn.Module):
         x_gated = self.gate(torch.cat([gating_scalars, x_nonscalars], dim=1))
         x_gated = torch.cat([transformed_l0_scalars, x_gated], dim=1)   # use the transformed scalars as the output
 
+        # 4. Apply linear map to output irreps
         if not self.reduce_node:
-            x_out = self.lin_out(x_gated)
+            # lin_out_start_time = time.perf_counter()
+            # x_out = self.lin_out(x_gated)
+            
+            # pass each irrep of x_out through its own SO3_Linear layer, where x_out followed simplified irreps_in (self.sphere_channels*0e + sphere_channels*1e + sphere_channels*2e ...)
+            x_out_list = []
+            irrep_end_track = 0
+            batch_size = x_gated.shape[0]
+            for l in range(0, self.lmax+1):
+
+                # sphere channels is the multiplicity of this l in the input 
+                dim_l = self.sphere_channels  * (2*l + 1) 
+
+                start_idx = irrep_end_track
+                end_idx = start_idx + dim_l
+                irrep_end_track = end_idx
+
+                x_l = x_gated[:, start_idx:end_idx]  # extract the l-th irrep component
+
+                # x_l = x_l.reshape(batch_size, 2*l + 1, self.sphere_channels)  # this is for SO3_Linear
+                x_l_out = self.lin_out_layers[l](x_l)  # apply the SO3_Linear layer
+                # mul_out = self.irreps_out.count(f'{l}e')
+                # x_l_out = x_l_out.reshape(batch_size, mul_out*(2*l+1))  # [batch, (2*l+1)*mul_out]
+
+                x_out_list.append(x_l_out)
+
+            # concatenate all the l outputs back together
+            x_out = torch.cat(x_out_list, dim=1) 
+
+            # permute to match the expected order of irreps in the output 
+            x_out = x_out[:, self.output_permutation]
+
+            # lin_out_end_time = time.perf_counter()
+            # print(f"lin_out time: {lin_out_end_time - lin_out_start_time} seconds", flush=True)
+
         else:
             if node_or_edge == 'node':
                 x_out = self.lin_out_node(x_gated)
+                # x_out = checkpoint(self.lin_out_node, x_gated)
         
             if node_or_edge == 'edge':
-                # chunk lin_out_edge because the number of edges can be quite large:
-                # print("memory allocated before lin_out_edge: ", torch.cuda.memory_allocated()/1e9, " GB")
-                chunk_size = 10000  # Manasa: this is set for h100 memory
-                if x_gated.shape[0] > chunk_size:
-                    chunks = torch.split(x_gated, chunk_size, dim=0)
-                    chunk_outputs = [self.lin_out_edge(chunk) for chunk in chunks]
-                    x_out = torch.cat(chunk_outputs, dim=0)
-                else:
-                    x_out = self.lin_out_edge(x_gated)
+                # chunk lin_out_edge to save memory
+                # chunk_size = 1000  # Manasa: this is set for h100 memory
+                # if x_gated.shape[0] > chunk_size:
+                #     chunks = torch.split(x_gated, chunk_size, dim=0)
+                #     chunk_outputs = [self.lin_out_edge(chunk) for chunk in chunks]
+                #     x_out = torch.cat(chunk_outputs, dim=0)
+                #     del chunks, chunk_outputs
+                # else:
+                # x_out = self.lin_out_edge(x_gated)
+                lin_out_start_time = time.perf_counter()
+                x_out = checkpoint(self.lin_out_edge, x_gated)
+                lin_out_end_time = time.perf_counter()
+                print(f"lin_out edge time: {lin_out_end_time - lin_out_start_time} seconds", flush=True)
 
-            # if node_or_edge == 'edge':
-            #     chunk_size = 5000 
-            #     if x_gated.shape[0] > chunk_size:
-
-            #         # Manual chunking to allow for garbage cleanup
-            #         chunk_outputs = []
-            #         for i in range(0, x_gated.shape[0], chunk_size):
-            #             end_idx = min(i + chunk_size, x_gated.shape[0])
-            #             chunk = x_gated[i:end_idx]
-            #             print("chunk size: ", chunk.shape)
-            #             print("memory allocated before lin_out_edge for this chunk: ", torch.cuda.memory_allocated()/1e9, " GB")
-                                                
-            #             chunk_output = self.lin_out_edge(chunk)
-            #             chunk_outputs.append(chunk_output.cpu())  # Move to CPU immediately
-            #             # chunk_outputs.append(chunk_output)  # Keep on GPU
-                        
-            #             # Clear GPU memory of chunk
-            #             del chunk, chunk_output
-            #             torch.cuda.empty_cache()
-                    
-            #         # Move results back to GPU and concatenate
-            #         chunk_outputs_gpu = [chunk.cuda() for chunk in chunk_outputs]
-            #         x_out = torch.cat(chunk_outputs_gpu, dim=0)
-            #         # x_out = torch.cat(chunk_outputs, dim=0)
-                    
-            #         # Clean up
-            #         # del chunk_outputs, chunk_outputs_gpu
-            #         # torch.cuda.empty_cache()
-            #     else:
-            #         x_out = self.lin_out_edge(x_gated)
 
         return x_out
 
