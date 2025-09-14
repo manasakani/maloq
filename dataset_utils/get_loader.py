@@ -41,7 +41,8 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         if dataset_name == "QM7":
             energy = mol['energy']
             forces = mol['forces']
-            hamiltonian = mol['hamiltonian'].numpy()   
+            hamiltonian = mol['hamiltonian'].numpy()  
+            overlap = mol['overlap'].numpy() 
             atomic_numbers = mol['_atomic_numbers'].numpy()
             positions=mol['_positions'].numpy()
             orbital_basis = orbital_basis_def2_svp_QM7
@@ -85,6 +86,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
                         forces=torch.tensor(forces, dtype=dtype),                                      # Hartree/Angstrom
                         num_atoms_in_molecule=len(graph_targets.atomic_numbers),
                         fock_target_object=graph_targets,
+                        overlap_matrix=torch.tensor(overlap, dtype=dtype) if make_fock_targets else None,
                     )
         datalist.append(data)
 
