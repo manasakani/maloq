@@ -24,7 +24,8 @@ class Fock_Targets:
                 scale_shift_data=None,
                 equivariant_blocks=None,
                 orbital_starts=None,
-                basis_transformation=None):
+                basis_transformation=None,
+                req_output_irreps=None):
         """
         atoms - ASE atoms object of the atomic structure
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]] 
@@ -76,7 +77,7 @@ class Fock_Targets:
                 self.reverse_edge_map[ind] = edge_dict.get((j.item(), i.item()), None)
 
         # --> Analyze structure of orbital interactions
-        if equivariant_blocks is None:
+        if equivariant_blocks is None or orbital_starts is None or basis_transformation is None or req_output_irreps is None:
             # targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps_old(self.orbital_basis)   
             targets, self.req_output_irreps, self.simplified_out_irreps, ls_list, out_js_list, self.orbital_starts, full_orb_interaction_list = utils_tensor_decomp.make_output_irreps(self.orbital_basis)  
             # self.equivariant_blocks, out_js_list, self.orbital_starts = utils_tensor_decomp.process_targets_old(self.orbital_basis, targets)
@@ -90,6 +91,7 @@ class Fock_Targets:
             self.equivariant_blocks = equivariant_blocks
             self.orbital_starts = orbital_starts
             self.basis_transformation = basis_transformation
+            self.req_output_irreps = req_output_irreps
         
         # print("out_js_list: ", out_js_list)
         # print("self.orbital_starts: ", self.orbital_starts)

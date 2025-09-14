@@ -201,6 +201,10 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
         sample_structure, rcut_orbitals, orbital_basis, fock_matrix=None,
         half_edges=reduce_edge, scale_shift_data=scale_shift_data
     )
+    equivariant_blocks = sample_fock_target_object.equivariant_blocks
+    orbital_starts = sample_fock_target_object.orbital_starts
+    basis_transformation = sample_fock_target_object.basis_transformation
+    req_output_irreps = sample_fock_target_object.req_output_irreps
 
     data_list = []
     for i in range(start_mol, end_mol):
@@ -212,14 +216,19 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
         # If running evaluation, we need to create a structure-dependent fock target object
         if train_or_eval == 'eval':
             print("Making fock analysis object for molecule", i, flush=True)
+            print("Not scaling node labels during evaluation", flush=True)
             structure = Atoms(symbols=data_obj.atomic_numbers, positions=data_obj.pos)
             fock_target_object = fock_targets.Fock_Targets(
                 structure, rcut_orbitals, orbital_basis, fock_matrix=None,
-                half_edges=reduce_edge, scale_shift_data=scale_shift_data
+                half_edges=reduce_edge, scale_shift_data=scale_shift_data,
+                equivariant_blocks=equivariant_blocks,
+                orbital_starts=orbital_starts,
+                basis_transformation=basis_transformation,
+                req_output_irreps=req_output_irreps
             )
             data_obj.fock_target_object = fock_target_object
 
-        if scale_nodes:
+        if train_or_eval == 'train' and scale_nodes:
             print(f"Scaling and shifting the node labels in database[{i}]", flush=True)
             start_time = time.perf_counter()
 
