@@ -204,18 +204,10 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
 
     data_list = []
     for i in range(start_mol, end_mol):
-        # if i % 100 == 0:
-        #     import gc
-        #     gc.collect()
-        #     if torch.cuda.is_available():
-        #         torch.cuda.empty_cache()
-        #     print(f"Processed {i-start_mol}/{end_mol-start_mol} molecules, cleared cache", flush=True)
-        
+ 
         data_obj = database[i]
         data_obj.fock_target_object = sample_fock_target_object
-
-        # print number of atoms in the molecule
-        print(f"Molecule {i} has {data_obj.natoms} atoms", flush=True)
+        # print(f"Molecule {i} has {data_obj.natoms} atoms", flush=True)
 
         # If running evaluation, we need to create a structure-dependent fock target object
         if train_or_eval == 'eval':
@@ -423,7 +415,6 @@ def create_atom_balanced_dataloader(data_list, target_atoms_per_batch, tolerance
     """
     Create a single DataLoader with atom-balanced batches.
     """
-    from torch_geometric.data import Batch
     
     # Create balanced batches
     batches = create_atom_balanced_batches(data_list, target_atoms_per_batch, tolerance)
@@ -538,7 +529,6 @@ def create_edge_balanced_dataloader(data_list, target_edges_per_batch, tolerance
     """
     Create a dataloader with edge-balanced batches using the existing SimpleBatchIterator.
     """
-    from torch_geometric.data import Batch
     
     # Create balanced batches
     batches = create_edge_balanced_batches(data_list, target_edges_per_batch, tolerance)

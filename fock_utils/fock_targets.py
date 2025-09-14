@@ -337,46 +337,155 @@ class Fock_Targets:
 
         return orbital_blocks
     
+    # def unpad_node_blocks(self, H_pred, atomic_numbers=None):
+        
+    #     atom_orbitals = self.orbital_basis
+    #     if atomic_numbers is None:
+    #         atomic_numbers = self.atomic_numbers
+
+    #     # Precompute number of orbitals for each atom
+    #     atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
+        
+    #     H_prev = {}
+        
+    #     for atom_ind in range(len(atomic_numbers)):
+            
+    #         key_term = (atom_ind, atom_ind)  # node key
+    #         print(f"Unpadding node {atom_ind}", flush=True)
+
+    #         # Precompute number of orbitals for atoms i and j
+    #         num_orbitals_i = atom_orbitals_count[atomic_numbers[atom_ind].item()]
+
+    #         # Initialize H_prev for this edge
+    #         H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_i), dtype=float)
+
+    #         H_prev_edge = H_prev[key_term]  # just to avoid repeated dictionary lookup 
+
+    #         for index_target, equivariant_block in enumerate(self.equivariant_blocks):
+    #             slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
+                
+    #             # Precompute block slices for this equivariant block
+    #             for N_M_str, block_slice in equivariant_block.items():
+    #                 slice_row = slice(block_slice[0], block_slice[1])
+    #                 slice_col = slice(block_slice[2], block_slice[3])
+    #                 len_row = block_slice[1] - block_slice[0]
+    #                 len_col = block_slice[3] - block_slice[2]
+                    
+    #                 condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
+
+    #                 if atomic_numbers[atom_ind].item() == int(condition_atomic_number_i) and atomic_numbers[atom_ind].item() == int(condition_atomic_number_j):
+    #                     H_prev_edge[slice_row, slice_col] = H_pred[atom_ind][slice_out].reshape(len_row, len_col)
+
+    #     return H_prev
+
     def unpad_node_blocks(self, H_pred, atomic_numbers=None):
         
         atom_orbitals = self.orbital_basis
         if atomic_numbers is None:
             atomic_numbers = self.atomic_numbers
 
-        # Precompute number of orbitals for each atom
+        # Convert to torch tensor if it's a numpy array
+        if isinstance(atomic_numbers, np.ndarray):
+            atomic_numbers = torch.from_numpy(atomic_numbers)
+
+        # Precompute number of orbitals for each atom type (not per atom)
         atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
         
         H_prev = {}
         
-        for atom_ind in range(len(atomic_numbers)):
+        # Process all nodes simultaneously for each equivariant block
+        for index_target, equivariant_block in enumerate(self.equivariant_blocks):
+            slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
             
-            key_term = (atom_ind, atom_ind)  # node key
-
-            # Precompute number of orbitals for atoms i and j
-            num_orbitals_i = atom_orbitals_count[atomic_numbers[atom_ind].item()]
-
-            # Initialize H_prev for this edge
-            H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_i), dtype=float)
-
-            H_prev_edge = H_prev[key_term]  # just to avoid repeated dictionary lookup 
-
-            for index_target, equivariant_block in enumerate(self.equivariant_blocks):
-                slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
+            print(f"Processing node equivariant block {index_target} of {len(self.equivariant_blocks)}", flush=True)
+            
+            for N_M_str, block_slice in equivariant_block.items():
+                condition_atomic_number_i, condition_atomic_number_j = map(int, N_M_str.split())
                 
-                # Precompute block slices for this equivariant block
-                for N_M_str, block_slice in equivariant_block.items():
-                    slice_row = slice(block_slice[0], block_slice[1])
-                    slice_col = slice(block_slice[2], block_slice[3])
-                    len_row = block_slice[1] - block_slice[0]
-                    len_col = block_slice[3] - block_slice[2]
+                # For nodes, both conditions should be the same (self-interaction)
+                if condition_atomic_number_i != condition_atomic_number_j:
+                    continue
                     
-                    condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
-
-                    if atomic_numbers[atom_ind].item() == int(condition_atomic_number_i) and atomic_numbers[atom_ind].item() == int(condition_atomic_number_j):
-                        H_prev_edge[slice_row, slice_col] = H_pred[atom_ind][slice_out].reshape(len_row, len_col)
+                # Vectorized mask creation for all atoms of this type
+                mask = atomic_numbers == condition_atomic_number_i
+                matching_atom_indices = torch.where(mask)[0]
+                
+                if len(matching_atom_indices) == 0:
+                    continue
+                
+                # Batch process all matching atoms
+                slice_row = slice(block_slice[0], block_slice[1])
+                slice_col = slice(block_slice[2], block_slice[3])
+                len_row = block_slice[1] - block_slice[0]
+                len_col = block_slice[3] - block_slice[2]
+                
+                # Extract predictions for all matching atoms at once
+                pred_batch = H_pred[matching_atom_indices][:, slice_out].reshape(-1, len_row, len_col)
+                
+                # Initialize matrices if not already done and assign predictions
+                for idx, atom_ind in enumerate(matching_atom_indices):
+                    atom_ind = atom_ind.item()
+                    key_term = (atom_ind, atom_ind)  # node key
+                    
+                    if key_term not in H_prev:
+                        num_orbitals_i = atom_orbitals_count[atomic_numbers[atom_ind].item()]
+                        H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_i), dtype=float)
+                    
+                    # Assign the prediction
+                    H_prev[key_term][slice_row, slice_col] = pred_batch[idx]
 
         return H_prev
-    
+        
+    # def unpad_edge_blocks(self, H_pred, atomic_numbers=None):
+        
+    #     edge_index = self.neighbour_list
+    #     atom_orbitals = self.orbital_basis
+
+    #     if atomic_numbers is None:
+    #         atomic_numbers = self.atomic_numbers
+
+    #     # Precompute number of orbitals for each atom
+    #     atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
+        
+    #     H_prev = {}
+    #     edge_counter = 0
+        
+    #     for index_edge in range(edge_index.shape[1]):
+    #         i = edge_index[0][index_edge].item()  # atom index 
+    #         j = edge_index[1][index_edge].item()
+    #         print(f"Unpadding edge {index_edge}: ({i}, {j})", flush=True)
+            
+    #         if self.forward_edge_mask[index_edge]:
+
+    #             key_term = (i, j)  # edge key term 
+
+    #             # Precompute number of orbitals for atoms i and j
+    #             num_orbitals_i = atom_orbitals_count[atomic_numbers[i].item()]
+    #             num_orbitals_j = atom_orbitals_count[atomic_numbers[j].item()]
+
+    #             # Initialize H_prev for this edge
+    #             H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_j), dtype=float)
+    #             H_prev_edge = H_prev[key_term]  
+
+    #             for index_target, equivariant_block in enumerate(self.equivariant_blocks):
+    #                 slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
+                    
+    #                 # Precompute block slices for this equivariant block
+    #                 for N_M_str, block_slice in equivariant_block.items():
+    #                     slice_row = slice(block_slice[0], block_slice[1])
+    #                     slice_col = slice(block_slice[2], block_slice[3])
+    #                     len_row = block_slice[1] - block_slice[0]
+    #                     len_col = block_slice[3] - block_slice[2]
+                        
+    #                     condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
+
+    #                     if atomic_numbers[i].item() == int(condition_atomic_number_i) and atomic_numbers[j].item() == int(condition_atomic_number_j):
+    #                         H_prev_edge[slice_row, slice_col] = H_pred[edge_counter][slice_out].reshape(len_row, len_col)
+                
+    #             edge_counter += 1
+
+    #     return H_prev
+
     def unpad_edge_blocks(self, H_pred, atomic_numbers=None):
         
         edge_index = self.neighbour_list
@@ -385,44 +494,62 @@ class Fock_Targets:
         if atomic_numbers is None:
             atomic_numbers = self.atomic_numbers
 
-        # Precompute number of orbitals for each atom
+        # Precompute number of orbitals for each atom type (not per atom)
         atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
         
-        H_prev = {}
-        edge_counter = 0
+        # Get forward edges only
+        forward_indices = torch.where(torch.tensor(self.forward_edge_mask))[0]
+        forward_edge_i = edge_index[0][forward_indices]
+        forward_edge_j = edge_index[1][forward_indices]
         
-        for index_edge in range(edge_index.shape[1]):
-            i = edge_index[0][index_edge].item()  # atom index 
-            j = edge_index[1][index_edge].item()
+        # Vectorized atomic number lookup
+        atomic_nums_i = atomic_numbers[forward_edge_i]
+        atomic_nums_j = atomic_numbers[forward_edge_j]
+        
+        H_prev = {}
+        
+        # Process all edges simultaneously for each equivariant block
+        for index_target, equivariant_block in enumerate(self.equivariant_blocks):
+            slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
+
+            print(f"Processing edge equivariant block {index_target} of {len(self.equivariant_blocks)}", flush=True)
             
-            if self.forward_edge_mask[index_edge]:
-
-                key_term = (i, j)  # edge key term 
-
-                # Precompute number of orbitals for atoms i and j
-                num_orbitals_i = atom_orbitals_count[atomic_numbers[i].item()]
-                num_orbitals_j = atom_orbitals_count[atomic_numbers[j].item()]
-
-                # Initialize H_prev for this edge
-                H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_j), dtype=float)
-                H_prev_edge = H_prev[key_term]  
-
-                for index_target, equivariant_block in enumerate(self.equivariant_blocks):
-                    slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
-                    
-                    # Precompute block slices for this equivariant block
-                    for N_M_str, block_slice in equivariant_block.items():
-                        slice_row = slice(block_slice[0], block_slice[1])
-                        slice_col = slice(block_slice[2], block_slice[3])
-                        len_row = block_slice[1] - block_slice[0]
-                        len_col = block_slice[3] - block_slice[2]
-                        
-                        condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
-
-                        if atomic_numbers[i].item() == int(condition_atomic_number_i) and atomic_numbers[j].item() == int(condition_atomic_number_j):
-                            H_prev_edge[slice_row, slice_col] = H_pred[edge_counter][slice_out].reshape(len_row, len_col)
+            for N_M_str, block_slice in equivariant_block.items():
+                condition_i, condition_j = map(int, N_M_str.split())
                 
-                edge_counter += 1
+                # Vectorized mask creation
+                mask = (atomic_nums_i == condition_i) & (atomic_nums_j == condition_j)
+                matching_forward_indices = forward_indices[mask]
+                
+                if len(matching_forward_indices) == 0:
+                    continue
+                    
+                # Get edge indices for matching edges
+                edge_i_batch = forward_edge_i[mask]
+                edge_j_batch = forward_edge_j[mask]
+                
+                # Batch process all matching edges
+                slice_row = slice(block_slice[0], block_slice[1])
+                slice_col = slice(block_slice[2], block_slice[3])
+                len_row = block_slice[1] - block_slice[0]
+                len_col = block_slice[3] - block_slice[2]
+                
+                # Extract predictions for all matching edges at once
+                edge_counter_batch = torch.searchsorted(forward_indices, matching_forward_indices)
+                pred_batch = H_pred[edge_counter_batch][:, slice_out].reshape(-1, len_row, len_col)
+                
+                # Initialize matrices if not already done
+                for idx, (i, j) in enumerate(zip(edge_i_batch, edge_j_batch)):
+                    i, j = i.item(), j.item()
+                    key_term = (i, j)
+                    
+                    if key_term not in H_prev:
+                        num_orbitals_i = atom_orbitals_count[atomic_numbers[i].item()]
+                        num_orbitals_j = atom_orbitals_count[atomic_numbers[j].item()]
+                        H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_j), dtype=float)
+                    
+                    # Assign the prediction
+                    H_prev[key_term][slice_row, slice_col] = pred_batch[idx]
 
         return H_prev
 
