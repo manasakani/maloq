@@ -11,6 +11,10 @@ import wandb
 import matplotlib.pyplot as plt
 import os
 from dataset_utils import get_scale_shift
+from fock_utils.get_energy_from_fock import build_density, get_integrals, get_permute_phase, permute_mat
+from fock_utils.utils_orca_out import periodic_table_number 
+import json
+from pyscf import gto
 
 # note: removing amp to get better precision for now
 def disable_amp(func):
@@ -353,7 +357,8 @@ class SplitTrainer():
                 edge_target_name=None, 
                 basis_transform=None,
                 element_references=None,
-                output_folder='outputs'):
+                output_folder='outputs',
+                dataset_name='omol'):
         
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
         print("Running eval.")
@@ -386,6 +391,7 @@ class SplitTrainer():
         node_outputs = {}
         node_labels = {}
         eigenvalue_maes = []
+        total_energy_errors = []
         if loss_target_string == 'fock_matrix':
             edge_outputs = {}
             edge_labels = {}
@@ -469,7 +475,7 @@ class SplitTrainer():
                 # Compute the eigenvalues and eigenvalue error
                 print("Computing eigenvalues...", flush=True)
 
-                if batch.overlap_matrix is not None:
+                if hasattr(batch, 'overlap_matrix') and batch.overlap_matrix is not None:
                     print("Solving generalized eigenvalue problem...", flush=True)
                     overlap_matrix = batch.overlap_matrix.detach().cpu().numpy() 
                     label_eigenvalues, _ = sp.linalg.eigh(label_fock_matrix.detach().cpu().numpy(), overlap_matrix)
@@ -485,14 +491,13 @@ class SplitTrainer():
                 self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
                 self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
                 # self.plot_eigenvalue_diff(label_fock_matrix.detach().cpu().numpy(), output_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
-
-                plt.xlabel('Eigenvalue #')
-                plt.ylabel('Eigenvalue ($E_h$)')
-                plt.yscale('log')
-                plt.legend()
-                plt.grid(True)
-                plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
                 plt.close()
+
+                # Compute error in total energy from predicted and label Fock matrices:
+                total_energy_label = self.get_total_energy(batch, label_fock_matrix.detach().cpu().numpy(), dataset_name)
+                total_energy_pred = self.get_total_energy(batch, output_fock_matrix.detach().cpu().numpy(), dataset_name)
+                total_energy_errors.append(np.abs(total_energy_pred - total_energy_label))
+                print("Total energy error from predicted Fock matrix: ", total_energy_errors[-1], flush=True)
 
                 node_outputs.update(node_orbital_blocks_output)
                 edge_outputs.update(edge_orbital_blocks_output)
@@ -744,7 +749,13 @@ class SplitTrainer():
         """
         eigenvalues = np.linalg.eigvalsh(matrix)
         plt.scatter(range(len(eigenvalues)), eigenvalues, s=s, alpha=alpha, label=label, color=color, edgecolors='none')
-    
+        plt.xlabel('Eigenvalue #')
+        plt.ylabel('Eigenvalue ($E_h$)')
+        plt.yscale('log')
+        plt.legend()
+        plt.grid(True)
+        plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
+
     def plot_eigenvalue_diff(self, matrix1, matrix2, s=1, alpha=0.3, label='', color='blue'):
         """
         Here for convinience, just plots the eigenvalues of the matrix
@@ -753,6 +764,56 @@ class SplitTrainer():
         eigenvalues_2 = np.linalg.eigvalsh(matrix2)
         eigenvalues = np.abs(eigenvalues_1 - eigenvalues_2)
         plt.scatter(range(len(eigenvalues)), eigenvalues, s=s, alpha=alpha, label=label, color=color, edgecolors='none')
+    
+    def get_total_energy(self, batch, fock_matrix, dataset_name):
+        """
+        Compute the total energy error from the Fock matrix 
+        """
+
+        if dataset_name == 'omol':
+            basis = 'gth-tzvpd'
+        elif dataset_name == 'QM7' or dataset_name == 'nablaDFT':
+            basis = 'def2-svp'
+        else:
+            raise ValueError(f"Unknown dataset name: {dataset_name}")
+
+        with open('./train_utils/element_perm_omol.json', 'r') as fh:
+            json_data = json.loads(fh.read())
+        elt_reorder = json_data['element_permuations']
+        elt_phase = json_data['element_phases']
+
+        atomic_numbers = batch.atomic_numbers.cpu().numpy()
+        positions = batch.pos.cpu().numpy()  # Assuming positions are in batch.pos
+        
+        # Convert atomic numbers to element symbols using the imported dictionary
+        atom_list = []
+        for z, pos in zip(atomic_numbers, positions):
+            element_symbol = periodic_table_number[z]  # Direct lookup
+            atom_list.append([element_symbol, pos])
+        
+        # Create molecule
+        mol = gto.M(
+            atom=atom_list,
+            basis=basis,  
+            unit='Angstrom'
+        )
+
+        print("Created molecule with atoms: ", mol.atom)
+
+        # reorder to PySCF ordering - FIX
+        F = fock_matrix
+        # perm, phase = get_permute_phase(mol, elt_reorder, elt_phase)
+        # F = permute_mat(fock_matrix, perm, phase)
+
+        # Get intermediate quantities
+        P = build_density(mol, F)
+        H, E_xc, V_xc = get_integrals(mol, P)
+
+        # Compute energy
+        E_nn = mol.energy_nuc()
+        total_energy = 0.5 * np.einsum('ij,ji', P,  H + F - V_xc) + E_xc + E_nn
+
+        return total_energy
 
     def save_training_state(self, step, model, optimizer, track_loss_node, track_validation_node, save_file, output_folder, track_loss_edge=None, track_validation_edge=None):
         """
