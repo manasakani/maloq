@@ -5,6 +5,7 @@ from torch.cuda.amp import autocast, GradScaler
 import time
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy as sp
 from e3nn.o3 import Irreps
 import wandb
 import matplotlib.pyplot as plt
@@ -149,7 +150,7 @@ class SplitTrainer():
                         print(f"--> Rank {rank} batch {batch_idx} loss: ", loss.item(), flush=True)
                         current_mem = torch.cuda.memory_allocated() / (1024 * 1024)   
                         peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024) 
-                        # print(f"Current: {current_mem:.2f} MB, Peak: {peak_mem:.2f} MB")
+                        print(f"Current: {current_mem:.2f} MB, Peak: {peak_mem:.2f} MB")
                         # print(torch.cuda.memory.memory_summary(), flush=True)
                         print(f"Backbone time: {backbone_end - backbone_start:.4f}s, Head time: {head_end - backbone_end:.4f}s, Loss time: {loss_end - loss_start:.4f}s", flush=True)
 
@@ -409,6 +410,7 @@ class SplitTrainer():
                 this_edge_target = getattr(batch, edge_target_name)
 
                 # Undo scale/shift layers:
+                print("Undoing scale/shift...", flush=True)
                 node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
                 this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target)
 
@@ -444,7 +446,6 @@ class SplitTrainer():
                 # reassemble the matrix (use the model output for the predicted matrix, and reconstruct the label matrix from the orbital blocks if needed)
                 print("Reconstructing matrices...", flush=True)
                 output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=True)
-
                 # if batch.fock_target_object[0].fock_matrix is not None:
                 #     label_fock_matrix = batch.fock_target_object[0].fock_matrix
                 # else:
@@ -467,24 +468,31 @@ class SplitTrainer():
 
                 # Compute the eigenvalues and eigenvalue error
                 print("Computing eigenvalues...", flush=True)
-                label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix.detach().cpu().numpy())
-                pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix.detach().cpu().numpy())
+
+                if batch.overlap_matrix is not None:
+                    print("Solving generalized eigenvalue problem...", flush=True)
+                    overlap_matrix = batch.overlap_matrix.detach().cpu().numpy() 
+                    label_eigenvalues, _ = sp.linalg.eigh(label_fock_matrix.detach().cpu().numpy(), overlap_matrix)
+                    pred_eigenvalues, _ = sp.linalg.eigh(output_fock_matrix.detach().cpu().numpy(), overlap_matrix)
+                else:
+                    label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix.detach().cpu().numpy())
+                    pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix.detach().cpu().numpy())
                 eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
                 eigenvalue_maes.append(eigenvalue_MAE)
                 print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
 
-                # plt.figure(figsize=(4, 3))
-                # self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
-                # self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
+                plt.figure(figsize=(4, 3))
+                self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
+                self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
                 # self.plot_eigenvalue_diff(label_fock_matrix.detach().cpu().numpy(), output_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
 
-                # plt.xlabel('Eigenvalue #')
-                # plt.ylabel('Eigenvalue ($E_h$)')
-                # plt.yscale('log')
-                # plt.legend()
-                # plt.grid(True)
-                # plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
-                # plt.close()
+                plt.xlabel('Eigenvalue #')
+                plt.ylabel('Eigenvalue ($E_h$)')
+                plt.yscale('log')
+                plt.legend()
+                plt.grid(True)
+                plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
+                plt.close()
 
                 node_outputs.update(node_orbital_blocks_output)
                 edge_outputs.update(edge_orbital_blocks_output)
@@ -506,7 +514,6 @@ class SplitTrainer():
                 loss = torch.abs(unscaled_energies - ref_energies).mean()  # use MAE for eval                
 
                 # print("predicted and reference energies for last val batch: ", unscaled_energies.tolist(), ref_energies.tolist())
-                # exit()
                 
             else:
                 node_output = self.head(backbone_out, batch)
@@ -712,6 +719,11 @@ class SplitTrainer():
         return collect
                 
     def visualize_embeddings(self, embs, output_folder, keyword, plot_log=True):
+
+        # make a folder called "embeddings" in the output folder if it doesn't exist
+        if not os.path.exists(os.path.join(output_folder, 'embeddings')):
+            os.makedirs(os.path.join(output_folder, 'embeddings'))
+        output_folder = os.path.join(output_folder, 'embeddings')
 
         # for i, emb in enumerate(embs):
         for i in range(embs.shape[0]):
