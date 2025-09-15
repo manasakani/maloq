@@ -400,8 +400,9 @@ class SplitTrainer():
             print(f"Processing molecule {index}...", flush=True)   
             print(f"Number of atoms in molecule {index}: {batch.num_nodes}", flush=True)
 
-            batch = batch.to(device)
-            backbone_out = self.backbone(batch) 
+            with torch.no_grad():
+                batch = batch.to(device)
+                backbone_out = self.backbone(batch) 
 
             # print("Writing embeddings to file...", flush=True)
             # self.write_embeddings_to_file(backbone_out, batch, index, output_folder, rank)
@@ -418,7 +419,7 @@ class SplitTrainer():
                 # Undo scale/shift layers:
                 print("Undoing scale/shift...", flush=True)
                 node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
-                this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target)
+                #this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target) - don't unscale the labels
 
                 # # write the corresponding node and edge outputs and targets to file:
                 # if rank == 0:
@@ -458,8 +459,8 @@ class SplitTrainer():
                 label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
 
                 matrix_out = output_fock_matrix.cpu().detach().numpy()
-                # matrix_out[np.abs(matrix_out) < 1e-6] = 0.0
-                plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
+                matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
                 matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
                 print("Matrix symmetry error: ", matrix_symmetry_error)
                 plt.colorbar()
@@ -467,7 +468,8 @@ class SplitTrainer():
                 plt.close()
 
                 matrix_out = label_fock_matrix.cpu().detach().numpy()
-                plt.imshow(np.log(np.abs(matrix_out)), vmin=-10.0, vmax=5.0)
+                matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
                 plt.colorbar()
                 plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
                 plt.close()
@@ -494,9 +496,12 @@ class SplitTrainer():
                 plt.close()
 
                 # Compute error in total energy from predicted and label Fock matrices:
+                print("Computing total energy...", flush=True)
                 total_energy_label = self.get_total_energy(batch, label_fock_matrix.detach().cpu().numpy(), dataset_name)
                 total_energy_pred = self.get_total_energy(batch, output_fock_matrix.detach().cpu().numpy(), dataset_name)
                 total_energy_errors.append(np.abs(total_energy_pred - total_energy_label))
+                print("Total energy from label Fock matrix: ", total_energy_label, flush=True)
+                print("Total energy from predicted Fock matrix: ", total_energy_pred, flush=True)
                 print("Total energy error from predicted Fock matrix: ", total_energy_errors[-1], flush=True)
 
                 node_outputs.update(node_orbital_blocks_output)
@@ -653,16 +658,11 @@ class SplitTrainer():
             if compute_uncoupled_loss:
                 output = basis_transform.get_H(output)
                 labels = basis_transform.get_H(labels)
-                # print("chunking the basis transform...")
-                # chunk_size = 10000 
-                # chunks = torch.split(output, chunk_size, dim=0)
-                # output = torch.cat([basis_transform.get_H(chunk) for chunk in chunks], dim=0)
-                # chunks = torch.split(labels, chunk_size, dim=0)
-                # labels = torch.cat([basis_transform.get_H(chunk) for chunk in chunks], dim=0)
-
+                
             loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
             loss_edge = loss_fxn(edge_output_fwd, this_edge_target, self.head_irreps) 
-            loss = loss_fxn(output, labels, self.head_irreps)
+            # loss = loss_fxn(output, labels, self.head_irreps)
+            loss = loss_node + loss_edge
 
         return loss_node, loss_edge, loss
     
@@ -697,6 +697,8 @@ class SplitTrainer():
             if backbone_out['edge_embeddings'] is not None:
                 f.write(f"Edge embeddings shape: {backbone_out['edge_embeddings'].shape}\n")
             f.write(f"Edge distances shape: {batch.edge_attr.shape}\n")
+        
+        del backbone_out
 
 
     def adjust_learning_rate(self, optimizer, epoch, warmup_epochs, initial_lr, final_lr):
@@ -771,7 +773,7 @@ class SplitTrainer():
         """
 
         if dataset_name == 'omol':
-            basis = 'gth-tzvpd'
+            basis = 'def2-tzvpd'
         elif dataset_name == 'QM7' or dataset_name == 'nablaDFT':
             basis = 'def2-svp'
         else:
@@ -783,12 +785,11 @@ class SplitTrainer():
         elt_phase = json_data['element_phases']
 
         atomic_numbers = batch.atomic_numbers.cpu().numpy()
-        positions = batch.pos.cpu().numpy()  # Assuming positions are in batch.pos
+        positions = batch.pos.cpu().numpy()  
         
-        # Convert atomic numbers to element symbols using the imported dictionary
         atom_list = []
         for z, pos in zip(atomic_numbers, positions):
-            element_symbol = periodic_table_number[z]  # Direct lookup
+            element_symbol = periodic_table_number[z] 
             atom_list.append([element_symbol, pos])
         
         # Create molecule
@@ -800,10 +801,10 @@ class SplitTrainer():
 
         print("Created molecule with atoms: ", mol.atom)
 
-        # reorder to PySCF ordering - FIX
+        # reorder to PySCF ordering (fix for not-omol)
         F = fock_matrix
-        # perm, phase = get_permute_phase(mol, elt_reorder, elt_phase)
-        # F = permute_mat(fock_matrix, perm, phase)
+        perm, phase = get_permute_phase(mol, elt_reorder, elt_phase)
+        F = permute_mat(fock_matrix, perm, phase)
 
         # Get intermediate quantities
         P = build_density(mol, F)
