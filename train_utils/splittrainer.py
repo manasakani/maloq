@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import os
 from dataset_utils import get_scale_shift
 from fock_utils.get_energy_from_fock import build_density, get_integrals, get_permute_phase, permute_mat
-from fock_utils.utils_orca_out import periodic_table_number 
+from fock_utils.utils_orca_out import periodic_table_number, sort_by_m
 import json
 from pyscf import gto
 
@@ -358,7 +358,8 @@ class SplitTrainer():
                 basis_transform=None,
                 element_references=None,
                 output_folder='outputs',
-                dataset_name='omol'):
+                dataset_name='omol',
+                orbital_basis=None):
         
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
         print("Running eval.")
@@ -453,11 +454,17 @@ class SplitTrainer():
                 # reassemble the matrix (use the model output for the predicted matrix, and reconstruct the label matrix from the orbital blocks if needed)
                 print("Reconstructing matrices...", flush=True)
                 output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=True)
-                # if batch.fock_target_object[0].fock_matrix is not None:
-                #     label_fock_matrix = batch.fock_target_object[0].fock_matrix
-                # else:
-                label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
+                if hasattr(batch.fock_target_object[0], 'fock_matrix') and batch.fock_target_object[0].fock_matrix is not None:
+                    print("Using the original label Fock matrix from the dataset...", flush=True)
+                    label_fock_matrix = batch.fock_target_object[0].fock_matrix
+                else:
+                    label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
 
+                # plot the difference between the reconstructed label matrix and the original label matrix if available:
+                # label_diff = label_fock_matrix - label_fock_matrix_recon
+                # plt.imshow(np.log(np.abs(label_diff.cpu().detach().numpy())), vmin=-5.0, vmax=5.0)
+                # plt.savefig("label_matrix_reconstruction_error.png", dpi=300, bbox_inches='tight')
+                
                 matrix_out = output_fock_matrix.cpu().detach().numpy()
                 matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
                 plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
@@ -497,8 +504,8 @@ class SplitTrainer():
 
                 # Compute error in total energy from predicted and label Fock matrices:
                 print("Computing total energy...", flush=True)
-                total_energy_label = self.get_total_energy(batch, label_fock_matrix.detach().cpu().numpy(), dataset_name)
-                total_energy_pred = self.get_total_energy(batch, output_fock_matrix.detach().cpu().numpy(), dataset_name)
+                total_energy_label = self.get_total_energy(batch, label_fock_matrix.detach().cpu().numpy(), orbital_basis, dataset_name)
+                total_energy_pred = self.get_total_energy(batch, output_fock_matrix.detach().cpu().numpy(), orbital_basis, dataset_name)
                 total_energy_errors.append(np.abs(total_energy_pred - total_energy_label))
                 print("Total energy from label Fock matrix: ", total_energy_label, flush=True)
                 print("Total energy from predicted Fock matrix: ", total_energy_pred, flush=True)
@@ -520,7 +527,6 @@ class SplitTrainer():
                 unscaled_energies /= batch.num_atoms_in_molecule
                 ref_energies /= batch.num_atoms_in_molecule
 
-                # loss = loss_fxn(unscaled_energies, ref_energies, self.head_irreps)
                 loss = torch.abs(unscaled_energies - ref_energies).mean()  # use MAE for eval                
 
                 # print("predicted and reference energies for last val batch: ", unscaled_energies.tolist(), ref_energies.tolist())
@@ -661,8 +667,8 @@ class SplitTrainer():
                 
             loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
             loss_edge = loss_fxn(edge_output_fwd, this_edge_target, self.head_irreps) 
-            # loss = loss_fxn(output, labels, self.head_irreps)
-            loss = loss_node + loss_edge
+            loss = loss_fxn(output, labels, self.head_irreps)
+            # loss = loss_node + loss_edge
 
         return loss_node, loss_edge, loss
     
@@ -753,7 +759,7 @@ class SplitTrainer():
         plt.scatter(range(len(eigenvalues)), eigenvalues, s=s, alpha=alpha, label=label, color=color, edgecolors='none')
         plt.xlabel('Eigenvalue #')
         plt.ylabel('Eigenvalue ($E_h$)')
-        plt.yscale('log')
+        # plt.yscale('log')
         plt.legend()
         plt.grid(True)
         plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
@@ -767,7 +773,7 @@ class SplitTrainer():
         eigenvalues = np.abs(eigenvalues_1 - eigenvalues_2)
         plt.scatter(range(len(eigenvalues)), eigenvalues, s=s, alpha=alpha, label=label, color=color, edgecolors='none')
     
-    def get_total_energy(self, batch, fock_matrix, dataset_name):
+    def get_total_energy(self, batch, fock_matrix, orbital_basis, dataset_name):
         """
         Compute the total energy error from the Fock matrix 
         """
@@ -785,7 +791,10 @@ class SplitTrainer():
         elt_phase = json_data['element_phases']
 
         atomic_numbers = batch.atomic_numbers.cpu().numpy()
-        positions = batch.pos.cpu().numpy()  
+        positions = batch.pos.cpu().numpy()
+
+        # First, reverse the sort so that we can use the permutation:
+        fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca") 
         
         atom_list = []
         for z, pos in zip(atomic_numbers, positions):

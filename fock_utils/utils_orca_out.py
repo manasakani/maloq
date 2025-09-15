@@ -232,7 +232,7 @@ def read_orca_out(orca_file):
 
     return fock_matrix, elements, coordinates, basis
 
-def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
+def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3nn"):
     """
     Converts hamiltonian matrix m-components from ORCA order to the one 
     expected by e3nn (m=0 is in the middle)
@@ -245,12 +245,22 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
     num_cols = hamiltonian.shape[0]
     
     m_to_m_conversion = []
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
+    if direction == "orca_to_e3nn":
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
+    elif direction == "e3nn_to_orca":
+        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [2, 3, 1, 4, 0], 3: [3, 4, 2, 5, 1, 6, 0], 4: [4, 5, 3, 6, 2, 7, 1, 8, 0]}) 
+        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [2, 3, 1, 4, 0], 3: [3, 4, 2, 5, 1, 6, 0], 4: [4, 5, 3, 6, 2, 7, 1, 8, 0]})
+        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [2, 3, 1, 4, 0], 3: [3, 4, 2, 5, 1, 6, 0], 4: [4, 5, 3, 6, 2, 7, 1, 8, 0]}) 
+        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [2, 3, 1, 4, 0], 3: [3, 4, 2, 5, 1, 6, 0], 4: [4, 5, 3, 6, 2, 7, 1, 8, 0]})
+        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [2, 3, 1, 4, 0], 3: [3, 4, 2, 5, 1, 6, 0], 4: [4, 5, 3, 6, 2, 7, 1, 8, 0]})
+        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [2, 3, 1, 4, 0], 3: [3, 4, 2, 5, 1, 6, 0], 4: [4, 5, 3, 6, 2, 7, 1, 8, 0]}) 
+    else:
+        raise ValueError("direction must be either orca_to_e3nn or e3nn_to_orca")
 
     reflection = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [-1, 1, 1, 1, 1, 1, -1], 4: [-1, -1, 1, 1, 1, 1, 1, -1, -1]} # reflection for each l 
 
