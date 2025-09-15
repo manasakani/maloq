@@ -33,6 +33,8 @@ e3nn.set_optimization_defaults(jit_script_fx=False)
 from .common.rotation import (
     init_edge_rot_mat,
     rotation_to_wigner,
+    eulers_to_wigner,
+    init_edge_rot_euler_angles
 )
 from .common.so3 import (
     CoefficientMapping,
@@ -231,27 +233,44 @@ class eSEN_Backbone(nn.Module):
         #     build_irreps.append((self.sphere_channels, (l, 1)))
         # self.irreps_in = Irreps(build_irreps)
 
-    def get_rotmat_and_wigner(self, edge_distance_vecs):
+    # def get_rotmat_and_wigner(self, edge_distance_vecs):
 
-        edge_rot_mat = init_edge_rot_mat(
-            edge_distance_vecs, rot_clip=(not self.direct_forces)
-        )
+    #     edge_rot_mat = init_edge_rot_mat(
+    #         edge_distance_vecs, rot_clip=(not self.direct_forces)
+    #     )
 
+    #     Jd_buffers = [
+    #         getattr(self, f"Jd_{l}").type(edge_rot_mat.dtype)
+    #         for l in range(self.lmax + 1)
+    #     ]
+
+    #     wigner = rotation_to_wigner(
+    #         edge_rot_mat,
+    #         0,
+    #         self.lmax,
+    #         Jd_buffers,
+    #         rot_clip=(not self.direct_forces),
+    #     )
+    #     wigner_inv = torch.transpose(wigner, 1, 2).contiguous()
+
+    #     return edge_rot_mat, wigner, wigner_inv
+
+    def _get_rotmat_and_wigner(self, edge_distance_vecs):
         Jd_buffers = [
-            getattr(self, f"Jd_{l}").type(edge_rot_mat.dtype)
+            getattr(self, f"Jd_{l}").type(edge_distance_vecs.dtype)
             for l in range(self.lmax + 1)
         ]
 
-        wigner = rotation_to_wigner(
-            edge_rot_mat,
+        euler_angles = init_edge_rot_euler_angles(edge_distance_vecs)
+        wigner = eulers_to_wigner(
+            euler_angles,
             0,
             self.lmax,
             Jd_buffers,
-            rot_clip=(not self.direct_forces),
         )
         wigner_inv = torch.transpose(wigner, 1, 2).contiguous()
 
-        return edge_rot_mat, wigner, wigner_inv
+        return wigner, wigner_inv
 
 
     @conditional_grad(torch.enable_grad())
@@ -290,12 +309,15 @@ class eSEN_Backbone(nn.Module):
             "edge_distance_vec": edge_distance_vec,
         }
 
-        edge_rot_mat, wigner, wigner_inv = self.get_rotmat_and_wigner(
+        # edge_rot_mat, wigner, wigner_inv = self.get_rotmat_and_wigner(
+        #     graph_dict["edge_distance_vec"]
+        # )
+        # delete edge_rot_mat! This is huge and not needed and it saves memory
+        # del edge_rot_mat
+
+        wigner, wigner_inv = self._get_rotmat_and_wigner(
             graph_dict["edge_distance_vec"]
         )
-
-        # delete edge_rot_mat! This is huge and not needed and it saves memory
-        del edge_rot_mat
 
         # --> Rotation test:
         # rotated_edges_to_z_axis = torch.bmm(edge_rot_mat, graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
@@ -583,14 +605,16 @@ class Fock_Irreps_Head(nn.Module):
                 # self.lin_out = cuet_Linear(irreps_in=irreps_in_simplified, irreps_out=irreps_out) 
 
                 # create single linear layers up to lmax:
-                self.lin_out_layers = nn.ModuleList()
+                self.node_lin_out_layers = nn.ModuleList()
+                self.edge_lin_out_layers = nn.ModuleList()
                 for l in range(0, self.lmax+1):
                     mul_in = self.sphere_channels
                     mul_out = irreps_out.count('{}e'.format(l))
                     irreps_in_l = f"{mul_in}x{l}e"  
                     irreps_out_l = f"{mul_out}x{l}e"
                     print("Creating linear output map for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out = ", irreps_out_l, flush=True)
-                    self.lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
+                    self.node_lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
+                    self.edge_lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
 
                     # Attempt at using SO3_Linear - not working well
                     # mul_in = self.sphere_channels
@@ -869,7 +893,10 @@ class Fock_Irreps_Head(nn.Module):
                 x_l = x_gated[:, start_idx:end_idx]  # extract the l-th irrep component
 
                 # x_l = x_l.reshape(batch_size, 2*l + 1, self.sphere_channels)  # this is for SO3_Linear..
-                x_l_out = self.lin_out_layers[l](x_l)  # apply the Linear layer for degree l
+                if node_or_edge == 'node':
+                    x_l_out = self.node_lin_out_layers[l](x_l)  # apply the Linear layer for degree l
+                if node_or_edge == 'edge':
+                    x_l_out = self.edge_lin_out_layers[l](x_l)  # apply the Linear layer for degree l
                 # mul_out = self.irreps_out.count(f'{l}e')
                 # x_l_out = x_l_out.reshape(batch_size, mul_out*(2*l+1))  # [batch, (2*l+1)*mul_out]
 
