@@ -95,7 +95,7 @@ def build_density(mol:gto.Mole, F:np.array)->np.array:
     P = 2 * C[:, :nocc] @ C[:, :nocc].T
     return P
 
-def get_integrals(mol:gto.Mole, P:np.array)->tuple[np.array, float, np.array]:
+def get_integrals(mol:gto.Mole, P:np.array, functional:str)->tuple[np.array, float, np.array]:
     """
     Get needed additional integrals/etc. for total energy evaluation.
 
@@ -116,16 +116,20 @@ def get_integrals(mol:gto.Mole, P:np.array)->tuple[np.array, float, np.array]:
     grids.prune = 'treutler'
     grids.build()
 
-    nlcgrids = dft.gen_grid.Grids(mol)
-    nlcgrids.atom_grid= (50,194)
-    nlcgrids.prune = 'treutler'
-    nlcgrids.build()
-
     ni = dft.numint.NumInt()
-    elec, E_xc, V_xc = ni.nr_rks(mol, grids, 'wb97m-v', P)
-    elec2, E_nlc, V_nlc = ni.nr_nlc_vxc(mol, nlcgrids, 'wb97m-v', P)
+    elec, E_xc, V_xc = ni.nr_rks(mol, grids, functional, P)
 
-    return H, E_xc + E_nlc, V_xc + V_nlc    
+    if functional == 'wb97m-v':
+        nlcgrids = dft.gen_grid.Grids(mol)
+        nlcgrids.atom_grid= (50,194)
+        nlcgrids.prune = 'treutler'
+        nlcgrids.build()
+        elec2, E_nlc, V_nlc = ni.nr_nlc_vxc(mol, nlcgrids, 'wb97m-v', P)
+        return H, E_xc + E_nlc, V_xc + V_nlc
+    elif functional == 'pbe' or functional == 'wb97x':
+        return H, E_xc, V_xc    
+    else:
+        raise ValueError(f"Functional {functional} not implemented.")
 
 def main():
     with open('element_perm.json', 'r') as fh:

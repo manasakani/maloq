@@ -194,9 +194,9 @@ class SplitTrainer():
                     del node_output, loss
                 del batch, backbone_out
                 
-                if rank == 0:
-                    print("Time per forward pass: ", forward_end - forward_start, flush=True)
-                    print("Time for backward pass: ", backward_end - backward_start, flush=True)
+                # if rank == 0:
+                #     print("Time per forward pass: ", forward_end - forward_start, flush=True)
+                #     print("Time for backward pass: ", backward_end - backward_start, flush=True)
 
             # -- Output dump -- 
             if loss_target_string == 'fock_matrix':
@@ -586,7 +586,7 @@ class SplitTrainer():
             # do output dump in append mode:
             if loss_target_string == 'fock_matrix':
                 with open(output_folder + "/" + 'model_fock_' + '_eval_' + str(rank) + '.txt', 'a') as f:
-                    f.write(f"{track_loss_edge[-1]:.10f}\t{track_loss_node[-1]:.10f}\t{track_loss[-1]:.10f}\t{eigenvalue_maes[-1]:.10f}\n")
+                    f.write(f"{track_loss_edge[-1]:.10f}\t{track_loss_node[-1]:.10f}\t{track_loss[-1]:.10f}\t{eigenvalue_maes[-1]:.10f}\t{total_energy_errors[-1]:.10f}\n")
             elif loss_target_string == 'energies':
                 with open(output_folder + "/" + 'model_energies_' + '_eval_' + str(rank) + '.txt', 'a') as f:
                     # f.write(f"{track_loss[-1]:.10f}\n")
@@ -618,8 +618,9 @@ class SplitTrainer():
         # -- Output dump -- 
         if loss_target_string == 'fock_matrix':
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
-                    for edge, node, total, eig in zip(track_loss_edge, track_loss_node, track_loss, eigenvalue_maes):
-                        f.write(f"{edge:.10f}\t{node:.10f}\t{total:.10f}\t{eig:.10f}\n")
+                f.write(f"Edge_MAE\tNode_MAE\tTotal_MAE\tEigenvalue_MAE\tTotal_Energy_Error\n")
+                for edge, node, total, eig, energy in zip(track_loss_edge, track_loss_node, track_loss, eigenvalue_maes, total_energy_errors):
+                    f.write(f"{edge:.10f}\t{node:.10f}\t{total:.10f}\t{eig:.10f}\t{energy:.10f}\n")
         else:
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                     for node in track_loss:
@@ -810,7 +811,8 @@ class SplitTrainer():
             mol = gto.M(
                 atom=atom_list,
                 basis=basis,  
-                unit='Angstrom', # ecp='def2-tzvpd' ADD
+                unit='Angstrom',
+                ecp='def2-tzvpd'
             )
 
             # orca to pyscf ordering:
@@ -827,9 +829,22 @@ class SplitTrainer():
             perm, phase = get_permute_phase(mol, elt_reorder, elt_phase)
             F = permute_mat(fock_matrix, perm, phase) 
 
-        elif dataset_name == 'QM7' or dataset_name == 'nablaDFT':
+        elif dataset_name == 'QM7':
             basis = 'def2-svp'
             functional = 'pbe'
+
+            fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca") 
+            F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="orca_to_pyscf") 
+
+            # Create molecule
+            mol = gto.M(
+                atom=atom_list,
+                basis=basis,  
+                unit='Angstrom'
+            )    
+        elif dataset_name == 'nablaDFT':
+            basis = 'def2-svp'
+            functional = 'wb97x'
 
             fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca") 
             F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="orca_to_pyscf") 
