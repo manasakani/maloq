@@ -15,7 +15,61 @@ from e3nn import o3
 
 YTOL = 0.999999
 
+def eulers_to_wigner(
+    eulers: torch.Tensor,
+    start_lmax: int,
+    end_lmax: int,
+    Jd: list[torch.Tensor],
+) -> torch.Tensor:
+    """
+    set <rot_clip=True> to handle gradient instability when using gradient-based force/stress prediction.
+    """
+    alpha, beta, gamma = eulers
 
+    size = int((end_lmax + 1) ** 2) - int((start_lmax) ** 2)
+    wigner = torch.zeros(len(alpha), size, size, device=alpha.device, dtype=alpha.dtype)
+    start = 0
+    for lmax in range(start_lmax, end_lmax + 1):
+        block = wigner_D(lmax, alpha, beta, gamma, Jd)
+        end = start + block.size()[1]
+        wigner[:, start:end, start:end] = block
+        start = end
+
+    return wigner
+
+def init_edge_rot_euler_angles(edge_distance_vec):
+    edge_vec_0 = edge_distance_vec
+    edge_vec_0_distance = torch.sqrt(torch.sum(edge_vec_0**2, dim=1))
+
+    # Make sure the atoms are far enough apart
+    # assert torch.min(edge_vec_0_distance) < 0.0001
+    if len(edge_vec_0_distance) > 0 and torch.min(edge_vec_0_distance) < 0.0001:
+        logging.error(f"Error edge_vec_0_distance: {torch.min(edge_vec_0_distance)}")
+
+    # make unit vectors
+    xyz = edge_vec_0 / (edge_vec_0_distance.view(-1, 1))
+
+    # are we standing at the north pole
+    mask = xyz[:, 1].abs().isclose(xyz.new_ones(1))
+
+    # compute alpha and beta
+
+    # latitude (beta)
+    beta = xyz.new_zeros(xyz.shape[0])
+    beta[~mask] = torch.acos(xyz[~mask, 1])
+    beta[mask] = torch.acos(xyz[mask, 1]).detach()
+
+    # longitude (alpha)
+    alpha = torch.zeros_like(beta)
+    alpha[~mask] = torch.atan2(xyz[~mask, 0], xyz[~mask, 2])
+    alpha[mask] = torch.atan2(xyz[mask, 0], xyz[mask, 2]).detach()
+
+    # random gamma (roll)
+    gamma = torch.rand_like(alpha) * 2 * torch.pi
+    # gamma = torch.zeros_like(alpha)
+
+    # intrinsic to extrinsic swap
+    return -gamma, -beta, -alpha
 
 def init_edge_rot_mat(edge_distance_vec, rot_clip=False):
     edge_vec_0 = edge_distance_vec

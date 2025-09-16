@@ -726,8 +726,6 @@ class Fock_Irreps_Head(nn.Module):
             edge_embeddings = self.stack_irreps(edge_embeddings)
             node_output = self.process(node_embeddings, edge_index, 'node')
             edge_output = self.process(edge_embeddings, edge_index, 'edge')
-            # node_output = self.process_doublegated(node_embeddings, x_edge, edge_index, 'node')
-            # edge_output = self.process_doublegated(edge_embeddings, x_edge, edge_index, 'edge')
         
         else:
             print("Error! Mispelt head type")
@@ -940,40 +938,6 @@ class Fock_Irreps_Head(nn.Module):
 
         return x_out
 
-    def process_doublegated(self, x, x_edge, edge_index, node_or_edge):
-
-        # 1. Extract the scalar components, which are the first # sphere_channels elements of this tensor
-        x_scalars = x[:, :self.sphere_channels]
-        x_nonscalars = x[:, self.sphere_channels:]
-
-        # 2. Prepare some scalars for gating
-        # gate with learnable scalars: the first 'sphere_channels' scalars are the l=0, and others are used for gating
-        all_scalars = self.lin_scalars_learnable(x_scalars) 
-
-        # 3. Gate the l>0 irreps:
-
-        # first gating pass:
-        gating_scalars = all_scalars[:, self.sphere_channels:]
-        x_gated = self.gate(torch.cat([gating_scalars, x_nonscalars], dim=1))
-
-        # second gating pass:
-        all_scalars_2 = self.lin_scalars_learnable_2(x_scalars)
-        gating_scalars_2 = all_scalars_2[:, self.sphere_channels:]  # these are the scalars used for gating the second pass
-        x_gated_2 = self.gate2(torch.cat([gating_scalars_2, x_gated], dim=1)) 
-
-        # plug the l=0 components back into x_gated (currently they are zeros):
-        transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
-        x_gated_out = torch.cat([transformed_l0_scalars, x_gated_2], dim=1)   # use the transformed scalars
-        
-        if not self.reduce_node:
-            x_out = self.lin_out(x_gated_out)
-        else:
-            if node_or_edge == 'node':
-                x_out = self.lin_out_node(x_gated_out)
-            if node_or_edge == 'edge':
-                x_out = self.lin_out_edge(x_gated_out)
-
-        return x_out
 
     def expand_reduced_node(self, node_output, edge_output):
         """
