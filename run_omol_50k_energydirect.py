@@ -49,7 +49,7 @@ print("Time to setup distributed environment: ", compute_end - compute_start)
 # --> OMOL 
 dataset_folder = '/checkpoint/ocp/manasakani/omol_58k_Sep11/omol_closedshell_58k_train_6.0_alledge_job_'+str(rank)+'.db' 
 dtype = torch.float32
-output_folder = 'outputs_omol_58k_energydirect'
+output_folder = 'outputs_omol_58k_energydirect_E128'
 dataset_name = 'omol'
 run_name = 'omol_58k_energydirect'
 orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
@@ -61,7 +61,7 @@ total_rows = db.count()
 # ---------------------------
 
 # --> Model settings:
-l_embedding_dim = 64 #64                    # sphere channels 
+l_embedding_dim = 128                    # sphere channels 
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 3 
@@ -74,7 +74,7 @@ restart_optimizer = False
 train_or_eval = "train"
 num_val = 100                             # Number of validation structures
 num_train = total_rows - num_val        # Number of training structures - need equal batches on every gpu (use 840 molecules per gpu if doing a mol-wise split)
-num_epochs = 3000
+num_epochs = 500
 batch_size = 10                          # 1 for not oom (molecule-wise batching for evals)
 target_atoms_per_batch = 130            # if not using batch_size (atom-wise batching for train)
 target_edges_per_batch = 17000
@@ -91,7 +91,7 @@ train_backbone = True
 train_head = True
 
 torch.set_default_dtype(dtype)
-lr_init = 1e-5 
+lr_init = 5e-5 
 patience = 50                           # for scheduler
 threshold = 1e-5                        # for scheduler
 scheduler_type = 'cosine'               # 'plateau' or 'cosine'
@@ -200,6 +200,7 @@ if train_or_eval == "train":
         min_train_loader_size = min([size.item() for size in all_sizes])
         
         if len(train_loader) > min_train_loader_size:
+            random.shuffle(train_loader.batches)
             train_loader.batches = train_loader.batches[:min_train_loader_size]
         print(f"NOTE: Trimming train loader size on rank {rank} (for batch consistency across ranks) from {local_size.item()} to {min_train_loader_size}", flush=True)
 
@@ -224,6 +225,7 @@ if train_or_eval == "train":
         min_val_loader_size = min([size.item() for size in all_sizes])
         
         if len(val_loader) > min_val_loader_size:
+            random.shuffle(val_loader.batches)
             val_loader.batches = val_loader.batches[:min_val_loader_size]
         print(f"NOTE: Trimming val loader size on rank {rank} (for batch consistency across ranks) from {local_size.item()} to {min_val_loader_size}", flush=True)
 

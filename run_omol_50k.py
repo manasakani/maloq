@@ -48,9 +48,9 @@ print("Time to setup distributed environment: ", compute_end - compute_start)
 # --> OMOL 
 dataset_folder = '/checkpoint/ocp/manasakani/omol_58k_Sep11/omol_closedshell_58k_train_6.0_alledge_job_'+str(rank)+'.db' 
 dtype = torch.float32
-output_folder = 'outputs_omol_58k_E90'
+output_folder = 'outputs_omol_58k_E128_scaled'
 dataset_name = 'omol'
-run_name = 'omol_58k_Aug26_E100'
+run_name = 'omol_58k_Aug26_E128_scaled'
 orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
 orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
 orbital_basis = {int(k): v for k, v in orbital_basis.items()}
@@ -60,7 +60,7 @@ total_rows = db.count()
 # ---------------------------
 
 # --> Model settings:
-l_embedding_dim = 100 #64                # sphere channels 
+l_embedding_dim = 128                   # sphere channels 
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 3 
@@ -76,7 +76,7 @@ num_train = total_rows - num_val        # Number of training structures - need e
 num_epochs = 3000
 batch_size = 1                          # 1 for not oom (molecule-wise batching for evals)
 target_atoms_per_batch = 130            # if not using batch_size (atom-wise batching for train)
-target_edges_per_batch = 17000
+target_edges_per_batch = 18000          # Don't use more than 18k (for E128)
 rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -90,15 +90,15 @@ train_backbone = True
 train_head = True
 
 torch.set_default_dtype(dtype)
-lr_init = 1e-4 
-patience = 5                           # for scheduler
+lr_init = 1e-3 
+patience = 10                           # for scheduler
 threshold = 1e-5                        # for scheduler
 scheduler_type = 'plateau'               # 'plateau' or 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
 eta_min = 1e-8                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
-compute_uncoupled_loss = False          
+compute_uncoupled_loss = True          
 head_type = 'gated'                     # linear or gated 
 train_loss_fxn = loss.rmse_mse_padded_loss   
 loss_scheduler = loss.MonotonicDecreaseScheduler
@@ -122,6 +122,8 @@ if rank == 0:
     print(f"Model - Num of Message Passing layers: {num_mp_layers}", flush=True)
     print(f"Model - Embedding dimension: {l_embedding_dim}", flush=True)
     print(f"Model - Edge reflections: {reduce_edge}")    
+    print(f"Model - Node reduction - interorbital: {reduce_node}")
+    print(f"Model - Node reduction - intraorbital: {reduce_node_intra}")
     print(f"Training - Loss target: {loss_target}", flush=True)
     print(f"Training - Loss function: {train_loss_fxn}", flush=True)
     print(f"Training - Initial learning rate: {lr_init}", flush=True)
@@ -197,6 +199,7 @@ if train_or_eval == "train":
         min_train_loader_size = min([size.item() for size in all_sizes])
         
         if len(train_loader) > min_train_loader_size:
+            random.shuffle(train_loader.batches)
             train_loader.batches = train_loader.batches[:min_train_loader_size]
         print(f"NOTE: Trimming train loader size on rank {rank} (for batch consistency across ranks) from {local_size.item()} to {min_train_loader_size}", flush=True)
 
@@ -359,7 +362,7 @@ trainer = splittrainer.SplitTrainer(backbone=backbone,
                                     head=head,
                                     head_irreps=output_irreps,
                                     run_name=run_name,
-                                    save_frequency=2)
+                                    save_frequency=1)
 
 if train_or_eval == "train":
     trainer.train(num_epochs, 
