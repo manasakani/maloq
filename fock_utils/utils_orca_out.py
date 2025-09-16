@@ -245,25 +245,25 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3n
     num_cols = hamiltonian.shape[0]
     
     m_to_m_conversion = []
-    # if direction == "orca_to_e3nn":
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
-    m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
-    # elif direction == "e3nn_to_orca":
-    #     m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [2, 3, 1, 4, 0], 3: [3, 4, 2, 5, 1, 6, 0], 4: [4, 5, 3, 6, 2, 7, 1, 8, 0]}) 
-    #     m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [2, 3, 1, 4, 0], 3: [3, 4, 2, 5, 1, 6, 0], 4: [4, 5, 3, 6, 2, 7, 1, 8, 0]})
-    #     m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [2, 3, 1, 4, 0], 3: [3, 4, 2, 5, 1, 6, 0], 4: [4, 5, 3, 6, 2, 7, 1, 8, 0]}) 
-    #     m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [2, 3, 1, 4, 0], 3: [3, 4, 2, 5, 1, 6, 0], 4: [4, 5, 3, 6, 2, 7, 1, 8, 0]})
-    #     m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [2, 3, 1, 4, 0], 3: [3, 4, 2, 5, 1, 6, 0], 4: [4, 5, 3, 6, 2, 7, 1, 8, 0]})
-    #     m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [2, 3, 1, 4, 0], 3: [3, 4, 2, 5, 1, 6, 0], 4: [4, 5, 3, 6, 2, 7, 1, 8, 0]}) 
-    # else:
-        # raise ValueError("direction must be either orca_to_e3nn or e3nn_to_orca")
+    if direction == "orca_to_e3nn" or direction == "e3nn_to_orca":
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
+    if direction == "orca_to_pyscf":
+        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
+        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
+        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
+        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
+        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
+        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
 
     reflection = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [-1, 1, 1, 1, 1, 1, -1], 4: [-1, -1, 1, 1, 1, 1, 1, -1, -1]} # reflection for each l 
-
+    # reflection_wrong1 = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [-1, -1, 1, 1, 1, -1, -1], 4: [-1, -1, 1, 1, 1, 1, 1, -1, -1]} # reflection for each l 
+    # reflection_wrong2 = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [1, 1, 1, 1, 1, 1, 1], 4: [-1, -1, 1, 1, 1, 1, 1, -1, -1]} # reflection for each l 
+    
     permutation = np.arange(0, num_cols)
     full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
     permuted_hamiltonian = hamiltonian.copy()
@@ -293,7 +293,7 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3n
         
         R = np.diag(refl)
 
-        if direction == "orca_to_e3nn":
+        if direction == "orca_to_e3nn" or direction == "orca_to_pyscf":
             block = permuted_hamiltonian[block_start:block_end, :]
             block = R @ P @ block
             permuted_hamiltonian[block_start:block_end, :] = block
@@ -309,6 +309,8 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3n
             block = block @ (P.T @ R).T
             permuted_hamiltonian[:, block_start:block_end] = block
             block_start += numel
+        else:
+            raise NotImplementedError(f"Direction {direction} not implemented")
 
         principle_quantum_number += 1
         l_prev = l

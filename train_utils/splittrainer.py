@@ -12,7 +12,8 @@ import matplotlib.pyplot as plt
 import os
 from dataset_utils import get_scale_shift
 from fock_utils.get_energy_from_fock import build_density, get_integrals, get_permute_phase, permute_mat
-from fock_utils.utils_orca_out import periodic_table_number, sort_by_m
+from fock_utils.utils_orca_out import periodic_table_number, sort_by_m, read_orca_out, periodic_table
+from fock_utils import basis_sets
 import json
 from pyscf import gto
 
@@ -420,7 +421,7 @@ class SplitTrainer():
                 # Undo scale/shift layers:
                 print("Undoing scale/shift...", flush=True)
                 node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
-                #this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target) - don't unscale the labels
+                this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target) #- don't unscale the labels
 
                 # # write the corresponding node and edge outputs and targets to file:
                 # if rank == 0:
@@ -458,10 +459,22 @@ class SplitTrainer():
                     print("Using the original label Fock matrix from the dataset...", flush=True)
                     label_fock_matrix = batch.fock_target_object[0].fock_matrix
                 else:
+                    # reconstructed from targets:
                     label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
+                    
+                # -------- Debugging code --------
+                # test - get label fock from orca output file:
+                # label_fock_matrix, elements, coordinates, _ = read_orca_out('/home/manasakani/ocp-modeling-dev/manasakani/fock_datasets/single_water_molecule/rot1/orca.out') 
+                # full_basis = {periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
+                # full_basis = dict(sorted(full_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
+                # basis = {element: full_basis[element] for element in elements} 
+                # label_fock_matrix = sort_by_m(label_fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
+                # -------- Debugging code --------
 
                 # plot the difference between the reconstructed label matrix and the original label matrix if available:
-                # label_diff = label_fock_matrix - label_fock_matrix_recon
+                # label_fock_matrix = torch.from_numpy(label_fock_matrix)
+                # label_diff = label_fock_matrix - label_fock_matrix_recon.cpu().detach()
+                # print("Label matrix reconstruction error (mean average of abs): ", torch.abs(label_diff).mean().item(), flush=True)
                 # plt.imshow(np.log(np.abs(label_diff.cpu().detach().numpy())), vmin=-5.0, vmax=5.0)
                 # plt.savefig("label_matrix_reconstruction_error.png", dpi=300, bbox_inches='tight')
                 
@@ -505,11 +518,14 @@ class SplitTrainer():
                 # Compute error in total energy from predicted and label Fock matrices:
                 print("Computing total energy...", flush=True)
                 total_energy_label = self.get_total_energy(batch, label_fock_matrix.detach().cpu().numpy(), orbital_basis, dataset_name)
+                # total_energy_label_recon = self.get_total_energy(batch, label_fock_matrix_recon.detach().cpu().numpy(), orbital_basis, dataset_name)
                 total_energy_pred = self.get_total_energy(batch, output_fock_matrix.detach().cpu().numpy(), orbital_basis, dataset_name)
                 total_energy_errors.append(np.abs(total_energy_pred - total_energy_label))
                 print("Total energy from label Fock matrix: ", total_energy_label, flush=True)
+                # print("Total energy from reconstructed label Fock matrix: ", total_energy_label_recon, flush=True)
                 print("Total energy from predicted Fock matrix: ", total_energy_pred, flush=True)
                 print("Total energy error from predicted Fock matrix: ", total_energy_errors[-1], flush=True)
+                print("Energy from database: ", batch.energies.cpu().detach().numpy(), flush=True)
 
                 node_outputs.update(node_orbital_blocks_output)
                 edge_outputs.update(edge_orbital_blocks_output)
@@ -778,46 +794,61 @@ class SplitTrainer():
         Compute the total energy error from the Fock matrix 
         """
 
-        if dataset_name == 'omol':
-            basis = 'def2-tzvpd'
-        elif dataset_name == 'QM7' or dataset_name == 'nablaDFT':
-            basis = 'def2-svp'
-        else:
-            raise ValueError(f"Unknown dataset name: {dataset_name}")
-
-        with open('./train_utils/element_perm_omol.json', 'r') as fh:
-            json_data = json.loads(fh.read())
-        elt_reorder = json_data['element_permuations']
-        elt_phase = json_data['element_phases']
-
         atomic_numbers = batch.atomic_numbers.cpu().numpy()
         positions = batch.pos.cpu().numpy()
 
-        # First, reverse the sort so that we can use the permutation:
-        fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca") 
-        
         atom_list = []
         for z, pos in zip(atomic_numbers, positions):
             element_symbol = periodic_table_number[z] 
             atom_list.append([element_symbol, pos])
+
+        if dataset_name == 'omol':
+            basis = 'def2-tzvpd'
+            functional = 'wb97m-v'
+
+            # Create molecule
+            mol = gto.M(
+                atom=atom_list,
+                basis=basis,  
+                unit='Angstrom', # ecp='def2-tzvpd' ADD
+            )
+
+            # orca to pyscf ordering:
+            with open('./train_utils/element_perm_omol.json', 'r') as fh:
+                json_data = json.loads(fh.read())
+            elt_reorder = json_data['element_permuations']
+            elt_phase = json_data['element_phases']
+
+            # First, reverse the sort so that we can use the orca to pyscf permutation:
+            fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca") 
+
+            # reorder to PySCF ordering (this is done atomic element wise)
+            F = fock_matrix
+            perm, phase = get_permute_phase(mol, elt_reorder, elt_phase)
+            F = permute_mat(fock_matrix, perm, phase) 
+
+        elif dataset_name == 'QM7' or dataset_name == 'nablaDFT':
+            basis = 'def2-svp'
+            functional = 'pbe'
+
+            fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca") 
+            F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="orca_to_pyscf") 
+
+            # Create molecule
+            mol = gto.M(
+                atom=atom_list,
+                basis=basis,  
+                unit='Angstrom'
+            )    
+
+        else:
+            raise ValueError(f"Unknown dataset name: {dataset_name}")
         
-        # Create molecule
-        mol = gto.M(
-            atom=atom_list,
-            basis=basis,  
-            unit='Angstrom'
-        )
-
         print("Created molecule with atoms: ", mol.atom)
-
-        # reorder to PySCF ordering (fix for not-omol)
-        F = fock_matrix
-        perm, phase = get_permute_phase(mol, elt_reorder, elt_phase)
-        F = permute_mat(fock_matrix, perm, phase)
 
         # Get intermediate quantities
         P = build_density(mol, F)
-        H, E_xc, V_xc = get_integrals(mol, P)
+        H, E_xc, V_xc = get_integrals(mol, P, functional)
 
         # Compute energy
         E_nn = mol.energy_nuc()
