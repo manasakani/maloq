@@ -49,9 +49,9 @@ print("Time to setup distributed environment: ", compute_end - compute_start)
 # --> OMOL 
 dataset_folder = '/checkpoint/ocp/manasakani/omol_58k_Sep11/omol_closedshell_58k_train_6.0_alledge_job_'+str(rank)+'.db' 
 dtype = torch.float32
-output_folder = 'outputs_omol_58k_energydirect_E128'
+output_folder = 'outputs_omol_58k_energydirect_E128_scaled'
 dataset_name = 'omol'
-run_name = 'omol_58k_energydirect'
+run_name = 'omol_58k_energydirect_scaled'
 orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
 orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
 orbital_basis = {int(k): v for k, v in orbital_basis.items()}
@@ -77,7 +77,7 @@ num_train = total_rows - num_val        # Number of training structures - need e
 num_epochs = 500
 batch_size = 10                          # 1 for not oom (molecule-wise batching for evals)
 target_atoms_per_batch = 130            # if not using batch_size (atom-wise batching for train)
-target_edges_per_batch = 17000
+target_edges_per_batch = 20000
 rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -112,7 +112,8 @@ if reduce_edge and batch_size != 1:
 
 scale_and_shift = False
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
-energy_ref_file = './fock_datasets/uma_v1_hof_lin_refs.yaml'  
+# energy_ref_file = './fock_datasets/uma_v1_hof_lin_refs.yaml'  
+energy_ref_file = './stats_omol_db0/lin_ref_coeffs_omol.npz' 
 
 # Dump all settings to the output file
 if rank == 0:
@@ -244,57 +245,29 @@ basis_transformation = val_data[0].fock_target_object.basis_transformation
 # Apply node energy reference subtraction
 if loss_target == "energies":
 
-    # Load linear reference coefficients from YAML for OMOL dataset
-    if energy_ref_file is not None:
-        if os.path.exists(energy_ref_file):
-            print(f"Loading energy reference coefficients from {energy_ref_file}")
+    # Load linear reference coefficients computed from nablaDFT dataset
+    if os.path.exists(energy_ref_file):
+        print(f"Loading energy reference coefficients from {energy_ref_file}")
+        lin_ref_data = np.load(energy_ref_file)
+        element_references_np = lin_ref_data['coeff']  # Shape: (max_atomic_number,)
+        
+        # Convert to torch tensor and move to device
+        element_references = torch.tensor(element_references_np, dtype=dtype, device=device)
+        print(f"Loaded energy references for {len(element_references)} elements")
+        
+        # Print non-zero references for verification
+        nonzero_mask = torch.abs(element_references) > 1e-10
+        nonzero_elements = torch.where(nonzero_mask)[0]
+        print("Non-zero energy references:")
+        for z in nonzero_elements:
+            print(f"  Element Z={z.item()}: {element_references[z].item():.6f} Hartree")
             
-            # Load YAML file
-            with open(energy_ref_file, 'r') as f:
-                yaml_data = yaml.safe_load(f)
-            
-            # Extract OMOL element references
-            if 'omol_elem_refs' in yaml_data:
-                element_references_list = yaml_data['omol_elem_refs']
-                
-                # Convert list to numpy array
-                element_references_np = np.array(element_references_list)
-
-                # convert from eV to hartree (the references are in eV)
-                eV_TO_HARTREE = 27.211386245988
-                element_references_np = element_references_np / eV_TO_HARTREE
-                
-                # Create a tensor with proper indexing (Z=0 gets value 0, Z=1+ get YAML values)
-                # The YAML list starts at Z=1, so we need to pad with a zero at index 0
-                padded_references = np.zeros(len(element_references_list) + 1)
-                padded_references[1:] = element_references_np  # Z=1,2,3... get the YAML values
-                
-                element_references = torch.tensor(padded_references, dtype=dtype, device=device)
-                
-                print(f"Loaded energy references for elements Z=1 to Z={len(element_references_list)}")
-                
-                # Print non-zero references for verification
-                nonzero_mask = torch.tensor([True]*len(element_references_list))
-                nonzero_elements = torch.where(nonzero_mask)[0]
-                print("Energy references:")
-                for z in nonzero_elements:
-                    print(f"  Element Z={z.item()}: {element_references[z].item():.6f} Hartree")
-                    
-            else:
-                print(f"Warning: 'omol_elem_refs' not found in {energy_ref_file}!")
-                print("Available keys:", list(yaml_data.keys()))
-                element_references = None
-                
-        else:
-            print(f"Warning: Energy reference file {energy_ref_file} not found!")
-            print("Proceeding without energy reference subtraction.")
-            element_references = None
     else:
-        print("No energy reference file specified.")
+        print(f"Warning: Energy reference file {energy_ref_file} not found!")
+        print("Proceeding without energy reference subtraction.")
         element_references = None
 else:
     element_references = None
-
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start, flush=True)
