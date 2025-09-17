@@ -33,6 +33,11 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     rank = dist.get_rank()
     assert end_idx > start_idx
 
+    # Fock matrix analysis parameters:
+    equivariant_blocks = None
+    orbital_starts = None
+    basis_transformation = None
+
     datalist = []
     for i in range(start_idx, end_idx):
         mol = database[i]
@@ -63,7 +68,14 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
                 hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate 
             
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, half_edges=half_edges,
-                                                      scale_shift_data=scale_shift_data)
+                                                      scale_shift_data=scale_shift_data,
+                                                      equivariant_blocks=equivariant_blocks,
+                                                      orbital_starts=orbital_starts,
+                                                      basis_transformation=basis_transformation)
+            equivariant_blocks = graph_targets.equivariant_blocks
+            orbital_starts = graph_targets.orbital_starts
+            basis_transformation = graph_targets.basis_transformation
+
         else:
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, None, dtype=dtype, half_edges=half_edges,
                                                       scale_shift_data=scale_shift_data)
