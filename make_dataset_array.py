@@ -39,7 +39,7 @@ def main():
                         os.path.isdir(os.path.join(structures_dir, f)) ]
     
     orca_file = 'orca.out'
-    cutoff = 8.0            
+    cutoff = 6.0            
     dataset_name = 'omol'
     
     # --> whether to scale and shift scalar values in the node blocks of the dataset (scale_shift_file needs to be precomputed)
@@ -176,7 +176,7 @@ def main():
     print(f"Job {args.job_id}: Time to process {total_attempted} structures: {big_time_end - big_time_start}", flush=True)
     
     # Write to database
-    output_db_filename = f"/checkpoint/ocp/manasakani/{args.output_db_name}_job_{args.job_id}.db"
+    output_db_filename = f"/checkpoint/ocp/manasakani/omol_test_all_5k/{args.output_db_name}_job_{args.job_id}.db"
     print(f"Job {args.job_id}: Writing to {output_db_filename}", flush=True)
     
     try:
