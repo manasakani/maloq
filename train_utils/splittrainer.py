@@ -360,7 +360,8 @@ class SplitTrainer():
                 element_references=None,
                 output_folder='outputs',
                 dataset_name='omol',
-                orbital_basis=None):
+                orbital_basis=None,
+                compute_total_energy=True):
         
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
         print("Running eval.")
@@ -518,7 +519,7 @@ class SplitTrainer():
                 eigenvalue_maes.append(eigenvalue_MAE)
                 print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
 
-                num_atoms_in_molecule_list = batch.num_atoms_in_molecule
+                num_atoms_in_molecule_list.append(batch.num_atoms_in_molecule.cpu().detach().numpy().tolist()[0])
 
                 plt.figure(figsize=(4, 3))
                 self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
@@ -527,16 +528,19 @@ class SplitTrainer():
                 plt.close()
 
                 # Compute error in total energy from predicted and label Fock matrices:
-                print("Computing total energy...", flush=True)
-                total_energy_label = self.get_total_energy(batch, label_fock_matrix.detach().cpu().numpy(), orbital_basis, dataset_name)
-                print("Total energy from label Fock matrix: ", total_energy_label, flush=True)
-                # total_energy_label_recon = self.get_total_energy(batch, label_fock_matrix_recon.detach().cpu().numpy(), orbital_basis, dataset_name)
-                total_energy_pred = self.get_total_energy(batch, output_fock_matrix.detach().cpu().numpy(), orbital_basis, dataset_name)
-                print("Total energy from predicted Fock matrix: ", total_energy_pred, flush=True)
-                total_energy_errors.append(np.abs(total_energy_pred - total_energy_label))
-                # print("Total energy from reconstructed label Fock matrix: ", total_energy_label_recon, flush=True)
-                print("Total energy error from predicted Fock matrix: ", total_energy_errors[-1], flush=True)
-                print("Energy from database: ", batch.energies.cpu().detach().numpy(), flush=True)
+                if compute_total_energy:
+                    print("Computing total energy...", flush=True)
+                    total_energy_label = self.get_total_energy(batch, label_fock_matrix.detach().cpu().numpy(), orbital_basis, dataset_name)
+                    print("Total energy from label Fock matrix: ", total_energy_label, flush=True)
+                    # total_energy_label_recon = self.get_total_energy(batch, label_fock_matrix_recon.detach().cpu().numpy(), orbital_basis, dataset_name)
+                    total_energy_pred = self.get_total_energy(batch, output_fock_matrix.detach().cpu().numpy(), orbital_basis, dataset_name)
+                    print("Total energy from predicted Fock matrix: ", total_energy_pred, flush=True)
+                    total_energy_errors.append(np.abs(total_energy_pred - total_energy_label))
+                    # print("Total energy from reconstructed label Fock matrix: ", total_energy_label_recon, flush=True)
+                    print("Total energy error from predicted Fock matrix: ", total_energy_errors[-1], flush=True)
+                    print("Energy from database: ", batch.energies.cpu().detach().numpy(), flush=True)
+                else:
+                    total_energy_errors.append(0.0)
 
                 node_outputs.update(node_orbital_blocks_output)
                 edge_outputs.update(edge_orbital_blocks_output)
@@ -633,15 +637,13 @@ class SplitTrainer():
         if loss_target_string == 'fock_matrix':
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                 f.write(f"Edge_MAE\tNode_MAE\tTotal_MAE\tEigenvalue_MAE\tTotal_Energy_Error\tNum_Atoms\n")
-
-                # # also write the num_atoms_in_molecule_list in the last column:
-                # f.write
                 for edge, node, total, eig, energy, num_atoms in zip(track_loss_edge, track_loss_node, track_loss, eigenvalue_maes, total_energy_errors, num_atoms_in_molecule_list):
                     f.write(f"{edge:.10f}\t{node:.10f}\t{total:.10f}\t{eig:.10f}\t{energy:.10f}\t{num_atoms}\n")
         else:
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
-                    for node in track_loss:
-                        f.write(f"{node:.10f}\n")
+                f.write(f"Energy error in Eh/atom\n")
+                for node in track_loss:
+                    f.write(f"{node:.10f}\n")
     
     # -- Helper functions for training and evaluation --
     def check_batch_consistency(self, num_train_batches, num_val_batches, device):
