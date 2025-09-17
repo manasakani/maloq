@@ -17,6 +17,7 @@ from .nn.layer_norm import get_normalization_layer
 from .nn.radial import PolynomialEnvelope
 from .nn.so2_layers import SO2_Convolution
 from .nn.so3_layers import SO3_Linear
+from torch.utils.checkpoint import checkpoint
 
 # Test equivariance
 # import e3nn.o3
@@ -152,9 +153,22 @@ class Edgewise(torch.nn.Module):
         x_message = torch.bmm(wigner, x_message)
 
         # SO2 convolution
-        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge) 
+        # print("fully checkpointed convs", flush=True)
+        # x_message, x_0_gating = self.so2_conv_1(x_message, x_edge) 
+        x_message, x_0_gating = checkpoint(
+            self.so2_conv_1, 
+            x_message, 
+            x_edge,
+            use_reentrant=False  # More memory efficient for newer PyTorch versions
+        )
         x_message = self.act(x_0_gating, x_message)
-        x_message = self.so2_conv_2(x_message, x_edge)
+        # x_message = self.so2_conv_2(x_message, x_edge)
+        x_message = checkpoint(
+            self.so2_conv_2, 
+            x_message,
+            x_edge,
+            use_reentrant=False  
+        )
 
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
@@ -194,10 +208,23 @@ class Edgewise(torch.nn.Module):
         x_message = torch.bmm(wigner, x_message)
 
         # SO2 convolution
-        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
+        # x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
+        # Checkpoint the SO2 convolution 
+        x_message, x_0_gating = checkpoint(
+            self.so2_conv_1, 
+            x_message, 
+            x_edge,
+            use_reentrant=False  # More memory efficient for newer PyTorch versions
+        )
                     
         x_message = self.act(x_0_gating, x_message)
-        x_message = self.so2_conv_2(x_message, x_edge)
+        # x_message = self.so2_conv_2(x_message, x_edge)
+        x_message = checkpoint(
+            self.so2_conv_2, 
+            x_message,
+            x_edge,
+            use_reentrant=False  
+        )
 
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
@@ -242,8 +269,10 @@ class SpectralAtomwise(torch.nn.Module):
     def forward(self, x):
         gating_scalars = self.scalar_mlp(x.narrow(1, 0, 1))
         x = self.so3_linear_1(x)
+        # x = checkpoint(self.so3_linear_1, x, use_reentrant=False)
         x = self.act(gating_scalars, x)
         return self.so3_linear_2(x)
+        # return checkpoint(self.so3_linear_2, x, use_reentrant=False)
 
 
 class eSEN_Block(torch.nn.Module):
