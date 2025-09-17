@@ -49,9 +49,9 @@ print("Time to setup distributed environment: ", compute_end - compute_start)
 # --> OMOL 
 dataset_folder = '/checkpoint/ocp/manasakani/omol_58k_Sep11/omol_closedshell_58k_train_6.0_alledge_job_'+str(rank)+'.db' 
 dtype = torch.float32
-output_folder = 'outputs_omol_58k_energydirect_E128_scaled'
+output_folder = 'outputs_omol_58k_energypretrained'
 dataset_name = 'omol'
-run_name = 'omol_58k_energydirect_scaled'
+run_name = 'omol_58k_energypretrained'
 orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
 orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
 orbital_basis = {int(k): v for k, v in orbital_basis.items()}
@@ -66,7 +66,7 @@ num_distance_basis = l_embedding_dim    # number of gaussian basis functions use
 hidden_dim = l_embedding_dim
 num_mp_layers = 3 
 model_name = 'esen'
-restart_backbone = False
+restart_backbone = True
 restart_head = False
 restart_optimizer = False
 
@@ -87,7 +87,7 @@ reduce_edge = False                     # use only edges i,j where i<j (other ed
 reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
 reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
 
-train_backbone = True
+train_backbone = False
 train_head = True
 
 torch.set_default_dtype(dtype)
