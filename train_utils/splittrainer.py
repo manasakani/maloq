@@ -394,6 +394,7 @@ class SplitTrainer():
         node_labels = {}
         eigenvalue_maes = []
         total_energy_errors = []
+        num_atoms_in_molecule_list = []
         if loss_target_string == 'fock_matrix':
             edge_outputs = {}
             edge_labels = {}
@@ -414,7 +415,9 @@ class SplitTrainer():
             # pass all the batches through:
             if loss_target_string == 'fock_matrix':
 
-                node_output, edge_output, edge_output_bwd, edge_perm, edge_refl  = self.head(backbone_out, batch)
+                with torch.no_grad():
+                    node_output, edge_output, edge_output_bwd, edge_perm, edge_refl  = self.head(backbone_out, batch)
+
                 this_node_target = getattr(batch, node_target_name)
                 this_edge_target = getattr(batch, edge_target_name)
 
@@ -515,6 +518,8 @@ class SplitTrainer():
                 eigenvalue_maes.append(eigenvalue_MAE)
                 print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
 
+                num_atoms_in_molecule_list = batch.num_atoms_in_molecule
+
                 plt.figure(figsize=(4, 3))
                 self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
                 self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
@@ -539,7 +544,8 @@ class SplitTrainer():
                 edge_labels.update(edge_orbital_blocks_label)
 
             elif loss_target_string == 'energies':
-                node_output = self.head(backbone_out, batch)
+                with torch.no_grad():
+                    node_output = self.head(backbone_out, batch)
                 ref_energies = batch.energies
 
                 # undo energy referencing:
@@ -554,7 +560,9 @@ class SplitTrainer():
                 # print("predicted and reference energies for last val batch: ", unscaled_energies.tolist(), ref_energies.tolist())
                 
             else:
-                node_output = self.head(backbone_out, batch)
+                with torch.no_grad():
+                    node_output = self.head(backbone_out, batch)
+
                 this_node_target = getattr(batch, node_target_name)
 
                 if self.head_irreps == '1x1e':             
@@ -617,16 +625,19 @@ class SplitTrainer():
                 param2.grad = None
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-            
+
 
         print(f"Writing eval outputs to file in {output_folder}...", flush=True)
 
         # -- Output dump -- 
         if loss_target_string == 'fock_matrix':
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
-                f.write(f"Edge_MAE\tNode_MAE\tTotal_MAE\tEigenvalue_MAE\tTotal_Energy_Error\n")
-                for edge, node, total, eig, energy in zip(track_loss_edge, track_loss_node, track_loss, eigenvalue_maes, total_energy_errors):
-                    f.write(f"{edge:.10f}\t{node:.10f}\t{total:.10f}\t{eig:.10f}\t{energy:.10f}\n")
+                f.write(f"Edge_MAE\tNode_MAE\tTotal_MAE\tEigenvalue_MAE\tTotal_Energy_Error\tNum_Atoms\n")
+
+                # # also write the num_atoms_in_molecule_list in the last column:
+                # f.write
+                for edge, node, total, eig, energy, num_atoms in zip(track_loss_edge, track_loss_node, track_loss, eigenvalue_maes, total_energy_errors, num_atoms_in_molecule_list):
+                    f.write(f"{edge:.10f}\t{node:.10f}\t{total:.10f}\t{eig:.10f}\t{energy:.10f}\t{num_atoms}\n")
         else:
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                     for node in track_loss:
@@ -864,8 +875,6 @@ class SplitTrainer():
 
         else:
             raise ValueError(f"Unknown dataset name: {dataset_name}")
-        
-        print("Created molecule with atoms: ", mol.atom)
 
         # Get intermediate quantities
         P = build_density(mol, F)
