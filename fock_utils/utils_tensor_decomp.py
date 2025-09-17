@@ -153,68 +153,68 @@ class e3TensorDecomp:
         return out
         
 
-def make_output_irreps_old(orbital_basis):
-    '''
-    hoppings_list = {'atomic#1, atomic#2': [orb_idx1, orb_idx2], ...}
-    il_list = [l1, idx_l1, l2, idx_l2] # hopping term from idx_l1's l1 orbital to the idx_l2's l2 orbital on the corresponding atoms in hoppings_list 
-    '''
+# def make_output_irreps_old(orbital_basis):
+#     '''
+#     hoppings_list = {'atomic#1, atomic#2': [orb_idx1, orb_idx2], ...}
+#     il_list = [l1, idx_l1, l2, idx_l2] # hopping term from idx_l1's l1 orbital to the idx_l2's l2 orbital on the corresponding atoms in hoppings_list 
+#     '''
 
-    # add 10 to all diffuse orbitals to distinguish them from core orbitals
-    def find_diffuse_start(orbitals):
-        for i in range(1, len(orbitals)):
-            if orbitals[i] < orbitals[i-1]:
-                return i
-        return len(orbitals)  
+#     # add 10 to all diffuse orbitals to distinguish them from core orbitals
+#     def find_diffuse_start(orbitals):
+#         for i in range(1, len(orbitals)):
+#             if orbitals[i] < orbitals[i-1]:
+#                 return i
+#         return len(orbitals)  
 
-    for atom1, orbitals in orbital_basis.items():
-        diffuse_start = find_diffuse_start(orbitals)
-        orbitals[diffuse_start:] = [l + 10 for l in orbitals[diffuse_start:]]
+#     for atom1, orbitals in orbital_basis.items():
+#         diffuse_start = find_diffuse_start(orbitals)
+#         orbitals[diffuse_start:] = [l + 10 for l in orbitals[diffuse_start:]]
 
-    # Collect all the orbital interactions for every possible pair of atoms in the orbital basis:
-    hoppings_list = [] 
-    for atom1, orbitals1 in orbital_basis.items():
-        for atom2, orbitals2 in orbital_basis.items():
-            hopping_key = str(atom1) + ' ' + str(atom2)
-            for orbital1 in range(len(orbitals1)):
-                for orbital2 in range(len(orbitals2)):
-                    hopping_orbital = [orbital1, orbital2]
-                    hoppings_list.append({hopping_key: hopping_orbital}) 
+#     # Collect all the orbital interactions for every possible pair of atoms in the orbital basis:
+#     hoppings_list = [] 
+#     for atom1, orbitals1 in orbital_basis.items():
+#         for atom2, orbitals2 in orbital_basis.items():
+#             hopping_key = str(atom1) + ' ' + str(atom2)
+#             for orbital1 in range(len(orbitals1)):
+#                 for orbital2 in range(len(orbitals2)):
+#                     hopping_orbital = [orbital1, orbital2]
+#                     hoppings_list.append({hopping_key: hopping_orbital}) 
 
-    il_list = [] 
-    for hopping in hoppings_list:
-        for N_M_str, block in hopping.items():
-            atom1, atom2 = N_M_str.split()
-            l1 = orbital_basis[int(atom1)][block[0]] 
-            l2 = orbital_basis[int(atom2)][block[1]]
-            il1 = block[0] - orbital_basis[int(atom1)].index(l1) 
-            il2 = block[1] - orbital_basis[int(atom2)].index(l2)
-        il_list.append([l1, il1, l2, il2])
+#     il_list = [] 
+#     for hopping in hoppings_list:
+#         for N_M_str, block in hopping.items():
+#             atom1, atom2 = N_M_str.split()
+#             l1 = orbital_basis[int(atom1)][block[0]] 
+#             l2 = orbital_basis[int(atom2)][block[1]]
+#             il1 = block[0] - orbital_basis[int(atom1)].index(l1) 
+#             il2 = block[1] - orbital_basis[int(atom2)].index(l2)
+#         il_list.append([l1, il1, l2, il2])
 
-    # used to exclude double-counted interactions
-    hoppings_list_mask = [False for _ in range(len(hoppings_list))]
-    targets = []
-    net_out_irreps = Irreps(None)
+#     # used to exclude double-counted interactions
+#     hoppings_list_mask = [False for _ in range(len(hoppings_list))]
+#     targets = []
+#     net_out_irreps = Irreps(None)
 
-    for hopping1_index in range(len(hoppings_list)):
-        target = {}
-        if not hoppings_list_mask[hopping1_index]: 
-            hoppings_list_mask[hopping1_index] = True
-            target.update(hoppings_list[hopping1_index]) 
-            for hopping2_index in range(len(hoppings_list)):
-                if not hoppings_list_mask[hopping2_index]:
-                    if il_list[hopping1_index] == il_list[hopping2_index]:
-                        target.update(hoppings_list[hopping2_index]) 
-                        hoppings_list_mask[hopping2_index] = True
-            targets.append(target) 
+#     for hopping1_index in range(len(hoppings_list)):
+#         target = {}
+#         if not hoppings_list_mask[hopping1_index]: 
+#             hoppings_list_mask[hopping1_index] = True
+#             target.update(hoppings_list[hopping1_index]) 
+#             for hopping2_index in range(len(hoppings_list)):
+#                 if not hoppings_list_mask[hopping2_index]:
+#                     if il_list[hopping1_index] == il_list[hopping2_index]:
+#                         target.update(hoppings_list[hopping2_index]) 
+#                         hoppings_list_mask[hopping2_index] = True
+#             targets.append(target) 
 
-            l1, l2 = il_list[hopping1_index][0], il_list[hopping1_index][2]
-            irreps_new = l1l2_to_l3s(l1, l2)
+#             l1, l2 = il_list[hopping1_index][0], il_list[hopping1_index][2]
+#             irreps_new = l1l2_to_l3s(l1, l2)
 
-            net_out_irreps = net_out_irreps + irreps_new
+#             net_out_irreps = net_out_irreps + irreps_new
     
-    # each target in targets represent a specific group of similar orbital interactions, between the nth l1 orbital of atom 1 and the mth l2 orbital of atom 2
-    # the number of targets is the number of orbital interaction blocks, or (Norb_1 + N_orb_2 + ...)^3 over the different atomic species 
-    return targets, net_out_irreps, net_out_irreps.sort()[0].simplify()
+#     # each target in targets represent a specific group of similar orbital interactions, between the nth l1 orbital of atom 1 and the mth l2 orbital of atom 2
+#     # the number of targets is the number of orbital interaction blocks, or (Norb_1 + N_orb_2 + ...)^3 over the different atomic species 
+#     return targets, net_out_irreps, net_out_irreps.sort()[0].simplify()
     
 
 def make_output_irreps(orbital_basis):
@@ -387,39 +387,39 @@ def process_targets(orbital_basis, targets, ls_list=None, out_js_list=None, full
 
     return equivariant_blocks
 
-def process_targets_old(orbital_basis, targets): 
+# def process_targets_old(orbital_basis, targets): 
 
-    orbital_types = [orbital_basis[atom] for atom in orbital_basis.keys()]
-    index_to_Z = list(orbital_basis.keys())
+#     orbital_types = [orbital_basis[atom] for atom in orbital_basis.keys()]
+#     index_to_Z = list(orbital_basis.keys())
 
-    Z_to_index = torch.full((100,), -1, dtype=torch.int64)
-    Z_to_index[index_to_Z] = torch.arange(len(index_to_Z))
+#     Z_to_index = torch.full((100,), -1, dtype=torch.int64)
+#     Z_to_index[index_to_Z] = torch.arange(len(index_to_Z))
         
-    orbital_types = list(map(lambda x: np.array(x, dtype=np.int32), orbital_types))
-    orbital_types_cumsum = list(map(lambda x: np.concatenate([np.zeros(1, dtype=np.int32), 
-                                                                np.cumsum(2 * (x % 10) + 1)]), orbital_types))
+#     orbital_types = list(map(lambda x: np.array(x, dtype=np.int32), orbital_types))
+#     orbital_types_cumsum = list(map(lambda x: np.concatenate([np.zeros(1, dtype=np.int32), 
+#                                                                 np.cumsum(2 * (x % 10) + 1)]), orbital_types))
 
-    # = process the orbital indices into block slices =
-    equivariant_blocks, out_js_list = [], []
-    out_slices = [0]
-    for target in targets:
-        out_js = None
-        equivariant_block = dict()
-        for N_M_str, block_indices in target.items():
-            i, j = map(lambda x: Z_to_index[int(x)], N_M_str.split())
-            block_slice = [
-                            orbital_types_cumsum[i][block_indices[0]], # defines the indices that indicate the start and end of the matrix block in row and column direction 
-                            orbital_types_cumsum[i][block_indices[0] + 1],
-                            orbital_types_cumsum[j][block_indices[1]],
-                            orbital_types_cumsum[j][block_indices[1] + 1]
-                            ]
-            equivariant_block.update({N_M_str: block_slice})
-            if out_js is None:
-                out_js = (orbital_types[i][block_indices[0]], orbital_types[j][block_indices[1]])
-            else:
-                assert out_js == (orbital_types[i][block_indices[0]], orbital_types[j][block_indices[1]])
-        equivariant_blocks.append(equivariant_block)
-        out_js_list.append(tuple(map(int, out_js)))
-        out_slices.append(out_slices[-1] + (2 * (out_js[0]%10) + 1) * (2 * (out_js[1]%10) + 1))
+#     # = process the orbital indices into block slices =
+#     equivariant_blocks, out_js_list = [], []
+#     out_slices = [0]
+#     for target in targets:
+#         out_js = None
+#         equivariant_block = dict()
+#         for N_M_str, block_indices in target.items():
+#             i, j = map(lambda x: Z_to_index[int(x)], N_M_str.split())
+#             block_slice = [
+#                             orbital_types_cumsum[i][block_indices[0]], # defines the indices that indicate the start and end of the matrix block in row and column direction 
+#                             orbital_types_cumsum[i][block_indices[0] + 1],
+#                             orbital_types_cumsum[j][block_indices[1]],
+#                             orbital_types_cumsum[j][block_indices[1] + 1]
+#                             ]
+#             equivariant_block.update({N_M_str: block_slice})
+#             if out_js is None:
+#                 out_js = (orbital_types[i][block_indices[0]], orbital_types[j][block_indices[1]])
+#             else:
+#                 assert out_js == (orbital_types[i][block_indices[0]], orbital_types[j][block_indices[1]])
+#         equivariant_blocks.append(equivariant_block)
+#         out_js_list.append(tuple(map(int, out_js)))
+#         out_slices.append(out_slices[-1] + (2 * (out_js[0]%10) + 1) * (2 * (out_js[1]%10) + 1))
     
-    return equivariant_blocks, out_js_list, out_slices
+#     return equivariant_blocks, out_js_list, out_slices
