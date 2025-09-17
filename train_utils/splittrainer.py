@@ -317,14 +317,14 @@ class SplitTrainer():
                 print("Time per epoch: ", epoch_end - epoch_start)
 
             # log to wandb:
-            if (epoch + 1) % self.save_frequency == 0:
-                update_dict = {"node_loss": float(track_loss_node[-1]), 
-                            "node_val_loss": float(track_loss_node_val[-1]),
-                            "learning_rate": float(current_lr)}
-                if loss_target_string == 'fock_matrix':
-                    update_dict.update({"edge_loss": float(track_loss_edge[-1]), 
-                                        "edge_val_loss": float(track_loss_edge_val[-1])})
-                wandb.log(update_dict)
+            # if (epoch + 1) % self.save_frequency == 0:
+            update_dict = {"node_loss": float(track_loss_node[-1]), 
+                        "node_val_loss": float(track_loss_node_val[-1]),
+                        "learning_rate": float(current_lr)}
+            if loss_target_string == 'fock_matrix':
+                update_dict.update({"edge_loss": float(track_loss_edge[-1]), 
+                                    "edge_val_loss": float(track_loss_edge_val[-1])})
+            wandb.log(update_dict)
             
             # save state
             if rank == 0:
@@ -500,11 +500,17 @@ class SplitTrainer():
                 if hasattr(batch, 'overlap_matrix') and batch.overlap_matrix is not None:
                     print("Solving generalized eigenvalue problem...", flush=True)
                     overlap_matrix = batch.overlap_matrix.detach().cpu().numpy() 
-                    label_eigenvalues, _ = sp.linalg.eigh(label_fock_matrix.detach().cpu().numpy(), overlap_matrix)
-                    pred_eigenvalues, _ = sp.linalg.eigh(output_fock_matrix.detach().cpu().numpy(), overlap_matrix)
+                    label_eigenvalues = sp.linalg.eigvalsh(label_fock_matrix.detach().cpu().numpy(), overlap_matrix)
+                    pred_eigenvalues = sp.linalg.eigvalsh(output_fock_matrix.detach().cpu().numpy(), overlap_matrix)
                 else:
                     label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix.detach().cpu().numpy())
                     pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix.detach().cpu().numpy())
+
+                # take the first half (occupied):
+                num_occupied = len(label_eigenvalues) // 2
+                label_eigenvalues = label_eigenvalues[:num_occupied]
+                pred_eigenvalues = pred_eigenvalues[:num_occupied]
+                
                 eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
                 eigenvalue_maes.append(eigenvalue_MAE)
                 print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
@@ -518,12 +524,12 @@ class SplitTrainer():
                 # Compute error in total energy from predicted and label Fock matrices:
                 print("Computing total energy...", flush=True)
                 total_energy_label = self.get_total_energy(batch, label_fock_matrix.detach().cpu().numpy(), orbital_basis, dataset_name)
+                print("Total energy from label Fock matrix: ", total_energy_label, flush=True)
                 # total_energy_label_recon = self.get_total_energy(batch, label_fock_matrix_recon.detach().cpu().numpy(), orbital_basis, dataset_name)
                 total_energy_pred = self.get_total_energy(batch, output_fock_matrix.detach().cpu().numpy(), orbital_basis, dataset_name)
-                total_energy_errors.append(np.abs(total_energy_pred - total_energy_label))
-                print("Total energy from label Fock matrix: ", total_energy_label, flush=True)
-                # print("Total energy from reconstructed label Fock matrix: ", total_energy_label_recon, flush=True)
                 print("Total energy from predicted Fock matrix: ", total_energy_pred, flush=True)
+                total_energy_errors.append(np.abs(total_energy_pred - total_energy_label))
+                # print("Total energy from reconstructed label Fock matrix: ", total_energy_label_recon, flush=True)
                 print("Total energy error from predicted Fock matrix: ", total_energy_errors[-1], flush=True)
                 print("Energy from database: ", batch.energies.cpu().detach().numpy(), flush=True)
 
@@ -844,7 +850,7 @@ class SplitTrainer():
             )    
         elif dataset_name == 'nablaDFT':
             basis = 'def2-svp'
-            functional = 'wb97x'
+            functional = 'wb97xd'
 
             fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca") 
             F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="orca_to_pyscf") 

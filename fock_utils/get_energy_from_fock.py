@@ -126,7 +126,7 @@ def get_integrals(mol:gto.Mole, P:np.array, functional:str)->tuple[np.array, flo
         nlcgrids.build()
         elec2, E_nlc, V_nlc = ni.nr_nlc_vxc(mol, nlcgrids, 'wb97m-v', P)
         return H, E_xc + E_nlc, V_xc + V_nlc
-    elif functional == 'pbe' or functional == 'wb97x':
+    elif functional == 'pbe' or functional == 'wb97xd':
         return H, E_xc, V_xc    
     else:
         raise ValueError(f"Functional {functional} not implemented.")
