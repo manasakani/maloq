@@ -876,7 +876,7 @@ class SplitTrainer():
             )    
         elif dataset_name == 'nablaDFT':
             basis = 'def2-svp'
-            functional = 'wb97xd'
+            functional = 'wb97x-d'
 
             F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf") 
 
@@ -892,7 +892,7 @@ class SplitTrainer():
 
         # Get intermediate quantities
         P = build_density(mol, F)
-        H, E_xc, V_xc = get_integrals(mol, P, functional)
+        H, E_xc, V_xc = get_integrals(mol, P, functional, dataset_name)
 
         # Compute energy
         E_nn = mol.energy_nuc()

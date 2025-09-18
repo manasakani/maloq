@@ -95,7 +95,10 @@ def build_density(mol:gto.Mole, F:np.array)->np.array:
     P = 2 * C[:, :nocc] @ C[:, :nocc].T
     return P
 
-def get_integrals(mol:gto.Mole, P:np.array, functional:str)->tuple[np.array, float, np.array]:
+def get_integrals(mol:gto.Mole, 
+                P:np.array, functional:str,
+                dataset_name:str='omol'
+                )->tuple[np.array, float, np.array]:
     """
     Get needed additional integrals/etc. for total energy evaluation.
 
@@ -112,7 +115,12 @@ def get_integrals(mol:gto.Mole, P:np.array, functional:str)->tuple[np.array, flo
     H = scf.hf.get_hcore(mol)
 
     grids = dft.gen_grid.Grids(mol)
-    grids.atom_grid= (99,590)
+
+    if dataset_name == 'nablaDFT':
+        grids.atom_grid= (75,302)
+    else:
+        grids.atom_grid= (99,590)
+
     grids.prune = 'treutler'
     grids.build()
 
@@ -126,7 +134,7 @@ def get_integrals(mol:gto.Mole, P:np.array, functional:str)->tuple[np.array, flo
         nlcgrids.build()
         elec2, E_nlc, V_nlc = ni.nr_nlc_vxc(mol, nlcgrids, 'wb97m-v', P)
         return H, E_xc + E_nlc, V_xc + V_nlc
-    elif functional == 'pbe' or functional == 'wb97xd':
+    elif functional == 'pbe' or functional == 'wb97x-d':
         return H, E_xc, V_xc    
     else:
         raise ValueError(f"Functional {functional} not implemented.")
