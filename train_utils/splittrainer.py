@@ -854,9 +854,8 @@ class SplitTrainer():
             elt_reorder = json_data['element_permuations']
             elt_phase = json_data['element_phases']
 
-            # First, reverse the sort so that we can use the orca to pyscf permutation:
+            # Reverse the sort so that we can use the orca to pyscf permutation:
             fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca") 
-            # F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="orca_to_pyscf") 
 
             # reorder to PySCF ordering (this is done atomic element wise)
             F = fock_matrix
@@ -867,8 +866,7 @@ class SplitTrainer():
             basis = 'def2-svp'
             functional = 'pbe'
 
-            fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca") 
-            F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="orca_to_pyscf") 
+            F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf") 
 
             # Create molecule
             mol = gto.M(
@@ -880,8 +878,7 @@ class SplitTrainer():
             basis = 'def2-svp'
             functional = 'wb97xd'
 
-            fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca") 
-            F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="orca_to_pyscf") 
+            F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf") 
 
             # Create molecule
             mol = gto.M(

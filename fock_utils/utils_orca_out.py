@@ -245,20 +245,20 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3n
     num_cols = hamiltonian.shape[0]
     
     m_to_m_conversion = []
-    if direction == "orca_to_e3nn" or direction == "e3nn_to_orca":
+    if direction == "orca_to_e3nn" or direction == "e3nn_to_orca": # this one works
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
-    if direction == "orca_to_pyscf" or direction == "pyscf_to_orca":
-        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
-        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
-        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
-        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
-        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
-        m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
+    if direction == "e3nn_to_pyscf" or direction == "pyscf_to_e3nn":
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
 
     reflection = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [-1, 1, 1, 1, 1, 1, -1], 4: [-1, -1, 1, 1, 1, 1, 1, -1, -1]} # reflection for each l 
     
@@ -291,7 +291,7 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3n
         
         R = np.diag(refl)
 
-        if direction == "orca_to_e3nn" or direction == "orca_to_pyscf":
+        if direction == "orca_to_e3nn" or direction == "e3nn_to_pyscf":
             block = permuted_hamiltonian[block_start:block_end, :]
             block = R @ P @ block
             permuted_hamiltonian[block_start:block_end, :] = block
@@ -299,7 +299,7 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3n
             block = block @ (R @ P).T
             permuted_hamiltonian[:, block_start:block_end] = block
             block_start += numel
-        elif direction == "e3nn_to_orca" or direction == "pyscf_to_orca":
+        elif direction == "e3nn_to_orca" or direction == "pyscf_to_e3nn":
             block = permuted_hamiltonian[block_start:block_end, :]
             block = P.T @ R @ block
             permuted_hamiltonian[block_start:block_end, :] = block
