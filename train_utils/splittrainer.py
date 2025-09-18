@@ -425,7 +425,10 @@ class SplitTrainer():
                 # Undo scale/shift layers:
                 print("Undoing scale/shift...", flush=True)
                 node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
-                this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target) #- don't unscale the labels
+
+                # for nabladft, we left the node scaling in
+                if dataset_name == 'omol' or dataset_name == 'nablaDFT':
+                    this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target) # note: remove node scaling from evals
 
                 # # write the corresponding node and edge outputs and targets to file:
                 # if rank == 0:
@@ -460,12 +463,15 @@ class SplitTrainer():
                 print("Reconstructing matrices...", flush=True)
                 output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=True)
                 if hasattr(batch.fock_target_object[0], 'fock_matrix') and batch.fock_target_object[0].fock_matrix is not None:
-                    print("Using the original label Fock matrix from the dataset...", flush=True)
                     label_fock_matrix = batch.fock_target_object[0].fock_matrix
                 else:
                     # reconstructed from targets:
                     label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=True)
                     
+                # detach the matrices:
+                output_fock_matrix = output_fock_matrix.cpu().detach().numpy()
+                label_fock_matrix = label_fock_matrix.cpu().detach().numpy()
+
                 # -------- Debugging code --------
                 # test - get label fock from orca output file:
                 # label_fock_matrix, elements, coordinates, _ = read_orca_out('/home/manasakani/ocp-modeling-dev/manasakani/fock_datasets/single_water_molecule/rot1/orca.out') 
@@ -475,40 +481,31 @@ class SplitTrainer():
                 # label_fock_matrix = sort_by_m(label_fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
                 # -------- Debugging code --------
 
-                # plot the difference between the reconstructed label matrix and the original label matrix if available:
-                # label_fock_matrix = torch.from_numpy(label_fock_matrix)
-                # label_diff = label_fock_matrix - label_fock_matrix_recon.cpu().detach()
-                # print("Label matrix reconstruction error (mean average of abs): ", torch.abs(label_diff).mean().item(), flush=True)
-                # plt.imshow(np.log(np.abs(label_diff.cpu().detach().numpy())), vmin=-5.0, vmax=5.0)
-                # plt.savefig("label_matrix_reconstruction_error.png", dpi=300, bbox_inches='tight')
-                
-                matrix_out = output_fock_matrix.cpu().detach().numpy()
-                matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
-                matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
-                print("Matrix symmetry error: ", matrix_symmetry_error)
-                plt.colorbar()
-                plt.savefig("predicted_fock.png", dpi=300, bbox_inches='tight')
-                plt.close()
+                # matrix_out = output_fock_matrix.copy()
+                # matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
+                # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
+                # print("Matrix symmetry error: ", matrix_symmetry_error)
+                # plt.colorbar()
+                # plt.savefig("predicted_fock.png", dpi=300, bbox_inches='tight')
+                # plt.close()
 
-                matrix_out = label_fock_matrix.cpu().detach().numpy()
-                matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
-                plt.colorbar()
-                plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
-                plt.close()
+                # matrix_out = label_fock_matrix.copy()
+                # matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
+                # plt.colorbar()
+                # plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
+                # plt.close()
 
                 # Compute the eigenvalues and eigenvalue error
-                print("Computing eigenvalues...", flush=True)
-
+                print("Solving generalized eigenvalue problem...", flush=True)
                 if hasattr(batch, 'overlap_matrix') and batch.overlap_matrix is not None:
-                    print("Solving generalized eigenvalue problem...", flush=True)
                     overlap_matrix = batch.overlap_matrix.detach().cpu().numpy() 
-                    label_eigenvalues = sp.linalg.eigvalsh(label_fock_matrix.detach().cpu().numpy(), overlap_matrix)
-                    pred_eigenvalues = sp.linalg.eigvalsh(output_fock_matrix.detach().cpu().numpy(), overlap_matrix)
+                    label_eigenvalues = sp.linalg.eigvalsh(label_fock_matrix, overlap_matrix)
+                    pred_eigenvalues = sp.linalg.eigvalsh(output_fock_matrix, overlap_matrix)
                 else:
-                    label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix.detach().cpu().numpy())
-                    pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix.detach().cpu().numpy())
+                    print("Building overlap matrix and computing eigenvalues...", flush=True)
+                    label_eigenvalues, pred_eigenvalues = self.get_overlap_and_eigs(batch, output_fock_matrix, label_fock_matrix, orbital_basis, dataset_name)
 
                 # take the first half (occupied):
                 num_occupied = len(label_eigenvalues) // 2
@@ -518,22 +515,18 @@ class SplitTrainer():
                 eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
                 eigenvalue_maes.append(eigenvalue_MAE)
                 print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
+                self.plot_eigenvalues(label_eigenvalues, pred_eigenvalues, s=5, alpha=0.2)
+                # self.plot_eigenvalue_diff(label_fock_matrix, output_fock_matrix, s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
 
                 num_atoms_in_molecule_list.append(batch.num_atoms_in_molecule.cpu().detach().numpy().tolist()[0])
-
-                plt.figure(figsize=(4, 3))
-                self.plot_eigenvalues(label_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.2, label='Labeled Fock', color='red')
-                self.plot_eigenvalues(output_fock_matrix.detach().cpu().numpy(), s=2, alpha=0.5, label='Predicted Fock', color='blue')
-                # self.plot_eigenvalue_diff(label_fock_matrix.detach().cpu().numpy(), output_fock_matrix.detach().cpu().numpy(), s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
-                plt.close()
 
                 # Compute error in total energy from predicted and label Fock matrices:
                 if compute_total_energy:
                     print("Computing total energy...", flush=True)
-                    total_energy_label = self.get_total_energy(batch, label_fock_matrix.detach().cpu().numpy(), orbital_basis, dataset_name)
+                    total_energy_label = self.get_total_energy(batch, label_fock_matrix, orbital_basis, dataset_name)
                     print("Total energy from label Fock matrix: ", total_energy_label, flush=True)
-                    # total_energy_label_recon = self.get_total_energy(batch, label_fock_matrix_recon.detach().cpu().numpy(), orbital_basis, dataset_name)
-                    total_energy_pred = self.get_total_energy(batch, output_fock_matrix.detach().cpu().numpy(), orbital_basis, dataset_name)
+                    # total_energy_label_recon = self.get_total_energy(batch, label_fock_matrix_recon, orbital_basis, dataset_name)
+                    total_energy_pred = self.get_total_energy(batch, output_fock_matrix, orbital_basis, dataset_name)
                     print("Total energy from predicted Fock matrix: ", total_energy_pred, flush=True)
                     total_energy_errors.append(np.abs(total_energy_pred - total_energy_label))
                     # print("Total energy from reconstructed label Fock matrix: ", total_energy_label_recon, flush=True)
@@ -560,8 +553,7 @@ class SplitTrainer():
                 ref_energies /= batch.num_atoms_in_molecule
 
                 loss = torch.abs(unscaled_energies - ref_energies).mean()  # use MAE for eval                
-
-                # print("predicted and reference energies for last val batch: ", unscaled_energies.tolist(), ref_energies.tolist())
+                print("predicted and reference energies for last val batch: ", unscaled_energies.tolist(), ref_energies.tolist())
                 
             else:
                 with torch.no_grad():
@@ -592,6 +584,10 @@ class SplitTrainer():
                 for edge_out, edge_label in zip(edge_outputs.values(), edge_labels.values()):
                     total_edge_element_loss += edge_multiplier*(torch.abs(edge_out - edge_label).sum())
                     num_edge_block_elements += edge_multiplier*edge_out.numel()
+
+                # convert matrices to torch tensors for loss computation
+                output_fock_matrix = torch.tensor(output_fock_matrix)
+                label_fock_matrix = torch.tensor(label_fock_matrix)
                 
                 total_matrix_mae_loss = torch.abs(output_fock_matrix - label_fock_matrix).sum() / output_fock_matrix.numel()
                 track_loss_node.append(total_node_element_loss / num_node_block_elements)
@@ -787,18 +783,20 @@ class SplitTrainer():
             plt.savefig(output_folder+"/" + keyword + "_emb_"+str(i)+".png", dpi=300, bbox_inches='tight')
             plt.close()
 
-    def plot_eigenvalues(self, matrix, s=1, alpha=0.3, label='', color='blue'):
+    def plot_eigenvalues(self, label_eigs, pred_eigs, s=1, alpha=0.3):
         """
         Here for convinience, just plots the eigenvalues of the matrix
         """
-        eigenvalues = np.linalg.eigvalsh(matrix)
-        plt.scatter(range(len(eigenvalues)), eigenvalues, s=s, alpha=alpha, label=label, color=color, edgecolors='none')
+        plt.figure(figsize=(4, 3))
+        plt.scatter(range(len(label_eigs)), label_eigs, s=1, alpha=alpha, label='label energy eigs', color='blue', edgecolors='none')
+        plt.scatter(range(len(pred_eigs)), pred_eigs, s=0.5, alpha=alpha, label='predicted energy eigs', color='red', edgecolors='none')
         plt.xlabel('Eigenvalue #')
         plt.ylabel('Eigenvalue ($E_h$)')
         # plt.yscale('log')
         plt.legend()
         plt.grid(True)
         plt.savefig("eigenvalues_fock.png", dpi=500, bbox_inches='tight')
+        plt.close()
 
     def plot_eigenvalue_diff(self, matrix1, matrix2, s=1, alpha=0.3, label='', color='blue'):
         """
@@ -816,6 +814,11 @@ class SplitTrainer():
 
         atomic_numbers = batch.atomic_numbers.cpu().numpy()
         positions = batch.pos.cpu().numpy()
+        bohr_to_angstrom = 0.529177249
+
+        # nablaDFT positions are in bohr (psi4), QM7 and omol are in angstrom (orca)
+        if dataset_name == 'nablaDFT':
+            positions *= bohr_to_angstrom 
 
         atom_list = []
         for z, pos in zip(atomic_numbers, positions):
@@ -826,12 +829,23 @@ class SplitTrainer():
             basis = 'def2-tzvpd'
             functional = 'wb97m-v'
 
+            # the folder names for omol have the format "X_1_1'", where the end is _charge_spin
+            try:
+                folder_name = batch.folder_name[0]
+                charge = int(folder_name.split('_')[-2])
+                spin = int(folder_name.split('_')[-1])
+            except:
+                print("Warning: folder name not in expected format, assuming neutral molecule.")
+                charge = 0
+                spin = 1
+
             # Create molecule
             mol = gto.M(
                 atom=atom_list,
                 basis=basis,  
                 unit='Angstrom',
-                ecp='def2-tzvpd'
+                ecp='def2-tzvpd',
+                charge=charge,
             )
 
             # orca to pyscf ordering:
@@ -842,6 +856,7 @@ class SplitTrainer():
 
             # First, reverse the sort so that we can use the orca to pyscf permutation:
             fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca") 
+            # F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="orca_to_pyscf") 
 
             # reorder to PySCF ordering (this is done atomic element wise)
             F = fock_matrix
@@ -887,6 +902,57 @@ class SplitTrainer():
         total_energy = 0.5 * np.einsum('ij,ji', P,  H + F - V_xc) + E_xc + E_nn
 
         return total_energy
+    
+    def get_overlap_and_eigs(self, batch, output_hamiltonian, label_hamiltonian, orbital_basis, dataset_name):
+        assert dataset_name == 'omol', "Overlap computation currently only implemented for omol dataset"
+
+        atomic_numbers = batch.atomic_numbers.cpu().numpy()
+        positions = batch.pos.cpu().numpy()
+
+        atom_list = []
+        for z, pos in zip(atomic_numbers, positions):
+            element_symbol = periodic_table_number[z] 
+            atom_list.append([element_symbol, pos])
+
+        basis = 'def2-tzvpd'
+        functional = 'wb97m-v'
+
+        # the folder name has the format "X_1_1'", where the end is _charge_spin
+        try:
+            folder_name = batch.folder_name[0]
+            charge = int(folder_name.split('_')[-2])
+            spin = int(folder_name.split('_')[-1])
+        except:
+            print("Warning: folder name not in expected format, assuming neutral molecule.")
+            charge = 0
+            spin = 1
+
+        # Create molecule
+        mol = gto.M(
+            atom=atom_list,
+            basis=basis,  
+            unit='Angstrom',
+            ecp='def2-tzvpd',
+            charge=charge,
+        )
+
+        # orca to pyscf ordering:
+        with open('./train_utils/element_perm_omol.json', 'r') as fh:
+            json_data = json.loads(fh.read())
+        elt_reorder = json_data['element_permuations']
+        elt_phase = json_data['element_phases']
+        perm, phase = get_permute_phase(mol, elt_reorder, elt_phase)
+
+        # get the overlap matrix, permute focks to pyscf order, and diagonalize them
+        overlap = mol.intor('int1e_ovlp')
+        
+        output_F = permute_mat(output_hamiltonian, perm, phase) 
+        label_F = permute_mat(label_hamiltonian, perm, phase)
+
+        e_pred, _ = sp.linalg.eigh(output_F, overlap)
+        e_label, _ = sp.linalg.eigh(label_F, overlap)
+
+        return e_pred, e_label
 
     def save_training_state(self, step, model, optimizer, track_loss_node, track_validation_node, save_file, output_folder, track_loss_edge=None, track_validation_edge=None):
         """

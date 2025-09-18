@@ -252,7 +252,7 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3n
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
-    if direction == "orca_to_pyscf":
+    if direction == "orca_to_pyscf" or direction == "pyscf_to_orca":
         m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
         m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
         m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
@@ -261,8 +261,6 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3n
         m_to_m_conversion.append({0: [0], 1: [1, 2, 0], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
 
     reflection = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [-1, 1, 1, 1, 1, 1, -1], 4: [-1, -1, 1, 1, 1, 1, 1, -1, -1]} # reflection for each l 
-    # reflection_wrong1 = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [-1, -1, 1, 1, 1, -1, -1], 4: [-1, -1, 1, 1, 1, 1, 1, -1, -1]} # reflection for each l 
-    # reflection_wrong2 = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [1, 1, 1, 1, 1, 1, 1], 4: [-1, -1, 1, 1, 1, 1, 1, -1, -1]} # reflection for each l 
     
     permutation = np.arange(0, num_cols)
     full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
@@ -301,7 +299,7 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3n
             block = block @ (R @ P).T
             permuted_hamiltonian[:, block_start:block_end] = block
             block_start += numel
-        elif direction == "e3nn_to_orca":
+        elif direction == "e3nn_to_orca" or direction == "pyscf_to_orca":
             block = permuted_hamiltonian[block_start:block_end, :]
             block = P.T @ R @ block
             permuted_hamiltonian[block_start:block_end, :] = block
