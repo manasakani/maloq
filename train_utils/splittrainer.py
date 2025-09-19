@@ -507,6 +507,7 @@ class SplitTrainer():
                 else:
                     print("Building overlap matrix and computing eigenvalues...", flush=True)
                     label_eigenvalues, pred_eigenvalues = self.get_overlap_and_eigs(batch, output_fock_matrix, label_fock_matrix, orbital_basis, dataset_name)
+                    overlap_matrix = None # return te overlap from get_overlap and eigs! - figure out how it will affect build_density
                     # label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix)
                     # pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix)
 
@@ -526,10 +527,10 @@ class SplitTrainer():
                 # Compute error in total energy from predicted and label Fock matrices:
                 if compute_total_energy:
                     print("Computing total energy...", flush=True)
-                    total_energy_label = self.get_total_energy(batch, label_fock_matrix, orbital_basis, dataset_name)
+                    total_energy_label = self.get_total_energy(batch, label_fock_matrix, orbital_basis, dataset_name, overlap_matrix=overlap_matrix)
                     print("Total energy from label Fock matrix: ", total_energy_label, flush=True)
                     # total_energy_label_recon = self.get_total_energy(batch, label_fock_matrix_recon, orbital_basis, dataset_name)
-                    total_energy_pred = self.get_total_energy(batch, output_fock_matrix, orbital_basis, dataset_name)
+                    total_energy_pred = self.get_total_energy(batch, output_fock_matrix, orbital_basis, dataset_name, overlap_matrix=overlap_matrix)
                     print("Total energy from predicted Fock matrix: ", total_energy_pred, flush=True)
                     total_energy_errors.append(np.abs(total_energy_pred - total_energy_label))
                     # print("Total energy from reconstructed label Fock matrix: ", total_energy_label_recon, flush=True)
@@ -797,7 +798,7 @@ class SplitTrainer():
         plt.xlabel('Eigenvalue #')
         plt.ylabel('Eigenvalue ($E_h$)')
         plt.legend()
-        plt.savefig("eigenvalues_fock_water.png", dpi=500, bbox_inches='tight')
+        plt.savefig("eigenvalues_fock_error.png", dpi=500, bbox_inches='tight')
         plt.close()
 
     def plot_eigenvalue_diff(self, matrix1, matrix2, s=1, alpha=0.3, label='', color='blue'):
@@ -809,7 +810,7 @@ class SplitTrainer():
         eigenvalues = np.abs(eigenvalues_1 - eigenvalues_2)
         plt.scatter(range(len(eigenvalues)), eigenvalues, s=s, alpha=alpha, label=label, color=color, edgecolors='none')
     
-    def get_total_energy(self, batch, fock_matrix, orbital_basis, dataset_name):
+    def get_total_energy(self, batch, fock_matrix, orbital_basis, dataset_name, overlap_matrix=None):
         """
         Compute the total energy error from the Fock matrix 
         """
@@ -866,12 +867,14 @@ class SplitTrainer():
             F = fock_matrix
             perm, phase = get_permute_phase(mol, elt_reorder, elt_phase)
             F = permute_mat(fock_matrix, perm, phase) 
+            overlap_matrix = None # recompute with pyscf in build_density()
 
         elif dataset_name == 'QM7':
             basis = 'def2-svp'
             functional = 'pbe'
 
             F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf") 
+            overlap_matrix = sort_by_m(overlap_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf")
 
             # Create molecule
             mol = gto.M(
@@ -884,6 +887,7 @@ class SplitTrainer():
             functional = 'wb97x-d'
 
             F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf") 
+            overlap_matrix = sort_by_m(overlap_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf")
 
             # Create molecule
             mol = gto.M(
@@ -898,7 +902,7 @@ class SplitTrainer():
         # Note: Need to add removal of linear dependence in overlap !!!
 
         # Get intermediate quantities
-        P = build_density(mol, F)
+        P = build_density(mol, F, S=overlap_matrix)
         H, E_xc, V_xc = get_integrals(mol, P, functional, dataset_name)
 
         # Compute energy
@@ -958,7 +962,7 @@ class SplitTrainer():
 
         # clean up small negative eigenvalues from the overlap matrix before diagonalization
         output_hamiltonian_cleaned, label_hamiltonian_cleaned, overlap_cleaned, idx_kept = self.remove_linear_dep_from_matrices(
-            output_hamiltonian_permuted, label_hamiltonian_permuted, overlap, threshold=1e-0
+            output_hamiltonian_permuted, label_hamiltonian_permuted, overlap, threshold=1e-6
         )
 
         eigvals = np.linalg.eigvalsh(overlap_cleaned)

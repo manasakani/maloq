@@ -74,7 +74,7 @@ def get_structure()->gto.Mole:
     mol = gto.M(atom = atom, basis='def2-tzvpd', ecp='def2-tzvpd')
     return mol
 
-def build_density(mol:gto.Mole, F:np.array)->np.array:
+def build_density(mol:gto.Mole, F:np.array, S:np.array=None)->np.array:
     """
     Build the density by diagonalizing FC=SCe.
 
@@ -85,7 +85,8 @@ def build_density(mol:gto.Mole, F:np.array)->np.array:
     :return: Density in the AO basis
     """
     # Get overlap matrix from PySCF to diagonalize F
-    S = mol.intor('int1e_ovlp')
+    if S is None:
+        S = mol.intor('int1e_ovlp')
     e, C = scipy.linalg.eigh(F, S)
 
     # Build density matrix (assuming closed-shell and N electrons)
