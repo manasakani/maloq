@@ -482,21 +482,21 @@ class SplitTrainer():
                 # label_fock_matrix = sort_by_m(label_fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
                 # -------- Debugging code --------
 
-                matrix_out = output_fock_matrix.copy()
-                matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
-                matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
-                print("Matrix symmetry error: ", matrix_symmetry_error)
-                plt.colorbar()
-                plt.savefig("predicted_fock.png", dpi=300, bbox_inches='tight')
-                plt.close()
+                # matrix_out = output_fock_matrix.copy()
+                # matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
+                # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
+                # print("Matrix symmetry error: ", matrix_symmetry_error)
+                # plt.colorbar()
+                # plt.savefig("predicted_fock.png", dpi=300, bbox_inches='tight')
+                # plt.close()
 
-                matrix_out = label_fock_matrix.copy()
-                matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
-                plt.colorbar()
-                plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
-                plt.close()
+                # matrix_out = label_fock_matrix.copy()
+                # matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
+                # plt.colorbar()
+                # plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
+                # plt.close()
 
                 # Compute the eigenvalues and eigenvalue error
                 print("Solving generalized eigenvalue problem...", flush=True)
@@ -506,8 +506,8 @@ class SplitTrainer():
                     pred_eigenvalues = sp.linalg.eigvalsh(output_fock_matrix, overlap_matrix)
                 else:
                     print("Building overlap matrix and computing eigenvalues...", flush=True)
-                    label_eigenvalues, pred_eigenvalues = self.get_overlap_and_eigs(batch, output_fock_matrix, label_fock_matrix, orbital_basis, dataset_name)
-                    overlap_matrix = None # return te overlap from get_overlap and eigs! - figure out how it will affect build_density
+                    label_eigenvalues, pred_eigenvalues, overlap_matrix = self.get_overlap_and_eigs(batch, output_fock_matrix, label_fock_matrix, orbital_basis, dataset_name)
+                    # overlap_matrix = None # return te overlap from get_overlap and eigs! - figure out how it will affect build_density
                     # label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix)
                     # pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix)
 
@@ -519,7 +519,7 @@ class SplitTrainer():
                 eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
                 eigenvalue_maes.append(eigenvalue_MAE)
                 print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
-                self.plot_eigenvalues(label_eigenvalues, pred_eigenvalues)
+                # self.plot_eigenvalues(label_eigenvalues, pred_eigenvalues)
                 # self.plot_eigenvalue_diff(label_fock_matrix, output_fock_matrix, s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
 
                 num_atoms_in_molecule_list.append(batch.num_atoms_in_molecule.cpu().detach().numpy().tolist()[0])
@@ -889,6 +889,11 @@ class SplitTrainer():
             F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf") 
             overlap_matrix = sort_by_m(overlap_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf")
 
+            # # clean up small negative eigenvalues from the overlap matrix before diagonalization
+            # F, F_discard, overlap_matrix, idx_kept = self.remove_linear_dep_from_matrices(
+            #     F, F, overlap_matrix, threshold=1e-6
+            # )
+
             # Create molecule
             mol = gto.M(
                 atom=atom_list,
@@ -961,19 +966,20 @@ class SplitTrainer():
         label_hamiltonian_permuted = permute_mat(label_hamiltonian, perm, phase)
 
         # clean up small negative eigenvalues from the overlap matrix before diagonalization
+        print("Cleaning the overlap matrix...", flush=True)
         output_hamiltonian_cleaned, label_hamiltonian_cleaned, overlap_cleaned, idx_kept = self.remove_linear_dep_from_matrices(
-            output_hamiltonian_permuted, label_hamiltonian_permuted, overlap, threshold=1e-6
+            output_hamiltonian_permuted, label_hamiltonian_permuted, overlap, threshold=1e-1
         )
 
-        eigvals = np.linalg.eigvalsh(overlap_cleaned)
-        print("Min S eigenvalue:", eigvals.min())
-        print("Max S eigenvalue:", eigvals.max())
-        print("Smallest 10 S eigenvalues:", np.sort(eigvals)[:10])
+        # eigvals = np.linalg.eigvalsh(overlap_cleaned)
+        # print("Min S eigenvalue:", eigvals.min())
+        # print("Max S eigenvalue:", eigvals.max())
+        # print("Smallest 10 S eigenvalues:", np.sort(eigvals)[:10])
 
         e_pred, _ = sp.linalg.eigh(output_hamiltonian_cleaned, overlap_cleaned)
         e_label, _ = sp.linalg.eigh(label_hamiltonian_cleaned, overlap_cleaned)
 
-        return e_pred, e_label
+        return e_pred, e_label, overlap_cleaned
     
     def remove_linear_dep_from_matrices(self, F1, F2, S, threshold=1e-6):
 
