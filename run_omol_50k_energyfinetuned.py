@@ -48,10 +48,13 @@ print("Time to setup distributed environment: ", compute_end - compute_start, fl
 # ---------------------------
 # --> OMOL 
 dataset_folder = '/checkpoint/ocp/manasakani/omol_58k_Sep11/omol_closedshell_58k_train_6.0_alledge_job_'+str(rank)+'.db' 
+# dataset_folder = '/checkpoint/ocp/manasakani/omol_test_common_1k/omol_closedshell_58k_test_common_1k_6.0_alledge_job_'+str(rank)+'.db' # 1 node
+# dataset_folder = '/checkpoint/ocp/manasakani/omol_test_all_5k/omol_closedshell_58k_test_all_5k_6.0_alledge_job_'+str(rank)+'.db' # 2 nodes
+
 dtype = torch.float32
-output_folder = 'outputs_omol_58k_energyfinetuned'
+output_folder = 'outputs_omol_58k_energyfinetuned_E140'
 dataset_name = 'omol'
-run_name = 'omol_58k_energyfinetuned'
+run_name = 'omol_58k_energyfinetuned_E140'
 orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
 orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
 orbital_basis = {int(k): v for k, v in orbital_basis.items()}
@@ -72,10 +75,16 @@ restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 10                             # Number of validation structures
-num_train = total_rows - num_val        # Number of training structures - need equal batches on every gpu (use 840 molecules per gpu if doing a mol-wise split)
+if train_or_eval == "eval":
+    num_train = 1
+    num_val = total_rows - num_train
+    batch_size = 1
+else:
+    num_val = 10                        # Number of validation structures
+    num_train = total_rows - num_val   #  Number of training structures - need equal batches on every gpu (use 840 molecules per gpu if doing a mol-wise split)
+    batch_size = 10
+
 num_epochs = 700
-batch_size = 10                          # 1 for not oom (molecule-wise batching for evals)
 target_atoms_per_batch = 130            # if not using batch_size (atom-wise batching for train)
 target_edges_per_batch = 20000
 rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
@@ -91,7 +100,7 @@ train_backbone = True
 train_head = True
 
 torch.set_default_dtype(dtype)
-lr_init = 5e-5 
+lr_init = 1e-6 
 patience = 50                           # for scheduler
 threshold = 1e-5                        # for scheduler
 scheduler_type = 'cosine'               # 'plateau' or 'cosine'
