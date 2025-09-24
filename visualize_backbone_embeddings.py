@@ -506,7 +506,8 @@ def plot_umap_analysis(embeddings, atomic_numbers, molecule_indices, output_fold
     molecule_labels_expanded = []
     
     # Extract l-components and create expanded datasets
-    for l in range(min(lmax + 1, 5)):  # Limit to l=0 through l=4
+    # for l in range(min(lmax + 1, 5)):  # Limit to l=0 through l=4
+    for l in range(lmax + 1):
         if l not in l_indices:
             continue
             
@@ -543,7 +544,7 @@ def plot_umap_analysis(embeddings, atomic_numbers, molecule_indices, output_fold
     l_components_2d = reducer_decomposed.fit_transform(combined_l_data)
     
     # Create plots for the decomposed data
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     
     # Plot 1: Colored by l-component
     l_colors = plt.cm.viridis(np.linspace(0, 1, len(np.unique(l_component_labels))))
@@ -569,26 +570,32 @@ def plot_umap_analysis(embeddings, atomic_numbers, molecule_indices, output_fold
         axes[1].scatter(l_components_2d[mask, 0], l_components_2d[mask, 1], 
                        c=[element_colors[i]], s=20, alpha=0.7, 
                        label=f'{element_name} (Z={element})', 
-                       edgecolors='black', linewidth=0.2)
+                       edgecolors='black', linewidth=0.4)
     
     axes[1].set_xlabel('UMAP Component 1')
     axes[1].set_ylabel('UMAP Component 2')
     axes[1].set_title('Decomposed UMAP: By Element Type')
-    axes[1].legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     axes[1].grid(True, alpha=0.3)
     
-    # Plot 3: Colored by magnitude
-    l_component_magnitudes = np.linalg.norm(combined_l_data, axis=1)
-    scatter = axes[2].scatter(l_components_2d[:, 0], l_components_2d[:, 1], 
-                             c=l_component_magnitudes, cmap='Blues', s=20, alpha=0.7,
-                             edgecolors='black', linewidth=0.2)
-    axes[2].set_xlabel('UMAP Component 1')
-    axes[2].set_ylabel('UMAP Component 2')
-    axes[2].set_title('Decomposed UMAP: By Magnitude')
-    plt.colorbar(scatter, ax=axes[2], label='L-Component Magnitude')
-    axes[2].grid(True, alpha=0.3)
+    # # Plot 3: Colored by magnitude
+    # l_component_magnitudes = np.linalg.norm(combined_l_data, axis=1)
+    # scatter = axes[2].scatter(l_components_2d[:, 0], l_components_2d[:, 1], 
+    #                          c=l_component_magnitudes, cmap='Blues', s=20, alpha=0.7,
+    #                          edgecolors='black', linewidth=0.2)
+    # axes[2].set_xlabel('UMAP Component 1')
+    # axes[2].set_ylabel('UMAP Component 2')
+    # axes[2].set_title('Decomposed UMAP: By Magnitude')
+    # plt.colorbar(scatter, ax=axes[2], label='L-Component Magnitude')
+    # axes[2].grid(True, alpha=0.3)
+    
+    # Create horizontal legend at bottom with 2 rows
+    handles, labels = axes[1].get_legend_handles_labels()
+    ncol = 8  # Adaptive number of columns (2-5)
+    fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.5), 
+               ncol=ncol, frameon=True, fancybox=True, shadow=False, fontsize=10)
     
     plt.tight_layout()
+    plt.subplots_adjust(bottom=0.15)  # Make room for the legend
     plt.savefig(os.path.join(output_folder, 'umap_decomposed_l_components.png'), 
                 dpi=300, bbox_inches='tight')
     plt.close()
@@ -1102,25 +1109,25 @@ def main(output_folder=None, max_molecules=10, start_molecule=0, lmax=4):
     print("RUNNING EMBEDDING ANALYSES")
     print("="*50)
     
-    # 1. L-component analysis (new!)
-    print("\n1. Computing l-component analysis...")
-    l_magnitudes, l_indices = plot_l_component_analysis(embeddings, atomic_numbers, molecule_indices, analysis_folder, lmax)
+    # # 1. L-component analysis (new!)
+    # print("\n1. Computing l-component analysis...")
+    # l_magnitudes, l_indices = plot_l_component_analysis(embeddings, atomic_numbers, molecule_indices, analysis_folder, lmax)
     
-    # 2. Basic statistics
-    print("\n2. Computing embedding statistics...")
-    plot_embedding_statistics(embeddings, atomic_numbers, molecule_indices, analysis_folder, lmax)
+    # # 2. Basic statistics
+    # print("\n2. Computing embedding statistics...")
+    # plot_embedding_statistics(embeddings, atomic_numbers, molecule_indices, analysis_folder, lmax)
     
-    # 3. PCA analysis
-    print("\n3. Running PCA analysis...")
-    embeddings_pca, pca = plot_pca_analysis(embeddings, atomic_numbers, molecule_indices, analysis_folder, lmax)
+    # # 3. PCA analysis
+    # print("\n3. Running PCA analysis...")
+    # embeddings_pca, pca = plot_pca_analysis(embeddings, atomic_numbers, molecule_indices, analysis_folder, lmax)
     
-    # 4. t-SNE analysis
-    print("\n4. Running t-SNE analysis...")
-    embeddings_tsne = plot_tsne_by_element(embeddings, atomic_numbers, molecule_indices, analysis_folder, lmax)
+    # # 4. t-SNE analysis
+    # print("\n4. Running t-SNE analysis...")
+    # embeddings_tsne = plot_tsne_by_element(embeddings, atomic_numbers, molecule_indices, analysis_folder, lmax)
     
-    # 5. Clustering analysis
-    print("\n5. Running clustering analysis...")
-    cluster_labels, kmeans = plot_clustering_analysis(embeddings, atomic_numbers, molecule_indices, analysis_folder, lmax)
+    # # 5. Clustering analysis
+    # print("\n5. Running clustering analysis...")
+    # cluster_labels, kmeans = plot_clustering_analysis(embeddings, atomic_numbers, molecule_indices, analysis_folder, lmax)
     
     # 6. UMAP analysis (new!)
     print("\n6. Running UMAP analysis...")
@@ -1143,8 +1150,12 @@ def main(output_folder=None, max_molecules=10, start_molecule=0, lmax=4):
 
 if __name__ == "__main__":
     # Configuration - modify these values directly
-    output_folder = 'outputs_nablaDFT_energytrained_medium/embeddings'  # Change this to your output folder
-    max_molecules = 100  # Number of molecules to load
+    # output_folder = 'outputs_omol_58k_energyfinetuned_E128/embeddings'  # Change this to your output folder
+    output_folder = 'nablaDFT_final_energy_evals/outputs_nablaDFT_focktrained_energyfinetuned_tiny/embeddings_train2k'  # Change this to your output folder
+
+    # output_folder = 'outputs_omol_58k_energydirect_E128_scaled_300epochs/embeddings_train'  # Change this to your output folder
+
+    max_molecules = 249  # Number of molecules to load
     start_molecule = 0  # Starting molecule index
     lmax = 4  # Maximum l value for spherical harmonic analysis
     

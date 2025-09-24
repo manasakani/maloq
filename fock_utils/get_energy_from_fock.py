@@ -5,6 +5,7 @@ from pyscf import gto, dft,scf
 import re
 from collections import defaultdict
 import periodictable as pt
+import scipy as sp
 
 def get_permute_phase(mol:gto.Mole, elt_reorder:dict[str, list], elt_phase:dict[str, list])-> tuple[list, list]:
     """
@@ -86,8 +87,23 @@ def build_density(mol:gto.Mole, F:np.array, S:np.array=None)->np.array:
     """
     # Get overlap matrix from PySCF to diagonalize F
     if S is None:
+        print("Calculating overlap matrix from PySCF")
         S = mol.intor('int1e_ovlp')
-    e, C = scipy.linalg.eigh(F, S)
+
+    # filter small eigenvalues
+    tol = 1e-1
+    s, U = sp.linalg.eigh(S)
+    keep = s > tol
+    s_kept = s[keep]
+    U_kept = U[:, keep]
+
+    print("Filtered out {} small eigenvalues of S".format(np.sum(~keep)))
+
+    X = U_kept @ np.diag(1.0 / np.sqrt(s_kept))            # N_AO x r  (r = rank)
+    Fp = X.T @ F @ X                                       # r x r
+    eps, Cp = sp.linalg.eigh(Fp)                           # Cp: r x r
+    C = X @ Cp                                             # N_AO x r
+    # e, C = scipy.linalg.eigh(F, S) # remove!
 
     # Build density matrix (assuming closed-shell and N electrons)
     nelec = mol.nelectron
