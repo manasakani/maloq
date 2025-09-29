@@ -54,8 +54,8 @@ train_or_eval = "eval"
 num_val = 500                           # Number of validation structures
 num_train = 25000  
 num_test = len(database) - num_train - num_val  # Number of test structures
-num_epochs = 1000
-batch_size = 1                          # for training (batch size is always 1 for eval) - small batch for multi-gpu!
+num_epochs = 10000
+batch_size = 10                          # for training (batch size is always 1 for eval) - small batch for multi-gpu!
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut_orbitals)
 rcut_gaussian = rcut_orbitals*2         # gaussian basis distance 
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -327,5 +327,7 @@ else:
                     edge_target_name=edge_target, 
                     basis_transform=basis_transformation,
                     output_folder=output_folder,
+                    dataset_name=dataset_name,
+                    orbital_basis=orbital_basis,
                     )
         

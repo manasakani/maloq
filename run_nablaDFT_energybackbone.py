@@ -28,11 +28,11 @@ random.seed(42)
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
-# database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/train_5k.db")
-database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/test_10k_conformers.db")
+database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/train_10k.db")
+# database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/test_10k_conformers.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_energytrained_small'
-run_name = 'nablaDFT_energytraining_notfrom_fock_small'
+output_folder = 'nablaDFT_final_energy_evals/outputs_nablaDFT_energytrained_medium'
+run_name = 'nablaDFT_energytraining_notfrom_fock_medium'
 # ---------------------------
 
 # --> Model settings:
@@ -47,7 +47,7 @@ restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "eval"
-num_val = 4 #int(len(database)/3)                             # Number of validation structures
+num_val = int(len(database)/3)                             # Number of validation structures
 num_train = len(database) - num_val
 num_epochs = 5000
 batch_size = 1#0                         # 1 for eval, 10 for train
@@ -182,22 +182,6 @@ if loss_target == "energies":
         for z in nonzero_elements:
             print(f"  Element Z={z.item()}: {element_references[z].item():.6f} Hartree")
             
-        # # Apply energy reference subtraction to the underlying datasets
-        # print("Applying energy reference subtraction to training dataset...")
-        # train_dataset = train_loader.dataset
-        # for i, batch in enumerate(train_loader):
-        #     data = train_dataset[i]
-        #     if hasattr(data, 'energies') and data.energies is not None:
-        #         data.energies = get_scale_shift.apply_energy_refs(batch, data.energies, element_references)
-        
-        # print("Applying energy reference subtraction to validation dataset...")
-        # val_dataset = val_loader.dataset
-        # for i, batch in enumerate(val_loader):
-        #     data = val_dataset[i]
-        #     if hasattr(data, 'energies') and data.energies is not None:
-        #         data.energies = get_scale_shift.apply_energy_refs(batch, data.energies, element_references)
-
-        # print("Energy reference subtraction applied to all datasets")
     else:
         print(f"Warning: Energy reference file {energy_ref_file} not found!")
         print("Proceeding without energy reference subtraction.")

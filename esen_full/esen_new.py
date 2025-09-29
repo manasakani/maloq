@@ -367,7 +367,6 @@ class eSEN_Backbone(nn.Module):
             data_dict["atomic_numbers"][graph_dict["edge_index"][1]]
         )
 
-        # x_edge needs to be symmetric over edges: (testing with sym)
         x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) #+ torch.cat((target_embedding, edge_distance_embedding, source_embedding), dim=1)      # symmetrized
 
         # do edge degree embeddings for both nodes and edges: - this breaks symmetry of identical nodes..
@@ -605,16 +604,18 @@ class Fock_Irreps_Head(nn.Module):
                 # self.lin_out = cuet_Linear(irreps_in=irreps_in_simplified, irreps_out=irreps_out) 
 
                 # create single linear layers up to lmax:
-                self.node_lin_out_layers = nn.ModuleList()
-                self.edge_lin_out_layers = nn.ModuleList()
+                self.lin_out_layers = nn.ModuleList()
+                # self.node_lin_out_layers = nn.ModuleList()
+                # self.edge_lin_out_layers = nn.ModuleList()
                 for l in range(0, self.lmax+1):
                     mul_in = self.sphere_channels
                     mul_out = irreps_out.count('{}e'.format(l))
                     irreps_in_l = f"{mul_in}x{l}e"  
                     irreps_out_l = f"{mul_out}x{l}e"
                     print("Creating linear output map for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out = ", irreps_out_l, flush=True)
-                    self.node_lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
-                    self.edge_lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
+                    self.lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
+                    # self.node_lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
+                    # self.edge_lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
 
                     # Attempt at using SO3_Linear - not working well
                     # mul_in = self.sphere_channels
@@ -891,10 +892,11 @@ class Fock_Irreps_Head(nn.Module):
                 x_l = x_gated[:, start_idx:end_idx]  # extract the l-th irrep component
 
                 # x_l = x_l.reshape(batch_size, 2*l + 1, self.sphere_channels)  # this is for SO3_Linear..
-                if node_or_edge == 'node':
-                    x_l_out = self.node_lin_out_layers[l](x_l)  # apply the Linear layer for degree l
-                if node_or_edge == 'edge':
-                    x_l_out = self.edge_lin_out_layers[l](x_l)  # apply the Linear layer for degree l
+                # if node_or_edge == 'node':
+                #     x_l_out = self.node_lin_out_layers[l](x_l)  # apply the Linear layer for degree l
+                # if node_or_edge == 'edge':
+                #     x_l_out = self.edge_lin_out_layers[l](x_l)  # apply the Linear layer for degree l
+                x_l_out = self.lin_out_layers[l](x_l)  # apply the Linear layer for degree l
                 # mul_out = self.irreps_out.count(f'{l}e')
                 # x_l_out = x_l_out.reshape(batch_size, mul_out*(2*l+1))  # [batch, (2*l+1)*mul_out]
 

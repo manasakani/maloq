@@ -28,9 +28,10 @@ random.seed(42)
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
-database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/train_5k.db")
+# database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/train_5k.db")
+database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/test_5k_conformers.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_small'
+output_folder = 'nablaDFT_final_Hamiltonian_models/outputs_nablaDFT_small'
 # ---------------------------
 
 # --> Model settings:
@@ -39,14 +40,15 @@ num_distance_basis = l_embedding_dim    # number of gaussian basis functions use
 hidden_dim = l_embedding_dim
 num_mp_layers = 3
 model_name = 'esen'
-restart_backbone = False
-restart_head = False
-restart_optimizer = False
+restart_backbone = True
+restart_head = True
+restart_optimizer = True
 
 # --> Training settings:
-train_or_eval = "train"
-num_val = 64                             # Number of validation structures
-num_train = len(database) - num_val
+train_or_eval = "eval"
+compute_total_energy = True              # compute total energy of each molecule in eval mode  
+num_val = len(database) - 64                             # Number of validation structures
+num_train = 64
 num_epochs = 1000
 batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
@@ -55,8 +57,8 @@ gaussian_width = 1.0                    # width of gaussians used to expand edge
 
 # Additional symmetries:
 reduce_edge = False                      # use only edges i,j where i<j (other edges are reflected)
-reduce_node = False                      # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = False                # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
@@ -319,4 +321,9 @@ else:
                     edge_target_name=edge_target, 
                     basis_transform=basis_transformation,
                     output_folder=output_folder,
+                    compute_total_energy=compute_total_energy,
+                    dataset_name=dataset_name,
+                    orbital_basis=orbital_basis
                     )
+
+print("Finished everything, exiting.")

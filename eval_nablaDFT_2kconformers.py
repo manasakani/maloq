@@ -27,10 +27,10 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> NablaDFT (tiny conformers)
-database = HamiltonianDatabase("./fock_datasets/nabla2_DFT/test_5k_conformers.db")
+database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/test_100k_conformers.db")
 # database = HamiltonianDatabase("./fock_datasets/test_structures.db")
 dataset_name = 'nablaDFT' 
-output_folder = 'outputs_nablaDFT_tiny_scaled_rcut10_10k'
+output_folder = './nablaDFT_final/outputs_nablaDFT_medium'
 # ---------------------------
 
 # --> Model settings:
@@ -47,7 +47,7 @@ restart_optimizer = False
 train_or_eval = "eval"
 num_val = 8                             # Number of validation structures
 num_train = len(database) 
-num_test = 1 #len(database)
+num_test = len(database)
 num_epochs = 50000
 batch_size = 1                          # 1 for eval, 10 for train
 rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
@@ -144,13 +144,13 @@ test_start_mol, test_end_mol, test_local_num_mol = utils_compute.split_indices(r
 ## DEBUG ###
 
 if train_or_eval == 'train':
-    train_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data)
-    # val_loader, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reflection_symmetry, scale_shift_data=scale_shift_data)
+    train_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge,  scale_shift_data=scale_shift_data)
+    # val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
     print("Size of train loader: ", len(train_loader))
     # print("Size of val loader: ", len(val_loader))
 else:
     batch_size = 1
-    test_loader, required_irreps, basis_transformation, orbital_basis = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data)
+    test_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
     print("Size of test loader: ", len(test_loader))
 
 data_load_end = time.perf_counter()
@@ -198,6 +198,8 @@ if loss_target == "fock_matrix":
                             irreps_out=output_irreps, 
                             lmax=required_irreps.lmax, 
                             sphere_channels=l_embedding_dim,
+                            half_edges=reduce_edge,
+                            ls_list=ls_list,
                             head_type=head_type,
                             reduce_node=reduce_node,
                             reduce_node_intra=reduce_node_intra,

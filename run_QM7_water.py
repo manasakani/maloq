@@ -30,7 +30,7 @@ random.seed(42)
 dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_water.db'
 database = ASEAtomsData(dbpath)
 dataset_name = 'QM7'
-output_folder = 'outputs_QM7_water'
+output_folder = 'outputs_QM7_water_new'
 # ---------------------------
 
 # --> Shuffle:
@@ -47,16 +47,16 @@ hidden_dim = l_embedding_dim
 num_mp_layers = 3
 restart_backbone = True
 restart_head = True
-restart_optimizer = True
+restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "eval"
 num_val = 500                           # Number of validation structures
 num_train = 500
 num_test = len(database) - num_train - num_val  # Number of test structures
-num_epochs = 5000
+num_epochs = 10000
 batch_size = 5                          # 1 for eval, 10 for train
-optimizer_type = "adam"                # "adam" or "adamw"
+optimizer_type = "adamw"                # "adam" or "adamw"
 rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -74,7 +74,7 @@ torch.set_default_dtype(dtype)
 lr_init = 1e-4
 weight_decay = 1e-4                     # weight decay for AdamW (L2 regularization)
 patience = 100                          # if ReduceLROnPlateau scheduler
-threshold = 1e-6                        # if ReduceLROnPlateau scheduler
+threshold = 1e-5                        # if ReduceLROnPlateau scheduler
 scheduler_type = 'plateau'               # 'plateau', 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
 eta_min = 1e-8                         # for cosine scheduler - minimum learning rate
@@ -94,7 +94,7 @@ if reduce_edge and batch_size != 1:
 # dataset_analysis.dataset_analysis(database, dataset_name, rcut=rcut_orbitals, dtype=torch.float64, reduce_edge=False)
 
 scale_and_shift = False
-scale_shift_file = 'element_scale_shifts_water_' + dataset_name + '.pt'
+scale_shift_file = 'element_scale_shifts_QM7water_' + dataset_name + '.pt'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
@@ -355,5 +355,7 @@ else:
                     edge_target_name=edge_target, 
                     basis_transform=basis_transformation,
                     output_folder=output_folder,
+                    dataset_name=dataset_name,
+                    orbital_basis=orbital_basis,
                     )
         

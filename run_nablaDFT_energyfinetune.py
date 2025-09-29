@@ -31,7 +31,7 @@ random.seed(42)
 database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/train_2k.db")
 # database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/test_10k_conformers.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_focktrained_energyfinetuned_tiny'
+output_folder = 'nablaDFT_final_energy_evals/outputs_nablaDFT_focktrained_energyfinetuned_tiny'
 run_name = 'nablaDFT_energytraining_from_fock_energyfinetuned_tiny'
 
 # ---------------------------
@@ -43,15 +43,15 @@ hidden_dim = l_embedding_dim
 num_mp_layers = 3
 model_name = 'esen'
 restart_backbone = True
-restart_head = False
+restart_head = True
 restart_optimizer = False
 
 # --> Training settings:
-train_or_eval = "train"
+train_or_eval = "eval"
 num_val = int(len(database)/3)                             # Number of validation structures
 num_train = len(database) - num_val
 num_epochs = 10000
-batch_size = 10                           # 1 for eval, 10 for train
+batch_size = 1#0                           # 1 for eval, 10 for train
 rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2                    # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                     # width of gaussians used to expand edge distance
@@ -354,7 +354,7 @@ if train_or_eval == "train":
 else:
     trainer.evaluate(train_loss_fxn,
                     device,
-                    train_loader,#val_loader,
+                    val_loader,
                     loss_target_string=loss_target,
                     node_target_name=node_target,
                     edge_target_name=edge_target, 

@@ -28,11 +28,11 @@ random.seed(42)
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
-# database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/train_5k.db")
-database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/test_10k_conformers.db")
+database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/train_10k.db")
+# database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/test_10k_conformers.db")
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_focktrained_small'
-run_name = 'nablaDFT_energytraining_from_fock_small'
+output_folder = 'nablaDFT_final_energy_evals/outputs_nablaDFT_focktrained_medium'
+run_name = 'nablaDFT_energytraining_from_fock_medium'
 
 # ---------------------------
 
@@ -48,7 +48,7 @@ restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "eval"
-num_val = 4 #int(len(database)/3)                             # Number of validation structures
+num_val = int(len(database)/3)                             # Number of validation structures
 num_train = len(database) - num_val
 num_epochs = 5000
 batch_size = 1#0                           # 1 for eval, 10 for train

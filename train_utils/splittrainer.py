@@ -482,21 +482,29 @@ class SplitTrainer():
                 # label_fock_matrix = sort_by_m(label_fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
                 # -------- Debugging code --------
 
-                # matrix_out = output_fock_matrix.copy()
-                # matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
+                matrix_out = output_fock_matrix.copy()
+                matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-6.0, vmax=6.0)
+                plt.imshow(matrix_out, vmin=-0.1, vmax=0.1, cmap='bwr')
                 # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
                 # print("Matrix symmetry error: ", matrix_symmetry_error)
-                # plt.colorbar()
-                # plt.savefig("predicted_fock.png", dpi=300, bbox_inches='tight')
-                # plt.close()
+                plt.colorbar()
+                plt.savefig("predicted_fock.png", dpi=500, bbox_inches='tight')
+                plt.close()
 
-                # matrix_out = label_fock_matrix.copy()
-                # matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-5.0, vmax=5.0)
-                # plt.colorbar()
-                # plt.savefig("label_fock.png", dpi=300, bbox_inches='tight')
-                # plt.close()
+                matrix_out = label_fock_matrix.copy()
+                matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-6.0, vmax=6.0)
+                plt.imshow(matrix_out, vmin=-0.1, vmax=0.1, cmap='bwr')
+                plt.colorbar()
+                plt.savefig("label_fock.png", dpi=500, bbox_inches='tight')
+                plt.close()
+
+                diff_matrix_out = output_fock_matrix.copy() - label_fock_matrix.copy()
+                plt.imshow(np.abs(diff_matrix_out), cmap='bone_r', vmin=0, vmax=0.1)
+                plt.colorbar()
+                plt.savefig("fock_diff.png", dpi=500, bbox_inches='tight')
+                plt.close()
 
                 # Compute the eigenvalues and eigenvalue error
                 print("Solving generalized eigenvalue problem...", flush=True)
@@ -505,10 +513,10 @@ class SplitTrainer():
                     label_eigenvalues = sp.linalg.eigvalsh(label_fock_matrix, overlap_matrix)
                     pred_eigenvalues = sp.linalg.eigvalsh(output_fock_matrix, overlap_matrix)
                 else:
-                    print("Building overlap matrix and computing eigenvalues...", flush=True)
+                    # print("Building overlap matrix and computing eigenvalues...", flush=True)
                     label_eigenvalues, pred_eigenvalues, overlap_matrix = self.get_overlap_and_eigs(batch, output_fock_matrix, label_fock_matrix, orbital_basis, dataset_name)
-                    # overlap_matrix = None # return te overlap from get_overlap and eigs! - figure out how it will affect build_density
-                    # label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix)
+                    # overlap_matrix = None 
+                    # label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix) # temp for testing
                     # pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix)
 
                 # take the first half (occupied):
@@ -518,9 +526,9 @@ class SplitTrainer():
                 
                 eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
                 eigenvalue_maes.append(eigenvalue_MAE)
-                print("MAE error in eigenvalues: ", eigenvalue_MAE, flush=True)
-                # self.plot_eigenvalues(label_eigenvalues, pred_eigenvalues)
-                # self.plot_eigenvalue_diff(label_fock_matrix, output_fock_matrix, s=5, alpha=0.3, label='Eigenvalue Difference', color='darkgreen')
+                print("MAE error in (H!) occupied eigenvalues: ", eigenvalue_MAE, flush=True)
+                self.plot_eigenvalues(label_eigenvalues, pred_eigenvalues)
+                self.plot_eigenvalue_diff(label_eigenvalues, pred_eigenvalues)
 
                 num_atoms_in_molecule_list.append(batch.num_atoms_in_molecule.cpu().detach().numpy().tolist()[0])
 
@@ -539,6 +547,11 @@ class SplitTrainer():
                 else:
                     total_energy_errors.append(0.0)
 
+                # # plot difference between P_label and P_pred
+                # plt.imshow(P_label - P_pred, vmin=-0.5, vmax=0.5, cmap='bwr')
+                # plt.colorbar()
+                # plt.savefig(os.path.join(output_folder, 'density_diff_' + str(index) + '.png'), dpi=300, bbox_inches='tight')
+
                 node_outputs.update(node_orbital_blocks_output)
                 edge_outputs.update(edge_orbital_blocks_output)
                 node_labels.update(node_orbital_blocks_label)
@@ -551,10 +564,6 @@ class SplitTrainer():
 
                 # undo energy referencing:
                 unscaled_energies = get_scale_shift.apply_energy_refs(batch, node_output['energies'], element_references, operation="add")
-
-                # divide by number of atoms to get per-atom MAE:
-                # unscaled_energies /= batch.num_atoms_in_molecule
-                # ref_energies /= batch.num_atoms_in_molecule
                 num_atoms_in_molecule_list.append(batch.num_atoms_in_molecule.cpu().detach().numpy().tolist()[0])
 
                 loss = torch.abs(unscaled_energies - ref_energies).mean()  # use MAE for eval                
@@ -605,11 +614,10 @@ class SplitTrainer():
             # do output dump in append mode:
             if loss_target_string == 'fock_matrix':
                 with open(output_folder + "/" + 'model_fock_' + '_eval_' + str(rank) + '.txt', 'a') as f:
-                    f.write(f"{track_loss_edge[-1]:.10f}\t{track_loss_node[-1]:.10f}\t{track_loss[-1]:.10f}\t{eigenvalue_maes[-1]:.10f}\t{total_energy_errors[-1]:.10f}\n")
+                    f.write(f"{track_loss_edge[-1]:.10f}\t{track_loss_node[-1]:.10f}\t{track_loss[-1]:.10f}\t{eigenvalue_maes[-1]:.10f}\t{total_energy_errors[-1]:.10f}\t{num_atoms_in_molecule_list[-1]}\n")
             elif loss_target_string == 'energies':
                 with open(output_folder + "/" + 'model_energies_' + '_eval_' + str(rank) + '.txt', 'a') as f:
-                    # f.write(f"{track_loss[-1]:.10f}\n")
-                    f.write(f"{unscaled_energies.item():.10f}\t{ref_energies.item():.10f}\t{track_loss[-1]:.10f}\n")
+                    f.write(f"{unscaled_energies.item():.10f}\t{ref_energies.item():.10f}\t{track_loss[-1]:.10f}\t{num_atoms_in_molecule_list[-1]}\n")
             else:
                 raise ValueError(f"Unknown loss target string: {loss_target_string}")
 
@@ -630,7 +638,6 @@ class SplitTrainer():
                 param2.grad = None
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-
 
         print(f"Writing eval outputs to file in {output_folder}...", flush=True)
 
@@ -792,23 +799,43 @@ class SplitTrainer():
         """
         Here for convinience, just plots the eigenvalues of the matrix
         """
-        plt.figure(figsize=(4, 3))
-        plt.scatter(range(len(label_eigs)), label_eigs, s=10, alpha=0.2, label='label energy eigs', color='blue', edgecolors='none')
-        plt.scatter(range(len(pred_eigs)), pred_eigs, s=2, alpha=0.6, label='predicted energy eigs', color='red', edgecolors='none')
+        plt.figure(figsize=(3, 2))
+
+        # find the halfway point of the predicted eigenvalues and draw a horizontal dashed line:
+        halfway_index = len(pred_eigs) // 2
+        plt.axhline(y=pred_eigs[halfway_index], color='black', linestyle='--', linewidth=0.5)
+        
+        plt.scatter(range(len(label_eigs)), label_eigs, s=15, alpha=0.4, label=r'$H^{ref}$', color='darkcyan', edgecolors='none')
+        # plt.scatter(range(len(pred_eigs)), pred_eigs, s=2, alpha=0.6, label=r'$H^{pred}$', color='mediumblue', edgecolors='none')
+        plt.scatter(range(len(pred_eigs)), pred_eigs, s=2, alpha=0.6, label=r'$H^{pred}$', color='mediumblue', marker='x', linewidths=0.5 )
+        plt.ylabel('$\lambda$ ($E_h$)', color='mediumblue')
+        plt.legend(frameon=False, loc='upper right')
         plt.xlabel('Eigenvalue #')
-        plt.ylabel('Eigenvalue ($E_h$)')
-        plt.legend()
-        plt.savefig("eigenvalues_fock_error.png", dpi=500, bbox_inches='tight')
+
+        diff_eigenvalues = np.abs(label_eigs - pred_eigs)
+        ax2 = plt.gca().twinx()
+        ax2.scatter(range(len(diff_eigenvalues)), diff_eigenvalues, s=5, alpha=0.5, color='red', edgecolors='none')
+        ax2.set_ylabel('$\delta\lambda$ ($E_h$)', color='red')
+
+        # plt.legend(frameon=False)
+        plt.savefig("eigenvalues_fock_tests.png", dpi=500, bbox_inches='tight')
         plt.close()
 
-    def plot_eigenvalue_diff(self, matrix1, matrix2, s=1, alpha=0.3, label='', color='blue'):
+
+    def plot_eigenvalue_diff(self, label_eigs, pred_eigs, s=1):
         """
         Here for convinience, just plots the eigenvalues of the matrix
         """
-        eigenvalues_1 = np.linalg.eigvalsh(matrix1)
-        eigenvalues_2 = np.linalg.eigvalsh(matrix2)
-        eigenvalues = np.abs(eigenvalues_1 - eigenvalues_2)
-        plt.scatter(range(len(eigenvalues)), eigenvalues, s=s, alpha=alpha, label=label, color=color, edgecolors='none')
+
+        plt.figure(figsize=(3, 2))
+        diff_eigenvalues = np.abs(label_eigs - pred_eigs)
+        plt.scatter(range(len(diff_eigenvalues)), diff_eigenvalues, s=5, alpha=0.5, label='Eigenvalue Difference', color='darkcyan', edgecolors='none')
+
+        plt.xlabel('Eigenvalue #')
+        plt.ylabel('$\delta\lambda$ ($E_h$)')
+        plt.legend(frameon=False)
+        plt.savefig("eigenvalues_diff_fock_omol.png", dpi=500, bbox_inches='tight')
+        plt.close()
     
     def get_total_energy(self, batch, fock_matrix, orbital_basis, dataset_name, overlap_matrix=None):
         """
@@ -889,11 +916,6 @@ class SplitTrainer():
             F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf") 
             overlap_matrix = sort_by_m(overlap_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf")
 
-            # # clean up small negative eigenvalues from the overlap matrix before diagonalization
-            # F, F_discard, overlap_matrix, idx_kept = self.remove_linear_dep_from_matrices(
-            #     F, F, overlap_matrix, threshold=1e-6
-            # )
-
             # Create molecule
             mol = gto.M(
                 atom=atom_list,
@@ -929,19 +951,45 @@ class SplitTrainer():
 
         basis = 'def2-tzvpd'
         functional = 'wb97m-v'
-        folder_name = batch.folder_name[0]
 
-        # the folder name has the format "X_1_1_...'", where the end is _charge_spin
-        pattern = r'_(-?\d+)_(\d+)(?:_|$)'
-        match = re.search(pattern, folder_name)
-        if match:
-            charge = int(match.group(1))
-            spin = int(match.group(2))
+        # Get informative folder name - the folder name has the format "X_1_1_...'", where the end is _charge_spin
+        folder_name_raw = batch.folder_name[0]
+        print("Folder name from batch: ", folder_name_raw)
+        # pattern = r'_(-?\d+)_(\d+)(?:_|$)'
+        pattern = r'_(\-?\d+)' # matches all integers
+        # pattern = r'_(\-?\d)(?:_|$)'
+        matches = re.findall(pattern, folder_name_raw)
+        if len(matches) > 1:
+            charge = int(matches[-2])
+            spin = int(matches[-1])
+            print("Extracted charge and spin from folder name: ", charge, spin)
         else:
-            print("Warning: folder name not in expected format, assuming neutral molecule.")
-            print("Folder name: ", folder_name)
-            charge = 0
-            spin = 1                         
+            # Normalize folder name for lookup
+            # Only replace the first three underscores with slashes
+            # Example: fm-ng_orca_job_1749115356_5ccb59b11bba -> fm-ng/orca/job_1749115356_5ccb59b11bba
+            parts = folder_name_raw.split('_')
+            normalized_folder_name = folder_name_raw.replace('_', '/', 2)
+            print("Normalized folder name: ", normalized_folder_name)
+
+            with open('./train_utils/omol_fock_mapping.json', 'r') as fh:
+                folder_name_mapping = json.loads(fh.read())
+
+            folder_name = folder_name_mapping.get(normalized_folder_name, None)
+            print("Using folder name: ", folder_name)
+
+            if folder_name is not None:
+                matches = re.findall(pattern, folder_name_raw)
+                if len(matches) > 1:
+                    charge = int(matches[-2])
+                    spin = int(matches[-1])
+                else:
+                    print("Warning: folder name: ", folder_name, " not found in mapping!.")
+                    charge = 0
+                    spin = 1
+            else:
+                print("Warning: normalized folder name not found in mapping!")
+                charge = 0
+                spin = 1                    
 
         # Create molecule
         mol = gto.M(
@@ -967,9 +1015,16 @@ class SplitTrainer():
 
         # clean up small negative eigenvalues from the overlap matrix before diagonalization
         print("Cleaning the overlap matrix...", flush=True)
+        if dataset_name == 'nablaDFT':
+            tolerance = 1e-6
+        if dataset_name == 'omol':
+            tolerance = 1e-1
         output_hamiltonian_cleaned, label_hamiltonian_cleaned, overlap_cleaned, idx_kept = self.remove_linear_dep_from_matrices(
-            output_hamiltonian_permuted, label_hamiltonian_permuted, overlap, threshold=1e-1
+            output_hamiltonian_permuted, label_hamiltonian_permuted, overlap, threshold=tolerance
         )
+        # output_hamiltonian_cleaned = output_hamiltonian_permuted
+        # label_hamiltonian_cleaned = label_hamiltonian_permuted
+        # overlap_cleaned = overlap
 
         # eigvals = np.linalg.eigvalsh(overlap_cleaned)
         # print("Min S eigenvalue:", eigvals.min())

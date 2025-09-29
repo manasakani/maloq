@@ -52,9 +52,9 @@ dataset_folder = '/checkpoint/ocp/manasakani/omol_58k_Sep11/omol_closedshell_58k
 # dataset_folder = '/checkpoint/ocp/manasakani/omol_test_all_5k/omol_closedshell_58k_test_all_5k_6.0_alledge_job_'+str(rank)+'.db' # 2 nodes
 
 dtype = torch.float32
-output_folder = 'outputs_omol_58k_energyfinetuned_E140'
+output_folder = 'outputs_omol_58k_energyfinetuned_E128_lr1e-4'
 dataset_name = 'omol'
-run_name = 'omol_58k_energyfinetuned_E140'
+run_name = 'omol_58k_energyfinetuned_E128_lr1e-4'
 orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
 orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
 orbital_basis = {int(k): v for k, v in orbital_basis.items()}
@@ -64,17 +64,17 @@ total_rows = db.count()
 # ---------------------------
 
 # --> Model settings:
-l_embedding_dim = 140                    # sphere channels 
+l_embedding_dim = 128                    # sphere channels 
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 3 
 model_name = 'esen'
 restart_backbone = True
-restart_head = False
+restart_head = True
 restart_optimizer = False
 
 # --> Training settings:
-train_or_eval = "train"
+train_or_eval = "eval"
 if train_or_eval == "eval":
     num_train = 1
     num_val = total_rows - num_train
@@ -100,7 +100,7 @@ train_backbone = True
 train_head = True
 
 torch.set_default_dtype(dtype)
-lr_init = 1e-6 
+lr_init = 5e-5 
 patience = 50                           # for scheduler
 threshold = 1e-5                        # for scheduler
 scheduler_type = 'cosine'               # 'plateau' or 'cosine'

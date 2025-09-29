@@ -4,13 +4,14 @@ import ase.db
 from tqdm import tqdm
 
 def count_atoms_edges_in_db(db_path):
-    """Count atoms and edges in a single database file"""
+    """Count atoms and edges in a single database file and write atoms per structure to a text file"""
     print(f"Processing: {os.path.basename(db_path)}")
     
     db = ase.db.connect(db_path)
     total_atoms = 0
     total_edges = 0
     total_molecules = 0
+    atoms_per_structure = []
     
     # Process one row at a time to avoid memory issues
     for row in tqdm(db.select(), desc=f"Processing {os.path.basename(db_path)}"):
@@ -20,7 +21,7 @@ def count_atoms_edges_in_db(db_path):
             atoms = row.toatoms()
             natoms = len(atoms)
             print(f"natoms from atoms object: {natoms}", flush=True)
-            
+            atoms_per_structure.append(natoms)
             # Get edge_index from data and count edges
             if 'edge_index' in row.data:
                 edge_index = row.data['edge_index']
@@ -46,6 +47,13 @@ def count_atoms_edges_in_db(db_path):
             print(f"Error processing row {row.id}: {e}")
             continue
     
+    # Write atoms per structure to a text file
+    out_txt = os.path.splitext(os.path.basename(db_path))[0] + "_atoms_per_structure.txt"
+    with open(out_txt, "w") as f:
+        for n in atoms_per_structure:
+            f.write(f"{n}\n")
+    print(f"Wrote atoms per structure to {out_txt}")
+    
     print(f"  Molecules: {total_molecules:,}")
     print(f"  Atoms: {total_atoms:,}")
     print(f"  Edges: {total_edges:,}")
@@ -55,8 +63,8 @@ def count_atoms_edges_in_db(db_path):
 
 def main():
     # Define the database directory pattern
-    db_directory = "/checkpoint/ocp/manasakani/omol_58k_Sep11/"
-    db_pattern = os.path.join(db_directory, "omol_closedshell_58k_train_6.0_alledge_job_*.db")
+    db_directory = "/checkpoint/ocp/manasakani/omol_test_all_5k/"
+    db_pattern = os.path.join(db_directory, "omol_closedshell_58k_test_all_5k_6.0_alledge_job_*.db")
     
     # Find all database files
     db_files = sorted(glob.glob(db_pattern))

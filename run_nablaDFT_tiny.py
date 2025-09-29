@@ -28,9 +28,11 @@ random.seed(42)
 # ---------------------------
 # ---------------------------
 # --> NablaDFT (tiny)
-database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/train_2k.db")
+# database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/train_2k.db")
+database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/test_2k_conformers.db")
+
 dataset_name = 'nablaDFT'
-output_folder = 'outputs_nablaDFT_tiny'
+output_folder = 'nablaDFT_final_Hamiltonian_models/outputs_nablaDFT_tiny'
 # ---------------------------
 
 # --> Model settings:
@@ -39,32 +41,33 @@ num_distance_basis = l_embedding_dim    # number of gaussian basis functions use
 hidden_dim = l_embedding_dim
 num_mp_layers = 3
 model_name = 'esen'
-restart_backbone = False
-restart_head = False
-restart_optimizer = False
+restart_backbone = True
+restart_head = True
+restart_optimizer = True
 
 # --> Training settings:
-train_or_eval = "train"
-num_val = 64                             # Number of validation structures
-num_train = len(database) - num_val
-num_epochs = 1000
+train_or_eval = "eval"
+compute_total_energy = True             # compute total energy of each molecule in eval mode
+num_val = len(database) - 64            # Number of validation structures
+num_train = 64
+num_epochs = 3000
 batch_size = 1                          # 1 for eval, 10 for train
-rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
-rcut_gaussian = rcut_orbitals*2                    # connectivity cutoff (=2xrcut)
+rcut_orbitals = 10.0                    # connectivity cutoff (=2xrcut)
+rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reduce_edge = False                      # use only edges i,j where i<j (other edges are reflected)
-reduce_node = False                      # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = False                # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_edge = False                     # use only edges i,j where i<j (other edges are reflected)
+reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
 
 dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-4
-patience = 100                           # if ReduceLROnPlateau scheduler
+lr_init = 1e-5
+patience = 50                           # if ReduceLROnPlateau scheduler
 threshold = 1e-5                        # if ReduceLROnPlateau scheduler
 scheduler_type = 'plateau'              # 'plateau' or 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
@@ -100,7 +103,7 @@ if scale_and_shift:
         scale_shift_data = {
             "element_scalar_means": scale_shift_data["element_scalar_means"],  # dict[int -> list[float]]
             "element_scalar_stds": scale_shift_data["element_scalar_stds"],    # dict[int -> list[float]]
-            "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"]   # list[int]
+            "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"],   # list[int]
         }
 else:
     print("Not scaling or shifting the dataset")
@@ -286,8 +289,6 @@ elif scheduler_type == 'cosine':
 else:
     raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
  
- # scheduler = loss_scheduler(optimizer)
-
 trainer = splittrainer.SplitTrainer(backbone=backbone, 
                                     head=head,
                                     head_irreps=output_irreps,
@@ -313,10 +314,15 @@ if train_or_eval == "train":
 else:
     trainer.evaluate(train_loss_fxn,
                     device,
-                    val_loader,
+                    val_loader, #val_loader,
                     loss_target_string=loss_target,
                     node_target_name=node_target,
                     edge_target_name=edge_target, 
                     basis_transform=basis_transformation,
                     output_folder=output_folder,
+                    compute_total_energy=compute_total_energy,
+                    dataset_name=dataset_name,
+                    orbital_basis=orbital_basis
                     )
+
+print("Finished everything, exiting.")

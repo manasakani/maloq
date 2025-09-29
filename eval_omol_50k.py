@@ -47,11 +47,12 @@ print("Time to setup distributed environment: ", compute_end - compute_start)
 # ---------------------------
 # --> OMOL 
 # dataset_folder = '/checkpoint/ocp/manasakani/omol_58k_Sep11/omol_closedshell_58k_train_6.0_alledge_job_'+str(rank)+'.db' 
-dataset_folder = '/checkpoint/ocp/manasakani/omol_test_common_1k/omol_closedshell_58k_test_common_1k_6.0_alledge_job_'+str(rank)+'.db' 
+# dataset_folder = '/checkpoint/ocp/manasakani/omol_test_common_1k/omol_closedshell_58k_test_common_1k_6.0_alledge_job_'+str(rank)+'.db' 
+dataset_folder = '/checkpoint/ocp/manasakani/omol_test_all_5k/omol_closedshell_58k_test_all_5k_6.0_alledge_job_'+str(rank)+'.db' # 2 nodes
 dtype = torch.float32
-# output_folder = 'outputs_omol_58k_energydirect_E128_scaled_300epochs'
-output_folder = 'outputs_omol_58k_E256_scaled'
-# output_folder = 'outputs_omol_58k_actuallyE256_scaled'
+output_folder = 'outputs_omol_58k_E128_combined_linear'
+# output_folder = 'outputs_omol_58k_energyfinetuned_E128'
+
 dataset_name = 'omol'
 run_name = 'omol_58k_Aug26_E128_eval'
 orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
@@ -63,7 +64,7 @@ total_rows = db.count()
 # ---------------------------
 
 # --> Model settings:
-l_embedding_dim = 140                   # sphere channels 
+l_embedding_dim = 128                   # sphere channels 
 num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 3 
@@ -74,12 +75,12 @@ restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "eval"
-compute_total_energy = True
-num_val = 1 #250                       # Number of validation structures
-num_train = 1 #total_rows - num_val     # Number of training structures - need equal batches on every gpu (use 840 molecules per gpu if doing a mol-wise split)
+compute_total_energy = False
+num_val = 1#total_rows - 1                       # Number of validation structures (250 for embedding visualization)
+num_train = 6                           # Number of training structures - need equal batches on every gpu (use 840 molecules per gpu if doing a mol-wise split)
 num_epochs = 300
 batch_size = 1                          # 1 for not oom (molecule-wise batching for evals)
-target_atoms_per_batch = 130            # if not using batch_size (atom-wise batching for train)
+target_atoms_per_batch = 200 #130            # if not using batch_size (atom-wise batching for train)
 target_edges_per_batch = 18000
 rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
@@ -87,8 +88,8 @@ gaussian_width = 1.0                    # width of gaussians used to expand edge
 
 # Additional symmetries:
 reduce_edge = False                     # use only edges i,j where i<j (other edges are reflected)
-reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_node = False                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = False                # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
@@ -101,7 +102,7 @@ scheduler_type = 'plateau'              # 'plateau' or 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
 eta_min = 1e-8                          # for cosine scheduler - minimum learning rate
 
-loss_target = 'fock_matrix'
+loss_target = 'fock_matrix'            # 'fock_matrix', 'forces', 'energies'
 compute_uncoupled_loss = True          
 head_type = 'gated'                     # linear or gated 
 train_loss_fxn = loss.rmse_mse_padded_loss   
@@ -113,7 +114,7 @@ include_edges = False if loss_target == 'energies' else True
 if reduce_edge and batch_size != 1:
     raise ValueError("If using reduce_edge, batch size must be 1! Reverse_edge map is not collated.")
 
-scale_and_shift = False
+scale_and_shift = True
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
 
 # Dump all settings to the output file
@@ -218,6 +219,12 @@ if train_or_eval == "train":
     )
 else: # molecule-wise batching for evals, only make the val dataloader since that's what evaluated
     val_data = get_scale_shift.scale_shift_database(val_database, 0, val_local_num_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
+    
+    # remove any molecules that have more atoms than the target_atoms_per_batch
+    print(f"Size of val data before removing molecules with more than {target_atoms_per_batch} atoms: ", len(val_data), flush=True)
+    val_data = [data for data in val_data if data.num_nodes <= target_atoms_per_batch]
+    print(f"Size of val data after removing molecules with more than {target_atoms_per_batch} atoms: ", len(val_data), flush=True)
+    
     val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0)
 
 print("Size of val loader: ", len(val_loader), flush=True)
@@ -393,5 +400,7 @@ else:
                     edge_target_name=edge_target, 
                     basis_transform=basis_transformation,
                     output_folder=output_folder,
-                    compute_total_energy=compute_total_energy
+                    compute_total_energy=compute_total_energy,
+                    dataset_name=dataset_name,
+                    orbital_basis=orbital_basis
                     )
