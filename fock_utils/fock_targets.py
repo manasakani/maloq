@@ -223,9 +223,39 @@ class Fock_Targets:
         self.edge_dist[:, 0] = torch.linalg.norm(self.edge_dist[:, 1:4], dim=-1, keepdim=False)                 # Scalar distances
     
     
+    # def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers=None):
+    #     """
+    #     Scale the l=0 values in the targets
+    #     scales - a list of scaling factors for each l=0 irrep component
+    #     shifts - a list of shifts for each l=0 irrep component
+    #     scalar_indices - a list of indices in the node_labels that correspond to the l=0 irreps
+    #     self.node_labels - the node labels that will be scaled
+    #     NOTE: if an element does not have that scalar value, the corresponding mean is 0.0 and std is 1.0
+    #     """
+
+    #     if node_atomic_numbers is None:
+    #         node_atomic_numbers = self.atomic_numbers
+
+    #     means = self.scale_shift_data['element_scalar_means']
+    #     stds = self.scale_shift_data['element_scalar_stds']
+    #     scalar_indices = self.scale_shift_data['scalar_irrep_indices']
+
+    #     # Process each node block
+    #     for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
+    #         z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
+    #         mean_vals = means[z]
+    #         std_vals = stds[z]
+
+    #         # Scale and shift the l=0 values in the node block
+    #         for idx_offset, idx in enumerate(scalar_indices):
+    #             node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
+    #         # print("maximum value in node block for element", z, ":", torch.max(node_block).item(), flush=True)
+
+    #     return node_blocks 
+
     def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers=None):
         """
-        Scale the l=0 values in the targets
+        Scale the l=0 values in the targets, and optionally all irrep degrees if extended data is available
         scales - a list of scaling factors for each l=0 irrep component
         shifts - a list of shifts for each l=0 irrep component
         scalar_indices - a list of indices in the node_labels that correspond to the l=0 irreps
@@ -236,50 +266,168 @@ class Fock_Targets:
         if node_atomic_numbers is None:
             node_atomic_numbers = self.atomic_numbers
 
-        means = self.scale_shift_data['element_scalar_means']
-        stds = self.scale_shift_data['element_scalar_stds']
-        scalar_indices = self.scale_shift_data['scalar_irrep_indices']
+        # Check if we have extended multi-degree scaling data
+        if 'element_irrep_means' in self.scale_shift_data and 'irrep_indices_by_l' in self.scale_shift_data:
+            # Use new multi-degree scaling
+            element_means = self.scale_shift_data['element_irrep_means']
+            element_stds = self.scale_shift_data['element_irrep_stds'] 
+            irrep_indices_by_l = self.scale_shift_data['irrep_indices_by_l']
+            lmax = self.scale_shift_data['lmax']
+            
+            # Process each node block
+            for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
+                z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
+                
+                # Scale each irrep degree
+                for l in range(lmax + 1):
+                    if l not in irrep_indices_by_l or z not in element_means[l]:
+                        continue
+                        
+                    irrep_indices = irrep_indices_by_l[l]
+                    mean_vals = element_means[l][z]
+                    std_vals = element_stds[l][z]
+                    
+                    if l == 0:
+                        # For l=0 (scalars), scale components directly
+                        for idx_offset, idx in enumerate(irrep_indices):
+                            node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
+                            
+                    else:
+                        # For l>0, scale the norms while preserving directions
+                        irrep_start_idx = 0
+                        for irrep_idx in range(len(mean_vals)):
+                            # Get indices for this irrep (2*l+1 components)
+                            irrep_size = 2 * l + 1
+                            start_idx = irrep_indices[irrep_start_idx]
+                            end_idx = irrep_indices[irrep_start_idx + irrep_size - 1] + 1
+                            
+                            # Extract irrep components
+                            irrep_components = node_block[start_idx:end_idx]
+                            
+                            # Compute current norm
+                            current_norm = torch.norm(irrep_components)
+                            
+                            # Scale the norm
+                            if current_norm > 1e-10:  # Avoid division by zero
+                                target_norm = (current_norm - mean_vals[irrep_idx]) / std_vals[irrep_idx]
+                                scale_factor = target_norm / current_norm
+                                node_block[start_idx:end_idx] = irrep_components * scale_factor
+                            else:
+                                # For zero norms, just apply the scaling to the mean
+                                scaled_mean = -mean_vals[irrep_idx] / std_vals[irrep_idx]
+                                node_block[start_idx:end_idx] = scaled_mean / torch.sqrt(torch.tensor(irrep_size, dtype=node_block.dtype))
+                            
+                            irrep_start_idx += irrep_size
+        
+        else:
+            # Fallback to original l=0 only scaling for backwards compatibility
+            means = self.scale_shift_data['element_scalar_means']
+            stds = self.scale_shift_data['element_scalar_stds']
+            scalar_indices = self.scale_shift_data['scalar_irrep_indices']
 
-        # Process each node block
-        for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
-            z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
-            mean_vals = means[z]
-            std_vals = stds[z]
+            # Process each node block
+            for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
+                z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
+                mean_vals = means[z]
+                std_vals = stds[z]
 
-            # Scale and shift the l=0 values in the node block
-            for idx_offset, idx in enumerate(scalar_indices):
-                node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
-            # print("maximum value in node block for element", z, ":", torch.max(node_block).item(), flush=True)
+                # Scale and shift the l=0 values in the node block
+                for idx_offset, idx in enumerate(scalar_indices):
+                    node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
 
-        return node_blocks 
+        return node_blocks
 
     def unscale_shift_node_blocks(self, node_blocks):
         """
-        Undo the scaling and shifting applied to the l=0 values in the targets.
+        Undo the scaling and shifting applied to the targets (l=0 values and optionally all irrep degrees).
         """
 
         if self.scale_shift_data is None:
             print("Possible Error! No scale/shift data provided! Not unscaling")
             return node_blocks
-            
-        means = self.scale_shift_data['element_scalar_means']
-        stds = self.scale_shift_data['element_scalar_stds']
-        scalar_indices = self.scale_shift_data['scalar_irrep_indices']
 
         new_node_blocks = node_blocks.clone()  # Create a copy to avoid modifying the original list
 
-        for i, (node_block, z) in enumerate(zip(node_blocks, self.atomic_numbers)):
-            z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
+        # Check if we have extended multi-degree scaling data
+        if 'element_irrep_means' in self.scale_shift_data and 'irrep_indices_by_l' in self.scale_shift_data:
+            print("Using extended multi-degree unscaling")
+            
+            # Use new multi-degree unscaling
+            element_means = self.scale_shift_data['element_irrep_means']
+            element_stds = self.scale_shift_data['element_irrep_stds'] 
+            irrep_indices_by_l = self.scale_shift_data['irrep_indices_by_l']
+            lmax = self.scale_shift_data['lmax']
+            
+            # Process each node block
+            for i, (node_block, z) in enumerate(zip(node_blocks, self.atomic_numbers)):
+                z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
+                
+                # Unscale each irrep degree
+                for l in range(lmax + 1):
+                    if l not in irrep_indices_by_l or z not in element_means[l]:
+                        continue
+                        
+                    irrep_indices = irrep_indices_by_l[l]
+                    mean_vals = element_means[l][z]
+                    std_vals = element_stds[l][z]
+                    
+                    if l == 0:
+                        # For l=0 (scalars), unscale components directly
+                        for idx_offset, idx in enumerate(irrep_indices):
+                            new_node_blocks[i][idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
+                            
+                    else:
+                        # For l>0, unscale the norms while preserving directions
+                        irrep_start_idx = 0
+                        for irrep_idx in range(len(mean_vals)):
+                            # Get indices for this irrep (2*l+1 components)
+                            irrep_size = 2 * l + 1
+                            start_idx = irrep_indices[irrep_start_idx]
+                            end_idx = irrep_indices[irrep_start_idx + irrep_size - 1] + 1
+                            
+                            # Extract irrep components
+                            irrep_components = node_block[start_idx:end_idx]
+                            
+                            # Compute current scaled norm
+                            current_scaled_norm = torch.norm(irrep_components)
+                            
+                            # Unscale the norm: scaled_norm = (original_norm - mean) / std
+                            # So: original_norm = scaled_norm * std + mean
+                            if current_scaled_norm > 1e-10:  # Avoid division by zero
+                                original_norm = current_scaled_norm * std_vals[irrep_idx] + mean_vals[irrep_idx]
+                                if original_norm > 1e-10:
+                                    scale_factor = original_norm / current_scaled_norm
+                                    new_node_blocks[i][start_idx:end_idx] = irrep_components * scale_factor
+                                else:
+                                    # If original norm would be zero, set components to zero
+                                    new_node_blocks[i][start_idx:end_idx] = torch.zeros_like(irrep_components)
+                            else:
+                                # If scaled norm is zero, reconstruct from the mean
+                                original_norm = mean_vals[irrep_idx]
+                                if original_norm > 1e-10:
+                                    # Set to uniform distribution with the target norm
+                                    new_node_blocks[i][start_idx:end_idx] = original_norm / torch.sqrt(torch.tensor(irrep_size, dtype=node_block.dtype))
+                                else:
+                                    new_node_blocks[i][start_idx:end_idx] = torch.zeros_like(irrep_components)
+                            
+                            irrep_start_idx += irrep_size
+        
+        else:
+            # Fallback to original l=0 only unscaling for backwards compatibility
+            print("Using l=0 only unscaling")
+            means = self.scale_shift_data['element_scalar_means']
+            stds = self.scale_shift_data['element_scalar_stds']
+            scalar_indices = self.scale_shift_data['scalar_irrep_indices']
 
-            mean_vals = means[z]
-            std_vals = stds[z]
+            for i, (node_block, z) in enumerate(zip(node_blocks, self.atomic_numbers)):
+                z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
 
-            for idx_offset, idx in enumerate(scalar_indices):
+                mean_vals = means[z]
+                std_vals = stds[z]
 
-                # node_block[idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
-                new_node_blocks[i][idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
+                for idx_offset, idx in enumerate(scalar_indices):
+                    new_node_blocks[i][idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
 
-            # new_node_blocks[i] = node_block
         return new_node_blocks
 
 
@@ -339,105 +487,105 @@ class Fock_Targets:
 
         return orbital_blocks
     
-    # def unpad_node_blocks(self, H_pred, atomic_numbers=None):
-        
-    #     atom_orbitals = self.orbital_basis
-    #     if atomic_numbers is None:
-    #         atomic_numbers = self.atomic_numbers
-
-    #     # Precompute number of orbitals for each atom
-    #     atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
-        
-    #     H_prev = {}
-        
-    #     for atom_ind in range(len(atomic_numbers)):
-            
-    #         key_term = (atom_ind, atom_ind)  # node key
-    #         print(f"Unpadding node {atom_ind}", flush=True)
-
-    #         # Precompute number of orbitals for atoms i and j
-    #         num_orbitals_i = atom_orbitals_count[atomic_numbers[atom_ind].item()]
-
-    #         # Initialize H_prev for this edge
-    #         H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_i), dtype=float)
-
-    #         H_prev_edge = H_prev[key_term]  # just to avoid repeated dictionary lookup 
-
-    #         for index_target, equivariant_block in enumerate(self.equivariant_blocks):
-    #             slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
-                
-    #             # Precompute block slices for this equivariant block
-    #             for N_M_str, block_slice in equivariant_block.items():
-    #                 slice_row = slice(block_slice[0], block_slice[1])
-    #                 slice_col = slice(block_slice[2], block_slice[3])
-    #                 len_row = block_slice[1] - block_slice[0]
-    #                 len_col = block_slice[3] - block_slice[2]
-                    
-    #                 condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
-
-    #                 if atomic_numbers[atom_ind].item() == int(condition_atomic_number_i) and atomic_numbers[atom_ind].item() == int(condition_atomic_number_j):
-    #                     H_prev_edge[slice_row, slice_col] = H_pred[atom_ind][slice_out].reshape(len_row, len_col)
-
-    #     return H_prev
-
     def unpad_node_blocks(self, H_pred, atomic_numbers=None):
         
         atom_orbitals = self.orbital_basis
         if atomic_numbers is None:
             atomic_numbers = self.atomic_numbers
 
-        # Convert to torch tensor if it's a numpy array
-        if isinstance(atomic_numbers, np.ndarray):
-            atomic_numbers = torch.from_numpy(atomic_numbers)
-
-        # Precompute number of orbitals for each atom type (not per atom)
+        # Precompute number of orbitals for each atom
         atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
         
         H_prev = {}
         
-        # Process all nodes simultaneously for each equivariant block
-        for index_target, equivariant_block in enumerate(self.equivariant_blocks):
-            slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
+        for atom_ind in range(len(atomic_numbers)):
             
-            print(f"Processing node equivariant block {index_target} of {len(self.equivariant_blocks)}", flush=True)
-            
-            for N_M_str, block_slice in equivariant_block.items():
-                condition_atomic_number_i, condition_atomic_number_j = map(int, N_M_str.split())
+            key_term = (atom_ind, atom_ind)  # node key
+            print(f"Unpadding node {atom_ind}", flush=True)
+
+            # Precompute number of orbitals for atoms i and j
+            num_orbitals_i = atom_orbitals_count[atomic_numbers[atom_ind].item()]
+
+            # Initialize H_prev for this edge
+            H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_i), dtype=float)
+
+            H_prev_edge = H_prev[key_term]  # just to avoid repeated dictionary lookup 
+
+            for index_target, equivariant_block in enumerate(self.equivariant_blocks):
+                slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
                 
-                # For nodes, both conditions should be the same (self-interaction)
-                if condition_atomic_number_i != condition_atomic_number_j:
-                    continue
+                # Precompute block slices for this equivariant block
+                for N_M_str, block_slice in equivariant_block.items():
+                    slice_row = slice(block_slice[0], block_slice[1])
+                    slice_col = slice(block_slice[2], block_slice[3])
+                    len_row = block_slice[1] - block_slice[0]
+                    len_col = block_slice[3] - block_slice[2]
                     
-                # Vectorized mask creation for all atoms of this type
-                mask = atomic_numbers == condition_atomic_number_i
-                matching_atom_indices = torch.where(mask)[0]
-                
-                if len(matching_atom_indices) == 0:
-                    continue
-                
-                # Batch process all matching atoms
-                slice_row = slice(block_slice[0], block_slice[1])
-                slice_col = slice(block_slice[2], block_slice[3])
-                len_row = block_slice[1] - block_slice[0]
-                len_col = block_slice[3] - block_slice[2]
-                
-                # Extract predictions for all matching atoms at once
-                pred_batch = H_pred[matching_atom_indices][:, slice_out].reshape(-1, len_row, len_col)
-                
-                # Initialize matrices if not already done and assign predictions
-                for idx, atom_ind in enumerate(matching_atom_indices):
-                    atom_ind = atom_ind.item()
-                    key_term = (atom_ind, atom_ind)  # node key
-                    
-                    if key_term not in H_prev:
-                        num_orbitals_i = atom_orbitals_count[atomic_numbers[atom_ind].item()]
-                        H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_i), dtype=float)
-                    
-                    # Assign the prediction
-                    H_prev[key_term][slice_row, slice_col] = pred_batch[idx]
+                    condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
+
+                    if atomic_numbers[atom_ind].item() == int(condition_atomic_number_i) and atomic_numbers[atom_ind].item() == int(condition_atomic_number_j):
+                        H_prev_edge[slice_row, slice_col] = H_pred[atom_ind][slice_out].reshape(len_row, len_col)
 
         return H_prev
+
+    # def unpad_node_blocks(self, H_pred, atomic_numbers=None):
         
+    #     atom_orbitals = self.orbital_basis
+    #     if atomic_numbers is None:
+    #         atomic_numbers = self.atomic_numbers
+
+    #     # Convert to torch tensor if it's a numpy array
+    #     if isinstance(atomic_numbers, np.ndarray):
+    #         atomic_numbers = torch.from_numpy(atomic_numbers)
+
+    #     # Precompute number of orbitals for each atom type (not per atom)
+    #     atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
+        
+    #     H_prev = {}
+        
+    #     # Process all nodes simultaneously for each equivariant block
+    #     for index_target, equivariant_block in enumerate(self.equivariant_blocks):
+    #         slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
+            
+    #         print(f"Processing node equivariant block {index_target} of {len(self.equivariant_blocks)}", flush=True)
+            
+    #         for N_M_str, block_slice in equivariant_block.items():
+    #             condition_atomic_number_i, condition_atomic_number_j = map(int, N_M_str.split())
+                
+    #             # For nodes, both conditions should be the same (self-interaction)
+    #             if condition_atomic_number_i != condition_atomic_number_j:
+    #                 continue
+                    
+    #             # Vectorized mask creation for all atoms of this type
+    #             mask = atomic_numbers == condition_atomic_number_i
+    #             matching_atom_indices = torch.where(mask)[0]
+                
+    #             if len(matching_atom_indices) == 0:
+    #                 continue
+                
+    #             # Batch process all matching atoms
+    #             slice_row = slice(block_slice[0], block_slice[1])
+    #             slice_col = slice(block_slice[2], block_slice[3])
+    #             len_row = block_slice[1] - block_slice[0]
+    #             len_col = block_slice[3] - block_slice[2]
+                
+    #             # Extract predictions for all matching atoms at once
+    #             pred_batch = H_pred[matching_atom_indices][:, slice_out].reshape(-1, len_row, len_col)
+                
+    #             # Initialize matrices if not already done and assign predictions
+    #             for idx, atom_ind in enumerate(matching_atom_indices):
+    #                 atom_ind = atom_ind.item()
+    #                 key_term = (atom_ind, atom_ind)  # node key
+                    
+    #                 if key_term not in H_prev:
+    #                     num_orbitals_i = atom_orbitals_count[atomic_numbers[atom_ind].item()]
+    #                     H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_i), dtype=float)
+                    
+    #                 # Assign the prediction
+    #                 H_prev[key_term][slice_row, slice_col] = pred_batch[idx]
+
+    #     return H_prev
+
     # def unpad_edge_blocks(self, H_pred, atomic_numbers=None):
         
     #     edge_index = self.neighbour_list
