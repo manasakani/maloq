@@ -40,29 +40,29 @@ class SplitTrainer():
 
         if not run_id:
             run_id = str(get_timestamp_uid)
-        
+
         # config: any dictionary, add the training parameters
         config = {}
 
-        wandb.init(config=config,    
+        wandb.init(config=config,
                    id=run_id,
                    name=run_name,
                    project='fockmatrices',
                    entity='manasakani')
-        
+
     # -- Train model --
     # @disable_amp
-    def train(self, 
-            num_epochs, 
-            loss_fxn, 
-            optimizer, 
-            scheduler, 
-            device, 
-            train_loader, 
-            loss_target_string, 
-            node_target_name, 
-            val_loader=None, 
-            edge_target_name=None, 
+    def train(self,
+            num_epochs,
+            loss_fxn,
+            optimizer,
+            scheduler,
+            device,
+            train_loader,
+            loss_target_string,
+            node_target_name,
+            val_loader=None,
+            edge_target_name=None,
             output_folder='outputs',
             num_warmup_epochs=0,
             train_backbone=True,
@@ -70,6 +70,7 @@ class SplitTrainer():
             basis_transform=None,
             compute_uncoupled_loss=True,
             element_references=None,
+            step_every_epoch=True,
             min_lr=1e-10):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}", flush=True)
@@ -85,15 +86,15 @@ class SplitTrainer():
 
         dist.barrier()
         if dist.is_available() and dist.is_initialized():
-            rank = dist.get_rank() 
+            rank = dist.get_rank()
             world_size = dist.get_world_size()
-            if train_backbone: 
+            if train_backbone:
                 self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, find_unused_parameters=False, gradient_as_bucket_view=True)
             if train_head:
                 self.head = nn.parallel.DistributedDataParallel(self.head, device_ids=[0], output_device=0, find_unused_parameters=False, gradient_as_bucket_view=True)
         else:
             rank = 0
-        
+
         # Ensure that the ranks have the same number of batches! - need to be careful of this due to the custom data distribution
         num_train_batches = len(train_loader)
         num_val_batches = len(val_loader)
@@ -102,7 +103,7 @@ class SplitTrainer():
         include_edges = False
         if edge_target_name:
             include_edges = True
-        
+
         initial_lr = optimizer.param_groups[0]['lr']
 
         track_loss_node = []
@@ -110,14 +111,14 @@ class SplitTrainer():
         if include_edges:
             track_loss_edge = []
             track_loss_edge_val = []
-        
+
         for epoch in range(num_epochs):
             epoch_start = time.perf_counter()
-            
+
             if train_backbone:
-                self.backbone.train() 
-                
-            if train_head: 
+                self.backbone.train()
+
+            if train_head:
                 self.head.train()
 
             train_loss_node = 0.0
@@ -127,18 +128,18 @@ class SplitTrainer():
 
                 optimizer.zero_grad()
 
-                # -- Forward -- 
+                # -- Forward --
                 forward_start = time.perf_counter()
                 batch = batch.to(device)
 
                 backbone_start = time.perf_counter()
-                backbone_out = self.backbone(batch) 
+                backbone_out = self.backbone(batch)
                 backbone_end = time.perf_counter()
 
                 if loss_target_string == 'fock_matrix':
                     node_output, edge_output_fwd, edge_output_bwd, edge_perm, edge_refl = self.head(backbone_out, batch)
                     head_end = time.perf_counter()
-                    
+
                     this_node_target = getattr(batch, node_target_name)
                     this_edge_target = getattr(batch, edge_target_name)
 
@@ -154,10 +155,9 @@ class SplitTrainer():
                     loss_end = time.perf_counter()
                     if rank == 0:
                         print(f"--> Rank {rank} batch {batch_idx} loss: ", loss.item(), flush=True)
-                        current_mem = torch.cuda.memory_allocated() / (1024 * 1024)   
-                        peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024) 
+                        current_mem = torch.cuda.memory_allocated() / (1024 * 1024)
+                        peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024)
                         print(f"Current: {current_mem:.2f} MB, Peak: {peak_mem:.2f} MB")
-                        # print(torch.cuda.memory.memory_summary(), flush=True)
                         print(f"Backbone time: {backbone_end - backbone_start:.4f}s, Head time: {head_end - backbone_end:.4f}s, Loss time: {loss_end - loss_start:.4f}s", flush=True)
 
                 elif loss_target_string == 'forces':
@@ -165,52 +165,64 @@ class SplitTrainer():
                     this_node_target = getattr(batch, node_target_name)
 
                     this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
-                    loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps) 
+                    loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps)
 
                     train_loss_node += loss.item()
-                    
+
                 elif loss_target_string == 'energies':
                     node_output = self.head(backbone_out, batch)
                     scaled_energies = get_scale_shift.apply_energy_refs(batch, batch.energies, element_references, operation="subtract") # Apply energy reference scaling
                     loss = loss_fxn(node_output['energies'], scaled_energies, self.head_irreps)
                     # print("predicted and reference energies for last train batch: ", node_output['energies'].tolist(), scaled_energies.tolist())
                     train_loss_node += loss.item()
+                    if rank == 0:
+                        print(f"--> Rank {rank} batch {batch_idx} loss: ", loss.item(), flush=True)
 
                 else:
                     raise ValueError(f"Unknown loss target string: {loss_target_string}")
 
                 forward_end = time.perf_counter()
 
-                # -- Backwards -- 
+                # -- Backwards --
                 backward_start = time.perf_counter()
                 loss.backward()
                 optimizer.step()
                 backward_end = time.perf_counter()
 
-                # Garbage collection 
+                # -- Scheduler --
+                if not step_every_epoch:
+                    if hasattr(scheduler, 'patience'):  # ReduceLROnPlateau
+                        scheduler.step(val_loss)
+                    else:                               # CosineAnnealingLR
+                        scheduler.step()
+                    current_lr = optimizer.param_groups[0]['lr']
+                    if rank == 0:
+                        print("Current learning rate: ", current_lr)
+
+                # Garbage collection
                 if loss_target_string == 'fock_matrix':
                     del node_output, edge_output_fwd, edge_output_bwd, this_node_target, this_edge_target
                     del loss_node, loss_edge, loss
                 else:
                     del node_output, loss
                 del batch, backbone_out
-                
-                # if rank == 0:
-                #     print("Time per forward pass: ", forward_end - forward_start, flush=True)
-                #     print("Time for backward pass: ", backward_end - backward_start, flush=True)
 
-            # -- Output dump -- 
+                if rank == 0:
+                    print("Time per forward pass: ", forward_end - forward_start, flush=True)
+                    print("Time for backward pass: ", backward_end - backward_start, flush=True)
+
+            # -- Output dump --
             if loss_target_string == 'fock_matrix':
-                track_loss_node.append(train_loss_node/num_train_batches) 
+                track_loss_node.append(train_loss_node/num_train_batches)
                 track_loss_edge.append(train_loss_edge/num_train_batches)
             else:
-                track_loss_node.append(train_loss_node/num_train_batches) 
+                track_loss_node.append(train_loss_node/num_train_batches)
 
             if rank == 0:
                 if loss_target_string == 'fock_matrix':
-                    print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]} [edge] {track_loss_edge[-1]}", flush=True)    
+                    print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]} [edge] {track_loss_edge[-1]}", flush=True)
                 else:
-                    print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]}", flush=True)    
+                    print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]}", flush=True)
 
             dist.barrier()
 
@@ -222,16 +234,16 @@ class SplitTrainer():
             val_loss_edge = 0.0
             with torch.no_grad():
                 for batch in val_loader:
-                    
+
                     # -- Forward --
                     batch = batch.to(device)
                     # with autocast():
-                    backbone_out = self.backbone(batch) 
-                    
+                    backbone_out = self.backbone(batch)
+
                     # -- Loss --
                     if loss_target_string == 'fock_matrix':
                         node_output, edge_output_fwd, edge_output_bwd, edge_perm, edge_refl = self.head(backbone_out, batch)
-                        
+
                         this_node_target = getattr(batch, node_target_name)
                         this_edge_target = getattr(batch, edge_target_name)
 
@@ -251,7 +263,7 @@ class SplitTrainer():
 
                         if self.head_irreps == '1x1e':             # permute force vectors to match edge permutations
                             this_node_target = this_node_target[:, [1, 2, 0]]
-                            loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps) 
+                            loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps)
                         val_loss_node += loss.item()
                     elif loss_target_string == 'energies':
                         node_output = self.head(backbone_out, batch)
@@ -276,20 +288,20 @@ class SplitTrainer():
                     # torch.cuda.empty_cache()
                     # torch.cuda.synchronize()
 
-            # -- Output dump -- 
+            # -- Output dump --
             if loss_target_string == 'fock_matrix':
-                track_loss_node_val.append(val_loss_node/num_val_batches) 
+                track_loss_node_val.append(val_loss_node/num_val_batches)
                 track_loss_edge_val.append(val_loss_edge/num_val_batches)
             else:
-                track_loss_node_val.append(val_loss_node/num_val_batches) 
+                track_loss_node_val.append(val_loss_node/num_val_batches)
 
             if rank == 0:
                 if loss_target_string == 'fock_matrix':
-                    print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)    
+                    print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)
                 else:
-                    print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]}", flush=True)   
+                    print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]}", flush=True)
                 print(torch.cuda.memory.memory_summary(), flush=True)
-            
+
             if dist.is_initialized():
                 val_loss_tensor = torch.tensor(val_loss, device=device)
                 val_loss_node_tensor = torch.tensor(val_loss_node, device=device)
@@ -304,73 +316,74 @@ class SplitTrainer():
                 val_loss_node = val_loss_node_tensor.item() / world_size
                 val_loss_edge = val_loss_edge_tensor.item() / world_size
 
-            # -- Scheduler -- 
-            if hasattr(scheduler, 'patience'):  # ReduceLROnPlateau
-                scheduler.step(val_loss)
-            else:                               # CosineAnnealingLR 
-                scheduler.step()
-            current_lr = optimizer.param_groups[0]['lr']
-            if rank == 0:
-                print("Current learning rate: ", current_lr)
-            
+            # -- Scheduler --
+            if step_every_epoch:
+                if hasattr(scheduler, 'patience'):  # ReduceLROnPlateau
+                    scheduler.step(val_loss)
+                else:                               # CosineAnnealingLR
+                    scheduler.step()
+                current_lr = optimizer.param_groups[0]['lr']
+                if rank == 0:
+                    print("Current learning rate: ", current_lr)
+
             epoch_end = time.perf_counter()
             if rank == 0:
                 print("Time per epoch: ", epoch_end - epoch_start)
 
             # log to wandb:
             # if (epoch + 1) % self.save_frequency == 0:
-            update_dict = {"node_loss": float(track_loss_node[-1]), 
+            update_dict = {"node_loss": float(track_loss_node[-1]),
                         "node_val_loss": float(track_loss_node_val[-1]),
                         "learning_rate": float(current_lr)}
             if loss_target_string == 'fock_matrix':
-                update_dict.update({"edge_loss": float(track_loss_edge[-1]), 
+                update_dict.update({"edge_loss": float(track_loss_edge[-1]),
                                     "edge_val_loss": float(track_loss_edge_val[-1])})
             wandb.log(update_dict)
-            
+
             # save state
             if rank == 0:
                 if (epoch + 1) % self.save_frequency == 0:
                     if loss_target_string == 'fock_matrix':
                         self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
-                        self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)     
+                        self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)
                     else:
                         self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder)
                         self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder)
-    
+
             # End condition is based on the learning rate:
             min_lr_reached = torch.tensor(float(current_lr == min_lr), device='cuda')
             if min_lr_reached:
                 print("Reached minimum learning rate, finished training.")
                 if loss_target_string == 'fock_matrix':
                     self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
-                    self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)     
+                    self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)
                 else:
                     self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder)
                     self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder)
                 return
 
     # -- Evaluate model --
-    def evaluate(self, 
-                loss_fxn, 
-                device, 
-                eval_loader, 
-                loss_target_string, 
-                node_target_name, 
-                edge_target_name=None, 
+    def evaluate(self,
+                loss_fxn,
+                device,
+                eval_loader,
+                loss_target_string,
+                node_target_name,
+                edge_target_name=None,
                 basis_transform=None,
                 element_references=None,
                 output_folder='outputs',
                 dataset_name='omol',
                 orbital_basis=None,
                 compute_total_energy=True):
-        
+
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
         print("Running eval.")
-        self.backbone.eval() 
-        self.head.eval() 
+        self.backbone.eval()
+        self.head.eval()
 
         if dist.is_available() and dist.is_initialized():
-            rank = dist.get_rank() 
+            rank = dist.get_rank()
             world_size = dist.get_world_size()
         else:
             rank = 0
@@ -387,8 +400,8 @@ class SplitTrainer():
         track_loss_node = []
         if loss_target_string == 'fock_matrix':
             track_loss_edge = []
-        
-        # -- Evaluate everything in the train_loader -- 
+
+        # -- Evaluate everything in the train_loader --
         # with torch.no_grad():  # NOTE: there is a bug with torch.no_grad() and e3nn_linear (used in the output head!) for e3nn v. 0.5.6. Using 0.5.5 instead.
 
         # dictionaries to store the orbital blocks, they get rewritten by each batch
@@ -400,14 +413,14 @@ class SplitTrainer():
         if loss_target_string == 'fock_matrix':
             edge_outputs = {}
             edge_labels = {}
-        
+
         for index, batch in enumerate(eval_loader):
-            print(f"Processing molecule {index}...", flush=True)   
+            print(f"Processing molecule {index}...", flush=True)
             print(f"Number of atoms in molecule {index}: {batch.num_nodes}", flush=True)
 
             with torch.no_grad():
                 batch = batch.to(device)
-                backbone_out = self.backbone(batch) 
+                backbone_out = self.backbone(batch)
 
             # print("Writing embeddings to file...", flush=True)
             # self.write_embeddings_to_file(backbone_out, batch, index, output_folder, rank)
@@ -441,7 +454,7 @@ class SplitTrainer():
                 #             this_node_target.cpu().detach().numpy())
                 #     np.save(os.path.join(output_folder, 'edge_targets_' + str(index) + '.npy'),
                 #             this_edge_target.cpu().detach().numpy())
-                #     # write the required irreps to file:    
+                #     # write the required irreps to file:
                 #     with open(os.path.join(output_folder, 'irreps.txt'), 'w') as f:
                 #         f.write(f"Head irreps: {self.head_irreps}\n")
 
@@ -459,7 +472,7 @@ class SplitTrainer():
                 edge_orbital_blocks_output = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_outputs, atomic_numbers=atomic_numbers)
                 node_orbital_blocks_label = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_labels, atomic_numbers=atomic_numbers)
                 edge_orbital_blocks_label = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_labels, atomic_numbers=atomic_numbers)
-                
+
                 # reassemble the matrix (use the model output for the predicted matrix, and reconstruct the label matrix from the orbital blocks if needed)
                 print("Reconstructing matrices...", flush=True)
                 output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=True)
@@ -468,17 +481,17 @@ class SplitTrainer():
                 else:
                     # reconstructed from targets:
                     label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=False)
-                    
+
                 # detach the matrices:
                 output_fock_matrix = output_fock_matrix.cpu().detach().numpy()
                 label_fock_matrix = label_fock_matrix.cpu().detach().numpy()
 
                 # -------- Debugging code --------
                 # test - get label fock from orca output file:
-                # label_fock_matrix, elements, coordinates, _ = read_orca_out('/home/manasakani/ocp-modeling-dev/manasakani/fock_datasets/single_water_molecule/rot1/orca.out') 
+                # label_fock_matrix, elements, coordinates, _ = read_orca_out('/home/manasakani/ocp-modeling-dev/manasakani/fock_datasets/single_water_molecule/rot1/orca.out')
                 # full_basis = {periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
                 # full_basis = dict(sorted(full_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
-                # basis = {element: full_basis[element] for element in elements} 
+                # basis = {element: full_basis[element] for element in elements}
                 # label_fock_matrix = sort_by_m(label_fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
                 # -------- Debugging code --------
 
@@ -509,13 +522,13 @@ class SplitTrainer():
                 # Compute the eigenvalues and eigenvalue error
                 print("Solving generalized eigenvalue problem...", flush=True)
                 if hasattr(batch, 'overlap_matrix') and batch.overlap_matrix is not None:
-                    overlap_matrix = batch.overlap_matrix.detach().cpu().numpy() 
+                    overlap_matrix = batch.overlap_matrix.detach().cpu().numpy()
                     label_eigenvalues = sp.linalg.eigvalsh(label_fock_matrix, overlap_matrix)
                     pred_eigenvalues = sp.linalg.eigvalsh(output_fock_matrix, overlap_matrix)
                 else:
                     # print("Building overlap matrix and computing eigenvalues...", flush=True)
                     label_eigenvalues, pred_eigenvalues, overlap_matrix = self.get_overlap_and_eigs(batch, output_fock_matrix, label_fock_matrix, orbital_basis, dataset_name)
-                    # overlap_matrix = None 
+                    # overlap_matrix = None
                     # label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix) # temp for testing
                     # pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix)
 
@@ -523,7 +536,7 @@ class SplitTrainer():
                 num_occupied = len(label_eigenvalues) // 2
                 label_eigenvalues = label_eigenvalues[:num_occupied]
                 pred_eigenvalues = pred_eigenvalues[:num_occupied]
-                
+
                 eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
                 eigenvalue_maes.append(eigenvalue_MAE)
                 print("MAE error in (H!) occupied eigenvalues: ", eigenvalue_MAE, flush=True)
@@ -566,28 +579,28 @@ class SplitTrainer():
                 unscaled_energies = get_scale_shift.apply_energy_refs(batch, node_output['energies'], element_references, operation="add")
                 num_atoms_in_molecule_list.append(batch.num_atoms_in_molecule.cpu().detach().numpy().tolist()[0])
 
-                loss = torch.abs(unscaled_energies - ref_energies).mean()  # use MAE for eval                
+                loss = torch.abs(unscaled_energies - ref_energies).mean()  # use MAE for eval
                 print("predicted and reference energies for last val batch: ", unscaled_energies.tolist(), ref_energies.tolist())
-                
+
             else:
                 with torch.no_grad():
                     node_output = self.head(backbone_out, batch)
 
                 this_node_target = getattr(batch, node_target_name)
 
-                if self.head_irreps == '1x1e':             
+                if self.head_irreps == '1x1e':
                     this_node_target = this_node_target[:, [1, 2, 0]] # match edge permutations
-                    loss = loss_fxn(node_output['forces'], this_node_target) 
+                    loss = loss_fxn(node_output['forces'], this_node_target)
                 else:
-                    print("To be implemented!") 
+                    print("To be implemented!")
 
-            # -- Track -- 
+            # -- Track --
             if loss_target_string == 'fock_matrix':
 
                 print("Tracking loss for batch ", index, flush=True)
                 edge_multiplier = 2 if batch.fock_target_object[0].half_edges else 1
                 total_node_element_loss = 0
-                total_edge_element_loss = 0   
+                total_edge_element_loss = 0
                 num_node_block_elements = 0
                 num_edge_block_elements = 0
 
@@ -602,7 +615,7 @@ class SplitTrainer():
                 # convert matrices to torch tensors for loss computation
                 output_fock_matrix = torch.tensor(output_fock_matrix)
                 label_fock_matrix = torch.tensor(label_fock_matrix)
-                
+
                 total_matrix_mae_loss = torch.abs(output_fock_matrix - label_fock_matrix).sum() / output_fock_matrix.numel()
                 track_loss_node.append(total_node_element_loss / num_node_block_elements)
                 track_loss_edge.append(total_edge_element_loss / num_edge_block_elements)
@@ -626,22 +639,22 @@ class SplitTrainer():
             del batch, backbone_out, node_output
             if include_edges:
                 del edge_output, this_edge_target, output_fock_matrix, label_fock_matrix, node_orbital_blocks_output, edge_orbital_blocks_output, node_orbital_blocks_label, edge_orbital_blocks_label
-            
+
             node_outputs.clear()
             node_labels.clear()
             if loss_target_string == 'fock_matrix':
                 edge_outputs.clear()
                 edge_labels.clear()
-                
+
             for param1, param2 in zip(self.backbone.parameters(), self.head.parameters()):
-                param1.grad = None 
+                param1.grad = None
                 param2.grad = None
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 
         print(f"Writing eval outputs to file in {output_folder}...", flush=True)
 
-        # -- Output dump -- 
+        # -- Output dump --
         if loss_target_string == 'fock_matrix':
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                 f.write(f"Edge_MAE\tNode_MAE\tTotal_MAE\tEigenvalue_MAE\tTotal_Energy_Error\tNum_Atoms\n")
@@ -652,7 +665,7 @@ class SplitTrainer():
                 f.write(f"Energy_Error (Eh)\tNum_Atoms\n")
                 for node, num_atoms in zip(track_loss, num_atoms_in_molecule_list):
                     f.write(f"{node:.10f}\t{num_atoms}\n")
-    
+
     # -- Helper functions for training and evaluation --
     def check_batch_consistency(self, num_train_batches, num_val_batches, device):
 
@@ -676,7 +689,7 @@ class SplitTrainer():
 
     def compute_fock_loss(self, node_output, edge_output_fwd, edge_output_bwd, this_node_target, this_edge_target, edge_perm, edge_refl, loss_fxn, head_irreps, basis_transform, compute_uncoupled_loss):
         """Computes the Fock loss for the given outputs and targets."""
-        
+
         # In this case, we only have labels for half the edges (edge_mask), so we need to construct the other half using parity rules + permutation
         # the required transformation is pre-computed in the output head as edge_perm and edge_refl
         if edge_perm is not None:
@@ -695,7 +708,7 @@ class SplitTrainer():
             loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
             edge_output = torch.cat([edge_output_fwd, edge_output_bwd], dim=0)
             edge_labels = torch.cat([edge_target_fwd, edge_target_bwd], dim=0)
-            loss_edge = loss_fxn(edge_output, edge_labels, self.head_irreps) 
+            loss_edge = loss_fxn(edge_output, edge_labels, self.head_irreps)
 
             loss = loss_fxn(output, labels, self.head_irreps)
 
@@ -708,14 +721,14 @@ class SplitTrainer():
             if compute_uncoupled_loss:
                 output = basis_transform.get_H(output)
                 labels = basis_transform.get_H(labels)
-                
+
             loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
-            loss_edge = loss_fxn(edge_output_fwd, this_edge_target, self.head_irreps) 
+            loss_edge = loss_fxn(edge_output_fwd, this_edge_target, self.head_irreps)
             loss = loss_fxn(output, labels, self.head_irreps)
             # loss = loss_node + loss_edge
 
         return loss_node, loss_edge, loss
-    
+
     def write_embeddings_to_file(self, backbone_out, batch, index, output_folder, rank):
         """
         Write the embeddings to file for later analysis
@@ -747,7 +760,7 @@ class SplitTrainer():
             if backbone_out['edge_embeddings'] is not None:
                 f.write(f"Edge embeddings shape: {backbone_out['edge_embeddings'].shape}\n")
             f.write(f"Edge distances shape: {batch.edge_attr.shape}\n")
-        
+
         del backbone_out
 
 
@@ -758,7 +771,7 @@ class SplitTrainer():
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
             print(f"Warmup epoch {epoch+1}: setting learning rate to {lr}")
-    
+
     def get_orbital(self, tensor, irreps_list, l):
         """
         Extract and return all irreps of type l from the tensor
@@ -772,9 +785,9 @@ class SplitTrainer():
                 collect.append(tensor[pointer : pointer + 2*l+1])
 
             pointer += 2*irrep_l+1
-        
+
         return collect
-                
+
     def visualize_embeddings(self, embs, output_folder, keyword, plot_log=True):
 
         # make a folder called "embeddings" in the output folder if it doesn't exist
@@ -804,7 +817,7 @@ class SplitTrainer():
         # find the halfway point of the predicted eigenvalues and draw a horizontal dashed line:
         halfway_index = len(pred_eigs) // 2
         plt.axhline(y=pred_eigs[halfway_index], color='black', linestyle='--', linewidth=0.5)
-        
+
         plt.scatter(range(len(label_eigs)), label_eigs, s=15, alpha=0.4, label=r'$H^{ref}$', color='darkcyan', edgecolors='none')
         # plt.scatter(range(len(pred_eigs)), pred_eigs, s=2, alpha=0.6, label=r'$H^{pred}$', color='mediumblue', edgecolors='none')
         plt.scatter(range(len(pred_eigs)), pred_eigs, s=2, alpha=0.6, label=r'$H^{pred}$', color='mediumblue', marker='x', linewidths=0.5 )
@@ -836,10 +849,10 @@ class SplitTrainer():
         plt.legend(frameon=False)
         plt.savefig("eigenvalues_diff_fock_omol.png", dpi=500, bbox_inches='tight')
         plt.close()
-    
+
     def get_total_energy(self, batch, fock_matrix, orbital_basis, dataset_name, overlap_matrix=None):
         """
-        Compute the total energy error from the Fock matrix 
+        Compute the total energy error from the Fock matrix
         """
 
         atomic_numbers = batch.atomic_numbers.cpu().numpy()
@@ -848,11 +861,11 @@ class SplitTrainer():
 
         # nablaDFT positions are in bohr (psi4), QM7 and omol are in angstrom (orca)
         if dataset_name == 'nablaDFT':
-            positions *= bohr_to_angstrom 
+            positions *= bohr_to_angstrom
 
         atom_list = []
         for z, pos in zip(atomic_numbers, positions):
-            element_symbol = periodic_table_number[z] 
+            element_symbol = periodic_table_number[z]
             atom_list.append([element_symbol, pos])
 
         if dataset_name == 'omol':
@@ -869,13 +882,13 @@ class SplitTrainer():
             else:
                 print("Warning: folder name not in expected format, assuming neutral molecule.")
                 charge = 0
-                spin = 1                         
+                spin = 1
 
 
             # Create molecule
             mol = gto.M(
                 atom=atom_list,
-                basis=basis,  
+                basis=basis,
                 unit='Angstrom',
                 ecp='def2-tzvpd',
                 charge=charge,
@@ -888,40 +901,40 @@ class SplitTrainer():
             elt_phase = json_data['element_phases']
 
             # Reverse the sort so that we can use the orca to pyscf permutation:
-            fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca") 
+            fock_matrix = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_orca")
 
             # reorder to PySCF ordering (this is done atomic element wise)
             F = fock_matrix
             perm, phase = get_permute_phase(mol, elt_reorder, elt_phase)
-            F = permute_mat(fock_matrix, perm, phase) 
+            F = permute_mat(fock_matrix, perm, phase)
             overlap_matrix = None # recompute with pyscf in build_density()
 
         elif dataset_name == 'QM7':
             basis = 'def2-svp'
             functional = 'pbe'
 
-            F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf") 
+            F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf")
             overlap_matrix = sort_by_m(overlap_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf")
 
             # Create molecule
             mol = gto.M(
                 atom=atom_list,
-                basis=basis,  
+                basis=basis,
                 unit='Angstrom'
-            )    
+            )
         elif dataset_name == 'nablaDFT':
             basis = 'def2-svp'
             functional = 'wb97x-d'
 
-            F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf") 
+            F = sort_by_m(fock_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf")
             overlap_matrix = sort_by_m(overlap_matrix, orbital_basis, atomic_numbers, direction="e3nn_to_pyscf")
 
             # Create molecule
             mol = gto.M(
                 atom=atom_list,
-                basis=basis,  
+                basis=basis,
                 unit='Angstrom'
-            )    
+            )
 
         else:
             raise ValueError(f"Unknown dataset name: {dataset_name}")
@@ -937,7 +950,7 @@ class SplitTrainer():
         total_energy = 0.5 * np.einsum('ij,ji', P,  H + F - V_xc) + E_xc + E_nn
 
         return total_energy
-    
+
     def get_overlap_and_eigs(self, batch, output_hamiltonian, label_hamiltonian, orbital_basis, dataset_name):
         assert dataset_name == 'omol', "Overlap computation currently only implemented for omol dataset"
 
@@ -946,7 +959,7 @@ class SplitTrainer():
 
         atom_list = []
         for z, pos in zip(atomic_numbers, positions):
-            element_symbol = periodic_table_number[z] 
+            element_symbol = periodic_table_number[z]
             atom_list.append([element_symbol, pos])
 
         basis = 'def2-tzvpd'
@@ -989,12 +1002,12 @@ class SplitTrainer():
             else:
                 print("Warning: normalized folder name not found in mapping!")
                 charge = 0
-                spin = 1                    
+                spin = 1
 
         # Create molecule
         mol = gto.M(
             atom=atom_list,
-            basis=basis,  
+            basis=basis,
             unit='Angstrom',
             ecp='def2-tzvpd',
             charge=charge,
@@ -1010,7 +1023,7 @@ class SplitTrainer():
         # get the overlap matrix, permute focks to pyscf order, and diagonalize them
         overlap = mol.intor('int1e_ovlp')
 
-        output_hamiltonian_permuted = permute_mat(output_hamiltonian, perm, phase) 
+        output_hamiltonian_permuted = permute_mat(output_hamiltonian, perm, phase)
         label_hamiltonian_permuted = permute_mat(label_hamiltonian, perm, phase)
 
         # clean up small negative eigenvalues from the overlap matrix before diagonalization
@@ -1035,7 +1048,7 @@ class SplitTrainer():
         e_label, _ = sp.linalg.eigh(label_hamiltonian_cleaned, overlap_cleaned)
 
         return e_pred, e_label, overlap_cleaned
-    
+
     def remove_linear_dep_from_matrices(self, F1, F2, S, threshold=1e-6):
 
         eigvals, eigvecs = sp.linalg.eigh(S)
@@ -1090,7 +1103,7 @@ class SplitTrainer():
         plt.plot(track_validation_node, '--', c='blue', label='validation node')
         if track_loss_edge:
             plt.plot(track_validation_edge,  '--', c='red', label='validation edge')
-            
+
         plt.grid(True)
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
