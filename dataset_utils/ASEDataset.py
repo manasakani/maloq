@@ -13,7 +13,7 @@ from . import schnetpack_properties as structure
 
 class ASEDataset(Dataset):
     def __init__(self, db_path, orbital_basis, dtype=torch.float32, world_size=1, rank=0, start_idx=0, end_idx=None):
-        
+
         print("Connecting to database...")
         self.db = ase.db.connect(db_path)
         print("connected.")
@@ -36,7 +36,7 @@ class ASEDataset(Dataset):
         self.dtype = dtype
 
         print("Rank", rank, "will read structure IDs:", self.ids, flush=True)
-    
+
     def _get_ids(self):
         """
         Not used, just required to have this function
@@ -58,12 +58,12 @@ class ASEDataset(Dataset):
         # Get structure by id
         structure = self.db.get(self.ids[idx])
         # print("Getting row with id", self.ids[idx], flush=True)
-        
+
         # Extract atom positions and atomic numbers
         atoms = structure.toatoms()
         positions = atoms.positions
         atomic_numbers = atoms.numbers
-        
+
         # Convert numpy arrays from structure.data to PyTorch tensors
         neighbour_list = structure.data['edge_index']
         edge_dist = torch.tensor(structure.data['edge_dist'], dtype=self.dtype)
@@ -78,11 +78,11 @@ class ASEDataset(Dataset):
         energies = torch.tensor(structure.data['total_energy [Eh]'])
         forces = torch.tensor(structure.data['gradient [Eh/bohr]'])
         # dipole = torch.tensor(structure.data['multipoles'][1])  # XX, YY, ZZ components
-        # quadrupole = torch.tensor(structure.data['multipoles'][2])  # XY, XZ, YZ components    
+        # quadrupole = torch.tensor(structure.data['multipoles'][2])  # XY, XZ, YZ components
 
         # metadata:
-        folder_name = structure.data['folder_name'] 
-            
+        folder_name = structure.data['folder_name']
+
         # Create PyTorch Geometric Data object
         data = Data(
             pos=torch.tensor(positions, dtype=self.dtype),
@@ -93,21 +93,18 @@ class ASEDataset(Dataset):
             reverse_edge_map=reverse_edge_map,
             y=edge_labels,
             node_y=node_labels,
-            atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),  
-            nedges=len(edge_index[0]), 
-            natoms=len(atomic_numbers), 
+            atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
+            nedges=len(edge_index[0]),
+            natoms=len(atomic_numbers),
             energies=energies,
             num_atoms_in_molecule=len(atomic_numbers),
             folder_name=folder_name,
-            # forces=forces,
-            # dipole=dipole,
-            # quadrupole=quadrupole
         )
 
         # Store orbital basis (dictionary)
         data.orbital_basis = self.orbital_basis
         # data.required_irreps = structure.data["required_irreps"]
-        
+
         return data
 
 class sampleDataset(torch.utils.data.Dataset):
@@ -664,4 +661,3 @@ class ASEAtomsData(BaseAtomsData):
                 raise AtomsDataError("Required property missing:" + pname)
 
         conn.write(atoms, data=data)
-
