@@ -35,7 +35,7 @@ scale_and_shift = False
 scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
 
 # --> whether to make labels for only half the edges (i,j) where i<j, or all edges (i,j) and (j,i)
-half_edges = True
+half_edges = False
 
 # Collect and process orbital basis for the omol tzvpd dataset:
 full_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}

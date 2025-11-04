@@ -70,7 +70,7 @@ class SplitTrainer():
             basis_transform=None,
             compute_uncoupled_loss=True,
             element_references=None,
-            step_every_epoch=True,
+            step_every_epoch=False,
             min_lr=1e-10):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}", flush=True)

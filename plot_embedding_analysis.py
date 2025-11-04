@@ -637,8 +637,8 @@ if __name__ == "__main__":
     # output_folder = "outputs_omol_closedshell_25k_scaled_pt2"
     # output_folder = './iclr_2025_data/outputs_nablaDFT_tiny_scaled_rcut10_10k'
     # output_folder = 'outputs_nablaDFT_tiny_scaled_rcut10_10k'
-    output_folder = 'outputs_QM7_water'
-    molecule_index = 2 # Which molecule to analyze (0 for first saved molecule)
+    output_folder = 'outputs_nablaDFT_focktrained_medium'
+    molecule_index = 0 # Which molecule to analyze (0 for first saved molecule)
     lmax = 4
     
     if not os.path.exists(output_folder):
