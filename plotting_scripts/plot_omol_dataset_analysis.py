@@ -10,12 +10,12 @@ import numpy as np
 # --------------------------------------------
 
 # Regular expression to extract the symbols from the output file
-symbols_regex = r"Structure and local basis:  Atoms\(symbols='([^']*)', pbc=False\)"
+symbols_regex = r"Structure:  Atoms\(symbols='([^']*)', pbc=False\)"
 # Initialize an empty list to store the atomic elements
 elements = []
 num_atoms_per_structure = []
 # Open the output file and read it line by line
-with open("out-makeomol_unscaled_orderedbasis.out", "r") as f:
+with open("out-makeomol.out", "r") as f:
     for line in f:
         # Use regular expression to extract the symbols from the line
         match = re.search(symbols_regex, line)
@@ -36,9 +36,9 @@ existing_elements = [element for element in ase.data.chemical_symbols if element
 sorted_elements = sorted(existing_elements, key=lambda x: ase.data.atomic_numbers[x])
 
 # Create a bar chart showing the distribution of elements
-plt.figure(figsize=(5, 3))
+plt.figure(figsize=(15, 3))
 plt.grid(True, linestyle='--', alpha=0.5, which='minor')
-plt.bar(sorted_elements, [element_counts[element] for element in sorted_elements], color=plt.cm.tab20(range(len(sorted_elements))), alpha=0.8)
+plt.bar(sorted_elements, [element_counts[element] for element in sorted_elements], color=plt.cm.summer(range(len(sorted_elements))), alpha=0.8)
 # plt.xlabel("Element")
 plt.ylabel("Count")
 plt.yscale('log')  # Use logarithmic scale for better visibility
@@ -49,8 +49,8 @@ plt.savefig("omol_elements.png", dpi=500, bbox_inches='tight')
 plt.close()
 
 # Create a histogram of the number of atoms per structure
-plt.figure(figsize=(5, 2))
-plt.hist(num_atoms_per_structure, bins=range(min(num_atoms_per_structure), max(num_atoms_per_structure) + 1), color='blue', alpha=0.4, rwidth=1.0)
+plt.figure(figsize=(5, 3))
+plt.hist(num_atoms_per_structure, bins=range(min(num_atoms_per_structure), max(num_atoms_per_structure) + 1), color='royalblue', alpha=0.5, rwidth=1.0)
 plt.xlabel("# Atoms per Structure")
 plt.ylabel("Count")
 plt.yscale('log')
@@ -58,20 +58,20 @@ plt.grid(True, linestyle='--', alpha=0.5, which='minor')
 plt.savefig("omol_num_atoms_per_structure.png", dpi=500, bbox_inches='tight')
 plt.close()
 
-# --> Interatomic distances
-# load omol_interatomic_distances.txt file
-with open('omol_interatomic_distances.txt', 'r') as f:
-    all_distances = list(map(float, f.read().strip().split()))
+# # --> Interatomic distances
+# # load omol_interatomic_distances.txt file
+# with open('omol_interatomic_distances.txt', 'r') as f:
+#     all_distances = list(map(float, f.read().strip().split()))
 
-# plot histogram of distances:
-plt.figure(figsize=(5, 2))
-plt.hist(all_distances, bins=100, color='blue', alpha=0.4, rwidth=1.0)
-plt.xlabel("r ($\AA$)")
-plt.ylabel("Count")
-plt.yscale('log')
-plt.grid(True, linestyle='--', alpha=0.4, which='minor')
-plt.savefig("omol_interatomic_distances_histogram.png", dpi=500, bbox_inches='tight')
-plt.close()
+# # plot histogram of distances:
+# plt.figure(figsize=(5, 2))
+# plt.hist(all_distances, bins=100, color='blue', alpha=0.4, rwidth=1.0)
+# plt.xlabel("r ($\AA$)")
+# plt.ylabel("Count")
+# plt.yscale('log')
+# plt.grid(True, linestyle='--', alpha=0.4, which='minor')
+# plt.savefig("omol_interatomic_distances_histogram.png", dpi=500, bbox_inches='tight')
+# plt.close()
 
 # --> Element interaction matrix
 with open('omol_element_interaction_matrix.txt', 'r') as f:
@@ -87,16 +87,18 @@ sorted_atomic_numbers = [ase.data.atomic_numbers[el]-1 for el in sorted_elements
 element_interaction_matrix = element_interaction_matrix[sorted_atomic_numbers][:, sorted_atomic_numbers]
 
 # plot element interaction matrix as a heatmap:
-plt.figure(figsize=(5, 5))
-plt.imshow(np.log(np.abs(element_interaction_matrix)), cmap='viridis', interpolation='nearest')
+plt.figure(figsize=(10, 10))
+plt.imshow(np.log(np.abs(element_interaction_matrix)), cmap='Blues', interpolation='nearest')
 plt.colorbar(label='Interaction Count')
 
 plt.xticks(ticks=range(len(sorted_elements)), labels=sorted_elements, rotation=90)
 plt.yticks(ticks=range(len(sorted_elements)), labels=sorted_elements)
+
+# put xaxis on top:
+plt.gca().xaxis.set_ticks_position('top')
 plt.tight_layout()
 plt.savefig("omol_element_interaction_matrix.png", dpi=500, bbox_inches='tight')
 plt.close()
-exit()
 
 # ##############################
 
@@ -119,7 +121,7 @@ print("ls_list: ", ls_list)
 
 elements = []
 # Open the output file and read it line by line
-with open("out-makeomol_unscaled_orderedbasis.out", "r") as f:
+with open("out-makeomol.out", "r") as f:
     for line in f:
         # Use regular expression to extract the symbols from the line
         match = re.search(symbols_regex, line)

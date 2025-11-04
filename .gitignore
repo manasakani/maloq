@@ -12,3 +12,6 @@ slurm-*
 *.err
 *.sh
 wandb/
+plot_env/
+ICLR_2025
+configs/

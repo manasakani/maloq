@@ -25,8 +25,6 @@ orbital_basis_def2_svp_QM7 = {9: [0, 0, 0, 1, 1, 2],
                               6: [0, 0, 0, 1, 1, 2],
                               1: [0, 0, 1]}
 
-# orbital_basis_def2_svp_QM7 = orbital_basis_def2_svp_nabla
-
 def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, half_edges=True, make_fock_targets=True, scale_shift_data=None):
     """
     Make dataloader with the given indices of the mocules in the input database
@@ -129,6 +127,8 @@ def get_datalist(dataset, start_idx, end_idx, dataset_name, rcut, element_refere
     for i in range(start_idx, end_idx):
         if i % 1000 == 0:
             print("Working on atom ", i, flush=True)
+
+        # 1. Get the atomic structure
         atoms = dataset.get_atoms(i)
         atomic_numbers = atoms.get_atomic_numbers()
         positions = atoms.get_positions()
@@ -143,9 +143,6 @@ def get_datalist(dataset, start_idx, end_idx, dataset_name, rcut, element_refere
             missing_atomic_numbers = [z for z in atomic_numbers if z not in existing_elements]
             print(f"Skipping molecule with missing atomic numbers: {missing_atomic_numbers}")
             continue
-
-        # 1. Make the atomic structure
-        mol_atoms = Atoms(symbols=atomic_numbers, positions=positions)
 
         # 2. Set up the Graph
         # --> Neighbour list
