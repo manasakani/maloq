@@ -59,6 +59,7 @@ local_folder_name_strings = []
 structures = []
 fock_matrices = []
 orca_output_list = []
+skipped_structures = []
 big_time_start = time.perf_counter()
 for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx:folder_end_idx]):
     if folder_idx >= num_local_structures:
@@ -105,9 +106,9 @@ for folder_idx, structure_folder in enumerate(structure_folders[folder_start_idx
         print("Total time for one structure: ", time_end - time_start, flush=True)
 
     except Exception as e:
-            print(f"ERROR: Job {args.job_id} skipping structure {structure_folder} due to error: {str(e)}", flush=True)
-            skipped_structures.append(structure_folder)
-            continue
+        print(f"ERROR: Skipping structure {structure_folder} due to error: {str(e)}", flush=True)
+        skipped_structures.append(structure_folder)
+        continue
 
 big_time_end = time.perf_counter()
 num_targets_made = min(world_size * num_local_structures, local_num_folders)
@@ -130,6 +131,7 @@ for current_rank in range(world_size):
 
                 print(f"Writing structure {i}")
                 structure_db.write(atoms, data=data)
+        print(f"Skipped structures from rank {rank}: ", skipped_structures)
     dist.barrier()
 
 print("done!")

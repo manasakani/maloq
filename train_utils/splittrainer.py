@@ -403,9 +403,6 @@ class SplitTrainer():
             include_edges = True
 
         track_loss = []
-        track_loss_node = []
-        if loss_target_string == 'fock_matrix':
-            track_loss_edge = []
 
         # -- Evaluate everything in the train_loader --
         # with torch.no_grad():  # NOTE: there is a bug with torch.no_grad() and e3nn_linear (used in the output head!) for e3nn v. 0.5.6. Using 0.5.5 instead.
@@ -679,8 +676,6 @@ class SplitTrainer():
                 label_fock_matrix = torch.tensor(label_fock_matrix)
 
                 total_matrix_mae_loss = torch.abs(output_fock_matrix - label_fock_matrix).sum() / output_fock_matrix.numel()
-                track_loss_node.append(0)
-                track_loss_edge.append(0)
                 track_loss.append(total_matrix_mae_loss)
 
             else:
@@ -689,7 +684,7 @@ class SplitTrainer():
             # do output dump in append mode:
             if loss_target_string == 'fock_matrix':
                 with open(output_folder + "/" + 'model_fock_' + '_eval_' + str(rank) + '.txt', 'a') as f:
-                    f.write(f"{track_loss_edge[-1]:.10f}\t{track_loss_node[-1]:.10f}\t{track_loss[-1]:.10f}\t{eigenvalue_maes[-1]:.10f}\t{total_energy_errors[-1]:.10f}\t{num_atoms_in_molecule_list[-1]}\n")
+                    f.write(f"{track_loss[-1]:.10f}\t{eigenvalue_maes[-1]:.10f}\t{total_energy_errors[-1]:.10f}\t{num_atoms_in_molecule_list[-1]}\n")
             elif loss_target_string == 'energies':
                 with open(output_folder + "/" + 'model_energies_' + '_eval_' + str(rank) + '.txt', 'a') as f:
                     f.write(f"{unscaled_energies.item():.10f}\t{ref_energies.item():.10f}\t{track_loss[-1]:.10f}\t{num_atoms_in_molecule_list[-1]}\n")
@@ -715,8 +710,8 @@ class SplitTrainer():
         if loss_target_string == 'fock_matrix':
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                 f.write(f"Edge_MAE\tNode_MAE\tTotal_MAE\tEigenvalue_MAE\tTotal_Energy_Error\tNum_Atoms\n")
-                for edge, node, total, eig, energy, num_atoms in zip(track_loss_edge, track_loss_node, track_loss, eigenvalue_maes, total_energy_errors, num_atoms_in_molecule_list):
-                    f.write(f"{edge:.10f}\t{node:.10f}\t{total:.10f}\t{eig:.10f}\t{energy:.10f}\t{num_atoms}\n")
+                for total, eig, energy, num_atoms in zip(track_loss, eigenvalue_maes, total_energy_errors, num_atoms_in_molecule_list):
+                    f.write(f"{total:.10f}\t{eig:.10f}\t{energy:.10f}\t{num_atoms}\n")
         else:
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                 f.write(f"Energy_Error (Eh)\tNum_Atoms\n")
