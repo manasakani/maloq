@@ -16,11 +16,11 @@ class Fock_Targets:
     Input target shape to standardize across molecules with different elements
     """
 
-    def __init__(self, atoms, cutoff, orbital_basis, 
-                fock_matrix=None, 
-                dtype=torch.float32, 
-                half_edges=False, 
-                compute_fock_eigenvalues=False, 
+    def __init__(self, atoms, cutoff, orbital_basis,
+                fock_matrix=None,
+                dtype=torch.float32,
+                half_edges=False,
+                compute_fock_eigenvalues=False,
                 scale_shift_data=None,
                 equivariant_blocks=None,
                 orbital_starts=None,
@@ -28,19 +28,19 @@ class Fock_Targets:
                 req_output_irreps=None):
         """
         atoms - ASE atoms object of the atomic structure
-        neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]] 
+        neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]]
         orbital_basis - H2O: {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]} (ex. dzvp)
         fock_matrix - Norb x Norb fock matrix (dense)
         half_edges - when True, only considers 'forward' edge blocks (backward edges are constructed as the transpose of the forward ones)
         """
 
         if torch.cuda.is_available():
-            self.device = torch.device('cuda')         
+            self.device = torch.device('cuda')
         else:
             self.device = torch.device('cpu')
-                
-        self.atoms = atoms                          
-        self.orbital_basis = orbital_basis          
+
+        self.atoms = atoms
+        self.orbital_basis = orbital_basis
         self.dtype = dtype
         self.half_edges = half_edges
 
@@ -56,18 +56,18 @@ class Fock_Targets:
 
         self.NA = len(atoms)
         self.atomic_numbers = self.atoms.get_atomic_numbers()
-        self.orbitals_per_atom = ([ sum([(2*l+1)    
-                                         for l in orbital_basis[atom_number]]) 
+        self.orbitals_per_atom = ([ sum([(2*l+1)
+                                         for l in orbital_basis[atom_number]])
                                          for atom_number in self.atomic_numbers ])
-        self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)]) # start index of atom i in the matrix (and block_starts[-1] is the matrix size)         
+        self.block_starts = np.hstack([0, np.cumsum(self.orbitals_per_atom)]) # start index of atom i in the matrix (and block_starts[-1] is the matrix size)
 
         self.edge_type = "i < j"              # keep edges i, j where i < j or i > j
         if self.half_edges:
-            self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]    
+            self.forward_edge_mask = self.neighbour_list[0] < self.neighbour_list[1]
         else:
             self.forward_edge_mask = [True]*len(self.neighbour_list[0])                 # keep all edges
-        
-        # index of self.neighbour_list which contains the forward edge 
+
+        # index of self.neighbour_list which contains the forward edge
         self.reverse_edge_map = [-1] * len(self.neighbour_list[0])  # Initialize with -1 for safety
         edge_dict = {(i.item(), j.item()): idx for idx, (i, j) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1]))}
         for ind, (i, j) in enumerate(zip(self.neighbour_list[0], self.neighbour_list[1])):
@@ -78,8 +78,7 @@ class Fock_Targets:
 
         # --> Analyze structure of orbital interactions
         if equivariant_blocks is None or orbital_starts is None or basis_transformation is None or req_output_irreps is None:
-            # targets, self.req_output_irreps, self.simplified_out_irreps = utils_tensor_decomp.make_output_irreps_old(self.orbital_basis)   
-            targets, self.req_output_irreps, self.simplified_out_irreps, ls_list, out_js_list, self.orbital_starts, full_orb_interaction_list = utils_tensor_decomp.make_output_irreps(self.orbital_basis)  
+            targets, self.req_output_irreps, self.simplified_out_irreps, ls_list, out_js_list, self.orbital_starts, full_orb_interaction_list = utils_tensor_decomp.make_output_irreps(self.orbital_basis)
             # self.equivariant_blocks, out_js_list, self.orbital_starts = utils_tensor_decomp.process_targets_old(self.orbital_basis, targets)
             self.equivariant_blocks = utils_tensor_decomp.process_targets(self.orbital_basis, targets, ls_list, out_js_list, full_orb_interaction_list)
             self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
@@ -92,14 +91,14 @@ class Fock_Targets:
             self.orbital_starts = orbital_starts
             self.basis_transformation = basis_transformation
             self.req_output_irreps = req_output_irreps
-        
+
         # print("out_js_list: ", out_js_list)
         # print("self.orbital_starts: ", self.orbital_starts)
-        
+
         ls_list = []
         for l in range(20): # large to account for possible diffuse functions which are incremented by 10
             counts = [torch.sum(torch.tensor(self.orbital_basis[el]) == l) for el in self.orbital_basis]
-            max_count = max(counts).item() 
+            max_count = max(counts).item()
             ls_list.append(torch.tensor(max_count * [l], dtype=torch.int))
 
         # Shift back all the diffuse orbitals (which were incremented by 10 in utils_tensor_decomp.py)
@@ -111,14 +110,14 @@ class Fock_Targets:
 
         self.ls_list = torch.cat(ls_list)        # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2].
         self.ls_list = self.ls_list % 10         # for OMOL: tensor([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 0, 1, 2]
-        
+
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         # print(f'Simplified irreps: {self.simplified_out_irreps}')
         self.scale_shift_data = scale_shift_data
 
         # If the fock targets should be computed on-the-fly rather than loaded from the db:
         self.node_labels = None
-        self.edge_labels = None    
+        self.edge_labels = None
         if fock_matrix is not None:
 
             self.fock_matrix = torch.from_numpy(fock_matrix).to(self.device)
@@ -128,7 +127,7 @@ class Fock_Targets:
                 self.eigenvalues = eigenvalues.to(self.device)                    # store eigenvalues
                 self.eigenvectors = eigenvectors.to(self.device)                  # store eigenvectors
 
-            self.target_len = None                
+            self.target_len = None
 
             # Decompose the Fock matrix into orbital blocks and insert them into the targets
             self.make_targets()
@@ -150,7 +149,7 @@ class Fock_Targets:
         edge_orbital_blocks = self.get_orbital_blocks(self.neighbour_list)
 
         # // !!! do garbage cleanup for the fock matrix here !!! //
-        
+
         flat_blocks = []
         # Iterate over target blocks (each corresponding to an l1-l2 interaction)
         for index_target, equivariant_block in enumerate(self.equivariant_blocks):
@@ -160,10 +159,10 @@ class Fock_Targets:
                 slice_row = slice(block_slice[0], block_slice[1])
                 slice_col = slice(block_slice[2], block_slice[3])
                 slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
-                flat_blocks.append((condition_numbers, slice_row, slice_col, slice_out)) 
-                # ^ from the interaction between atomic numbers 'cond1 and cond2', we extract the block defined by slice_row, slice_col and insert 
+                flat_blocks.append((condition_numbers, slice_row, slice_col, slice_out))
+                # ^ from the interaction between atomic numbers 'cond1 and cond2', we extract the block defined by slice_row, slice_col and insert
                 # it into slice_out of the corresponding labels
-        
+
 
         time_label_start = time.perf_counter()
         # Off-diagonal orbital blocks --> Edge labels
@@ -174,7 +173,7 @@ class Fock_Targets:
             mask = (atomic_numbers_i == condition_i) & (atomic_numbers_j == condition_j)
 
             # select relevant edges and accumulate the corresponding slices
-            matching_indices = np.where(mask)[0]  
+            matching_indices = np.where(mask)[0]
             for edge_idx in matching_indices:
 
                 # only collect from forward edges if we are using reflected edges, the other edge_orbital_blocks are None
@@ -198,7 +197,7 @@ class Fock_Targets:
             mask = (atomic_numbers_i == condition_i) & (atomic_numbers_j == condition_j)
 
             # select relevant nodes and accumulate the corresponding slices
-            matching_indices = np.where(mask)[0]  
+            matching_indices = np.where(mask)[0]
             for node_idx in matching_indices:
                 node_labels[node_idx, slice_out] += torch.squeeze(
                     node_orbital_blocks[node_idx][slice_row, slice_col].reshape(1, -1)
@@ -221,8 +220,8 @@ class Fock_Targets:
         self.edge_dist = torch.zeros((len(indices0), 4), dtype=self.dtype)
         self.edge_dist[:, 1:4] = torch.from_numpy(self.atoms.get_distances(indices1, indices0, vector=True))    # Vector components
         self.edge_dist[:, 0] = torch.linalg.norm(self.edge_dist[:, 1:4], dim=-1, keepdim=False)                 # Scalar distances
-    
-    
+
+
     # def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers=None):
     #     """
     #     Scale the l=0 values in the targets
@@ -251,7 +250,7 @@ class Fock_Targets:
     #             node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
     #         # print("maximum value in node block for element", z, ":", torch.max(node_block).item(), flush=True)
 
-    #     return node_blocks 
+    #     return node_blocks
 
     def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers=None):
         """
@@ -270,28 +269,28 @@ class Fock_Targets:
         if 'element_irrep_means' in self.scale_shift_data and 'irrep_indices_by_l' in self.scale_shift_data:
             # Use new multi-degree scaling
             element_means = self.scale_shift_data['element_irrep_means']
-            element_stds = self.scale_shift_data['element_irrep_stds'] 
+            element_stds = self.scale_shift_data['element_irrep_stds']
             irrep_indices_by_l = self.scale_shift_data['irrep_indices_by_l']
             lmax = self.scale_shift_data['lmax']
-            
+
             # Process each node block
             for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
                 z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
-                
+
                 # Scale each irrep degree
                 for l in range(lmax + 1):
                     if l not in irrep_indices_by_l or z not in element_means[l]:
                         continue
-                        
+
                     irrep_indices = irrep_indices_by_l[l]
                     mean_vals = element_means[l][z]
                     std_vals = element_stds[l][z]
-                    
+
                     if l == 0:
                         # For l=0 (scalars), scale components directly
                         for idx_offset, idx in enumerate(irrep_indices):
                             node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
-                            
+
                     else:
                         # For l>0, scale the norms while preserving directions
                         irrep_start_idx = 0
@@ -300,13 +299,13 @@ class Fock_Targets:
                             irrep_size = 2 * l + 1
                             start_idx = irrep_indices[irrep_start_idx]
                             end_idx = irrep_indices[irrep_start_idx + irrep_size - 1] + 1
-                            
+
                             # Extract irrep components
                             irrep_components = node_block[start_idx:end_idx]
-                            
+
                             # Compute current norm
                             current_norm = torch.norm(irrep_components)
-                            
+
                             # Scale the norm
                             if current_norm > 1e-10:  # Avoid division by zero
                                 target_norm = (current_norm - mean_vals[irrep_idx]) / std_vals[irrep_idx]
@@ -316,9 +315,9 @@ class Fock_Targets:
                                 # For zero norms, just apply the scaling to the mean
                                 scaled_mean = -mean_vals[irrep_idx] / std_vals[irrep_idx]
                                 node_block[start_idx:end_idx] = scaled_mean / torch.sqrt(torch.tensor(irrep_size, dtype=node_block.dtype))
-                            
+
                             irrep_start_idx += irrep_size
-        
+
         else:
             # Fallback to original l=0 only scaling for backwards compatibility
             means = self.scale_shift_data['element_scalar_means']
@@ -351,31 +350,31 @@ class Fock_Targets:
         # Check if we have extended multi-degree scaling data
         if 'element_irrep_means' in self.scale_shift_data and 'irrep_indices_by_l' in self.scale_shift_data:
             print("Using extended multi-degree unscaling")
-            
+
             # Use new multi-degree unscaling
             element_means = self.scale_shift_data['element_irrep_means']
-            element_stds = self.scale_shift_data['element_irrep_stds'] 
+            element_stds = self.scale_shift_data['element_irrep_stds']
             irrep_indices_by_l = self.scale_shift_data['irrep_indices_by_l']
             lmax = self.scale_shift_data['lmax']
-            
+
             # Process each node block
             for i, (node_block, z) in enumerate(zip(node_blocks, self.atomic_numbers)):
                 z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
-                
+
                 # Unscale each irrep degree
                 for l in range(lmax + 1):
                     if l not in irrep_indices_by_l or z not in element_means[l]:
                         continue
-                        
+
                     irrep_indices = irrep_indices_by_l[l]
                     mean_vals = element_means[l][z]
                     std_vals = element_stds[l][z]
-                    
+
                     if l == 0:
                         # For l=0 (scalars), unscale components directly
                         for idx_offset, idx in enumerate(irrep_indices):
                             new_node_blocks[i][idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
-                            
+
                     else:
                         # For l>0, unscale the norms while preserving directions
                         irrep_start_idx = 0
@@ -384,13 +383,13 @@ class Fock_Targets:
                             irrep_size = 2 * l + 1
                             start_idx = irrep_indices[irrep_start_idx]
                             end_idx = irrep_indices[irrep_start_idx + irrep_size - 1] + 1
-                            
+
                             # Extract irrep components
                             irrep_components = node_block[start_idx:end_idx]
-                            
+
                             # Compute current scaled norm
                             current_scaled_norm = torch.norm(irrep_components)
-                            
+
                             # Unscale the norm: scaled_norm = (original_norm - mean) / std
                             # So: original_norm = scaled_norm * std + mean
                             if current_scaled_norm > 1e-10:  # Avoid division by zero
@@ -409,9 +408,9 @@ class Fock_Targets:
                                     new_node_blocks[i][start_idx:end_idx] = original_norm / torch.sqrt(torch.tensor(irrep_size, dtype=node_block.dtype))
                                 else:
                                     new_node_blocks[i][start_idx:end_idx] = torch.zeros_like(irrep_components)
-                            
+
                             irrep_start_idx += irrep_size
-        
+
         else:
             # Fallback to original l=0 only unscaling for backwards compatibility
             print("Using l=0 only unscaling")
@@ -431,17 +430,6 @@ class Fock_Targets:
         return new_node_blocks
 
 
-    def get_cartesian_and_spherical_rotations_to_yzx(self):
-        """
-        Specifically gets the cartesian and spherical rotations for xyz -> yzx
-        Note: not needed.
-        """
-        R_cart = torch.tensor([[0.0,  0.0, 1.0],
-                               [ 1.0, 0.0, 0.0],
-                               [ 0.0, 1.0, 0.0]])
-        R_sphere = self.req_output_irreps.D_from_matrix(R_cart).to(self.device)
-        return R_cart, R_sphere
-
     def get_target_len(self):
         """
         Returns the expected size of the targets which contain the maximum orbital interactions.
@@ -458,7 +446,7 @@ class Fock_Targets:
 
     def locate_atom_in_matrix(self, idx):
         return self.block_starts[idx], self.orbitals_per_atom[idx]
-        
+
     def get_orbital_blocks(self, edges):
         """
         The order of the orbital blocks returned corresponds to the order of the input edges
@@ -466,7 +454,7 @@ class Fock_Targets:
 
         orbital_blocks = {}
 
-        for i in range(len(edges[0])): 
+        for i in range(len(edges[0])):
 
             atom_i_index = int(edges[0][i])
             atom_j_index = int(edges[1][i])
@@ -479,27 +467,27 @@ class Fock_Targets:
                 mat = self.fock_matrix[starting_i:starting_i+num_orbitals_i, starting_j:starting_j+num_orbitals_j]
 
                 orbital_blocks[i] = mat
-            
-            # if it is a backward edge  
-            else: 
+
+            # if it is a backward edge
+            else:
                 orbital_blocks[i] = None
-                
+
 
         return orbital_blocks
-    
+
     def unpad_node_blocks(self, H_pred, atomic_numbers=None):
-        
+
         atom_orbitals = self.orbital_basis
         if atomic_numbers is None:
             atomic_numbers = self.atomic_numbers
 
         # Precompute number of orbitals for each atom
         atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
-        
+
         H_prev = {}
-        
+
         for atom_ind in range(len(atomic_numbers)):
-            
+
             key_term = (atom_ind, atom_ind)  # node key
             print(f"Unpadding node {atom_ind}", flush=True)
 
@@ -509,18 +497,18 @@ class Fock_Targets:
             # Initialize H_prev for this edge
             H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_i), dtype=float)
 
-            H_prev_edge = H_prev[key_term]  # just to avoid repeated dictionary lookup 
+            H_prev_edge = H_prev[key_term]  # just to avoid repeated dictionary lookup
 
             for index_target, equivariant_block in enumerate(self.equivariant_blocks):
                 slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
-                
+
                 # Precompute block slices for this equivariant block
                 for N_M_str, block_slice in equivariant_block.items():
                     slice_row = slice(block_slice[0], block_slice[1])
                     slice_col = slice(block_slice[2], block_slice[3])
                     len_row = block_slice[1] - block_slice[0]
                     len_col = block_slice[3] - block_slice[2]
-                    
+
                     condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
 
                     if atomic_numbers[atom_ind].item() == int(condition_atomic_number_i) and atomic_numbers[atom_ind].item() == int(condition_atomic_number_j):
@@ -528,116 +516,8 @@ class Fock_Targets:
 
         return H_prev
 
-    # def unpad_node_blocks(self, H_pred, atomic_numbers=None):
-        
-    #     atom_orbitals = self.orbital_basis
-    #     if atomic_numbers is None:
-    #         atomic_numbers = self.atomic_numbers
-
-    #     # Convert to torch tensor if it's a numpy array
-    #     if isinstance(atomic_numbers, np.ndarray):
-    #         atomic_numbers = torch.from_numpy(atomic_numbers)
-
-    #     # Precompute number of orbitals for each atom type (not per atom)
-    #     atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
-        
-    #     H_prev = {}
-        
-    #     # Process all nodes simultaneously for each equivariant block
-    #     for index_target, equivariant_block in enumerate(self.equivariant_blocks):
-    #         slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
-            
-    #         print(f"Processing node equivariant block {index_target} of {len(self.equivariant_blocks)}", flush=True)
-            
-    #         for N_M_str, block_slice in equivariant_block.items():
-    #             condition_atomic_number_i, condition_atomic_number_j = map(int, N_M_str.split())
-                
-    #             # For nodes, both conditions should be the same (self-interaction)
-    #             if condition_atomic_number_i != condition_atomic_number_j:
-    #                 continue
-                    
-    #             # Vectorized mask creation for all atoms of this type
-    #             mask = atomic_numbers == condition_atomic_number_i
-    #             matching_atom_indices = torch.where(mask)[0]
-                
-    #             if len(matching_atom_indices) == 0:
-    #                 continue
-                
-    #             # Batch process all matching atoms
-    #             slice_row = slice(block_slice[0], block_slice[1])
-    #             slice_col = slice(block_slice[2], block_slice[3])
-    #             len_row = block_slice[1] - block_slice[0]
-    #             len_col = block_slice[3] - block_slice[2]
-                
-    #             # Extract predictions for all matching atoms at once
-    #             pred_batch = H_pred[matching_atom_indices][:, slice_out].reshape(-1, len_row, len_col)
-                
-    #             # Initialize matrices if not already done and assign predictions
-    #             for idx, atom_ind in enumerate(matching_atom_indices):
-    #                 atom_ind = atom_ind.item()
-    #                 key_term = (atom_ind, atom_ind)  # node key
-                    
-    #                 if key_term not in H_prev:
-    #                     num_orbitals_i = atom_orbitals_count[atomic_numbers[atom_ind].item()]
-    #                     H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_i), dtype=float)
-                    
-    #                 # Assign the prediction
-    #                 H_prev[key_term][slice_row, slice_col] = pred_batch[idx]
-
-    #     return H_prev
-
-    # def unpad_edge_blocks(self, H_pred, atomic_numbers=None):
-        
-    #     edge_index = self.neighbour_list
-    #     atom_orbitals = self.orbital_basis
-
-    #     if atomic_numbers is None:
-    #         atomic_numbers = self.atomic_numbers
-
-    #     # Precompute number of orbitals for each atom
-    #     atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
-        
-    #     H_prev = {}
-    #     edge_counter = 0
-        
-    #     for index_edge in range(edge_index.shape[1]):
-    #         i = edge_index[0][index_edge].item()  # atom index 
-    #         j = edge_index[1][index_edge].item()
-    #         print(f"Unpadding edge {index_edge}: ({i}, {j})", flush=True)
-            
-    #         if self.forward_edge_mask[index_edge]:
-
-    #             key_term = (i, j)  # edge key term 
-
-    #             # Precompute number of orbitals for atoms i and j
-    #             num_orbitals_i = atom_orbitals_count[atomic_numbers[i].item()]
-    #             num_orbitals_j = atom_orbitals_count[atomic_numbers[j].item()]
-
-    #             # Initialize H_prev for this edge
-    #             H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_j), dtype=float)
-    #             H_prev_edge = H_prev[key_term]  
-
-    #             for index_target, equivariant_block in enumerate(self.equivariant_blocks):
-    #                 slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
-                    
-    #                 # Precompute block slices for this equivariant block
-    #                 for N_M_str, block_slice in equivariant_block.items():
-    #                     slice_row = slice(block_slice[0], block_slice[1])
-    #                     slice_col = slice(block_slice[2], block_slice[3])
-    #                     len_row = block_slice[1] - block_slice[0]
-    #                     len_col = block_slice[3] - block_slice[2]
-                        
-    #                     condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
-
-    #                     if atomic_numbers[i].item() == int(condition_atomic_number_i) and atomic_numbers[j].item() == int(condition_atomic_number_j):
-    #                         H_prev_edge[slice_row, slice_col] = H_pred[edge_counter][slice_out].reshape(len_row, len_col)
-                
-    #             edge_counter += 1
-
-    #     return H_prev
-
     def unpad_edge_blocks(self, H_pred, atomic_numbers=None):
-        
+
         edge_index = self.neighbour_list
         atom_orbitals = self.orbital_basis
 
@@ -646,58 +526,58 @@ class Fock_Targets:
 
         # Precompute number of orbitals for each atom type (not per atom)
         atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
-        
+
         # Get forward edges only
         forward_indices = torch.where(torch.tensor(self.forward_edge_mask))[0]
         forward_edge_i = edge_index[0][forward_indices]
         forward_edge_j = edge_index[1][forward_indices]
-        
+
         # Vectorized atomic number lookup
         atomic_nums_i = atomic_numbers[forward_edge_i]
         atomic_nums_j = atomic_numbers[forward_edge_j]
-        
+
         H_prev = {}
-        
+
         # Process all edges simultaneously for each equivariant block
         for index_target, equivariant_block in enumerate(self.equivariant_blocks):
             slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
 
             print(f"Processing edge equivariant block {index_target} of {len(self.equivariant_blocks)}", flush=True)
-            
+
             for N_M_str, block_slice in equivariant_block.items():
                 condition_i, condition_j = map(int, N_M_str.split())
-                
+
                 # Vectorized mask creation
                 mask = (atomic_nums_i == condition_i) & (atomic_nums_j == condition_j)
                 matching_forward_indices = forward_indices[mask]
-                
+
                 if len(matching_forward_indices) == 0:
                     continue
-                    
+
                 # Get edge indices for matching edges
                 edge_i_batch = forward_edge_i[mask]
                 edge_j_batch = forward_edge_j[mask]
-                
+
                 # Batch process all matching edges
                 slice_row = slice(block_slice[0], block_slice[1])
                 slice_col = slice(block_slice[2], block_slice[3])
                 len_row = block_slice[1] - block_slice[0]
                 len_col = block_slice[3] - block_slice[2]
-                
+
                 # Extract predictions for all matching edges at once
                 edge_counter_batch = torch.searchsorted(forward_indices, matching_forward_indices)
                 pred_batch = H_pred[edge_counter_batch][:, slice_out].reshape(-1, len_row, len_col)
-                
+
                 # Initialize matrices if not already done
                 for idx, (i, j) in enumerate(zip(edge_i_batch, edge_j_batch)):
                     i, j = i.item(), j.item()
                     key_term = (i, j)
-                    
+
                     if key_term not in H_prev:
                         num_orbitals_i = atom_orbitals_count[atomic_numbers[i].item()]
                         num_orbitals_j = atom_orbitals_count[atomic_numbers[j].item()]
                         H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_j), dtype=float)
-                    
+
                     # Assign the prediction
                     H_prev[key_term][slice_row, slice_col] = pred_batch[idx]
 
@@ -712,7 +592,7 @@ class Fock_Targets:
         else:
             print("Unscaling node blocks with scale/shift data")
             return self.unscale_shift_node_blocks(node_blocks)
-    
+
 
     def reconstruct_matrix(self, node_blocks, edge_blocks, symmetrize_matrix_if_needed=False):
         """
@@ -747,12 +627,12 @@ class Fock_Targets:
                     reconstructed_matrix[starting_j:starting_j+num_orbitals_j, starting_i:starting_i+num_orbitals_i] = edge.T
 
                 edge_counter += 1
-        
+
         # Check if the matrix is symmetric and symmetrize if not
         if not torch.allclose(reconstructed_matrix, reconstructed_matrix.T, atol=1e-10) and symmetrize_matrix_if_needed:
             print("Matrix is not already symmetrix! Symmetrizing the matrix")
             reconstructed_matrix = (reconstructed_matrix + reconstructed_matrix.T) / 2
 
         return reconstructed_matrix
-    
+
     # Compute reverse edg

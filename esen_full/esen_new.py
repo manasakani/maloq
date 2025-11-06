@@ -13,9 +13,8 @@ import torch
 import math
 import torch.nn as nn
 import e3nn
-from e3nn.o3 import Irreps, Irrep 
+from e3nn.o3 import Irreps, Irrep
 from e3nn.o3 import Linear as e3nn_Linear
-from cuequivariance_torch import Linear as cuet_Linear
 from e3nn.nn import Gate
 from torch.nn import Linear
 import numpy as np
@@ -24,8 +23,6 @@ from torch.utils.checkpoint import checkpoint
 import time
 from .nn.so3_layers import SO3_Linear
 
-# Fix this later!:
-# sys.path.append('/home/manasakani/fairchem/src/')
 from fairchem.core.common.registry import registry
 from fairchem.core.common.utils import conditional_grad
 e3nn.set_optimization_defaults(jit_script_fx=False)
@@ -131,7 +128,7 @@ class eSEN_Backbone(nn.Module):
                 0.0,
                 self.cutoff,
                 self.num_distance_basis,
-                self.gaussian_width, 
+                self.gaussian_width,
             )
         elif self.distance_function == "bessel":
             self.distance_expansion = EnvelopedBesselBasis(
@@ -225,36 +222,6 @@ class eSEN_Backbone(nn.Module):
             num_channels=self.sphere_channels
         )
 
-        # affine=True, centering=True # for antisymmetry, removes the bias!
-
-        # # Irreps of the internal embeddings
-        # build_irreps = []
-        # for l in range(self.lmax+1):
-        #     build_irreps.append((self.sphere_channels, (l, 1)))
-        # self.irreps_in = Irreps(build_irreps)
-
-    # def get_rotmat_and_wigner(self, edge_distance_vecs):
-
-    #     edge_rot_mat = init_edge_rot_mat(
-    #         edge_distance_vecs, rot_clip=(not self.direct_forces)
-    #     )
-
-    #     Jd_buffers = [
-    #         getattr(self, f"Jd_{l}").type(edge_rot_mat.dtype)
-    #         for l in range(self.lmax + 1)
-    #     ]
-
-    #     wigner = rotation_to_wigner(
-    #         edge_rot_mat,
-    #         0,
-    #         self.lmax,
-    #         Jd_buffers,
-    #         rot_clip=(not self.direct_forces),
-    #     )
-    #     wigner_inv = torch.transpose(wigner, 1, 2).contiguous()
-
-    #     return edge_rot_mat, wigner, wigner_inv
-
     def _get_rotmat_and_wigner(self, edge_distance_vecs):
         Jd_buffers = [
             getattr(self, f"Jd_{l}").type(edge_distance_vecs.dtype)
@@ -297,23 +264,17 @@ class eSEN_Backbone(nn.Module):
             forward_edge_mask = torch.ones(data_dict["edge_index"].shape[1], dtype=torch.bool, device=data_dict["pos"].device)
             reverse_edge_map = torch.arange(data_dict["edge_index"].shape[1], dtype=torch.long, device=data_dict["pos"].device)
 
-        # The input edges are in xyz coordinates, we need to rotate them to the yzx coordinates expected by e3nn to be consistent with the data       
+        # The input edges are in xyz coordinates, we need to rotate them to the yzx coordinates expected by e3nn to be consistent with the data
         edge_distance_vec = data_dict["edge_dist"][:, [2, 3, 1]]
         edge_distance = data_dict["edge_dist"][:, 0]
-        
+
         graph_dict = {
-            "edge_index": data_dict["edge_index"], 
+            "edge_index": data_dict["edge_index"],
             "forward_edge_mask": forward_edge_mask,
             "reverse_edge_map": reverse_edge_map,
-            "edge_distance": edge_distance,        
+            "edge_distance": edge_distance,
             "edge_distance_vec": edge_distance_vec,
         }
-
-        # edge_rot_mat, wigner, wigner_inv = self.get_rotmat_and_wigner(
-        #     graph_dict["edge_distance_vec"]
-        # )
-        # delete edge_rot_mat! This is huge and not needed and it saves memory
-        # del edge_rot_mat
 
         wigner, wigner_inv = self._get_rotmat_and_wigner(
             graph_dict["edge_distance_vec"]
@@ -337,7 +298,7 @@ class eSEN_Backbone(nn.Module):
             dtype=data_dict["pos"].dtype,
         )
         # set l = 0 components to the element embeddings:
-        x_message_node[:, 0, :] = self.sphere_embedding(data_dict["atomic_numbers"]) 
+        x_message_node[:, 0, :] = self.sphere_embedding(data_dict["atomic_numbers"])
 
         if self.include_edges:
             # x_message_edge: [#edges considered, self.sph_feature_size = (l_max+1)**2, self.sphere_channels = E]
@@ -369,7 +330,7 @@ class eSEN_Backbone(nn.Module):
 
         x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) #+ torch.cat((target_embedding, edge_distance_embedding, source_embedding), dim=1)      # symmetrized
 
-        # do edge degree embeddings for both nodes and edges: - this breaks symmetry of identical nodes..
+        # do edge degree embeddings for both nodes and edges:
         x_message_node = self.edge_degree_embedding(
             x_message_node,
             x_edge,
@@ -380,7 +341,7 @@ class eSEN_Backbone(nn.Module):
             node_or_edge='node'
         )
 
-        if self.include_edges: # this is not antisymmetrized (yet) 
+        if self.include_edges:
             x_message_edge = self.edge_degree_embedding(
                 x_message_node,
                 x_edge,
@@ -423,7 +384,7 @@ class eSEN_Backbone(nn.Module):
                     wigner_inv,
                     node_or_edge='edge',
                 )
-        
+
         # Final layer norm
         x_message_node = self.norm(x_message_node)
 
@@ -499,7 +460,7 @@ class Fock_Irreps_Head(nn.Module):
         self.ls_list = ls_list                              # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2]
         self.backward_irrep_track = {}                      # helper dict to keep track of where to find the forward onsite orbital edges when we expand them out later
         print("ls_list for output head: ", self.ls_list)
-        
+
         # We make a new list of irreps (irreps_nodereduced) which contains only the unique irreps in the node blocks
         if self.reduce_node:
             irreps_nodereduced = []
@@ -522,7 +483,7 @@ class Fock_Irreps_Head(nn.Module):
                         product_irreps = str(self.get_product_irreps(l1, l2))
                         irreps_nodereduced.append(product_irreps)
                         irrep_len = sum([2*l + 1 for l in Irreps(product_irreps).ls])
-                        
+
                         # track it for the backward edge in the expand section later:
                         self.backward_irrep_track[(j, i)] = [irrep_pointer, irrep_pointer+irrep_len]
                         irrep_pointer += irrep_len
@@ -553,11 +514,6 @@ class Fock_Irreps_Head(nn.Module):
             input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
             combined_output_scalars = Irreps(f"{irreps_scalars.num_irreps + irreps_gated.num_irreps}x0e")
             self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars, biases=True) # just a linear layer
-            # self.lin_scalars_learnable_2 = nn.Linear(
-            #     in_features=self.sphere_channels, 
-            #     out_features=combined_output_scalars.num_irreps, 
-            #     bias=True
-            # )
             self.act_input_scalars = torch.nn.SiLU() # torch.nn.Sigmoid() # torch.nn.Tanh() # torch.nn.ReLU() # torch.nn.SiLU() # torch.nn.GELU()
             # this returns the irreps_gates
 
@@ -568,13 +524,13 @@ class Fock_Irreps_Head(nn.Module):
                                 act_gates=[torch.sigmoid] * len(irreps_gates),
                                 irreps_gated=irreps_gated
                             )
-            
+
             # now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
             irreps_in_simplified = (irreps_scalars + self.gate.irreps_out).simplify()
             assert irreps_in_simplified == (irreps_scalars+self.gate.irreps_out), "The irreps_in for the output linear layer should not change when simplified!"
             if reduce_node:
                 # self.lin_out_node = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_nodereduced, biases=True)
-                # self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=True) 
+                # self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=True)
                 self.node_lin_out_layers = nn.ModuleList()
                 self.edge_lin_out_layers = nn.ModuleList()
                 for l in range(0, self.lmax+1):
@@ -582,14 +538,14 @@ class Fock_Irreps_Head(nn.Module):
 
                     # for nodes:
                     mul_out = self.irreps_nodereduced.count('{}e'.format(l))
-                    irreps_in_l = f"{mul_in}x{l}e"  
+                    irreps_in_l = f"{mul_in}x{l}e"
                     irreps_out_l = f"{mul_out}x{l}e"
                     print("Creating node linear output map for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out = ", irreps_out_l, flush=True)
                     self.node_lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
 
                     # for edges:
                     mul_out = self.irreps_out.count('{}e'.format(l))
-                    irreps_in_l = f"{mul_in}x{l}e"  
+                    irreps_in_l = f"{mul_in}x{l}e"
                     irreps_out_l = f"{mul_out}x{l}e"
                     print("Creating edge linear output map for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out = ", irreps_out_l, flush=True)
                     self.edge_lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
@@ -599,9 +555,6 @@ class Fock_Irreps_Head(nn.Module):
 
             else:
                 print("Irreps in: ", irreps_in_simplified, flush=True)
-                # self.lin_out = e3nn_Linear(irreps_in=irreps_in_simplified, irreps_out=irreps_out, biases=True) 
-                # self.lin_out = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=False) 
-                # self.lin_out = cuet_Linear(irreps_in=irreps_in_simplified, irreps_out=irreps_out) 
 
                 # create single linear layers up to lmax:
                 self.lin_out_layers = nn.ModuleList()
@@ -610,7 +563,7 @@ class Fock_Irreps_Head(nn.Module):
                 for l in range(0, self.lmax+1):
                     mul_in = self.sphere_channels
                     mul_out = irreps_out.count('{}e'.format(l))
-                    irreps_in_l = f"{mul_in}x{l}e"  
+                    irreps_in_l = f"{mul_in}x{l}e"
                     irreps_out_l = f"{mul_out}x{l}e"
                     print("Creating linear output map for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out = ", irreps_out_l, flush=True)
                     self.lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
@@ -624,15 +577,14 @@ class Fock_Irreps_Head(nn.Module):
                     # self.lin_out_layers.append(SO3_Linear(mul_in, mul_out, l, single=True))
 
                 self.output_permutation = self.get_output_permutation(irreps_out)
-                
+
                 # self.compiled_lin_out = torch.compile(self.lin_out, fullgraph=True)
-                # self.lin_out2 = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=irreps_out, biases=True)
 
     def get_output_permutation(self, output_irreps):
         """
         Get the permutation that reorders irreps from sorted-by-l order to irreps_out order.
         Initially, we have the output irreps in sorted order: (omol) 114x0e+ 229x1e+239x2e+161x3e+73x4e+24x5e+4x6e
-        We want to permute them to the order they appear in irreps_out. 
+        We want to permute them to the order they appear in irreps_out.
         """
         input_irreps_simplified = output_irreps.sort()[0].simplify()
         total_dim = sum(mul * (2 * ir.l + 1) for mul, ir in input_irreps_simplified)
@@ -653,22 +605,22 @@ class Fock_Irreps_Head(nn.Module):
             ir_dim = 2 * ir.l + 1
             # print("Handling irrep: ", ir, " of dim ", ir_dim, "in sorted position ", sorted_irrep_idx, flush=True)
             # print("This should go to unsorted position ", req_permutation[sorted_irrep_idx], flush=True)
-            
+
             # Find which original irrep this corresponds to in the output_irreps
             original_irrep_idx = req_permutation[sorted_irrep_idx]
-            
+
             # Calculate tensor position in original order for this irrep
             original_tensor_pos = 0
             for i in range(original_irrep_idx):
                 _, orig_ir = output_irreps[i]
                 original_tensor_pos += 2 * orig_ir.l + 1
-            
+
             # Map tensor elements: original[orig_pos] = sorted[sorted_pos]
             for j in range(ir_dim):
                 tensor_inverse_permutation[original_tensor_pos + j] = sorted_tensor_pos + j
-            
+
             sorted_tensor_pos += ir_dim
-        
+
         # print("tensor_inverse_permutation: ", [tensor_inverse_permutation[i].item() for i in range(len(tensor_inverse_permutation))], flush=True)
         return tensor_inverse_permutation
 
@@ -682,13 +634,13 @@ class Fock_Irreps_Head(nn.Module):
             else:
                 gated.append((mul, ir))
         return Irreps(scalars), Irreps(gated)
-    
+
 
     def get_product_irreps(self, l1, l2, even_or_odd=None):
         """
         Return the irreps required to represent l1 X l2 (X = tensor product)
         """
-            
+
         m = 1   # multiplicity
         p = 1   # even parity only (real-valued Fock matrix)
         l3s = range(abs(l1 - l2), l1 + l2 + 1)
@@ -727,10 +679,10 @@ class Fock_Irreps_Head(nn.Module):
             edge_embeddings = self.stack_irreps(edge_embeddings)
             node_output = self.process(node_embeddings, edge_index, 'node')
             edge_output = self.process(edge_embeddings, edge_index, 'edge')
-        
+
         else:
             print("Error! Mispelt head type")
-        
+
         # augment the node irreps back to the full irrep list (containing the lower triangle of orbital interactions and odd self-interaction irreps)
         # using edge_output to infer the total size of the output embeddings
         if self.reduce_node:
@@ -747,7 +699,7 @@ class Fock_Irreps_Head(nn.Module):
 
         #     # Iterate through the edges which will not have a corresponding label (~edge_exists)
         #     for i, edge_exists in enumerate(edge_mask):
-        #         if not edge_exists: 
+        #         if not edge_exists:
         #             # find the forward edge index, this will have a label of it's own:
         #             forward_edge_index = reverse_edge_map[i]
         #             # we need to convert the backward edge to the forward edge order
@@ -768,7 +720,7 @@ class Fock_Irreps_Head(nn.Module):
 
     def get_edge_permutation(self):
         """
-        The forward and backward edges contain the same irreps, but they are permuted in the data list 
+        The forward and backward edges contain the same irreps, but they are permuted in the data list
         due to the order of flattening the matrix blocks. Here we create the permutation of the irreps to match the reverse edge order.
         We also handle the reflection rules of the orbital interactions, which are different for even and odd parity.
         """
@@ -799,7 +751,7 @@ class Fock_Irreps_Head(nn.Module):
                 if i < j:
                     # store this in the forward_irrep_track:
                     forward_irrep_track[(j, i)] = [pointer, pointer + irrep_len]
-                                    
+
                 if i > j:
 
                     # Find where the p1A-p2B irreps are in the forward edge
@@ -809,12 +761,12 @@ class Fock_Irreps_Head(nn.Module):
                     # Update both the forward and backward edge permutations
                     edge_permutation[pointer:pointer+irrep_len] = list(range(forward_irrep_start, forward_irrep_end))
                     edge_permutation[forward_irrep_start:forward_irrep_end] = list(range(pointer, pointer + irrep_len))
-                
+
                 # --> 2. Handle the reflections
                 parity = ((-1) ** (l1+l2)).item()
 
                 # Even parity: odd output irreps are flipped
-                if parity == 1: 
+                if parity == 1:
                     start_l = 0
                     for p in product_irreps.split('+'):
                         l = Irreps(p).ls[0]
@@ -825,7 +777,7 @@ class Fock_Irreps_Head(nn.Module):
                         start_l += (2*l + 1)
 
                 # Odd parity: even output irreps are flipped
-                if parity == -1: 
+                if parity == -1:
                     start_l = 0
                     for p in product_irreps.split('+'):
                         l = Irreps(p).ls[0]
@@ -834,19 +786,19 @@ class Fock_Irreps_Head(nn.Module):
                             l_orb_end = l_orb_start + (2*l + 1)
                             self.edge_m_reflection[l_orb_start:l_orb_end] *= -1
                         start_l += (2*l + 1)
-                    
+
                 pointer += irrep_len
 
         # assert that total_irreps is the same as the output irreps
         assert total_irreps == self.irreps_out, f"Error! Total irreps in the Hamiltonian output head {total_irreps} do not match the provided output irreps {self.irreps_out}!"
-                
+
         return edge_permutation
 
 
-    def stack_irreps(self, x_message):   
+    def stack_irreps(self, x_message):
         # input = x_message = [num_atoms/edges (batch_size), (lmax+1)**2, sphere_channels]
 
-        x_message_T = x_message.transpose(-1,-2) # rearrange dimensions from [l, E] to [E, l] 
+        x_message_T = x_message.transpose(-1,-2) # rearrange dimensions from [l, E] to [E, l]
         batch_size = x_message_T.shape[0]
 
         # group all the different ls so l_sorted output looks like sphere_channels*0e + sphere_channels*1e + sphere_channels*2e ...
@@ -865,7 +817,7 @@ class Fock_Irreps_Head(nn.Module):
         x_nonscalars = x[:, self.sphere_channels:]
 
         # 2. Prepare some scalars for gating - gate with learnable scalars: the first 'sphere_channels' scalars are the l=0, and others are used for gating
-        all_scalars = self.lin_scalars_learnable(x_scalars) 
+        all_scalars = self.lin_scalars_learnable(x_scalars)
         transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
         gating_scalars = all_scalars[:, self.sphere_channels:]
 
@@ -876,17 +828,16 @@ class Fock_Irreps_Head(nn.Module):
         # 4. Apply linear map to output irreps
         if not self.reduce_node:
             # lin_out_start_time = time.perf_counter()
-            # x_out = self.lin_out(x_gated)
-            
+
             # pass each irrep of x_out through its own SO3_Linear layer, where x_out followed simplified irreps_in (self.sphere_channels*0e + sphere_channels*1e + sphere_channels*2e ...)
             x_out_list = []
             irrep_end_track = 0
             batch_size = x_gated.shape[0]
             for l in range(0, self.lmax+1):
 
-                # sphere channels is the multiplicity of this l in the input 
+                # sphere channels is the multiplicity of this l in the input
                 start_idx = irrep_end_track
-                end_idx = start_idx + self.sphere_channels  * (2*l + 1) 
+                end_idx = start_idx + self.sphere_channels  * (2*l + 1)
                 irrep_end_track = end_idx
 
                 x_l = x_gated[:, start_idx:end_idx]  # extract the l-th irrep component
@@ -903,9 +854,9 @@ class Fock_Irreps_Head(nn.Module):
                 x_out_list.append(x_l_out)
 
             # concatenate all the l outputs back together
-            x_out = torch.cat(x_out_list, dim=1) 
+            x_out = torch.cat(x_out_list, dim=1)
 
-            # permute to match the expected order of irreps in the output 
+            # permute to match the expected order of irreps in the output
             x_out = x_out[:, self.output_permutation]
 
             # lin_out_end_time = time.perf_counter()
@@ -917,9 +868,9 @@ class Fock_Irreps_Head(nn.Module):
             batch_size = x_gated.shape[0]
             for l in range(0, self.lmax+1):
 
-                # sphere channels is the multiplicity of this l in the input 
+                # sphere channels is the multiplicity of this l in the input
                 start_idx = irrep_end_track
-                end_idx = start_idx + self.sphere_channels  * (2*l + 1) 
+                end_idx = start_idx + self.sphere_channels  * (2*l + 1)
                 irrep_end_track = end_idx
 
                 x_l = x_gated[:, start_idx:end_idx]  # extract the l-th irrep component
@@ -930,9 +881,9 @@ class Fock_Irreps_Head(nn.Module):
                 x_out_list.append(x_l_out)
 
             # concatenate all the l outputs back together
-            x_out = torch.cat(x_out_list, dim=1) 
+            x_out = torch.cat(x_out_list, dim=1)
 
-            # permute to match the expected order of irreps in the output 
+            # permute to match the expected order of irreps in the output
             if node_or_edge == 'node':
                 x_out = x_out[:, self.node_output_permutation]
             if node_or_edge == 'edge':
@@ -959,18 +910,18 @@ class Fock_Irreps_Head(nn.Module):
 
         for i, l1 in enumerate(self.ls_list):
             for j, l2 in enumerate(self.ls_list):
-                
+
                 # if it's an orbital self-interaction, need to slot in only the even irrep components
                 if i == j and l1 == l2 and self.reduce_node_intra:
 
                     even_irreps = self.get_product_irreps(l1, l2, 'even')
                     even_irreps_len = sum([2*l + 1 for l in even_irreps.ls])
                     odd_irreps = self.get_product_irreps(l1, l2, 'odd')
-                    combined_irreps = Irreps(even_irreps + odd_irreps)    
+                    combined_irreps = Irreps(even_irreps + odd_irreps)
 
                     # Extract even irreps:
-                    local_p_output = 0  
-                    local_p_reduced = 0  
+                    local_p_output = 0
+                    local_p_reduced = 0
                     for even_l in even_irreps.ls:
                         this_irrep_len = 2 * even_l + 1
                         expanded_node_output[:, output_irrep_p+local_p_output:output_irrep_p+local_p_output+this_irrep_len] = node_output[:, reduced_irrep_p+local_p_reduced:reduced_irrep_p+local_p_reduced+this_irrep_len]
@@ -985,9 +936,9 @@ class Fock_Irreps_Head(nn.Module):
 
                     # update reduced_irrep_pointer with even_irreps size
                     reduced_irrep_p += sum([2*l + 1 for l in even_irreps.ls])
-                
+
                 # if it's a forward edge, copy the next irreps directly from node_output
-                if i < j or (i == j and l1 == l2 and not self.reduce_node_intra):      
+                if i < j or (i == j and l1 == l2 and not self.reduce_node_intra):
                     these_irreps = self.get_product_irreps(l1, l2)
                     irreps_len = sum([2*l + 1 for l in these_irreps.ls])
                     expanded_node_output[:, output_irrep_p:output_irrep_p + irreps_len] = node_output[:, reduced_irrep_p:reduced_irrep_p + irreps_len]
@@ -1003,71 +954,24 @@ class Fock_Irreps_Head(nn.Module):
 
                     forward_edge_irreps = node_output[:, forward_edge_bounds[0]:forward_edge_bounds[1]]
 
-                    # add the parity operator 
+                    # add the parity operator
                     outer_parity = ((-1) ** (l1+l2)).item()
                     start_l = 0
                     for l in these_irreps.ls:
                         inner_parity = (-1) ** l
-                        end_l = start_l + (2 * l + 1)                        
+                        end_l = start_l + (2 * l + 1)
                         if inner_parity != outer_parity:
-                            forward_edge_irreps[:, start_l:end_l] *= -1                        
+                            forward_edge_irreps[:, start_l:end_l] *= -1
                         start_l = end_l
-                
+
                     expanded_node_output[:, output_irrep_p:output_irrep_p + irreps_len] = forward_edge_irreps
-                    
+
                     output_irrep_p += sum([2*l + 1 for l in these_irreps.ls]) # only need to update the pointer along the output_irreps
 
         # print("node_output[0]: ", node_output[0])
         # print("expanded_node_output[0]: ", expanded_node_output[0])
         return expanded_node_output
 
-
-@registry.register_model("esen_linear_fock_head")
-class Seperable_Linear_Fock_Head(nn.Module):
-        """
-        Linear mapping from irreps of type Ex0e + Ex1e + Ex2e... (where E = sphere_channels) 
-        to outputs like:
-
-        layer 1: Ex0e + Ex1e + Ex2e ... -> Nsx0e (where Ns is the s-multiplicity of the output irreps) 
-        layer 2: Ex0e + Ex1e + Ex2e ... -> Npx1e (where Np is the p-multiplicity of the output irreps)
-        layer 3: Ex0e + Ex1e + Ex2e ... -> Ndx1e (where Nd is the d-multiplicity of the output irreps)
-        ... 
-
-        The output has the form Nsx0e+Npx1e+Ndx2e ... and then there is a final linear layer:
-        --> e3nn_Linear(irreps_in="Nsx0e+Npx1e+Ndx2e", irreps_out=self.irreps_out, biases=False)
-        """
-        def __init__(self, sphere_channels, irreps_in, irreps_out, mappingReduced):
-            super().__init__()
-            self.irreps_in = irreps_in
-            self.irreps_out = irreps_out
-            self.mappingReduced = mappingReduced
-            self.lmax = irreps_in.lmax
-            self.mmax = irreps_in.lmax
-
-            # groups the irreps of the same l in the output
-            simplified_output_irreps = irreps_out.sort()[0].simplify()
-            
-            # Multiplicity of different ls in the output tensor (Ns, Np, Nd...)
-            output_multiplicities = [int(str(ir).split('x')[0]) for ir in simplified_output_irreps]
-
-            # Linear layers to handle the mappings for each l-component
-            self.l_wise_linear_layers = nn.ModuleList()
-            for l, mul in enumerate(output_multiplicities):
-                l_output_irreps = Irreps(str(mul)+"x"+str(l)+"e")
-                self.l_wise_linear_layers.append(e3nn_Linear(irreps_in, l_output_irreps, biases=True))
-
-            # final linear layer to make output irrep order:
-            self.convert_to_output_irreps = e3nn_Linear(irreps_in=simplified_output_irreps, irreps_out=self.irreps_out, biases=True)
-
-        def forward(self, x):
-            out = []
-            for l_wise_linear_layer in self.l_wise_linear_layers:
-                x_l = l_wise_linear_layer(x)
-                out.append(x_l)
-            out = torch.cat(out, dim=1)
-            
-            # convert from simplified to full output irreps        
-            return self.convert_to_output_irreps(out)
 
 @registry.register_model("esen_linear_energy_head")
 class Linear_Energy_Head(nn.Module):
@@ -1087,11 +991,11 @@ class Linear_Energy_Head(nn.Module):
         self.act = GateActivation(
                 lmax=self.lmax, mmax=self.mmax, num_channels=self.hidden_channels
             )
-        
+
         multiplier = 2 #3 if self.include_edges else 2
 
         self.so2_conv_1 = SO2_Convolution(
-            multiplier*self.sphere_channels,  
+            multiplier*self.sphere_channels,
             self.hidden_channels,
             self.lmax,
             self.mmax,
@@ -1111,7 +1015,7 @@ class Linear_Energy_Head(nn.Module):
             edge_channels_list=None,
             extra_m0_output_channels=None,
         )
-        
+
         # self.linear = nn.Linear(backbone.sphere_channels, 1, bias=True)
 
         # make this a two linear layers with nonlinearity in between:
@@ -1133,8 +1037,9 @@ class Linear_Energy_Head(nn.Module):
     def forward(self, emb: dict[str, torch.Tensor], batch):
 
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
-        edge_mask = batch.edge_mask
-        
+        # edge_mask = batch.edge_mask
+        edge_mask = torch.ones(edge_index.shape[1], dtype=torch.bool, device=edge_index.device)
+
         # Trim the embeddings to the chosen lmax (not used)
         nodes = emb["node_embeddings"]#[:, :(self.lmax+1)**2, :]
         edges = emb["edge_embeddings"]#[:, :(self.lmax+1)**2, :]
@@ -1145,14 +1050,14 @@ class Linear_Energy_Head(nn.Module):
         # Create the messages for the last convolution:
         x_source = nodes[edge_index[0][edge_mask]]
         x_target = nodes[edge_index[1][edge_mask]]
-        x_message = torch.cat((x_source, x_target), dim=2) 
+        x_message = torch.cat((x_source, x_target), dim=2)
 
         # -----------------
         # Rotate the irreps
         x_message = torch.bmm(wigner, x_message)
 
         # Apply the SO2 convolution to the messages
-        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge) 
+        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
         x_message = self.act(x_0_gating, x_message)
         x_message = self.so2_conv_2(x_message, x_edge)
 
@@ -1169,9 +1074,9 @@ class Linear_Energy_Head(nn.Module):
         # aggregate messages
         new_embedding.index_add_(0, edge_index[1][edge_mask], x_message) # only for the first row
         energies = new_embedding.narrow(1, 0, 1)
-        energies = self.linear(energies) 
+        energies = self.linear(energies)
 
-        energies = energies.squeeze(-1).squeeze(-1)  
+        energies = energies.squeeze(-1).squeeze(-1)
 
         molecule_indices = torch.cat([
             torch.full((num_atoms,), i, dtype=torch.long, device=energies.device)
@@ -1185,34 +1090,6 @@ class Linear_Energy_Head(nn.Module):
 
         return {"energies": energies_per_molecule}
 
-        # aggregate the edges onto every node:
-        # if self.include_edges:
-        #     agg_embedding = torch.zeros(
-        #         (emb["node_embeddings"].shape[0],) + emb["edge_embeddings"].shape[1:],
-        #         dtype=emb["node_embeddings"].dtype,
-        #         device=emb["node_embeddings"].device,
-        #     )
-
-        #     agg_embedding.index_add_(0, edge_index[1], emb["node_embeddings"]) 
-        # else:
-        #     agg_embedding = emb["node_embeddings"]
-        # energies = self.linear(agg_embedding.narrow(1, 0, 1))
-
-        # final_node_output = self.conv(
-        #                         emb["node_embeddings"],
-        #                         emb["edge_embeddings"],
-        #                         emb["x_edge"],
-        #                         forward_edges,
-        #                         edge_distance,
-        #                         edge_index,
-        #                         edge_mask,
-        #                         reverse_edge_map,
-        #                         emb["wigner"],
-        #                         emb["wigner_inv"],
-        #                         node_or_edge='node', 
-        #                     )
-        # energies = self.linear(final_node_output.narrow(1, 0, 1))
-
 
 @registry.register_model("esen_linear_force_head")
 class Linear_Force_Head(nn.Module):
@@ -1223,16 +1100,16 @@ class Linear_Force_Head(nn.Module):
     def forward(self, emb: dict[str, torch.Tensor], batch):
 
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
-        
+
         forces = self.linear(emb["node_embeddings"].narrow(1, 0, 4))
         forces = forces.narrow(1, 1, 3)
         forces = forces.view(-1, 3).contiguous()
         return {"forces": forces}
-    
+
 class Convolution_Force_Head(nn.Module):
     def __init__(self, backbone):
         super().__init__()
-        
+
         # self.output_node_block = eSEN_Block(
         #                                     backbone.sphere_channels,
         #                                     backbone.hidden_channels,
@@ -1269,7 +1146,7 @@ class Convolution_Force_Head(nn.Module):
             #         reverse_edge_map,
             #         emb["wigner"],
             #         emb["wigner_inv"],
-            #         node_or_edge='edge', 
+            #         node_or_edge='edge',
             #     )
             final_edge_output = emb["edge_embeddings"]
 
@@ -1285,7 +1162,7 @@ class Convolution_Force_Head(nn.Module):
 
             aggregated_forces.index_add_(0, edge_index[1][edge_mask], edgewise_forces)
             if (~edge_mask).any():                                              # if we are ignoring half the edges, need to now add the other half
-                    aggregated_forces.index_add_(0, edge_index[0][edge_mask], -1*edgewise_forces)   
+                    aggregated_forces.index_add_(0, edge_index[0][edge_mask], -1*edgewise_forces)
 
 
         # nodewise forward (convolution + aggregation):
@@ -1302,7 +1179,7 @@ class Convolution_Force_Head(nn.Module):
                     reverse_edge_map,
                     emb["wigner"],
                     emb["wigner_inv"],
-                    node_or_edge='node', 
+                    node_or_edge='node',
                 )
 
             aggregated_forces = self.linear(aggregated_forces.narrow(1, 0, 4))
