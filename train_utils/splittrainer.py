@@ -13,10 +13,11 @@ import os
 from dataset_utils import get_scale_shift
 from fock_utils.get_energy_from_fock import build_density, get_integrals, get_permute_phase, permute_mat
 from fock_utils.utils_orca_out import periodic_table_number, sort_by_m, read_orca_out, periodic_table
-from fock_utils import basis_sets
+from fock_utils import basis_sets, matrix2labels_kernels
 import json
 from pyscf import gto, scf
 import re
+import cupy as cp
 
 # note: removing amp to get better precision for now
 def disable_amp(func):
@@ -375,12 +376,17 @@ class SplitTrainer():
                 output_folder='outputs',
                 dataset_name='omol',
                 orbital_basis=None,
-                compute_total_energy=True):
+                compute_total_energy=True,
+                orbital_template=None):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
         print("Running eval.")
         self.backbone.eval()
         self.head.eval()
+
+        dump_plots = False
+        dump_embeddings = False
+        compute_eigenvalues = False
 
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank()
@@ -404,9 +410,31 @@ class SplitTrainer():
         # -- Evaluate everything in the train_loader --
         # with torch.no_grad():  # NOTE: there is a bug with torch.no_grad() and e3nn_linear (used in the output head!) for e3nn v. 0.5.6. Using 0.5.5 instead.
 
+        # Transform orbital template into cupy version:
+        print("orbital template to regular array")
+        orbital_template_ptrs = []
+        orbital_template_tmp = []
+        for o in orbital_template:
+            inner_size = 5 * len(o)
+            tmp = cp.zeros((inner_size,), dtype=cp.int32)
+            try:
+                for j, (row_slice, col_slice, output_slice) in enumerate(o):
+                    tmp[j * 5 + 0] = row_slice.start
+                    tmp[j * 5 + 1] = row_slice.stop
+                    tmp[j * 5 + 2] = col_slice.start
+                    tmp[j * 5 + 3] = col_slice.stop
+                    tmp[j * 5 + 4] = output_slice.start
+                orbital_template_tmp.append(tmp)
+            except Exception:
+                print(o[j],j, flush=True)
+            orbital_template_ptrs.append(matrix2labels_kernels.get_ptr(tmp))
+
+        orbital_template_ptrs = cp.array(
+            orbital_template_ptrs, dtype=cp.uintp
+        )
+        print("done orbital template to regular array")
+
         # dictionaries to store the orbital blocks, they get rewritten by each batch
-        node_outputs = {}
-        node_labels = {}
         eigenvalue_maes = []
         total_energy_errors = []
         num_atoms_in_molecule_list = []
@@ -415,23 +443,33 @@ class SplitTrainer():
             edge_labels = {}
 
         for index, batch in enumerate(eval_loader):
-            print(f"Processing molecule {index}...", flush=True)
-            print(f"Number of atoms in molecule {index}: {batch.num_nodes}", flush=True)
+            if rank == 0:
+                print(f"Processing molecule {index}...", flush=True)
+                print(f"Number of atoms in molecule {index}: {batch.num_nodes}", flush=True)
 
             with torch.no_grad():
                 batch = batch.to(device)
+                start_backbone = time.perf_counter()
                 backbone_out = self.backbone(batch)
+                end_backbone = time.perf_counter()
+                if rank == 0:
+                    print(f"Backbone time: {end_backbone - start_backbone:.4f}s", flush=True)
 
-            # print("Writing embeddings to file...", flush=True)
-            # self.write_embeddings_to_file(backbone_out, batch, index, output_folder, rank)
-            # self.visualize_embeddings(backbone_out["node_embeddings"], output_folder, keyword='node')
-            # self.visualize_embeddings(backbone_out["edge_embeddings"], output_folder, keyword='edge')
+            if dump_embeddings:
+                print("Writing embeddings to file...", flush=True)
+                self.write_embeddings_to_file(backbone_out, batch, index, output_folder, rank)
+                self.visualize_embeddings(backbone_out["node_embeddings"], output_folder, keyword='node')
+                self.visualize_embeddings(backbone_out["edge_embeddings"], output_folder, keyword='edge')
 
             # pass all the batches through:
             if loss_target_string == 'fock_matrix':
 
                 with torch.no_grad():
+                    start_head = time.perf_counter()
                     node_output, edge_output, edge_output_bwd, edge_perm, edge_refl  = self.head(backbone_out, batch)
+                    end_head = time.perf_counter()
+                    if rank == 0:
+                        print(f"Fock head time: {end_head - start_head:.4f}s", flush=True)
 
                 this_node_target = getattr(batch, node_target_name)
                 this_edge_target = getattr(batch, edge_target_name)
@@ -441,107 +479,150 @@ class SplitTrainer():
                 node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
 
                 # for nabladft, we left the node scaling in
-                if dataset_name == 'omol' or dataset_name == 'nablaDFT':
+                if dataset_name == 'nablaDFT':
                     this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target) # note: remove node scaling from evals
 
-                # # write the corresponding node and edge outputs and targets to file:
-                # if rank == 0:
-                #     np.save(os.path.join(output_folder, 'node_outputs_' + str(index) + '.npy'),
-                #             node_output.cpu().detach().numpy())
-                #     np.save(os.path.join(output_folder, 'edge_outputs_' + str(index) + '.npy'),
-                #             edge_output.cpu().detach().numpy())
-                #     np.save(os.path.join(output_folder, 'node_targets_' + str(index) + '.npy'),
-                #             this_node_target.cpu().detach().numpy())
-                #     np.save(os.path.join(output_folder, 'edge_targets_' + str(index) + '.npy'),
-                #             this_edge_target.cpu().detach().numpy())
-                #     # write the required irreps to file:
-                #     with open(os.path.join(output_folder, 'irreps.txt'), 'w') as f:
-                #         f.write(f"Head irreps: {self.head_irreps}\n")
 
                 # Transform back to uncoupled basis:
                 print("Transforming to uncoupled basis...", flush=True)
+                start_basis = time.perf_counter()
                 uncoupled_node_outputs = basis_transform.get_H(node_output)
                 uncoupled_edge_outputs = basis_transform.get_H(edge_output)
                 uncoupled_node_labels = basis_transform.get_H(this_node_target)
                 uncoupled_edge_labels = basis_transform.get_H(this_edge_target)
+                end_basis = time.perf_counter()
+                if rank == 0:
+                    print(f"Basis transform time: {end_basis - start_basis:.4f}s", flush=True)
 
-                # Unpad them into the hamiltonian orbital blocks
-                print("Unpadding orbital blocks...", flush=True)
-                atomic_numbers = batch.atomic_numbers.cpu().detach().numpy()
-                node_orbital_blocks_output = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_outputs, atomic_numbers=atomic_numbers)
-                edge_orbital_blocks_output = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_outputs, atomic_numbers=atomic_numbers)
-                node_orbital_blocks_label = batch.fock_target_object[0].unpad_node_blocks(uncoupled_node_labels, atomic_numbers=atomic_numbers)
-                edge_orbital_blocks_label = batch.fock_target_object[0].unpad_edge_blocks(uncoupled_edge_labels, atomic_numbers=atomic_numbers)
+                ## LABEL -> MATRIX START ##
+                start_conversion = time.perf_counter()
+                matrix_size = batch.fock_target_object[0].block_starts[-1]
 
-                # reassemble the matrix (use the model output for the predicted matrix, and reconstruct the label matrix from the orbital blocks if needed)
-                print("Reconstructing matrices...", flush=True)
-                output_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_output, edge_orbital_blocks_output, symmetrize_matrix_if_needed=True)
-                if hasattr(batch.fock_target_object[0], 'fock_matrix') and batch.fock_target_object[0].fock_matrix is not None:
-                    label_fock_matrix = batch.fock_target_object[0].fock_matrix
-                else:
-                    # reconstructed from targets:
-                    label_fock_matrix = batch.fock_target_object[0].reconstruct_matrix(node_orbital_blocks_label, edge_orbital_blocks_label, symmetrize_matrix_if_needed=False)
+                # Augment neighbor list with node self-neighbors, because we will stack the nodes together with the edges
+                src_idx, target_idx = batch.fock_target_object[0].neighbour_list[0], batch.fock_target_object[0].neighbour_list[1]
+                num_atoms = len(batch.fock_target_object[0].atomic_numbers)
+                src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
+                target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
+                fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(batch.fock_target_object[0].orbitals_per_atom)])
 
-                # detach the matrices:
-                output_fock_matrix = output_fock_matrix.cpu().detach().numpy()
-                label_fock_matrix = label_fock_matrix.cpu().detach().numpy()
+                output_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
+                edge_output_cupy = cp.from_dlpack(uncoupled_edge_outputs)
+                node_output_cupy = cp.from_dlpack(uncoupled_node_outputs)
+                output_targets = cp.concatenate([edge_output_cupy, node_output_cupy])
 
-                # -------- Debugging code --------
-                # test - get label fock from orca output file:
-                # label_fock_matrix, elements, coordinates, _ = read_orca_out('/home/manasakani/ocp-modeling-dev/manasakani/fock_datasets/single_water_molecule/rot1/orca.out')
-                # full_basis = {periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
-                # full_basis = dict(sorted(full_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
-                # basis = {element: full_basis[element] for element in elements}
-                # label_fock_matrix = sort_by_m(label_fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
-                # -------- Debugging code --------
+                label_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
+                edge_label_cupy = cp.from_dlpack(uncoupled_edge_labels)
+                node_label_cupy = cp.from_dlpack(uncoupled_node_labels)
+                label_targets = cp.concatenate([edge_label_cupy, node_label_cupy])
 
-                matrix_out = output_fock_matrix.copy()
-                matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-6.0, vmax=6.0)
-                plt.imshow(matrix_out, vmin=-0.1, vmax=0.1, cmap='bwr')
-                # matrix_symmetry_error = np.abs(matrix_out - np.transpose(matrix_out)).sum() / matrix_out.size
-                # print("Matrix symmetry error: ", matrix_symmetry_error)
-                plt.colorbar()
-                plt.savefig("predicted_fock.png", dpi=500, bbox_inches='tight')
-                plt.close()
+                # output_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
+                # output_targets = np.concatenate([uncoupled_edge_outputs.detach().cpu().numpy(), uncoupled_node_outputs.detach().cpu().numpy()])
+                # # matrix2labels_kernels.numpy_single_matrix2label(
+                #     orbital_template,
+                #     fock_block_offsets,
+                #     batch.fock_target_object[0].atomic_numbers,
+                #     src_idxes,
+                #     target_idxes,
+                #     output_fock_matrix,
+                #     output_targets,
+                #     forward=False
+                # )
 
-                matrix_out = label_fock_matrix.copy()
-                matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                # plt.imshow(np.log(np.abs(matrix_out)), vmin=-6.0, vmax=6.0)
-                plt.imshow(matrix_out, vmin=-0.1, vmax=0.1, cmap='bwr')
-                plt.colorbar()
-                plt.savefig("label_fock.png", dpi=500, bbox_inches='tight')
-                plt.close()
+                matrix2labels_kernels.cupy_single_matrix2label(
+                    orbital_template,
+                    fock_block_offsets,
+                    batch.fock_target_object[0].atomic_numbers,
+                    src_idxes,
+                    target_idxes,
+                    output_fock_matrix,
+                    output_targets,
+                    orbital_template_ptrs,
+                    forward=False
+                )
 
-                diff_matrix_out = output_fock_matrix.copy() - label_fock_matrix.copy()
-                plt.imshow(np.abs(diff_matrix_out), cmap='bone_r', vmin=0, vmax=0.1)
-                plt.colorbar()
-                plt.savefig("fock_diff.png", dpi=500, bbox_inches='tight')
-                plt.close()
+                # label_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
+                # label_targets = np.concatenate([uncoupled_edge_labels.detach().cpu().numpy(), uncoupled_node_labels.detach().cpu().numpy()])
+                # matrix2labels_kernels.numpy_single_matrix2label(
+                #     orbital_template,
+                #     fock_block_offsets,
+                #     batch.fock_target_object[0].atomic_numbers,
+                #     src_idxes,
+                #     target_idxes,
+                #     label_fock_matrix,
+                #     label_targets,
+                #     forward=False
+                # )
+
+                matrix2labels_kernels.cupy_single_matrix2label(
+                    orbital_template,
+                    fock_block_offsets,
+                    batch.fock_target_object[0].atomic_numbers,
+                    src_idxes,
+                    target_idxes,
+                    label_fock_matrix,
+                    label_targets,
+                    orbital_template_ptrs,
+                    forward=False
+                )
+                end_conversion = time.perf_counter()
+                output_fock_matrix = (output_fock_matrix + output_fock_matrix.T) / 2
+                label_fock_matrix = (label_fock_matrix + label_fock_matrix.T) / 2
+                if rank == 0:
+                    print(f"Label -> Matrix time [NEW]: {end_conversion - start_conversion:.4f}s", flush=True)
+                ## DEBUG NEW LABEL -> MATRIX END ##
+
+                if dump_plots:
+                    matrix_out = output_fock_matrix.copy()
+                    matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                    plt.imshow(matrix_out, vmin=-0.1, vmax=0.1, cmap='bwr')
+                    plt.colorbar()
+                    plt.savefig("predicted_fock.png", dpi=500, bbox_inches='tight')
+                    plt.close()
+
+                    matrix_out = label_fock_matrix.copy()
+                    matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
+                    plt.imshow(matrix_out, vmin=-0.1, vmax=0.1, cmap='bwr')
+                    plt.colorbar()
+                    plt.savefig("label_fock.png", dpi=500, bbox_inches='tight')
+                    plt.close()
+
+                    diff_matrix_out = output_fock_matrix.copy() - label_fock_matrix.copy()
+                    plt.imshow(np.abs(diff_matrix_out), cmap='bone_r', vmin=0, vmax=0.1)
+                    plt.colorbar()
+                    plt.savefig("fock_diff.png", dpi=500, bbox_inches='tight')
+                    plt.close()
 
                 # Compute the eigenvalues and eigenvalue error
-                print("Solving generalized eigenvalue problem...", flush=True)
-                if hasattr(batch, 'overlap_matrix') and batch.overlap_matrix is not None:
-                    overlap_matrix = batch.overlap_matrix.detach().cpu().numpy()
-                    label_eigenvalues = sp.linalg.eigvalsh(label_fock_matrix, overlap_matrix)
-                    pred_eigenvalues = sp.linalg.eigvalsh(output_fock_matrix, overlap_matrix)
+                if compute_eigenvalues:
+                    print("Solving generalized eigenvalue problem...", flush=True)
+                    if hasattr(batch, 'overlap_matrix') and batch.overlap_matrix is not None:
+                        overlap_matrix = batch.overlap_matrix.detach().cpu().numpy()
+                        label_eigenvalues = sp.linalg.eigvalsh(label_fock_matrix, overlap_matrix)
+                        pred_eigenvalues = sp.linalg.eigvalsh(output_fock_matrix, overlap_matrix)
+                    else:
+                        print("Building overlap matrix and computing eigenvalues...", flush=True)
+                        # label_eigenvalues, pred_eigenvalues, overlap_matrix = self.get_overlap_and_eigs(batch, output_fock_matrix, label_fock_matrix, orbital_basis, dataset_name)
+                        overlap_matrix = None
+                        label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix) # temp for testing
+                        pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix)
+
+                    # take the first half (occupied):
+                    num_occupied = len(label_eigenvalues) // 2
+                    label_eigenvalues = label_eigenvalues[:num_occupied]
+                    pred_eigenvalues = pred_eigenvalues[:num_occupied]
+
+                    eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
+                    eigenvalue_maes.append(eigenvalue_MAE)
+
+                    if rank == 0:
+                        print("MAE error in (H!) occupied eigenvalues: ", eigenvalue_MAE, flush=True)
                 else:
-                    # print("Building overlap matrix and computing eigenvalues...", flush=True)
-                    label_eigenvalues, pred_eigenvalues, overlap_matrix = self.get_overlap_and_eigs(batch, output_fock_matrix, label_fock_matrix, orbital_basis, dataset_name)
-                    # overlap_matrix = None
-                    # label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix) # temp for testing
-                    # pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix)
+                    eigenvalue_maes.append(0)
 
-                # take the first half (occupied):
-                num_occupied = len(label_eigenvalues) // 2
-                label_eigenvalues = label_eigenvalues[:num_occupied]
-                pred_eigenvalues = pred_eigenvalues[:num_occupied]
 
-                eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
-                eigenvalue_maes.append(eigenvalue_MAE)
-                print("MAE error in (H!) occupied eigenvalues: ", eigenvalue_MAE, flush=True)
-                self.plot_eigenvalues(label_eigenvalues, pred_eigenvalues)
-                self.plot_eigenvalue_diff(label_eigenvalues, pred_eigenvalues)
+                if dump_plots:
+                    self.plot_eigenvalues(label_eigenvalues, pred_eigenvalues)
+                    self.plot_eigenvalue_diff(label_eigenvalues, pred_eigenvalues)
 
                 num_atoms_in_molecule_list.append(batch.num_atoms_in_molecule.cpu().detach().numpy().tolist()[0])
 
@@ -550,25 +631,14 @@ class SplitTrainer():
                     print("Computing total energy...", flush=True)
                     total_energy_label = self.get_total_energy(batch, label_fock_matrix, orbital_basis, dataset_name, overlap_matrix=overlap_matrix)
                     print("Total energy from label Fock matrix: ", total_energy_label, flush=True)
-                    # total_energy_label_recon = self.get_total_energy(batch, label_fock_matrix_recon, orbital_basis, dataset_name)
                     total_energy_pred = self.get_total_energy(batch, output_fock_matrix, orbital_basis, dataset_name, overlap_matrix=overlap_matrix)
                     print("Total energy from predicted Fock matrix: ", total_energy_pred, flush=True)
                     total_energy_errors.append(np.abs(total_energy_pred - total_energy_label))
-                    # print("Total energy from reconstructed label Fock matrix: ", total_energy_label_recon, flush=True)
                     print("Total energy error from predicted Fock matrix: ", total_energy_errors[-1], flush=True)
                     print("Energy from database: ", batch.energies.cpu().detach().numpy(), flush=True)
                 else:
                     total_energy_errors.append(0.0)
 
-                # # plot difference between P_label and P_pred
-                # plt.imshow(P_label - P_pred, vmin=-0.5, vmax=0.5, cmap='bwr')
-                # plt.colorbar()
-                # plt.savefig(os.path.join(output_folder, 'density_diff_' + str(index) + '.png'), dpi=300, bbox_inches='tight')
-
-                node_outputs.update(node_orbital_blocks_output)
-                edge_outputs.update(edge_orbital_blocks_output)
-                node_labels.update(node_orbital_blocks_label)
-                edge_labels.update(edge_orbital_blocks_label)
 
             elif loss_target_string == 'energies':
                 with torch.no_grad():
@@ -604,21 +674,13 @@ class SplitTrainer():
                 num_node_block_elements = 0
                 num_edge_block_elements = 0
 
-                for node_out, node_label in zip(node_outputs.values(), node_labels.values()):
-                    total_node_element_loss += torch.abs(node_out - node_label).sum()
-                    num_node_block_elements += node_out.numel()
-
-                for edge_out, edge_label in zip(edge_outputs.values(), edge_labels.values()):
-                    total_edge_element_loss += edge_multiplier*(torch.abs(edge_out - edge_label).sum())
-                    num_edge_block_elements += edge_multiplier*edge_out.numel()
-
                 # convert matrices to torch tensors for loss computation
                 output_fock_matrix = torch.tensor(output_fock_matrix)
                 label_fock_matrix = torch.tensor(label_fock_matrix)
 
                 total_matrix_mae_loss = torch.abs(output_fock_matrix - label_fock_matrix).sum() / output_fock_matrix.numel()
-                track_loss_node.append(total_node_element_loss / num_node_block_elements)
-                track_loss_edge.append(total_edge_element_loss / num_edge_block_elements)
+                track_loss_node.append(0)
+                track_loss_edge.append(0)
                 track_loss.append(total_matrix_mae_loss)
 
             else:
@@ -638,13 +700,8 @@ class SplitTrainer():
             print("Removing batch from GPU memory", flush=True)
             del batch, backbone_out, node_output
             if include_edges:
-                del edge_output, this_edge_target, output_fock_matrix, label_fock_matrix, node_orbital_blocks_output, edge_orbital_blocks_output, node_orbital_blocks_label, edge_orbital_blocks_label
+                del edge_output, this_edge_target, output_fock_matrix, label_fock_matrix
 
-            node_outputs.clear()
-            node_labels.clear()
-            if loss_target_string == 'fock_matrix':
-                edge_outputs.clear()
-                edge_labels.clear()
 
             for param1, param2 in zip(self.backbone.parameters(), self.head.parameters()):
                 param1.grad = None
@@ -709,7 +766,6 @@ class SplitTrainer():
             edge_output = torch.cat([edge_output_fwd, edge_output_bwd], dim=0)
             edge_labels = torch.cat([edge_target_fwd, edge_target_bwd], dim=0)
             loss_edge = loss_fxn(edge_output, edge_labels, self.head_irreps)
-
             loss = loss_fxn(output, labels, self.head_irreps)
 
         # otherwise, edge_output_fwd has all the edges and we can use it directly
@@ -725,7 +781,6 @@ class SplitTrainer():
             loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
             loss_edge = loss_fxn(edge_output_fwd, this_edge_target, self.head_irreps)
             loss = loss_fxn(output, labels, self.head_irreps)
-            # loss = loss_node + loss_edge
 
         return loss_node, loss_edge, loss
 
@@ -819,7 +874,6 @@ class SplitTrainer():
         plt.axhline(y=pred_eigs[halfway_index], color='black', linestyle='--', linewidth=0.5)
 
         plt.scatter(range(len(label_eigs)), label_eigs, s=15, alpha=0.4, label=r'$H^{ref}$', color='darkcyan', edgecolors='none')
-        # plt.scatter(range(len(pred_eigs)), pred_eigs, s=2, alpha=0.6, label=r'$H^{pred}$', color='mediumblue', edgecolors='none')
         plt.scatter(range(len(pred_eigs)), pred_eigs, s=2, alpha=0.6, label=r'$H^{pred}$', color='mediumblue', marker='x', linewidths=0.5 )
         plt.ylabel('$\lambda$ ($E_h$)', color='mediumblue')
         plt.legend(frameon=False, loc='upper right')
