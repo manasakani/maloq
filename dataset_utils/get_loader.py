@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-from fock_utils import utils_orca_out, fock_targets
+from fock_utils import utils_orca_out, fock_targets, matrix2labels_kernels
 from dataset_utils.ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
 from ase import Atoms
 from ase.neighborlist import NeighborList
@@ -108,10 +108,14 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
 
     basis_transform = graph_targets.basis_transformation
 
+    equivariant_blocks = graph_targets.equivariant_blocks
+    orbital_starts = graph_targets.orbital_starts
+    orbital_template = matrix2labels_kernels.get_orbital_template(equivariant_blocks, orbital_starts)
+
     dataset = sampleDataset(datalist)
     data_loader = DataLoader(dataset, batch_size=batch_size)
 
-    return data_loader, required_irreps, basis_transform, orbital_basis, ls_list
+    return data_loader, required_irreps, basis_transform, orbital_basis, ls_list, orbital_template
 
 def get_datalist(dataset, start_idx, end_idx, dataset_name, rcut, element_references, dtype=torch.float32, half_edges=True, make_fock_targets=True, scale_shift_data=None):
     """
@@ -140,8 +144,9 @@ def get_datalist(dataset, start_idx, end_idx, dataset_name, rcut, element_refere
 
         # if any of the atomic_numbers are not in element_references, skip this molecule
         if any(z not in existing_elements for z in atomic_numbers):
-            missing_atomic_numbers = [z for z in atomic_numbers if z not in existing_elements]
-            print(f"Skipping molecule with missing atomic numbers: {missing_atomic_numbers}")
+            # missing_atomic_numbers = [z for z in atomic_numbers if z not in existing_elements]
+            # print(f"Skipping molecule with missing atomic numbers: {missing_atomic_numbers}")
+            print(f"Skipping molecule with missing atomic numbers")
             continue
 
         # 2. Set up the Graph
@@ -163,8 +168,6 @@ def get_datalist(dataset, start_idx, end_idx, dataset_name, rcut, element_refere
         data = gnnData(
                         pos=torch.tensor(positions, dtype=dtype),
                         edge_index=torch.tensor(neighbour_list),
-                        # edge_mask=torch.tensor(forward_edge_mask),
-                        # reverse_edge_map=torch.tensor(reverse_edge_map),
                         edge_attr=edge_dist,
                         atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long).cpu(),
                         energies=torch.tensor(energy, dtype=dtype),
