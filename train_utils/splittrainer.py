@@ -38,7 +38,7 @@ class SplitTrainer():
         self.head = head              # takes internal embeddings, outputs fixed irrep size
         self.head_irreps = head_irreps
         self.save_frequency = save_frequency
-        self.open_shell = self.head.open_shell
+        self.open_shell = False
 
         if not run_id:
             run_id = str(get_timestamp_uid)
@@ -76,6 +76,7 @@ class SplitTrainer():
             min_lr=1e-10):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}", flush=True)
+        self.open_shell = self.head.open_shell
         # torch.autograd.set_detect_anomaly(True)
 
         # Torch compile:

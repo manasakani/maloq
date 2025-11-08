@@ -47,6 +47,22 @@ def extract_total_energy_manual(file_path):
         print(f"Error extracting total energy manually: {e}")
         return None
 
+def get_finalms(file_path):
+    """
+    Extracts the value of 'finalms' from an ORCA input file.
+    Returns a float if found, otherwise None.
+    """
+    try:
+        with open(file_path, 'r') as f:
+            for line in f:
+                match = re.search(r'finalms\s+([-\d.]+)', line, re.IGNORECASE)
+                if match:
+                    return float(match.group(1))
+        return None
+    except Exception as e:
+        print(f"Error extracting finalms: {e}")
+        return None
+
 # from https://github.com/facebookexternal/ocp-modeling-dev/blob/master/foundation_models/data/omol/process/orca_parsing.py#L295
 def parse_output(
     orca_output_path: Path,
@@ -125,6 +141,9 @@ def parse_output(
         else:
             spins["nbo"] = None
         desired_data["spins"] = spins
+        desired_data["finalms"] = get_finalms(orca_output_path)
+    else:
+        desired_data["finalms"] = 0.0
     desired_data["n_scf_steps"] = len(orca_props.scfvalues[0]) - 1
 
     if (core_hours := orca_props.metadata.get("cpu_time")) is not None:

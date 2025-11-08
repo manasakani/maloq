@@ -19,6 +19,8 @@ class Fock_Targets:
 
     def __init__(self, atoms, cutoff, orbital_basis,
                 fock_matrix=None,
+                charge=0,
+                spin_multiplicity=1,
                 dtype=torch.float32,
                 half_edges=False,
                 compute_fock_eigenvalues=False,
@@ -44,6 +46,8 @@ class Fock_Targets:
         self.orbital_basis = orbital_basis
         self.dtype = dtype
         self.half_edges = half_edges
+        self.spin_multiplicity = spin_multiplicity
+        self.charge = charge
 
         # --> Atoms and connectivity list:
         num_atoms = len(atoms)
@@ -137,7 +141,6 @@ class Fock_Targets:
         Creates padded node/edge labels from the fock matrix
         """
 
-        # time_label_start = time.perf_counter()
         open_shell = True if len(self.fock_matrix) == 2 else False
 
         # each target should fit in a NxN matrix (to be flattened)
@@ -151,15 +154,16 @@ class Fock_Targets:
         target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
         fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(self.orbitals_per_atom)])
 
-        # initialize tensors of size N for nodes and (forward) edges
+        # initialize tensors for node and edge labels for training
         num_spins = 2 if open_shell else 1
         self.node_labels = torch.empty((num_spins, num_atoms, self.target_len), device=self.device)
         self.edge_labels = torch.empty((num_spins, num_edges, self.target_len), device=self.device)
 
         for spin in range(num_spins):
 
-            labels = np.zeros((num_edges + num_atoms, self.target_len))
+            labels = torch.empty((num_edges + num_atoms, self.target_len), device=self.device)
             matrix = self.fock_matrix[spin] if open_shell else self.fock_matrix
+            matrix = torch.from_numpy(matrix).to(self.device)
 
             # Populate the matrix elements into the correct positions in the labels
             matrix2labels_kernels.numpy_single_matrix2label(
@@ -173,7 +177,6 @@ class Fock_Targets:
                                                                 forward=True
                                                             )
             # Basis transformation:
-            labels = torch.from_numpy(labels).to(self.device)
             labels = self.basis_transformation.get_net_out(labels)
 
             # ---------------------------------------------

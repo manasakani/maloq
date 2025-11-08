@@ -581,21 +581,21 @@ def numpy_single_matrix2label(
 
     # iterates over atom pairs (i, j) within this molecule
     for idx in range(len(fock_block_rows)):
-        i = fock_block_rows[idx]
-        j = fock_block_cols[idx]
+        i = fock_block_rows[idx].item()
+        j = fock_block_cols[idx].item()
 
         # extract this atom pair subblock from the fock matrix:
         row_slice = slice(
-            fock_block_offsets[i], fock_block_offsets[i + 1]
+            fock_block_offsets[i].item(), fock_block_offsets[i + 1].item()
         )
         col_slice = slice(
-            fock_block_offsets[j], fock_block_offsets[j + 1]
+            fock_block_offsets[j].item(), fock_block_offsets[j + 1].item()
         )
         interaction_block = fock_matrix[row_slice, col_slice]
 
         # Get the template of all orbital interactions for this atom pair
-        atomic_element_i = idx_to_atomic_number[i]
-        atomic_element_j = idx_to_atomic_number[j]
+        atomic_element_i = idx_to_atomic_number[i].item()
+        atomic_element_j = idx_to_atomic_number[j].item()
 
         element_interaction_key = atomic_element_j + max_elements * atomic_element_i
 
@@ -699,7 +699,6 @@ def get_orbital_template(equivariant_blocks, orbital_starts):
                 flat_blocks_dict[condition_numbers] = []
 
             slice_out = slice(orbital_starts[index_target], orbital_starts[index_target + 1])
-
             slice_row = slice(block_slice[0], block_slice[1])
             slice_col = slice(block_slice[2], block_slice[3])
             flat_blocks_dict[condition_numbers].append((slice_row, slice_col, slice_out))
@@ -716,7 +715,6 @@ def get_orbital_template(equivariant_blocks, orbital_starts):
                 flat_blocks_dict[condition_numbers] = []
 
             slice_out = slice(orbital_starts[index_target], orbital_starts[index_target + 1])
-
             slice_row = slice(block_slice[0], block_slice[1])
             slice_col = slice(block_slice[2], block_slice[3])
 

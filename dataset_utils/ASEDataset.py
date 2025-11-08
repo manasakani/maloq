@@ -63,6 +63,8 @@ class ASEDataset(Dataset):
         atoms = structure.toatoms()
         positions = atoms.positions
         atomic_numbers = atoms.numbers
+        charge = structure.data['charge']
+        spin_multiplicity = structure.data['spin_multiplicity']
 
         # Convert numpy arrays from structure.data to PyTorch tensors
         neighbour_list = structure.data['edge_index']
@@ -88,6 +90,8 @@ class ASEDataset(Dataset):
         if node_labels.ndim == 2:
             node_labels = node_labels.unsqueeze(0)
             edge_labels = edge_labels.unsqueeze(0)
+            charge = 0
+            spin = 1
 
         # metadata:
         folder_name = structure.data['folder_name']
@@ -107,6 +111,8 @@ class ASEDataset(Dataset):
             natoms=len(atomic_numbers),
             energies=energies,
             num_atoms_in_molecule=len(atomic_numbers),
+            charge=charge,
+            spin_multiplicity=spin_multiplicity,
             folder_name=folder_name,
         )
 
