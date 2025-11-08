@@ -26,8 +26,7 @@ class Fock_Targets:
                 orbital_starts=None,
                 orbital_template=None,
                 basis_transformation=None,
-                req_output_irreps=None,
-                open_shell=False):
+                req_output_irreps=None):
         """
         atoms - ASE atoms object of the atomic structure
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]]
@@ -128,17 +127,18 @@ class Fock_Targets:
             self.target_len = None
 
             # Decompose the Fock matrix into orbital blocks and insert them into the targets
-            self.make_targets(open_shell)
+            self.make_targets()
 
             if self.scale_shift_data is not None:
                 self.node_labels = self.scale_shift_node_blocks(self.node_labels)  # scale and shift the node labels (l=0 irreps) in the targets
 
-    def make_targets(self, open_shell):
+    def make_targets(self):
         """
         Creates padded node/edge labels from the fock matrix
         """
 
         # time_label_start = time.perf_counter()
+        open_shell = True if len(self.fock_matrix) == 2 else False
 
         # each target should fit in a NxN matrix (to be flattened)
         self.target_len = self.get_target_len()

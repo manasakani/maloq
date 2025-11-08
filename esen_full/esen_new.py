@@ -454,6 +454,7 @@ class Fock_Irreps_Head(nn.Module):
                 head_type='gated',
                 half_edges=False,
                 ls_list=None,
+                open_shell=False,
                 reduce_node=False,
                 reduce_node_intra=False,
                 orbital_basis=None):
@@ -463,6 +464,7 @@ class Fock_Irreps_Head(nn.Module):
         self.head_type = head_type
         self.sphere_channels = sphere_channels
         self.lmax = lmax
+        self.open_shell = open_shell
         self.reduce_node = reduce_node                      # take advantage of 'inter'-orbital interaction symmetry within node blocks
         self.reduce_node_intra = reduce_node_intra          # take advantage of 'intra'-orbital interaction symmetry within node blocks
         self.irreps_out = irreps_out
@@ -524,7 +526,7 @@ class Fock_Irreps_Head(nn.Module):
             input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
             combined_output_scalars = Irreps(f"{irreps_scalars.num_irreps + irreps_gated.num_irreps}x0e")
             self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars, biases=True) # just a linear layer
-            self.act_input_scalars = torch.nn.SiLU() # torch.nn.Sigmoid() # torch.nn.Tanh() # torch.nn.ReLU() # torch.nn.SiLU() # torch.nn.GELU()
+            self.act_input_scalars = torch.nn.SiLU()
             # this returns the irreps_gates
 
             # 2. Apply the gating to the other ls (need to pass in a stack of [l=0, l~=0])

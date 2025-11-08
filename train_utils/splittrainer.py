@@ -38,6 +38,7 @@ class SplitTrainer():
         self.head = head              # takes internal embeddings, outputs fixed irrep size
         self.head_irreps = head_irreps
         self.save_frequency = save_frequency
+        self.open_shell = self.head.open_shell
 
         if not run_id:
             run_id = str(get_timestamp_uid)
@@ -749,10 +750,8 @@ class SplitTrainer():
     def compute_fock_loss(self, node_output, edge_output, this_node_target, this_edge_target, loss_fxn, head_irreps, basis_transform, compute_uncoupled_loss):
         """Computes the Fock loss for the given outputs and targets."""
 
-        open_shell = False
-
         # if closed shell, remove the spin dimension [spin, num_atoms/edges, target_size]
-        if not open_shell:
+        if not self.open_shell:
             this_node_target = this_node_target[0]
             this_edge_target = this_edge_target[0]
 

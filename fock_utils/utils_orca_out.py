@@ -30,7 +30,7 @@ def extract_total_energy_manual(file_path):
     try:
         with open(file_path, 'r') as f:
             lines = f.readlines()
-        
+
         for i, line in enumerate(lines):
             if "TOTAL SCF ENERGY" in line:
                 # Look for the "Total Energy" line in the next few lines
@@ -96,12 +96,16 @@ def parse_output(
             print(f"Manually extracted total energy: {total_energy} Eh")
         else:
             print(f"Warning: Could not extract total energy for file at {orca_output_path}")
-    
+
     desired_data["total_energy [Eh]"] = total_energy
     desired_data["gradient [Eh/bohr]"] = orca_props.grads[0]
     desired_data["s_squared"] = getattr(orca_props, "s_squared", 0.0)
     desired_data["s_squared_dev"] = getattr(orca_props, "s_squared_dev", 0.0)
-    desired_data["unrestricted"] = hasattr(orca_props, "s_squared")
+
+    # Check for open-shell calculations
+    is_open_shell = orca_props.mult > 1
+    is_unrestricted = hasattr(orca_props, "s_squared")
+    desired_data["unrestricted"] = is_unrestricted or is_open_shell
 
     charges = {}
     charges["mulliken"] = orca_props.atomcharges.get("mulliken")
@@ -161,23 +165,28 @@ def get_fock_size(elements, basis):
     """
     Compute size of fock matrix, given the elements in the structure and their orbital basis
     """
-    
+
     N = 0
     for element in elements:
         N += np.sum([2*l+1 for l in basis[element]])                        # 2*l+1 gets the size of a spherical tensor with degree l
 
     return N
 
-def read_orca_out(orca_file):
+def read_orca_out(orca_file, unrestricted=False):
     """
     Get structure information (elements, coordinates, basis) and fock matrix from orca output file
+    If unrestricted=True, returns {'alpha': ..., 'beta': ...} for the Fock matrices.
     """
     elements = []
     coordinates = []
     basis = {}                                                              # basis in the form {atomic_number : [degrees]}
     N = 0                                                                   # size of Fock matrix
     ls = {'s': 0, 'p': 1, 'd': 2, 'f': 3, 'g': 4}                           # l conversion from string to degree #
-    
+
+    fock_matrices = []
+    fock_matrix = None
+    found_fock = 0
+
     orca_out = open(orca_file).readlines()
     for idx, line in enumerate(orca_out):
 
@@ -198,10 +207,10 @@ def read_orca_out(orca_file):
 
                     for i, orb in enumerate(basis_string[1::2]):
                         basis[element].extend([ls[orb]]*int(basis_string[2*i]))
-                
+
                 if 'AUXILIARY/J BASIS SET INFORMATION' in line:
                     break
-        
+
             assert(basis)
             N = get_fock_size(elements, basis)
 
@@ -212,56 +221,103 @@ def read_orca_out(orca_file):
             fock_matrix = np.zeros((N, N))
 
             # get column size:
-            cols = [int(x) for x in orca_out[idx+2:][0].split()]    
-            cols_per_line = len(cols) 
+            cols = [int(x) for x in orca_out[idx+2:][0].split()]
+            cols_per_line = len(cols)
 
+            line_idx = idx + 3
             for line in orca_out[idx+3:]:
                 if len(line.split()) == 0:
                     break
 
                 # new columns in file:
                 if len(line.split()) != cols_per_line + 1:
-                    cols = [int(x) for x in line.split()]   
-                    cols_per_line = len(cols) 
+                    cols = [int(x) for x in line.split()]
+                    cols_per_line = len(cols)
 
                 # matrix entries:
                 else:
                     row = int(line.split()[0])
                     vals = [float(x) for x in line.split()[1:]]
-                    fock_matrix[row, cols] = vals              
+                    fock_matrix[row, cols] = vals
 
-    return fock_matrix, elements, coordinates, basis
+                line_idx += 1
+
+            fock_matrices.append(fock_matrix)
+
+            # If unrestricted, parse the second Fock matrix (beta)
+            if unrestricted:
+
+                # Skip empty lines after first matrix
+                while line_idx < len(orca_out) and len(orca_out[line_idx].split()) == 0:
+                    line_idx += 1
+
+                # The next non-empty line should be column headers for second matrix
+                if line_idx < len(orca_out):
+                    fock_matrix_beta = np.zeros((N, N))
+
+                    # get column size for beta matrix:
+                    cols = [int(x) for x in orca_out[line_idx].split()]
+                    cols_per_line = len(cols)
+
+                    line_idx += 1
+                    for line in orca_out[line_idx:]:
+                        if len(line.split()) == 0:
+                            break
+
+                        # new columns in file:
+                        if len(line.split()) != cols_per_line + 1:
+                            cols = [int(x) for x in line.split()]
+                            cols_per_line = len(cols)
+
+                        # matrix entries:
+                        else:
+                            row = int(line.split()[0])
+                            vals = [float(x) for x in line.split()[1:]]
+                            fock_matrix_beta[row, cols] = vals
+
+                    fock_matrices.append(fock_matrix_beta)
+
+            break  # Found and parsed all needed matrices
+
+    if unrestricted:
+        if len(fock_matrices) != 2:
+            raise ValueError(f"Expected 2 Fock matrices for unrestricted calculation, but found {len(fock_matrices)}")
+        return {'alpha': fock_matrices[0], 'beta': fock_matrices[1]}, elements, coordinates, basis
+    else:
+        if len(fock_matrices) == 0:
+            raise ValueError("No Fock matrix found in ORCA output file")
+        return fock_matrices[0], elements, coordinates, basis
 
 def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3nn"):
     """
-    Converts hamiltonian matrix m-components from ORCA order to the one 
+    Converts hamiltonian matrix m-components from ORCA order to the one
     expected by e3nn (m=0 is in the middle)
-    
+
     l = 0: m = [0] -> [0]
     l = 1: m = [0 +1 -1] -> [-1 0 1]
     ...
     """
 
     num_cols = hamiltonian.shape[0]
-    
+
     m_to_m_conversion = []
     if direction == "orca_to_e3nn" or direction == "e3nn_to_orca": # this one works
-        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
-        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
-        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
-        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}) 
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]})
     if direction == "e3nn_to_pyscf" or direction == "pyscf_to_e3nn":
-        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
-        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
-        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
         m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
-        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}) 
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
+        m_to_m_conversion.append({0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]})
 
-    reflection = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [-1, 1, 1, 1, 1, 1, -1], 4: [-1, -1, 1, 1, 1, 1, 1, -1, -1]} # reflection for each l 
-    
+    reflection = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [-1, 1, 1, 1, 1, 1, -1], 4: [-1, -1, 1, 1, 1, 1, 1, -1, -1]} # reflection for each l
+
     permutation = np.arange(0, num_cols)
     full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
     permuted_hamiltonian = hamiltonian.copy()
@@ -283,12 +339,12 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3n
 
         this_m_to_m_conversion = m_to_m_conversion[principle_quantum_number]
         orbital_perm = this_m_to_m_conversion[l]
-        refl = reflection[l]   
-        
+        refl = reflection[l]
+
         P = np.zeros((numel, numel))
         for i, j in enumerate(orbital_perm):
             P[i, j] = 1
-        
+
         R = np.diag(refl)
 
         if direction == "orca_to_e3nn" or direction == "e3nn_to_pyscf":
@@ -348,36 +404,6 @@ def sort_by_l(hamiltonian, orbital_basis, atomic_numbers):
     permuted_hamiltonian = permuted_hamiltonian[:, permutation]
     return permuted_hamiltonian
 
-
-# def sort_by_m(hamiltonian, orbital_basis, atomic_numbers):
-#     """
-#     Converts hamiltonian matrix m-components from ORCA order to the one 
-#     expected by e3nn (m=0 is in the middle)
-    
-#     l = 0: m = [0] -> [0]
-#     l = 1: m = [0 +1 -1] -> [-1 0 1]
-#     ...
-#     """
-
-#     num_cols = hamiltonian.shape[0]
-#     m_to_m_conversion = {0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5]} #, 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}   # Original DZVP
-    
-#     permutation = np.arange(0, num_cols)
-
-#     full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
-
-#     # Create permutation list, one block at a time
-#     block_start = 0
-#     for l in full_orb_list:
-#         numel = 2*l + 1
-#         block_end = block_start + numel
-#         orbital_perm = m_to_m_conversion[l]
-#         permutation[block_start:block_end] = [x+block_start for x in orbital_perm]
-#         block_start += numel
-
-#     permuted_hamiltonian = hamiltonian[permutation, :]
-#     permuted_hamiltonian = permuted_hamiltonian[:, permutation]
-#     return permuted_hamiltonian
 
 def delete_rows_and_columns(matrix, indices):
     """
