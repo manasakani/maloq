@@ -19,7 +19,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
 
     # Fock matrix analysis parameters:
     orbital_starts = None
-    basis_transformation = None
+    out_js_list = None
     orbital_template = None
 
     datalist = []
@@ -54,10 +54,10 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, half_edges=half_edges,
                                                       scale_shift_data=scale_shift_data,
                                                       orbital_starts=orbital_starts,
-                                                      basis_transformation=basis_transformation,
+                                                      out_js_list=out_js_list,
                                                       orbital_template=orbital_template)
             orbital_starts = graph_targets.orbital_starts
-            basis_transformation = graph_targets.basis_transformation
+            out_js_list = graph_targets.out_js_list
             orbital_template = graph_targets.orbital_template
 
         else:

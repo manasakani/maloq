@@ -27,8 +27,8 @@ class Fock_Targets:
                 scale_shift_data=None,
                 orbital_starts=None,
                 orbital_template=None,
-                basis_transformation=None,
-                req_output_irreps=None):
+                req_output_irreps=None,
+                out_js_list=None):
         """
         atoms - ASE atoms object of the atomic structure
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]]
@@ -82,20 +82,22 @@ class Fock_Targets:
                 self.reverse_edge_map[ind] = edge_dict.get((j.item(), i.item()), None)
 
         # --> Analyze structure of orbital interactions
-        if orbital_template is None or basis_transformation is None or req_output_irreps is None:
-            targets, self.req_output_irreps, self.simplified_out_irreps, ls_list, out_js_list, self.orbital_starts, full_orb_interaction_list = utils_tensor_decomp.make_output_irreps(self.orbital_basis)
-            self.equivariant_blocks = utils_tensor_decomp.process_targets(self.orbital_basis, targets, ls_list, out_js_list, full_orb_interaction_list)
-            self.orbital_template = matrix2labels_kernels.get_orbital_template(self.equivariant_blocks, self.orbital_starts)
-            self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
-                                                                out_js_list,
-                                                                default_dtype_torch=dtype,
-                                                                if_sort=False,
-                                                                device_torch=self.device)
+        if orbital_template is None or out_js_list is None or req_output_irreps is None:
+            targets, self.req_output_irreps, simplified_out_irreps, ls_list, self.out_js_list, self.orbital_starts, full_orb_interaction_list = utils_tensor_decomp.make_output_irreps(self.orbital_basis)
+            equivariant_blocks = utils_tensor_decomp.process_targets(self.orbital_basis, targets, ls_list, self.out_js_list, full_orb_interaction_list)
+            self.orbital_template = matrix2labels_kernels.get_orbital_template(equivariant_blocks, self.orbital_starts)
         else:
             self.orbital_template = orbital_template
             self.orbital_starts = orbital_starts
-            self.basis_transformation = basis_transformation
+            self.out_js_list = out_js_list
             self.req_output_irreps = req_output_irreps
+
+        # --> Create coupled/uncoupled basis transformation
+        self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
+                                                                       self.out_js_list,
+                                                                       default_dtype_torch=dtype,
+                                                                       if_sort=False,
+                                                                       device_torch=self.device)
 
         # ls list will define the max basis needed (eg, for OMOL: tensor([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 0, 1, 2])
         ls_list = []
@@ -108,7 +110,12 @@ class Fock_Targets:
         for atom, orbitals in self.orbital_basis.items():
             self.orbital_basis[atom] = [orb % 10 for orb in orbitals]
 
-        self.ls_list = torch.cat(ls_list) % 10       # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2]
+        for atom, orbitals in orbital_basis.items():
+            orbital_basis[atom] = [orb % 10 for orb in orbitals]
+
+        # self.ls_list = torch.cat(ls_list) % 10       # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2]
+        self.ls_list = torch.cat(ls_list)        # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2].
+        self.ls_list = self.ls_list % 10         # for OMOL: tensor([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 0, 1, 2]
 
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         # print(f'Simplified irreps: {self.simplified_out_irreps}')
