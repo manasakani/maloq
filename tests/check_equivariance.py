@@ -5,30 +5,26 @@ import numpy as np
 from ase import Atoms
 from ase.neighborlist import NeighborList
 
-
-from fock_utils import utils_orca_out, fock_targets
-from train_utils import loss, utils_compute, splittrainer
-from dataset_utils import get_loader
-# from dataset_utils.ASEDataset import ASEAtomsData
-# from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
-
 from copy import deepcopy
 import matplotlib.pyplot as plt
 
 import torch
 import torch.distributed as dist
 
-from ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
+from fock_utils import utils_orca_out, fock_targets
+from train_utils import loss, utils_compute, splittrainer
+# from dataset_utils import get_loader
+# from dataset_utils.ASEDataset import ASEAtomsData
+# from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
+
+from dataset_utils.ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
 import random
 
-from equiformer.network import SO2Net
-from equiformer.SO3 import CoefficientMappingModule
-
-from esen.esen import eSEN_Backbone
+from esen.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Convolution_Force_Head, Gated_Force_Head     # NO EDGES: .esen_noedges
 from e3nn.o3 import Irreps, rand_matrix
-import utils_training
+from train_utils import loss, utils_compute, splittrainer
 import_end = time.perf_counter()
 print("Time to do imports: ", import_end - import_start)
 
@@ -45,25 +41,40 @@ sys.path.append('/home/manasakani/fairchem/src/')
 
 # Settings (just dumping everything here for now)
 # -----------------------------------------------
-dbpath = 'fock_datasets/schnorb_hamiltonian_water.db'
+dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_water.db'
 database = ASEAtomsData(dbpath)
 print("Targets available: ", database.available_properties)
 
-# -> Model settings:
+# --> Model settings:
 l_embedding_dim = 128                   # sphere channels
 num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
-hidden_dim = 128
-cutoff = 6.0*2                          # Cutoff used for edge distance embedding
-num_mp_layers = 1
-model_name = 'esen'
-restart = True
-output_folder = 'outputs_QM7'
-loss_fxn = utils_training.mse_padded_loss
+hidden_dim = l_embedding_dim
+num_mp_layers = 2
+restart_backbone = False
+restart_head = False
+restart_optimizer = False
+loss_target = 'fock_matrix'
+
+output_folder = 'outputs_QM7_water'
+head_type = 'gated'                   # 'linear' or 'gated'
+
+loss_fxn = loss.combined_padded_loss
 
 # -> Training settings:
-num_val = 1                           # Number of validation structures
-num_train = 1
+num_val = 1                            # Number of validation structures
+num_train = 1 
+num_epochs = 200000
+batch_size = 1                         # 1 for eval, 10 for train
+rcut_orbitals = 6.0                    # connectivity cutoff (=2xrcut)
+rcut_gaussian = 5.0                    # connectivity cutoff (=2xrcut)
+gaussian_width = 1.0                   # width of gaussians used to expand edge distance
 dtype = torch.float32
+include_edges = True
+
+# Additional symmetries:
+reduce_edge = False                      # use only edge orbital blocks for edge i,j where i<j (other edges are reflected)
+reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
 
 # --> Compute env
 device = torch.device('cuda')         
@@ -101,24 +112,34 @@ for i in range(num_molecules):      # deterministic
     hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)  
 
     time_start = time.perf_counter()
-    graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian)
+    graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, reflection_symmetry=reduce_edge)
     time_end = time.perf_counter()
     print("time to make targets: ", time_end - time_start)
 
+    # collect only a subset of the edges (use reflection symmetry in the network)
+    forward_edge_mask = graph_targets.forward_edge_mask
+    reverse_edge_map = graph_targets.reverse_edge_map
+        
+    # Make the data object
     data = gnnData(
-                    pos=torch.tensor(graph_targets.atoms.positions, dtype=torch.float),
-                    x=torch.tensor(graph_targets.atomic_numbers, dtype=torch.long), 
-                    edge_index=torch.tensor(graph_targets.neighbour_list).to(device),
-                    edge_attr=graph_targets.edge_dist.to(device),
+                    pos=torch.tensor(graph_targets.atoms.positions, dtype=dtype),
+                    edge_index=torch.tensor(graph_targets.neighbour_list), 
+                    edge_mask=torch.tensor(forward_edge_mask),
+                    reverse_edge_map=torch.tensor(reverse_edge_map),
+                    edge_attr=graph_targets.edge_dist, 
                     y=graph_targets.edge_labels,
                     node_y=graph_targets.node_labels,
                     atomic_numbers=torch.tensor(graph_targets.atomic_numbers, dtype=torch.long).cpu(),  
                     energies=torch.tensor(energy, dtype=dtype),
-                    forces=torch.tensor(forces, dtype=dtype),
+                    forces=torch.tensor(forces, dtype=dtype),                                      # Hartree/Angstrom
+                    num_atoms_in_molecule=len(graph_targets.atomic_numbers),
+                    fock_target_object=graph_targets,
                 )
     datalist.append(data)
 
+orbital_basis = {k: torch.tensor(v) for k, v in graph_targets.orbital_basis.items()}
 required_irreps = graph_targets.req_output_irreps
+output_irreps = required_irreps
 print("required irreps: ", required_irreps)
 
 train_size = len(datalist) - num_val
@@ -132,60 +153,80 @@ val_loader = DataLoader(val_dataset, batch_size=1, collate_fn=custom_collate_fn,
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
 
-# Prepare model
+
+# Get model
 # --------------------------------------------
-model_setup_start = time.perf_counter()
-if model_name == 'equiformer':
-    irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
-    mappingReduced = CoefficientMappingModule(required_irreps.lmax, required_irreps.lmax)
-    edge_channels_list = [l_embedding_dim, l_embedding_dim, l_embedding_dim]
+irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
 
-    attn_hidden_channels = 128 
-    attn_alpha_channels = 32
-    attn_value_channels = 32 
-    ffn_hidden_channels = 64 
-    num_heads=2
+backbone = eSEN_Backbone(
+                required_irreps,
+                sphere_channels=l_embedding_dim,
+                hidden_channels=hidden_dim,
+                lmax=required_irreps.lmax,
+                mmax=required_irreps.lmax,
+                use_pbc=False,
+                cutoff=rcut_gaussian,
+                edge_channels=l_embedding_dim,
+                num_layers=num_mp_layers,
+                act_type='gate',
+                mlp_type = 'spectral',
+                num_distance_basis=num_distance_basis,
+                gaussian_width=gaussian_width,
+                include_edges=include_edges
+            )
 
-    model = SO2Net(num_mp_layers, 
-                    required_irreps.lmax, 
-                    required_irreps.lmax, 
-                    mappingReduced, 
-                    l_embedding_dim, 
-                    edge_channels_list, 
-                    attn_hidden_channels, 
-                    num_heads, 
-                    attn_alpha_channels, 
-                    attn_value_channels, 
-                    ffn_hidden_channels, 
-                    irreps_in, 
-                    required_irreps)
-elif model_name == 'esen':
-    model = eSEN_Backbone(
-                    required_irreps,
-                    sphere_channels=l_embedding_dim,
-                    hidden_channels=hidden_dim,
-                    lmax=required_irreps.lmax,
-                    mmax=required_irreps.lmax,
-                    use_pbc=False,
-                    cutoff=cutoff,
-                    edge_channels=l_embedding_dim,
-                    num_layers=num_mp_layers,
-                    act_type='gate',
-                    mlp_type = 'spectral',
-                    num_distance_basis=num_distance_basis
-                )
+if loss_target == "fock_matrix":
+    head = Fock_Irreps_Head(irreps_in=irreps_in, 
+                            irreps_out=output_irreps, 
+                            lmax=required_irreps.lmax, 
+                            sphere_channels=l_embedding_dim,
+                            head_type=head_type,
+                            reduce_node=reduce_node,
+                            reduce_node_intra=reduce_node_intra,
+                            orbital_basis=orbital_basis)
 
-model = model.to(device)
-print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
-model_setup_end = time.perf_counter()
-print("Time to setup model: ", model_setup_end - model_setup_start)
+elif loss_target == "forces":
+    # head = Linear_Force_Head(backbone)
+    head = Convolution_Force_Head(backbone)
 
-if restart:
-    print("Restarting model from ", output_folder)
-    restart_file = output_folder + "/model.pt.pt"
+elif loss_target == "energy":
+    print("To be implemented!")
+
+
+backbone = backbone.to(device)
+head = head.to(device)
+
+# print("Number of parameters: ", sum(p.numel() for p in model.parameters()))
+
+if restart_backbone:
+    restart_file = output_folder + '/' + backbone_checkpoint
+    print("Restarting backbone model from :", restart_file)
     checkpoint = torch.load(restart_file)
     state_dict = checkpoint['model_state_dict']
-    model.load_state_dict(state_dict)
+    
+    # Get rid of module prefix if saved with DDP
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        new_key = key.replace('module.', '')  
+        new_state_dict[new_key] = value
+    backbone.load_state_dict(new_state_dict)
+
+if restart_head:
+    restart_file = output_folder + '/' + head_checkpoint
+    print("Restarting output head model from :", restart_file)
+    checkpoint = torch.load(restart_file)
+    state_dict = checkpoint['model_state_dict']
+
+    if restart_optimizer:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    # Get rid of module prefix if saved with DDP
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        new_key = key.replace('module.', '')  
+        new_state_dict[new_key] = value
+    head.load_state_dict(new_state_dict)
+    
 
 # Rotation matrices:
 cartesian_rot_mat = rand_matrix(dtype=dtype)
@@ -195,7 +236,8 @@ cartesian_rot_mat = cartesian_rot_mat.to(device)
 # Check equivariance of the network itself:
 # -----------------------------------------
 for batch in train_loader:
-    model.eval()
+    backbone.eval()
+    head.eval()
 
     batch = batch.to(device)
     rotated_input = batch
@@ -212,16 +254,14 @@ for batch in train_loader:
     rotated_input.edge_attr[:, 1:4] = rotated_input_edge_vec
     print("final rotated_input.edge_attr: ", rotated_input.edge_attr)
 
-    # with torch.no_grad():
-    rotated_input = model(rotated_input) 
-    rotated_input_nodes = rotated_input["node_rankN"]
-    rotated_input_edges = rotated_input["edge_rankN"]
+    rotated_input = backbone(rotated_input) 
+    rotated_input_nodes, rotated_input_edges = head(rotated_input, batch)
     
     # --> 2. Rotated the output of the "rotated output" batch - WD(f(x)):
-    # with torch.no_grad():
-    rotated_output = model(rotated_output) 
-    rotated_output_nodes = (spherical_rot_mat @ rotated_output["node_rankN"].T).T
-    rotated_output_edges = (spherical_rot_mat @ rotated_output["edge_rankN"].T).T
+    rotated_output = backbone(rotated_output)
+    rotated_output_nodes, rotated_output_edges = head(rotated_output, batch)
+    rotated_output_nodes = (spherical_rot_mat @ rotated_output_nodes.T).T
+    rotated_output_edges = (spherical_rot_mat @ rotated_output_edges.T).T
 
     print("rotated input node 0: ", rotated_input_nodes[0][0:6])
     print("rotated output node 0: ", rotated_output_nodes[0][0:6])
@@ -231,10 +271,10 @@ for batch in train_loader:
 
     for n in range(len(rotated_output_nodes)):
         print("Checking node " + str(n) + "...")
-        if not torch.allclose(rotated_input_nodes[n], rotated_output_nodes[n]):
+        if not torch.allclose(rotated_input_nodes[n], rotated_output_nodes[n], atol=1e-4):
             print(f"Error: Node {n} input and output are not allclose")
         plt.imshow(rotated_input_nodes[n].detach().cpu().numpy().reshape(14, 14) 
-                - rotated_output_nodes[n].detach().cpu().numpy().reshape(14, 14), vmin=0, vmax=1e-6)
+                - rotated_output_nodes[n].detach().cpu().numpy().reshape(14, 14), vmin=0, vmax=1e-5)
         plt.colorbar()
         plt.savefig("equivariance_test_results/numerical_equivariance_err_node" + str(n) + ".png", dpi=300, bbox_inches='tight')
         plt.close()
@@ -244,7 +284,7 @@ for batch in train_loader:
         if not torch.allclose(rotated_input_edges[e], rotated_output_edges[e]):
             print(f"Error: Edge {e} input and output are not allclose")
         plt.imshow(rotated_input_edges[e].detach().cpu().numpy().reshape(14, 14) 
-                - rotated_output_edges[e].detach().cpu().numpy().reshape(14, 14), vmin=0, vmax=1e-6)
+                - rotated_output_edges[e].detach().cpu().numpy().reshape(14, 14), vmin=0, vmax=1e-5)
         plt.colorbar()
         plt.savefig("equivariance_test_results/numerical_equivariance_err_edge" + str(e) + ".png", dpi=300, bbox_inches='tight')
         plt.close()
@@ -254,7 +294,8 @@ for batch in train_loader:
 # Check equivariance of the data pipeline
 # -----------------------------------------
 for batch in val_loader:
-    model.eval()
+    backbone.eval()
+    head.eval()
 
     batch = batch.to(device)
     unrotated_input = batch
@@ -269,14 +310,10 @@ for batch in val_loader:
     rotated_input_edge_vec = rotated_input_edge_vec[:, [2, 0, 1]]                   # yzx -> xyz because the network will do -> xyz   
     rotated_input.edge_attr[:, 1:4] = rotated_input_edge_vec
 
-    # with torch.no_grad():
-    unrotated_mol = model(unrotated_input) 
-    rotated_mol = model(rotated_input) 
-
-    unrotated_node_output = unrotated_mol["node_rankN"]
-    unrotated_edge_output = unrotated_mol["edge_rankN"]
-    rotated_node_output = rotated_mol["node_rankN"]
-    rotated_edge_output = rotated_mol["edge_rankN"]
+    unrotated_mol = backbone(unrotated_input)
+    rotated_mol = backbone(rotated_input)
+    unrotated_node_output, unrotated_edge_output = head(unrotated_mol, batch)
+    rotated_node_output, rotated_edge_output = head(rotated_mol, batch)
     
     # --> 2. Rotate the corresponding Fock matrix blocks:
     unrotated_node_labels = batch.node_y

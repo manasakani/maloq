@@ -380,13 +380,14 @@ class SplitTrainer():
                 orbital_template=None):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
-        print("Running eval.")
+
         self.backbone.eval()
         self.head.eval()
 
         dump_plots = False
         dump_embeddings = False
-        compute_eigenvalues = False
+        compute_eigenvalues = True
+        save_density = True
 
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank()
@@ -405,31 +406,30 @@ class SplitTrainer():
         track_loss = []
 
         # -- Evaluate everything in the train_loader --
-        # with torch.no_grad():  # NOTE: there is a bug with torch.no_grad() and e3nn_linear (used in the output head!) for e3nn v. 0.5.6. Using 0.5.5 instead.
 
         # Transform orbital template into cupy version:
-        print("orbital template to regular array")
-        orbital_template_ptrs = []
-        orbital_template_tmp = []
-        for o in orbital_template:
-            inner_size = 5 * len(o)
-            tmp = cp.zeros((inner_size,), dtype=cp.int32)
-            try:
-                for j, (row_slice, col_slice, output_slice) in enumerate(o):
-                    tmp[j * 5 + 0] = row_slice.start
-                    tmp[j * 5 + 1] = row_slice.stop
-                    tmp[j * 5 + 2] = col_slice.start
-                    tmp[j * 5 + 3] = col_slice.stop
-                    tmp[j * 5 + 4] = output_slice.start
-                orbital_template_tmp.append(tmp)
-            except Exception:
-                print(o[j],j, flush=True)
-            orbital_template_ptrs.append(matrix2labels_kernels.get_ptr(tmp))
+        if loss_target_string == 'fock_matrix':
+            print("orbital template to regular array")
+            orbital_template_ptrs = []
+            orbital_template_tmp = []
+            for o in orbital_template:
+                inner_size = 5 * len(o)
+                tmp = cp.zeros((inner_size,), dtype=cp.int32)
+                try:
+                    for j, (row_slice, col_slice, output_slice) in enumerate(o):
+                        tmp[j * 5 + 0] = row_slice.start
+                        tmp[j * 5 + 1] = row_slice.stop
+                        tmp[j * 5 + 2] = col_slice.start
+                        tmp[j * 5 + 3] = col_slice.stop
+                        tmp[j * 5 + 4] = output_slice.start
+                    orbital_template_tmp.append(tmp)
+                except Exception:
+                    print(o[j],j, flush=True)
+                orbital_template_ptrs.append(matrix2labels_kernels.get_ptr(tmp))
 
-        orbital_template_ptrs = cp.array(
-            orbital_template_ptrs, dtype=cp.uintp
-        )
-        print("done orbital template to regular array")
+            orbital_template_ptrs = cp.array(
+                orbital_template_ptrs, dtype=cp.uintp
+            )
 
         # dictionaries to store the orbital blocks, they get rewritten by each batch
         eigenvalue_maes = []
@@ -514,7 +514,7 @@ class SplitTrainer():
 
                 # output_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
                 # output_targets = np.concatenate([uncoupled_edge_outputs.detach().cpu().numpy(), uncoupled_node_outputs.detach().cpu().numpy()])
-                # # matrix2labels_kernels.numpy_single_matrix2label(
+                # matrix2labels_kernels.numpy_single_matrix2label(
                 #     orbital_template,
                 #     fock_block_offsets,
                 #     batch.fock_target_object[0].atomic_numbers,
@@ -625,10 +625,15 @@ class SplitTrainer():
 
                 # Compute error in total energy from predicted and label Fock matrices:
                 if compute_total_energy:
+
+                    # cupy -> numpy (cpu)
+                    output_fock_matrix = output_fock_matrix.get()
+                    label_fock_matrix = label_fock_matrix.get()
+
                     print("Computing total energy...", flush=True)
-                    total_energy_label = self.get_total_energy(batch, label_fock_matrix, orbital_basis, dataset_name, overlap_matrix=overlap_matrix)
+                    total_energy_label = self.get_total_energy(batch, label_fock_matrix, orbital_basis, dataset_name, overlap_matrix=overlap_matrix, save_density=save_density, key='output')
                     print("Total energy from label Fock matrix: ", total_energy_label, flush=True)
-                    total_energy_pred = self.get_total_energy(batch, output_fock_matrix, orbital_basis, dataset_name, overlap_matrix=overlap_matrix)
+                    total_energy_pred = self.get_total_energy(batch, output_fock_matrix, orbital_basis, dataset_name, overlap_matrix=overlap_matrix, save_density=save_density, key='label')
                     print("Total energy from predicted Fock matrix: ", total_energy_pred, flush=True)
                     total_energy_errors.append(np.abs(total_energy_pred - total_energy_label))
                     print("Total energy error from predicted Fock matrix: ", total_energy_errors[-1], flush=True)
@@ -813,15 +818,6 @@ class SplitTrainer():
 
         del backbone_out
 
-
-    def adjust_learning_rate(self, optimizer, epoch, warmup_epochs, initial_lr, final_lr):
-        """Adjusts the learning rate linearly during the warmup phase."""
-        if epoch < warmup_epochs:
-            lr = initial_lr + (final_lr - initial_lr) * (epoch / warmup_epochs)
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr
-            print(f"Warmup epoch {epoch+1}: setting learning rate to {lr}")
-
     def get_orbital(self, tensor, irreps_list, l):
         """
         Extract and return all irreps of type l from the tensor
@@ -899,7 +895,7 @@ class SplitTrainer():
         plt.savefig("eigenvalues_diff_fock_omol.png", dpi=500, bbox_inches='tight')
         plt.close()
 
-    def get_total_energy(self, batch, fock_matrix, orbital_basis, dataset_name, overlap_matrix=None):
+    def get_total_energy(self, batch, fock_matrix, orbital_basis, dataset_name, overlap_matrix=None, save_density=False, key='0'):
         """
         Compute the total energy error from the Fock matrix
         """
@@ -940,7 +936,7 @@ class SplitTrainer():
                 basis=basis,
                 unit='Angstrom',
                 ecp='def2-tzvpd',
-                charge=charge,
+                charge=charge, # SPIN?
             )
 
             # orca to pyscf ordering:
@@ -991,7 +987,7 @@ class SplitTrainer():
         # Note: Need to add removal of linear dependence in overlap !!!
 
         # Get intermediate quantities
-        P = build_density(mol, F, S=overlap_matrix)
+        P = build_density(mol, F, S=overlap_matrix, name=key, save_density=save_density)
         H, E_xc, V_xc = get_integrals(mol, P, functional, dataset_name)
 
         # Compute energy
