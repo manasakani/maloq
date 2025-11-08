@@ -76,8 +76,7 @@ class SplitTrainer():
             min_lr=1e-10):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}", flush=True)
-        self.open_shell = self.head.open_shell
-        # torch.autograd.set_detect_anomaly(True)
+        self.open_shell = self.head.num_spins > 1
 
         # Torch compile:
         # self.backbone = torch.compile(self.backbone, fullgraph=True)

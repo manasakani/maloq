@@ -492,7 +492,6 @@ class Fock_Irreps_Head(nn.Module):
         self.head_type = head_type
         self.sphere_channels = sphere_channels
         self.lmax = lmax
-        self.open_shell = open_shell
         self.reduce_node = reduce_node                      # take advantage of 'inter'-orbital interaction symmetry within node blocks
         self.reduce_node_intra = reduce_node_intra          # take advantage of 'intra'-orbital interaction symmetry within node blocks
         self.irreps_out = irreps_out
@@ -500,6 +499,11 @@ class Fock_Irreps_Head(nn.Module):
         self.ls_list = ls_list                              # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2]
         self.backward_irrep_track = {}                      # helper dict to keep track of where to find the forward onsite orbital edges when we expand them out later
         print("ls_list for output head: ", self.ls_list)
+
+        if open_shell:                                      # output two sets of labels for alpha/beta fock
+            self.num_spins = 2
+        else:
+            self.num_spins = 1
 
         # We make a new list of irreps (irreps_nodereduced) which contains only the unique irreps in the node blocks
         if self.reduce_node:
@@ -537,42 +541,49 @@ class Fock_Irreps_Head(nn.Module):
             self.edge_m_reflection = None
             self.edge_permutation = self.get_edge_permutation()
 
-        if self.head_type == 'linear':
-            self.map_node_to_rank_N = e3nn_Linear(irreps_in=irreps_in, irreps_out=irreps_out, biases=True)
-            self.map_edge_to_rank_N = e3nn_Linear(irreps_in=irreps_in, irreps_out=irreps_out, biases=True)
+        irreps_scalars, irreps_gated = self.split_irreps(irreps_in)
+        irreps_gates = Irreps(f"{irreps_gated.num_irreps}x0e")
 
-        elif self.head_type == 'gated':
+        # 1. Apply a linear layer to convert the number of input scalars to the number of required gating scalars
+        # the number of input scalars is equal to sphere_channels
+        # the output 'irreps_gates' are the gating scalars
 
-            irreps_scalars, irreps_gated = self.split_irreps(irreps_in)
-            irreps_gates = Irreps(f"{irreps_gated.num_irreps}x0e")
+        # --> gate with learnable parameters by outputting more random scalars:
+        input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
+        combined_output_scalars = Irreps(f"{irreps_scalars.num_irreps + irreps_gated.num_irreps}x0e")
+        self.lin_scalars_learnable = nn.ModuleList()
+        self.act_input_scalars = nn.ModuleList()
+        self.gate = nn.ModuleList()
 
-            # 1. Apply a linear layer to convert the number of input scalars to the number of required gating scalars
-            # the number of input scalars is equal to sphere_channels
-            # the output 'irreps_gates' are the gating scalars
+        if reduce_node:
+            self.node_lin_out_layers = nn.ModuleList()
+            self.edge_lin_out_layers = nn.ModuleList()
+            self.node_output_permutation = self.get_output_permutation(self.irreps_nodereduced)
+            self.edge_output_permutation = self.get_output_permutation(irreps_out)
+        else:
+            self.lin_out_layers = nn.ModuleList()
+            self.output_permutation = self.get_output_permutation(irreps_out)
 
-            # --> gate with learnable parameters by outputting more random scalars:
-            input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
-            combined_output_scalars = Irreps(f"{irreps_scalars.num_irreps + irreps_gated.num_irreps}x0e")
-            self.lin_scalars_learnable = e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars, biases=True) # just a linear layer
-            self.act_input_scalars = torch.nn.SiLU()
+        for spin in range(self.num_spins):
+
+            self.lin_scalars_learnable.append(e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars, biases=True))
+            self.act_input_scalars.append(torch.nn.SiLU())
             # this returns the irreps_gates
 
             # 2. Apply the gating to the other ls (need to pass in a stack of [l=0, l~=0])
-            self.gate = Gate(irreps_scalars=Irreps(),
-                                act_scalars=[],
-                                irreps_gates=irreps_gates,
-                                act_gates=[torch.sigmoid] * len(irreps_gates),
-                                irreps_gated=irreps_gated
-                            )
+            self.gate.append(Gate(irreps_scalars=Irreps(),
+                                    act_scalars=[],
+                                    irreps_gates=irreps_gates,
+                                    act_gates=[torch.sigmoid] * len(irreps_gates),
+                                    irreps_gated=irreps_gated
+                                ))
 
             # now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
-            irreps_in_simplified = (irreps_scalars + self.gate.irreps_out).simplify()
-            assert irreps_in_simplified == (irreps_scalars+self.gate.irreps_out), "The irreps_in for the output linear layer should not change when simplified!"
+            irreps_in_simplified = (irreps_scalars + self.gate[spin].irreps_out).simplify()
+            assert irreps_in_simplified == (irreps_scalars+self.gate[spin].irreps_out), "The irreps_in for the output linear layer should not change when simplified!"
             if reduce_node:
-                # self.lin_out_node = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_nodereduced, biases=True)
-                # self.lin_out_edge = e3nn_Linear(irreps_in=irreps_scalars+self.gate.irreps_out, irreps_out=self.irreps_out, biases=True)
-                self.node_lin_out_layers = nn.ModuleList()
-                self.edge_lin_out_layers = nn.ModuleList()
+                node_lin_layers = nn.ModuleList()
+                edge_lin_layers = nn.ModuleList()
                 for l in range(0, self.lmax+1):
                     mul_in = self.sphere_channels
 
@@ -581,43 +592,30 @@ class Fock_Irreps_Head(nn.Module):
                     irreps_in_l = f"{mul_in}x{l}e"
                     irreps_out_l = f"{mul_out}x{l}e"
                     print("Creating node linear output map for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out = ", irreps_out_l, flush=True)
-                    self.node_lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
+                    node_lin_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
 
                     # for edges:
                     mul_out = self.irreps_out.count('{}e'.format(l))
                     irreps_in_l = f"{mul_in}x{l}e"
                     irreps_out_l = f"{mul_out}x{l}e"
                     print("Creating edge linear output map for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out = ", irreps_out_l, flush=True)
-                    self.edge_lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
+                    edge_lin_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
 
-                self.node_output_permutation = self.get_output_permutation(self.irreps_nodereduced)
-                self.edge_output_permutation = self.get_output_permutation(irreps_out)
-
+                self.node_lin_out_layers.append(node_lin_layers)
+                self.edge_lin_out_layers.append(edge_lin_layers)
             else:
-                print("Irreps in: ", irreps_in_simplified, flush=True)
 
                 # create single linear layers up to lmax:
-                self.lin_out_layers = nn.ModuleList()
-                # self.node_lin_out_layers = nn.ModuleList()
-                # self.edge_lin_out_layers = nn.ModuleList()
+                lin_layers = nn.ModuleList()
                 for l in range(0, self.lmax+1):
                     mul_in = self.sphere_channels
                     mul_out = irreps_out.count('{}e'.format(l))
                     irreps_in_l = f"{mul_in}x{l}e"
                     irreps_out_l = f"{mul_out}x{l}e"
                     print("Creating linear output map for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out = ", irreps_out_l, flush=True)
-                    self.lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
-                    # self.node_lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
-                    # self.edge_lin_out_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
+                    lin_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
 
-                    # Attempt at using SO3_Linear - not working well
-                    # mul_in = self.sphere_channels
-                    # mul_out = irreps_out.count('{}e'.format(l))
-                    # print("Creating SO3_Linear layer for l = ", l, " with mul_in = ", mul_in, " and mul_out = ", mul_out, flush=True)
-                    # self.lin_out_layers.append(SO3_Linear(mul_in, mul_out, l, single=True))
-
-                self.output_permutation = self.get_output_permutation(irreps_out)
-
+                self.lin_out_layers.append(lin_layers)
 
     def get_output_permutation(self, output_irreps):
         """
@@ -707,53 +705,25 @@ class Fock_Irreps_Head(nn.Module):
         reverse_edge_map = batch.reverse_edge_map if "reverse_edge_map" in batch else None
         edge_mask = batch.edge_mask if "edge_mask" in batch else None
 
-        if self.head_type == 'linear':
-            node_embeddings = self.stack_irreps(node_embeddings)
-            edge_embeddings = self.stack_irreps(edge_embeddings)
-            node_output = self.map_node_to_rank_N(node_embeddings)
-            edge_output = self.map_edge_to_rank_N(edge_embeddings)
+        node_outputs = []
+        edge_outputs = []
+        for spin in range(self.num_spins):
+            node_embeddings_spin = self.stack_irreps(node_embeddings)
+            edge_embeddings_spin = self.stack_irreps(edge_embeddings)
+            node_output = self.process(node_embeddings_spin, edge_index, 'node', spin)
+            edge_output = self.process(edge_embeddings_spin, edge_index, 'edge', spin)
 
-        elif self.head_type == 'gated':
-            node_embeddings = self.stack_irreps(node_embeddings)
-            edge_embeddings = self.stack_irreps(edge_embeddings)
-            node_output = self.process(node_embeddings, edge_index, 'node')
-            edge_output = self.process(edge_embeddings, edge_index, 'edge')
+            # augment the node irreps back to the full irrep list (containing the lower triangle of orbital interactions and odd self-interaction irreps)
+            # using edge_output to infer the total size of the output embeddings
+            if self.reduce_node:
+                node_output = self.expand_reduced_node(node_output, edge_output)
+            node_outputs.append(node_output)
+            edge_outputs.append(edge_output)
 
-        else:
-            print("Error! Mispelt head type")
-
-        # augment the node irreps back to the full irrep list (containing the lower triangle of orbital interactions and odd self-interaction irreps)
-        # using edge_output to infer the total size of the output embeddings
-        if self.reduce_node:
-            node_output = self.expand_reduced_node(node_output, edge_output)
-
-        # # --> Symmetrize the edges so we only need to return the forward edges
-        # # for loop over the 'true' elements of edge_mask:
-        # if self.half_edges:
-        #     # print("Using half edges, symmetrizing the edge outputs!")
-        #     assert edge_mask is not None, "edge_mask must be provided when using half_edges=True!"
-        #     assert edge_mask.any(), "only half the edges need to be created when half_edges=True!"
-        #     # need reflection on same device, could not access device from within constructor functions
-        #     self.edge_m_reflection = torch.tensor(self.edge_m_reflection, dtype=edge_output.dtype, device=edge_output.device)
-
-        #     # Iterate through the edges which will not have a corresponding label (~edge_exists)
-        #     for i, edge_exists in enumerate(edge_mask):
-        #         if not edge_exists:
-        #             # find the forward edge index, this will have a label of it's own:
-        #             forward_edge_index = reverse_edge_map[i]
-        #             # we need to convert the backward edge to the forward edge order
-        #             transposed_backward_edge = edge_output[i, self.edge_permutation] * self.edge_m_reflection
-        #             # now we can average the transposed backward edge with the forward edge output
-        #             edge_output[forward_edge_index] = (edge_output[forward_edge_index] + transposed_backward_edge) / 2.0
-        #             # and it will be accounted for when computing the loss over the edges with labels
-
-        #     edge_output = edge_output[edge_mask]  # only return the edges that will have a label
-
-        if self.half_edges:
-            self.edge_m_reflection = torch.tensor(self.edge_m_reflection, dtype=edge_output.dtype, device=edge_output.device)
-            return node_output, edge_output[edge_mask], edge_output[~edge_mask], self.edge_permutation, self.edge_m_reflection
-        else:
-            return node_output, edge_output
+        # Stack along spin dimension
+        node_outputs = torch.stack(node_outputs, dim=0)  # [spin, num_nodes, ...]
+        edge_outputs = torch.stack(edge_outputs, dim=0)  # [spin, num_edges, ...]
+        return node_outputs, edge_outputs
 
     def get_edge_permutation(self):
         """
@@ -847,19 +817,19 @@ class Fock_Irreps_Head(nn.Module):
 
         return l_sorted_output
 
-    def process(self, x, edge_index, node_or_edge):
+    def process(self, x, edge_index, node_or_edge, spin):
 
         # 1. Extract the scalar components, which are the first # sphere_channels elements of this tensor
         x_scalars = x[:, :self.sphere_channels]
         x_nonscalars = x[:, self.sphere_channels:]
 
         # 2. Prepare some scalars for gating - gate with learnable scalars: the first 'sphere_channels' scalars are the l=0, and others are used for gating
-        all_scalars = self.lin_scalars_learnable(x_scalars)
+        all_scalars = self.lin_scalars_learnable[spin](x_scalars)
         transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
         gating_scalars = all_scalars[:, self.sphere_channels:]
 
         # 3. Gate the l>0 irreps:
-        x_gated = self.gate(torch.cat([gating_scalars, x_nonscalars], dim=1))
+        x_gated = self.gate[spin](torch.cat([gating_scalars, x_nonscalars], dim=1))
         x_gated = torch.cat([transformed_l0_scalars, x_gated], dim=1)   # use the transformed scalars as the output
 
         # 4. Apply linear map to output irreps
@@ -884,7 +854,7 @@ class Fock_Irreps_Head(nn.Module):
                 #     x_l_out = self.node_lin_out_layers[l](x_l)  # apply the Linear layer for degree l
                 # if node_or_edge == 'edge':
                 #     x_l_out = self.edge_lin_out_layers[l](x_l)  # apply the Linear layer for degree l
-                x_l_out = self.lin_out_layers[l](x_l)  # apply the Linear layer for degree l
+                x_l_out = self.lin_out_layers[spin][l](x_l)  # apply the Linear layer for degree l
                 # mul_out = self.irreps_out.count(f'{l}e')
                 # x_l_out = x_l_out.reshape(batch_size, mul_out*(2*l+1))  # [batch, (2*l+1)*mul_out]
 
@@ -912,9 +882,9 @@ class Fock_Irreps_Head(nn.Module):
 
                 x_l = x_gated[:, start_idx:end_idx]  # extract the l-th irrep component
                 if node_or_edge == 'node':
-                    x_l_out = self.node_lin_out_layers[l](x_l)  # apply the Linear layer for degree l
+                    x_l_out = self.node_lin_out_layers[spin][l](x_l)  # apply the Linear layer for degree l
                 if node_or_edge == 'edge':
-                    x_l_out = self.edge_lin_out_layers[l](x_l)  # apply the Linear layer for degree l
+                    x_l_out = self.edge_lin_out_layers[spin][l](x_l)  # apply the Linear layer for degree l
                 x_out_list.append(x_l_out)
 
             # concatenate all the l outputs back together
