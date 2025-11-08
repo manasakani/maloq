@@ -1,10 +1,11 @@
 import numpy as np
 import torch
-from . import utils_tensor_decomp
+from . import utils_tensor_decomp, matrix2labels_kernels
 import torch
 import time
 from ase.neighborlist import NeighborList
 import random
+import cupy as cp
 
 class Fock_Targets:
     """
@@ -24,6 +25,7 @@ class Fock_Targets:
                 scale_shift_data=None,
                 equivariant_blocks=None,
                 orbital_starts=None,
+                orbital_template=None,
                 basis_transformation=None,
                 req_output_irreps=None):
         """
@@ -79,7 +81,6 @@ class Fock_Targets:
         # --> Analyze structure of orbital interactions
         if equivariant_blocks is None or orbital_starts is None or basis_transformation is None or req_output_irreps is None:
             targets, self.req_output_irreps, self.simplified_out_irreps, ls_list, out_js_list, self.orbital_starts, full_orb_interaction_list = utils_tensor_decomp.make_output_irreps(self.orbital_basis)
-            # self.equivariant_blocks, out_js_list, self.orbital_starts = utils_tensor_decomp.process_targets_old(self.orbital_basis, targets)
             self.equivariant_blocks = utils_tensor_decomp.process_targets(self.orbital_basis, targets, ls_list, out_js_list, full_orb_interaction_list)
             self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
                                                                 out_js_list,
@@ -120,89 +121,68 @@ class Fock_Targets:
         self.edge_labels = None
         if fock_matrix is not None:
 
-            self.fock_matrix = torch.from_numpy(fock_matrix).to(self.device)
+            # self.fock_matrix = torch.from_numpy(fock_matrix).to(self.device)
+            self.fock_matrix = fock_matrix
 
             if compute_fock_eigenvalues:
-                eigenvalues, eigenvectors = torch.linalg.eigh(self.fock_matrix)   # compute eigenvalues and eigenvectors of the fock matrix
+                fock_matrix = torch.from_numpy(fock_matrix).to(self.device)
+                eigenvalues, eigenvectors = torch.linalg.eigh(fock_matrix)   # compute eigenvalues and eigenvectors of the fock matrix
                 self.eigenvalues = eigenvalues.to(self.device)                    # store eigenvalues
                 self.eigenvectors = eigenvectors.to(self.device)                  # store eigenvectors
 
             self.target_len = None
 
             # Decompose the Fock matrix into orbital blocks and insert them into the targets
+            if orbital_template is None:
+                print("Recomputing orbital template for this basis...")
+                self.orbital_template = matrix2labels_kernels.get_orbital_template(self.equivariant_blocks, self.orbital_starts)
+            else:
+                self.orbital_template = orbital_template
+
             self.make_targets()
 
             if self.scale_shift_data is not None:
                 self.node_labels = self.scale_shift_node_blocks(self.node_labels)  # scale and shift the node labels (l=0 irreps) in the targets
 
     def make_targets(self):
+        """
+        Creates padded node/edge labels from the fock matrix
+        """
 
-        self.target_len = self.get_target_len()                                 # each target should fit in a NxN matrix (to be flattened)
+        # time_label_start = time.perf_counter()
+
+        # each target should fit in a NxN matrix (to be flattened)
+        self.target_len = self.get_target_len()
+        num_atoms = len(self.atomic_numbers)
+        num_edges = len(self.neighbour_list[0])
+
+        # Augment neighbor list with node self-neighbors, because we will stack the nodes together with the edges
+        src_idx, target_idx = self.neighbour_list[0], self.neighbour_list[1]
+        src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
+        target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
+        fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(self.orbitals_per_atom)])
 
         # initialize torch tensors of size N for nodes and (forward) edges
-        node_labels = torch.zeros(( len(self.atoms), self.target_len ), dtype=self.dtype, device=self.device)
-        edge_labels = torch.zeros(( len(self.neighbour_list[0]), self.target_len ), dtype=self.dtype, device=self.device)
+        node_labels = np.zeros(( num_atoms, self.target_len ))
+        edge_labels = np.zeros(( num_edges, self.target_len ))
+        labels = np.concatenate([edge_labels, node_labels])
 
-        # Extract blocks from fock matrix:
-        self_edges = [list(range(self.NA)), list(range(self.NA))]
-        node_orbital_blocks = self.get_orbital_blocks(self_edges)
-        edge_orbital_blocks = self.get_orbital_blocks(self.neighbour_list)
+        # Populate the matrix elements into the correct positions in the labels
+        matrix2labels_kernels.numpy_single_matrix2label(
+                                                            self.orbital_template,
+                                                            fock_block_offsets,
+                                                            self.atomic_numbers,
+                                                            src_idxes,
+                                                            target_idxes,
+                                                            self.fock_matrix,
+                                                            labels,
+                                                            forward=True
+                                                        )
+        labels = torch.from_numpy(labels).to(self.device)
+        node_labels = labels[num_edges:, :]
+        edge_labels = labels[:num_edges, :]
 
-        # // !!! do garbage cleanup for the fock matrix here !!! //
-
-        flat_blocks = []
-        # Iterate over target blocks (each corresponding to an l1-l2 interaction)
-        for index_target, equivariant_block in enumerate(self.equivariant_blocks):
-            # Collect all the atom-atom interactions which will use this target block
-            for N_M_str, block_slice in equivariant_block.items():
-                condition_numbers = tuple(map(int, N_M_str.split()))    # atomic numbers
-                slice_row = slice(block_slice[0], block_slice[1])
-                slice_col = slice(block_slice[2], block_slice[3])
-                slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
-                flat_blocks.append((condition_numbers, slice_row, slice_col, slice_out))
-                # ^ from the interaction between atomic numbers 'cond1 and cond2', we extract the block defined by slice_row, slice_col and insert
-                # it into slice_out of the corresponding labels
-
-
-        time_label_start = time.perf_counter()
-        # Off-diagonal orbital blocks --> Edge labels
-        atomic_numbers_i = self.atomic_numbers[self.neighbour_list[0]]
-        atomic_numbers_j = self.atomic_numbers[self.neighbour_list[1]]
-        for condition_numbers, slice_row, slice_col, slice_out in flat_blocks:
-            condition_i, condition_j = condition_numbers
-            mask = (atomic_numbers_i == condition_i) & (atomic_numbers_j == condition_j)
-
-            # select relevant edges and accumulate the corresponding slices
-            matching_indices = np.where(mask)[0]
-            for edge_idx in matching_indices:
-
-                # only collect from forward edges if we are using reflected edges, the other edge_orbital_blocks are None
-                if self.forward_edge_mask[edge_idx]:
-
-                    # print("edge_idx: ", edge_idx, "slice_out: ", slice_out, "slice_row: ", slice_row, "slice_col: ", slice_col)
-                    # print("shape of edge_labels[edge_idx, slice_out]: ", edge_labels[edge_idx, slice_out].shape)
-                    # print("shape of edge_orbital_blocks[edge_idx][slice_row, slice_col]: ", edge_orbital_blocks[edge_idx][slice_row, slice_col].shape)
-                    edge_labels[edge_idx, slice_out] += torch.squeeze(
-                        edge_orbital_blocks[edge_idx][slice_row, slice_col].reshape(1, -1)
-                    )
-
-        # Keep only the filled forward edges
-        edge_labels = edge_labels[self.forward_edge_mask]
-
-        # Diagonal orbital blocks --> Node labels
-        atomic_numbers_i = self.atomic_numbers[self_edges[0]]
-        atomic_numbers_j = self.atomic_numbers[self_edges[1]]
-        for condition_numbers, slice_row, slice_col, slice_out in flat_blocks:
-            condition_i, condition_j = condition_numbers
-            mask = (atomic_numbers_i == condition_i) & (atomic_numbers_j == condition_j)
-
-            # select relevant nodes and accumulate the corresponding slices
-            matching_indices = np.where(mask)[0]
-            for node_idx in matching_indices:
-                node_labels[node_idx, slice_out] += torch.squeeze(
-                    node_orbital_blocks[node_idx][slice_row, slice_col].reshape(1, -1)
-                )
-        time_label_end = time.perf_counter()
+        # time_label_end = time.perf_counter()
         # print("time to make labels: ", time_label_end - time_label_start, flush=True)
 
         # Basis transformation:
@@ -475,113 +455,113 @@ class Fock_Targets:
 
         return orbital_blocks
 
-    def unpad_node_blocks(self, H_pred, atomic_numbers=None):
+    # def unpad_node_blocks(self, H_pred, atomic_numbers=None):
 
-        atom_orbitals = self.orbital_basis
-        if atomic_numbers is None:
-            atomic_numbers = self.atomic_numbers
+    #     atom_orbitals = self.orbital_basis
+    #     if atomic_numbers is None:
+    #         atomic_numbers = self.atomic_numbers
 
-        # Precompute number of orbitals for each atom
-        atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
+    #     # Precompute number of orbitals for each atom
+    #     atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
 
-        H_prev = {}
+    #     H_prev = {}
 
-        for atom_ind in range(len(atomic_numbers)):
+    #     for atom_ind in range(len(atomic_numbers)):
 
-            key_term = (atom_ind, atom_ind)  # node key
-            print(f"Unpadding node {atom_ind}", flush=True)
+    #         key_term = (atom_ind, atom_ind)  # node key
+    #         print(f"Unpadding node {atom_ind}", flush=True)
 
-            # Precompute number of orbitals for atoms i and j
-            num_orbitals_i = atom_orbitals_count[atomic_numbers[atom_ind].item()]
+    #         # Precompute number of orbitals for atoms i and j
+    #         num_orbitals_i = atom_orbitals_count[atomic_numbers[atom_ind].item()]
 
-            # Initialize H_prev for this edge
-            H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_i), dtype=float)
+    #         # Initialize H_prev for this edge
+    #         H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_i), dtype=float)
 
-            H_prev_edge = H_prev[key_term]  # just to avoid repeated dictionary lookup
+    #         H_prev_edge = H_prev[key_term]  # just to avoid repeated dictionary lookup
 
-            for index_target, equivariant_block in enumerate(self.equivariant_blocks):
-                slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
+    #         for index_target, equivariant_block in enumerate(self.equivariant_blocks):
+    #             slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
 
-                # Precompute block slices for this equivariant block
-                for N_M_str, block_slice in equivariant_block.items():
-                    slice_row = slice(block_slice[0], block_slice[1])
-                    slice_col = slice(block_slice[2], block_slice[3])
-                    len_row = block_slice[1] - block_slice[0]
-                    len_col = block_slice[3] - block_slice[2]
+    #             # Precompute block slices for this equivariant block
+    #             for N_M_str, block_slice in equivariant_block.items():
+    #                 slice_row = slice(block_slice[0], block_slice[1])
+    #                 slice_col = slice(block_slice[2], block_slice[3])
+    #                 len_row = block_slice[1] - block_slice[0]
+    #                 len_col = block_slice[3] - block_slice[2]
 
-                    condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
+    #                 condition_atomic_number_i, condition_atomic_number_j = N_M_str.split()
 
-                    if atomic_numbers[atom_ind].item() == int(condition_atomic_number_i) and atomic_numbers[atom_ind].item() == int(condition_atomic_number_j):
-                        H_prev_edge[slice_row, slice_col] = H_pred[atom_ind][slice_out].reshape(len_row, len_col)
+    #                 if atomic_numbers[atom_ind].item() == int(condition_atomic_number_i) and atomic_numbers[atom_ind].item() == int(condition_atomic_number_j):
+    #                     H_prev_edge[slice_row, slice_col] = H_pred[atom_ind][slice_out].reshape(len_row, len_col)
 
-        return H_prev
+    #     return H_prev
 
-    def unpad_edge_blocks(self, H_pred, atomic_numbers=None):
+    # def unpad_edge_blocks(self, H_pred, atomic_numbers=None):
 
-        edge_index = self.neighbour_list
-        atom_orbitals = self.orbital_basis
+    #     edge_index = self.neighbour_list
+    #     atom_orbitals = self.orbital_basis
 
-        if atomic_numbers is None:
-            atomic_numbers = self.atomic_numbers
+    #     if atomic_numbers is None:
+    #         atomic_numbers = self.atomic_numbers
 
-        # Precompute number of orbitals for each atom type (not per atom)
-        atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
+    #     # Precompute number of orbitals for each atom type (not per atom)
+    #     atom_orbitals_count = {key: np.sum(2 * np.array(atom_orbitals[key]) + 1) for key in atom_orbitals}
 
-        # Get forward edges only
-        forward_indices = torch.where(torch.tensor(self.forward_edge_mask))[0]
-        forward_edge_i = edge_index[0][forward_indices]
-        forward_edge_j = edge_index[1][forward_indices]
+    #     # Get forward edges only
+    #     forward_indices = torch.where(torch.tensor(self.forward_edge_mask))[0]
+    #     forward_edge_i = edge_index[0][forward_indices]
+    #     forward_edge_j = edge_index[1][forward_indices]
 
-        # Vectorized atomic number lookup
-        atomic_nums_i = atomic_numbers[forward_edge_i]
-        atomic_nums_j = atomic_numbers[forward_edge_j]
+    #     # Vectorized atomic number lookup
+    #     atomic_nums_i = atomic_numbers[forward_edge_i]
+    #     atomic_nums_j = atomic_numbers[forward_edge_j]
 
-        H_prev = {}
+    #     H_prev = {}
 
-        # Process all edges simultaneously for each equivariant block
-        for index_target, equivariant_block in enumerate(self.equivariant_blocks):
-            slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
+    #     # Process all edges simultaneously for each equivariant block
+    #     for index_target, equivariant_block in enumerate(self.equivariant_blocks):
+    #         slice_out = slice(self.orbital_starts[index_target], self.orbital_starts[index_target + 1])
 
-            print(f"Processing edge equivariant block {index_target} of {len(self.equivariant_blocks)}", flush=True)
+    #         print(f"Processing edge equivariant block {index_target} of {len(self.equivariant_blocks)}", flush=True)
 
-            for N_M_str, block_slice in equivariant_block.items():
-                condition_i, condition_j = map(int, N_M_str.split())
+    #         for N_M_str, block_slice in equivariant_block.items():
+    #             condition_i, condition_j = map(int, N_M_str.split())
 
-                # Vectorized mask creation
-                mask = (atomic_nums_i == condition_i) & (atomic_nums_j == condition_j)
-                matching_forward_indices = forward_indices[mask]
+    #             # Vectorized mask creation
+    #             mask = (atomic_nums_i == condition_i) & (atomic_nums_j == condition_j)
+    #             matching_forward_indices = forward_indices[mask]
 
-                if len(matching_forward_indices) == 0:
-                    continue
+    #             if len(matching_forward_indices) == 0:
+    #                 continue
 
-                # Get edge indices for matching edges
-                edge_i_batch = forward_edge_i[mask]
-                edge_j_batch = forward_edge_j[mask]
+    #             # Get edge indices for matching edges
+    #             edge_i_batch = forward_edge_i[mask]
+    #             edge_j_batch = forward_edge_j[mask]
 
-                # Batch process all matching edges
-                slice_row = slice(block_slice[0], block_slice[1])
-                slice_col = slice(block_slice[2], block_slice[3])
-                len_row = block_slice[1] - block_slice[0]
-                len_col = block_slice[3] - block_slice[2]
+    #             # Batch process all matching edges
+    #             slice_row = slice(block_slice[0], block_slice[1])
+    #             slice_col = slice(block_slice[2], block_slice[3])
+    #             len_row = block_slice[1] - block_slice[0]
+    #             len_col = block_slice[3] - block_slice[2]
 
-                # Extract predictions for all matching edges at once
-                edge_counter_batch = torch.searchsorted(forward_indices, matching_forward_indices)
-                pred_batch = H_pred[edge_counter_batch][:, slice_out].reshape(-1, len_row, len_col)
+    #             # Extract predictions for all matching edges at once
+    #             edge_counter_batch = torch.searchsorted(forward_indices, matching_forward_indices)
+    #             pred_batch = H_pred[edge_counter_batch][:, slice_out].reshape(-1, len_row, len_col)
 
-                # Initialize matrices if not already done
-                for idx, (i, j) in enumerate(zip(edge_i_batch, edge_j_batch)):
-                    i, j = i.item(), j.item()
-                    key_term = (i, j)
+    #             # Initialize matrices if not already done
+    #             for idx, (i, j) in enumerate(zip(edge_i_batch, edge_j_batch)):
+    #                 i, j = i.item(), j.item()
+    #                 key_term = (i, j)
 
-                    if key_term not in H_prev:
-                        num_orbitals_i = atom_orbitals_count[atomic_numbers[i].item()]
-                        num_orbitals_j = atom_orbitals_count[atomic_numbers[j].item()]
-                        H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_j), dtype=float)
+    #                 if key_term not in H_prev:
+    #                     num_orbitals_i = atom_orbitals_count[atomic_numbers[i].item()]
+    #                     num_orbitals_j = atom_orbitals_count[atomic_numbers[j].item()]
+    #                     H_prev[key_term] = torch.zeros((num_orbitals_i, num_orbitals_j), dtype=float)
 
-                    # Assign the prediction
-                    H_prev[key_term][slice_row, slice_col] = pred_batch[idx]
+    #                 # Assign the prediction
+    #                 H_prev[key_term][slice_row, slice_col] = pred_batch[idx]
 
-        return H_prev
+    #     return H_prev
 
     def undo_scale_shift(self, node_blocks):
 
@@ -594,45 +574,43 @@ class Fock_Targets:
             return self.unscale_shift_node_blocks(node_blocks)
 
 
-    def reconstruct_matrix(self, node_blocks, edge_blocks, symmetrize_matrix_if_needed=False):
-        """
-        Note: always returns a symmetric matrix (symmetrizes it if not already symmetric)
-        """
+    # def reconstruct_matrix(self, node_blocks, edge_blocks, symmetrize_matrix_if_needed=False):
+    #     """
+    #     Note: always returns a symmetric matrix (symmetrizes it if not already symmetric)
+    #     """
 
-        N = self.block_starts[-1]
-        reconstructed_matrix = torch.zeros((N, N), dtype=self.dtype, device=self.device)
+    #     N = self.block_starts[-1]
+    #     reconstructed_matrix = torch.zeros((N, N), dtype=self.dtype, device=self.device)
 
-        # Insert node orbital blocks (diagonal blocks)
-        for i, node in enumerate(node_blocks):
-            starting_i, num_orbitals_i = self.locate_atom_in_matrix(i)
-            reconstructed_matrix[starting_i:starting_i+num_orbitals_i, starting_i:starting_i+num_orbitals_i] = node_blocks[node]
+    #     # Insert node orbital blocks (diagonal blocks)
+    #     for i, node in enumerate(node_blocks):
+    #         starting_i, num_orbitals_i = self.locate_atom_in_matrix(i)
+    #         reconstructed_matrix[starting_i:starting_i+num_orbitals_i, starting_i:starting_i+num_orbitals_i] = node_blocks[node]
 
-        # Insert edge orbital blocks (off-diagonal blocks)
-        edge_counter = 0
-        for index_edge in range(len(self.neighbour_list[0])):
+    #     # Insert edge orbital blocks (off-diagonal blocks)
+    #     edge_counter = 0
+    #     for index_edge in range(len(self.neighbour_list[0])):
 
-            # get just the forward edges if we are using a reduced set of edges
-            if self.forward_edge_mask[index_edge]:
+    #         # get just the forward edges if we are using a reduced set of edges
+    #         if self.forward_edge_mask[index_edge]:
 
-                i, j = self.neighbour_list[0][index_edge], self.neighbour_list[1][index_edge]
-                starting_i, num_orbitals_i = self.locate_atom_in_matrix(i)
-                starting_j, num_orbitals_j = self.locate_atom_in_matrix(j)
+    #             i, j = self.neighbour_list[0][index_edge], self.neighbour_list[1][index_edge]
+    #             starting_i, num_orbitals_i = self.locate_atom_in_matrix(i)
+    #             starting_j, num_orbitals_j = self.locate_atom_in_matrix(j)
 
-                # Insert forward edge
-                edge = edge_blocks[(i, j)]
-                reconstructed_matrix[starting_i:starting_i+num_orbitals_i, starting_j:starting_j+num_orbitals_j] = edge
+    #             # Insert forward edge
+    #             edge = edge_blocks[(i, j)]
+    #             reconstructed_matrix[starting_i:starting_i+num_orbitals_i, starting_j:starting_j+num_orbitals_j] = edge
 
-                # If reflection symmetry is used, insert the backward edge as the transpose
-                if self.half_edges:
-                    reconstructed_matrix[starting_j:starting_j+num_orbitals_j, starting_i:starting_i+num_orbitals_i] = edge.T
+    #             # If reflection symmetry is used, insert the backward edge as the transpose
+    #             if self.half_edges:
+    #                 reconstructed_matrix[starting_j:starting_j+num_orbitals_j, starting_i:starting_i+num_orbitals_i] = edge.T
 
-                edge_counter += 1
+    #             edge_counter += 1
 
-        # Check if the matrix is symmetric and symmetrize if not
-        if not torch.allclose(reconstructed_matrix, reconstructed_matrix.T, atol=1e-10) and symmetrize_matrix_if_needed:
-            print("Matrix is not already symmetrix! Symmetrizing the matrix")
-            reconstructed_matrix = (reconstructed_matrix + reconstructed_matrix.T) / 2
+    #     # Check if the matrix is symmetric and symmetrize if not
+    #     if not torch.allclose(reconstructed_matrix, reconstructed_matrix.T, atol=1e-10) and symmetrize_matrix_if_needed:
+    #         print("Matrix is not already symmetrix! Symmetrizing the matrix")
+    #         reconstructed_matrix = (reconstructed_matrix + reconstructed_matrix.T) / 2
 
-        return reconstructed_matrix
-
-    # Compute reverse edg
+    #     return reconstructed_matrix
