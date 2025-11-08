@@ -475,14 +475,18 @@ class SplitTrainer():
                 this_node_target = getattr(batch, node_target_name)
                 this_edge_target = getattr(batch, edge_target_name)
 
-                # Undo scale/shift layers:
+                # Remove the spin dimension if needed
+                if not self.open_shell and this_node_target.ndim == 3:
+                    this_node_target = this_node_target[0]
+                    this_edge_target = this_edge_target[0]
+
+                # Undo scale/shift layers on output:
                 print("Undoing scale/shift...", flush=True)
                 node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
 
                 # for nabladft, we left the node scaling in
                 if dataset_name == 'nablaDFT':
                     this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target) # note: remove node scaling from evals
-
 
                 # Transform back to uncoupled basis:
                 print("Transforming to uncoupled basis...", flush=True)
@@ -752,7 +756,7 @@ class SplitTrainer():
         """Computes the Fock loss for the given outputs and targets."""
 
         # if closed shell, remove the spin dimension [spin, num_atoms/edges, target_size]
-        if not self.open_shell:
+        if not self.open_shell and this_node_target.ndim == 3:
             this_node_target = this_node_target[0]
             this_edge_target = this_edge_target[0]
 

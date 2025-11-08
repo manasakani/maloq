@@ -13,6 +13,7 @@ import torch.distributed as dist
 def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, half_edges=True, make_fock_targets=True, scale_shift_data=None):
     """
     Make dataloader with the given indices of the mocules in the input database
+    NOTE: closedshell only
     """
     rank = dist.get_rank()
     assert end_idx > start_idx
@@ -68,6 +69,10 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         forward_edge_mask = graph_targets.forward_edge_mask
         reverse_edge_map = graph_targets.reverse_edge_map
 
+        # closed shell, needed for custom collate
+        edge_labels = graph_targets.edge_labels[0]
+        node_labels = graph_targets.node_labels[0]
+
         # 3. Make the data object
         data = gnnData(
                         pos=torch.tensor(graph_targets.atoms.positions, dtype=dtype),
@@ -75,8 +80,8 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
                         edge_mask=torch.tensor(forward_edge_mask),
                         reverse_edge_map=torch.tensor(reverse_edge_map),
                         edge_attr=graph_targets.edge_dist,
-                        y=graph_targets.edge_labels,
-                        node_y=graph_targets.node_labels,
+                        y=edge_labels,
+                        node_y=node_labels,
                         atomic_numbers=torch.tensor(graph_targets.atomic_numbers, dtype=torch.long).cpu(),
                         energies=torch.tensor(energy, dtype=dtype),
                         forces=torch.tensor(forces, dtype=dtype),                                      # Hartree/Angstrom
