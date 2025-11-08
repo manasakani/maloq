@@ -97,7 +97,7 @@ class Fock_Targets:
             self.basis_transformation = basis_transformation
             self.req_output_irreps = req_output_irreps
 
-        # ls list will contain the max basis needed (eg, for OMOL: tensor([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 0, 1, 2])
+        # ls list will define the max basis needed (eg, for OMOL: tensor([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 0, 1, 2])
         ls_list = []
         for l in range(20): # large to account for possible diffuse functions which are incremented by 10
             counts = [torch.sum(torch.tensor(self.orbital_basis[el]) == l) for el in self.orbital_basis]
