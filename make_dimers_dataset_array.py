@@ -27,6 +27,16 @@ def parse_args():
                        help='SLURM array job ID')
     return parser.parse_args()
 
+def get_subdirs(parent_dir, n):
+    subdirs = []
+    with os.scandir(parent_dir) as it:
+        for entry in it:
+            if entry.is_dir():
+                subdirs.append(entry.name)
+                if len(subdirs) >= n:
+                    break
+    return subdirs
+
 def main():
     args = parse_args()
 
@@ -35,8 +45,13 @@ def main():
     # Setup
     structures_dir = args.structures_dir
     structure_folders = [f for f in os.listdir(structures_dir)
-                        if len(os.listdir(os.path.join(structures_dir, f))) > 0 and
-                        os.path.isdir(os.path.join(structures_dir, f)) ]
+                        if os.path.isdir(os.path.join(structures_dir, f)) ]
+
+    # structure_folders = [f for f in os.listdir(structures_dir)
+    #                     if len(os.listdir(os.path.join(structures_dir, f))) > 0 and
+    #                     os.path.isdir(os.path.join(structures_dir, f)) ]
+    # num_folders = args.end_idx - args.start_idx
+    # structure_folders = get_subdirs(structures_dir, num_folders)
 
     orca_file = 'orca.out'
     cutoff = 6.0
@@ -52,9 +67,9 @@ def main():
 
     # Fock matrix analysis parameters
     orbital_starts = None
-    basis_transformation = None
     orbital_template = None
     req_output_irreps = None
+    out_js_list = None
 
     print(f"Job {args.job_id}: Total structure folders available: {len(structure_folders)}", flush=True)
 
@@ -78,90 +93,90 @@ def main():
 
     # Process structures
     for folder_idx, structure_folder in enumerate(structures_to_process):
-        # try:
-            # if folder_idx % 10 == 0:
-        print(f"Job {args.job_id}: Processing folder {folder_idx}/{len(structures_to_process)}: {structure_folder}", flush=True)
+        try:
+            if folder_idx % 10 == 0:
+                print(f"Job {args.job_id}: Processing folder {folder_idx}/{len(structures_to_process)}: {structure_folder}", flush=True)
 
-        time_start = time.perf_counter()
+            time_start = time.perf_counter()
 
-        # Read ORCA output
-        orca_output_filepath = os.path.join(structures_dir, structure_folder, orca_file)
-        if not os.path.exists(orca_output_filepath):
-            raise FileNotFoundError(f"ORCA output file not found: {orca_output_filepath}", flush=True)
+            # Read ORCA output
+            orca_output_filepath = os.path.join(structures_dir, structure_folder, orca_file)
+            if not os.path.exists(orca_output_filepath):
+                raise FileNotFoundError(f"ORCA output file not found: {orca_output_filepath}", flush=True)
 
-        # General ORCA output file elements:
-        read_time_start = time.perf_counter()
-        parsed_orca_output = utils_orca_out.parse_output(Path(orca_output_filepath), source='manasakani')
+            # General ORCA output file elements:
+            read_time_start = time.perf_counter()
+            parsed_orca_output = utils_orca_out.parse_output(Path(orca_output_filepath), source='manasakani')
 
-        open_shell = parsed_orca_output["unrestricted"]
-        finalms = parsed_orca_output["finalms"]
-        spin_multiplicity = 2 * abs(finalms) + 1
-        charge = parsed_orca_output["total_charge"]
+            open_shell = parsed_orca_output["unrestricted"]
+            finalms = parsed_orca_output["finalms"]
+            spin_multiplicity = 2 * abs(finalms) + 1
+            charge = parsed_orca_output["total_charge"]
 
-        # Atomic and electronic structure:
-        if open_shell:
-            print("Loading data from open shell calculation...")
-            fock_matrices, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath, unrestricted=True)
-            basis = {element: full_basis[element] for element in elements} # Get basis (for this structure) for rearranging the matrix:
-            alpha_fock_matrix = utils_orca_out.sort_by_m(fock_matrices['alpha'], basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
-            beta_fock_matrix = utils_orca_out.sort_by_m(fock_matrices['beta'], basis, np.array(elements))
-        else:
-            fock_matrix, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath)
-            basis = {element: full_basis[element] for element in elements} # Get basis (for this structure) for rearranging the matrix:
-            fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
+            # Atomic and electronic structure:
+            if open_shell:
+                print("Loading data from open shell calculation...")
+                fock_matrices, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath, unrestricted=True)
+                basis = {element: full_basis[element] for element in elements} # Get basis (for this structure) for rearranging the matrix:
+                alpha_fock_matrix = utils_orca_out.sort_by_m(fock_matrices['alpha'], basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
+                beta_fock_matrix = utils_orca_out.sort_by_m(fock_matrices['beta'], basis, np.array(elements))
+            else:
+                fock_matrix, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath)
+                basis = {element: full_basis[element] for element in elements} # Get basis (for this structure) for rearranging the matrix:
+                fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
 
-        #NOTE: The basis returned by utils_orca_out (taken from the output file) is not in the right order for the diffuse functions! So we don't use it directly.
-        structure = Atoms(elements, positions=coordinates)
-        read_time_end = time.perf_counter()
+            #NOTE: The basis returned by utils_orca_out (taken from the output file) is not in the right order for the diffuse functions! So we don't use it directly.
+            structure = Atoms(elements, positions=coordinates)
+            read_time_end = time.perf_counter()
 
-        if folder_idx % 10 == 0:
-            print(f"Job {args.job_id}: Time to make atoms and get matrix: {read_time_end - read_time_start}", flush=True)
-            print(f"Job {args.job_id}: Structure: {structure}", flush=True)
+            if folder_idx % 10 == 0:
+                print(f"Job {args.job_id}: Time to make atoms and get matrix: {read_time_end - read_time_start}", flush=True)
+                print(f"Job {args.job_id}: Structure: {structure}", flush=True)
 
-        # Create fock targets:
-        target_time_start = time.perf_counter()
+            # Create fock targets:
+            target_time_start = time.perf_counter()
 
-        if open_shell:
-            fock_matrix = [alpha_fock_matrix, beta_fock_matrix]
+            if open_shell:
+                fock_matrix = [alpha_fock_matrix, beta_fock_matrix]
 
-        fock_target = fock_targets.Fock_Targets(structure, cutoff, full_basis,
-                                                charge=charge,
-                                                spin_multiplicity=spin_multiplicity,
-                                                fock_matrix=fock_matrix, half_edges=half_edges,
-                                                dtype=torch.float32,
-                                                orbital_starts=orbital_starts,
-                                                basis_transformation=basis_transformation,
-                                                orbital_template=orbital_template,
-                                                req_output_irreps=req_output_irreps)
+            fock_target = fock_targets.Fock_Targets(structure, cutoff, full_basis,
+                                                    charge=charge,
+                                                    spin_multiplicity=spin_multiplicity,
+                                                    fock_matrix=fock_matrix, half_edges=half_edges,
+                                                    dtype=torch.float32,
+                                                    orbital_starts=orbital_starts,
+                                                    orbital_template=orbital_template,
+                                                    req_output_irreps=req_output_irreps,
+                                                    out_js_list=out_js_list)
 
-        # Save the analysis objects to use for the next structure (these depend only on the basis)
-        # orbital_starts = fock_target.orbital_starts
-        # basis_transformation = fock_target.basis_transformation
-        # orbital_template = fock_target.orbital_template
-        # req_output_irreps = fock_target.req_output_irreps
+            # Save the analysis objects to use for the next structure (these depend only on the basis)
+            orbital_starts = fock_target.orbital_starts
+            orbital_template = fock_target.orbital_template
+            req_output_irreps = fock_target.req_output_irreps
+            out_js_list = fock_target.out_js_list
 
-        target_time_end = time.perf_counter()
+            target_time_end = time.perf_counter()
 
-        if folder_idx % 10 == 0:
-            print(f"Job {args.job_id}: Time to make targets: {target_time_end - target_time_start}", flush=True)
+            if folder_idx % 10 == 0:
+                print(f"Job {args.job_id}: Time to make targets: {target_time_end - target_time_start}", flush=True)
 
-        # Shift back diffuse orbitals
-        for atom, orbitals in full_basis.items():
-            full_basis[atom] = [orb % 10 for orb in orbitals]
+            # Shift back diffuse orbitals
+            for atom, orbitals in full_basis.items():
+                full_basis[atom] = [orb % 10 for orb in orbitals]
 
-        # Store successful structure
-        structures.append(fock_target)
-        orca_output_list.append(parsed_orca_output)
-        local_folder_name_strings.append(structure_folder)
+            # Store successful structure
+            structures.append(fock_target)
+            orca_output_list.append(parsed_orca_output)
+            local_folder_name_strings.append(structure_folder)
 
-        time_end = time.perf_counter()
-        if folder_idx % 10 == 0:
-            print(f"Job {args.job_id}: Total time for one structure: {time_end - time_start}", flush=True)
+            time_end = time.perf_counter()
+            if folder_idx % 10 == 0:
+                print(f"Job {args.job_id}: Total time for one structure: {time_end - time_start}", flush=True)
 
-        # except Exception as e:
-        #     print(f"ERROR: Job {args.job_id} skipping structure {structure_folder} due to error: {str(e)}", flush=True)
-        #     skipped_structures.append(structure_folder)
-        #     continue
+        except Exception as e:
+            print(f"ERROR: Job {args.job_id} skipping structure {structure_folder} due to error: {str(e)}", flush=True)
+            skipped_structures.append(structure_folder)
+            continue
 
     big_time_end = time.perf_counter()
     successful_structures = len(structures)
@@ -174,8 +189,8 @@ def main():
     print(f"Job {args.job_id}: Time to process {total_attempted} structures: {big_time_end - big_time_start}", flush=True)
 
     # Write to database
-    # output_db_filename = f"omol_dimers/{args.output_db_name}_job_{args.job_id}.db"
-    output_db_filename = f"test.db"
+    output_db_filename = f"omol_dimers/{args.output_db_name}_job_{args.job_id}.db"
+    # output_db_filename = f"test.db"
     print(f"Job {args.job_id}: Writing to {output_db_filename}", flush=True)
 
     try:
