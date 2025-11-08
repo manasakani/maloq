@@ -2,9 +2,8 @@ import torch
 import numpy as np
 import multiprocessing as mp
 
-from fock_utils import utils_orca_out, fock_targets
+from fock_utils import utils_orca_out, fock_targets, basis_sets
 from ase import Atoms
-from .get_loader import orbital_basis_def2_svp_nabla, orbital_basis_def2_svp_QM7
 from .ASEDataset import ASEAtomsData
 
 from torch_geometric.loader import DataLoader
@@ -29,14 +28,14 @@ def dataset_analysis(database, dataset_name, rcut=5.0, dtype=torch.float64, redu
         if dataset_name == "QM7":
             energy = mol['energy']
             forces = mol['forces']
-            hamiltonian = mol['hamiltonian'].numpy()   
+            hamiltonian = mol['hamiltonian'].numpy()
             atomic_numbers = mol['_atomic_numbers'].numpy()
             positions=mol['_positions'].numpy()
-            orbital_basis = orbital_basis_def2_svp_QM7
-        
+            orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
+
         elif dataset_name == "nablaDFT":
             atomic_numbers, positions, energy, forces, hamiltonian, overlap, coeff_matrix, moses_id, conformation_id = database[i]
-            orbital_basis = orbital_basis_def2_svp_nabla
+            orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
 
         elif dataset_name == "omol":
             atomic_numbers = mol.atomic_numbers
@@ -45,19 +44,19 @@ def dataset_analysis(database, dataset_name, rcut=5.0, dtype=torch.float64, redu
             energies = mol.energies
             forces = mol.forces
 
-        else: 
+        else:
             print("Unknown database!")
-        
+
         # if the dataset is not omol, we need to create the atomic structure and set up the graph targets
         if dataset_name != "omol":
 
             # 1. Make the atomic structure
             mol_atoms = Atoms(symbols=atomic_numbers, positions=positions)
 
-            # 2. Set up the Graph targets 
-            if dataset_name == "QM7":                 
-                hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate 
-            
+            # 2. Set up the Graph targets
+            if dataset_name == "QM7":
+                hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate
+
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, reflection_symmetry=reduce_edge, scale_shift_data=scale_shift_data)
             required_irreps = graph_targets.req_output_irreps
 
@@ -68,13 +67,13 @@ def dataset_analysis(database, dataset_name, rcut=5.0, dtype=torch.float64, redu
             atomic_number = int(atomic_number.item())
             if atomic_number not in element_node_block_values:
                 element_node_block_values[atomic_number] = []
-            
+
             # append all the nonzero values:
             tol = 1e-8
             node_block = node_block.cpu().numpy()
-            nonzero_values = node_block[np.abs(node_block) >= tol]  
+            nonzero_values = node_block[np.abs(node_block) >= tol]
             element_node_block_values[atomic_number].append(nonzero_values)
-            
+
     # sort the keys in increasing order:
     element_node_block_values = {k: element_node_block_values[k] for k in sorted(element_node_block_values.keys())}
 
@@ -85,7 +84,7 @@ def dataset_analysis(database, dataset_name, rcut=5.0, dtype=torch.float64, redu
 
     # if distributed, gather the element_node_block_values dictionary to rank 0
     if dist.is_available() and dist.is_initialized():
-        rank = dist.get_rank() 
+        rank = dist.get_rank()
         world_size = dist.get_world_size()
 
         print(f"Rank {rank} gathering element_node_block_values...")
@@ -125,7 +124,7 @@ def dataset_analysis(database, dataset_name, rcut=5.0, dtype=torch.float64, redu
         #     plt.scatter([index_track] * len(node_block_values), node_block_values, s=5.0, alpha=0.50)
         #     index_track += 1
         #     element_labels.append(element_name)
-        
+
         # # plt.yscale('log')
         # plt.xticks(range(len(element_labels)), element_labels)
         # plt.savefig(f"{dataset_name}_node_block_values_rank_{rank}.png", bbox_inches='tight', dpi=300)
@@ -147,5 +146,5 @@ def dataset_analysis(database, dataset_name, rcut=5.0, dtype=torch.float64, redu
         # plt.violinplot(data, showmeans=False, showmedians=True, widths=0.3, bw_method=0.1)
         # plt.xticks(range(1, len(element_labels) + 1), element_labels)
         # plt.savefig(f"{dataset_name}_node_block_values_violin_rank_{rank}.png", bbox_inches='tight', dpi=300)
-    
+
     print("Done analysis of dataset:", dataset_name, flush=True)

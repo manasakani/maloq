@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-from fock_utils import utils_orca_out, fock_targets, matrix2labels_kernels
+from fock_utils import utils_orca_out, fock_targets, matrix2labels_kernels, basis_sets
 from dataset_utils.ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
 from ase import Atoms
 from ase.neighborlist import NeighborList
@@ -9,21 +9,6 @@ from ase.neighborlist import NeighborList
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
 import torch.distributed as dist
-
-orbital_basis_def2_svp_nabla = {35: [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2],
-                                17: [0, 0, 0, 0, 1, 1, 1, 2],
-                                16: [0, 0, 0, 0, 1, 1, 1, 2],
-                                9: [0, 0, 0, 1, 1, 2],
-                                8: [0, 0, 0, 1, 1, 2],
-                                7: [0, 0, 0, 1, 1, 2],
-                                6: [0, 0, 0, 1, 1, 2],
-                                1: [0, 0, 1]}
-
-orbital_basis_def2_svp_QM7 = {9: [0, 0, 0, 1, 1, 2],
-                              8: [0, 0, 0, 1, 1, 2],
-                              7: [0, 0, 0, 1, 1, 2],
-                              6: [0, 0, 0, 1, 1, 2],
-                              1: [0, 0, 1]}
 
 def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, half_edges=True, make_fock_targets=True, scale_shift_data=None):
     """
@@ -33,9 +18,9 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     assert end_idx > start_idx
 
     # Fock matrix analysis parameters:
-    equivariant_blocks = None
     orbital_starts = None
     basis_transformation = None
+    orbital_template = None
 
     datalist = []
     for i in range(start_idx, end_idx):
@@ -49,11 +34,11 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             overlap = mol['overlap'].numpy()
             atomic_numbers = mol['_atomic_numbers'].numpy()
             positions=mol['_positions'].numpy()
-            orbital_basis = orbital_basis_def2_svp_QM7
+            orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
 
         elif dataset_name == "nablaDFT":
             atomic_numbers, positions, energy, forces, hamiltonian, overlap, coeff_matrix, moses_id, conformation_id = database[i]
-            orbital_basis = orbital_basis_def2_svp_nabla
+            orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
 
         else:
             print("Unknown database!")
@@ -68,12 +53,12 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
 
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, half_edges=half_edges,
                                                       scale_shift_data=scale_shift_data,
-                                                      equivariant_blocks=equivariant_blocks,
                                                       orbital_starts=orbital_starts,
-                                                      basis_transformation=basis_transformation)
-            equivariant_blocks = graph_targets.equivariant_blocks
+                                                      basis_transformation=basis_transformation,
+                                                      orbital_template=orbital_template)
             orbital_starts = graph_targets.orbital_starts
             basis_transformation = graph_targets.basis_transformation
+            orbital_template = graph_targets.orbital_template
 
         else:
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, None, dtype=dtype, half_edges=half_edges,
@@ -107,15 +92,12 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     print("required irreps: ", required_irreps)
 
     basis_transform = graph_targets.basis_transformation
-
-    equivariant_blocks = graph_targets.equivariant_blocks
     orbital_starts = graph_targets.orbital_starts
-    orbital_template = matrix2labels_kernels.get_orbital_template(equivariant_blocks, orbital_starts)
 
     dataset = sampleDataset(datalist)
     data_loader = DataLoader(dataset, batch_size=batch_size)
 
-    return data_loader, required_irreps, basis_transform, orbital_basis, ls_list, orbital_template
+    return data_loader, required_irreps, basis_transform, orbital_basis, ls_list
 
 def get_datalist(dataset, start_idx, end_idx, dataset_name, rcut, element_references, dtype=torch.float32, half_edges=True, make_fock_targets=True, scale_shift_data=None):
     """

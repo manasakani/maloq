@@ -3,7 +3,6 @@ import numpy as np
 
 from fock_utils import utils_orca_out, fock_targets, basis_sets, utils_tensor_decomp
 from ase import Atoms
-from .get_loader import orbital_basis_def2_svp_nabla, orbital_basis_def2_svp_QM7
 import matplotlib.pyplot as plt
 from e3nn.o3 import Irreps
 import time
@@ -23,9 +22,9 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
     # 1. Get the indices of the scalar components in every target
     # -----------------------------------------------------------
     if dataset_name == "QM7":
-        orbital_basis = orbital_basis_def2_svp_QM7
+        orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
     elif dataset_name == "nablaDFT":
-        orbital_basis = orbital_basis_def2_svp_nabla
+        orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
     elif dataset_name == "omol":
         orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
     else:
@@ -86,11 +85,11 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             hamiltonian = mol['hamiltonian'].numpy()
             atomic_numbers = mol['_atomic_numbers'].numpy()
             positions=mol['_positions'].numpy()
-            orbital_basis = orbital_basis_def2_svp_QM7
+            orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
 
         elif dataset_name == "nablaDFT":
             atomic_numbers, positions, energy, forces, hamiltonian, overlap, coeff_matrix, moses_id, conformation_id = database[i]
-            orbital_basis = orbital_basis_def2_svp_nabla
+            orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
 
         elif dataset_name == "omol":
             atomic_numbers = mol.atomic_numbers
@@ -294,7 +293,7 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
         sample_structure, rcut_orbitals, orbital_basis, fock_matrix=None,
         half_edges=reduce_edge, scale_shift_data=scale_shift_data
     )
-    equivariant_blocks = sample_fock_target_object.equivariant_blocks
+    orbital_template = sample_fock_target_object.orbital_template
     orbital_starts = sample_fock_target_object.orbital_starts
     basis_transformation = sample_fock_target_object.basis_transformation
     req_output_irreps = sample_fock_target_object.req_output_irreps
@@ -314,7 +313,7 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
             fock_target_object = fock_targets.Fock_Targets(
                 structure, rcut_orbitals, orbital_basis, fock_matrix=None,
                 half_edges=reduce_edge, scale_shift_data=scale_shift_data,
-                equivariant_blocks=equivariant_blocks,
+                orbital_template=orbital_template,
                 orbital_starts=orbital_starts,
                 basis_transformation=basis_transformation,
                 req_output_irreps=req_output_irreps

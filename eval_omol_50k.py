@@ -48,7 +48,7 @@ print("Time to setup distributed environment: ", compute_end - compute_start)
 # dataset_folder = '/checkpoint/ocp/manasakani/omol_58k_Sep11/omol_closedshell_58k_train_6.0_alledge_job_'+str(rank)+'.db'
 # dataset_folder = '/checkpoint/ocp/manasakani/omol_test_common_1k/omol_closedshell_58k_test_common_1k_6.0_alledge_job_'+str(rank)+'.db'
 dataset_folder = '/checkpoint/ocp/manasakani/omol_test_all_5k/omol_closedshell_58k_test_all_5k_6.0_alledge_job_'+str(rank)+'.db' # 2 nodes
-output_folder = 'outputs_omol_58k_E128_eval'
+output_folder = 'ICLR_2025/outputs_omol_58k_E128_fock_evals'
 dataset_name = 'omol'
 run_name = 'omol_eval'
 
@@ -69,8 +69,8 @@ restart_optimizer = False
 # --> Training settings:
 train_or_eval = "eval"
 compute_total_energy = False
-num_val = total_rows - 1                # Number of validation structures (250 for embedding visualization)
-num_train = 1                           # Number of training structures - need equal batches on every gpu (use 840 molecules per gpu if doing a mol-wise split)
+num_val = 1#total_rows - 1                # Number of validation structures (250 for embedding visualization)
+num_train = 2                           # Number of training structures - need equal batches on every gpu (use 840 molecules per gpu if doing a mol-wise split)
 num_epochs = 300
 batch_size = 1                          # 1 for not oom (molecule-wise batching for evals)
 target_atoms_per_batch = 200            # if not using batch_size (atom-wise batching for train)
@@ -382,10 +382,6 @@ if train_or_eval == "train":
                     train_head=train_head,
                     compute_uncoupled_loss=compute_uncoupled_loss)
 else:
-    equivariant_blocks = val_data[0].fock_target_object.equivariant_blocks
-    orbital_starts = val_data[0].fock_target_object.orbital_starts
-    orbital_template = matrix2labels_kernels.get_orbital_template(equivariant_blocks, orbital_starts)
-
     trainer.evaluate(train_loss_fxn,
                     device,
                     val_loader,
@@ -396,6 +392,5 @@ else:
                     output_folder=output_folder,
                     compute_total_energy=compute_total_energy,
                     dataset_name=dataset_name,
-                    orbital_basis=orbital_basis,
-                    orbital_template=orbital_template
+                    orbital_basis=orbital_basis
                     )

@@ -376,8 +376,7 @@ class SplitTrainer():
                 output_folder='outputs',
                 dataset_name='omol',
                 orbital_basis=None,
-                compute_total_energy=True,
-                orbital_template=None):
+                compute_total_energy=True):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
 
@@ -387,7 +386,7 @@ class SplitTrainer():
         dump_plots = False
         dump_embeddings = False
         compute_eigenvalues = True
-        save_density = True
+        save_density = False
 
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank()
@@ -409,7 +408,10 @@ class SplitTrainer():
 
         # Transform orbital template into cupy version:
         if loss_target_string == 'fock_matrix':
-            print("orbital template to regular array")
+            print("Creating orbital template pointers")
+            first_batch = next(iter(eval_loader))
+            orbital_template = first_batch.fock_target_object[0].orbital_template
+
             orbital_template_ptrs = []
             orbital_template_tmp = []
             for o in orbital_template:
