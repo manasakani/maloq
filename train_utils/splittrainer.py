@@ -138,7 +138,7 @@ class SplitTrainer():
                 backbone_end = time.perf_counter()
 
                 if loss_target_string == 'fock_matrix':
-                    node_output, edge_output_fwd, edge_output_bwd, edge_perm, edge_refl = self.head(backbone_out, batch)
+                    node_output, edge_output = self.head(backbone_out, batch)
                     head_end = time.perf_counter()
 
                     this_node_target = getattr(batch, node_target_name)
@@ -146,9 +146,9 @@ class SplitTrainer():
 
                     loss_start = time.perf_counter()
                     loss_node, loss_edge, loss = self.compute_fock_loss(
-                        node_output, edge_output_fwd, edge_output_bwd,
+                        node_output, edge_output,
                         this_node_target, this_edge_target,
-                        edge_perm, edge_refl, loss_fxn, self.head_irreps,
+                        loss_fxn, self.head_irreps,
                         basis_transform, compute_uncoupled_loss
                     )
                     train_loss_node += loss_node.item()
@@ -202,7 +202,7 @@ class SplitTrainer():
 
                 # Garbage collection
                 if loss_target_string == 'fock_matrix':
-                    del node_output, edge_output_fwd, edge_output_bwd, this_node_target, this_edge_target
+                    del node_output, edge_output, this_node_target, this_edge_target
                     del loss_node, loss_edge, loss
                 else:
                     del node_output, loss
@@ -243,15 +243,15 @@ class SplitTrainer():
 
                     # -- Loss --
                     if loss_target_string == 'fock_matrix':
-                        node_output, edge_output_fwd, edge_output_bwd, edge_perm, edge_refl = self.head(backbone_out, batch)
+                        node_output, edge_output = self.head(backbone_out, batch)
 
                         this_node_target = getattr(batch, node_target_name)
                         this_edge_target = getattr(batch, edge_target_name)
 
                         loss_node, loss_edge, loss = self.compute_fock_loss(
-                            node_output, edge_output_fwd, edge_output_bwd,
+                            node_output, edge_output,
                             this_node_target, this_edge_target,
-                            edge_perm, edge_refl, loss_fxn, self.head_irreps,
+                            loss_fxn, self.head_irreps,
                             basis_transform, compute_uncoupled_loss
                         )
 
@@ -281,7 +281,7 @@ class SplitTrainer():
 
                     # Garbage collection for validation stuff
                     if loss_target_string == 'fock_matrix':
-                        del node_output, edge_output_fwd, edge_output_bwd, this_node_target, this_edge_target
+                        del node_output, edge_output, this_node_target, this_edge_target
                         del loss_node, loss_edge, loss
                     else:
                         del node_output, loss
@@ -465,7 +465,7 @@ class SplitTrainer():
 
                 with torch.no_grad():
                     start_head = time.perf_counter()
-                    node_output, edge_output, edge_output_bwd, edge_perm, edge_refl  = self.head(backbone_out, batch)
+                    node_output, edge_output = self.head(backbone_out, batch)
                     end_head = time.perf_counter()
                     if rank == 0:
                         print(f"Fock head time: {end_head - start_head:.4f}s", flush=True)
@@ -746,43 +746,27 @@ class SplitTrainer():
                 print("Mismatch in number of validation batches across ranks!", flush=True)
                 raise ValueError("Mismatch in number of validation batches across ranks!", flush=True)
 
-    def compute_fock_loss(self, node_output, edge_output_fwd, edge_output_bwd, this_node_target, this_edge_target, edge_perm, edge_refl, loss_fxn, head_irreps, basis_transform, compute_uncoupled_loss):
+    def compute_fock_loss(self, node_output, edge_output, this_node_target, this_edge_target, loss_fxn, head_irreps, basis_transform, compute_uncoupled_loss):
         """Computes the Fock loss for the given outputs and targets."""
 
-        # In this case, we only have labels for half the edges (edge_mask), so we need to construct the other half using parity rules + permutation
-        # the required transformation is pre-computed in the output head as edge_perm and edge_refl
-        if edge_perm is not None:
+        open_shell = False
 
-            edge_target_fwd = this_edge_target
-            edge_target_bwd = edge_target_fwd[:, edge_perm] * edge_refl # construct the backward edge targets
+        # if closed shell, remove the spin dimension [spin, num_atoms/edges, target_size]
+        if not open_shell:
+            this_node_target = this_node_target[0]
+            this_edge_target = this_edge_target[0]
 
-            output = torch.cat([node_output, edge_output_fwd, edge_output_bwd], dim=0)
-            labels = torch.cat([this_node_target, edge_target_fwd, edge_target_bwd], dim=0)
+        output = torch.cat([node_output, edge_output], dim=0)
+        labels = torch.cat([this_node_target, this_edge_target], dim=0)
 
-            # Transform from direct sum of irreps to matrix elements
-            if compute_uncoupled_loss:
-                output = basis_transform.get_H(output)
-                labels = basis_transform.get_H(labels)
+        # Transform from direct sum of irreps to matrix elements
+        if compute_uncoupled_loss:
+            output = basis_transform.get_H(output)
+            labels = basis_transform.get_H(labels)
 
-            loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
-            edge_output = torch.cat([edge_output_fwd, edge_output_bwd], dim=0)
-            edge_labels = torch.cat([edge_target_fwd, edge_target_bwd], dim=0)
-            loss_edge = loss_fxn(edge_output, edge_labels, self.head_irreps)
-            loss = loss_fxn(output, labels, self.head_irreps)
-
-        # otherwise, edge_output_fwd has all the edges and we can use it directly
-        else:
-            output = torch.cat([node_output, edge_output_fwd], dim=0)
-            labels = torch.cat([this_node_target, this_edge_target], dim=0)
-
-            # Transform from direct sum of irreps to matrix elements
-            if compute_uncoupled_loss:
-                output = basis_transform.get_H(output)
-                labels = basis_transform.get_H(labels)
-
-            loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
-            loss_edge = loss_fxn(edge_output_fwd, this_edge_target, self.head_irreps)
-            loss = loss_fxn(output, labels, self.head_irreps)
+        loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
+        loss_edge = loss_fxn(edge_output, this_edge_target, self.head_irreps)
+        loss = loss_fxn(output, labels, self.head_irreps)
 
         return loss_node, loss_edge, loss
 

@@ -447,7 +447,17 @@ class Fock_Irreps_Head(nn.Module):
     """
     Takes an input irrep like 64x0e+64x1e+64x2e ... and nonlinearly maps it to the output irreps of arbitrary size and l-multiplicity
     """
-    def __init__(self, irreps_in, irreps_out, lmax, sphere_channels, head_type='gated', half_edges=False, ls_list=None, reduce_node=False, reduce_node_intra=False, orbital_basis=None):
+    def __init__(self, irreps_in,
+                irreps_out,
+                lmax,
+                sphere_channels,
+                head_type='gated',
+                half_edges=False,
+                ls_list=None,
+                reduce_node=False,
+                reduce_node_intra=False,
+                orbital_basis=None):
+
         super().__init__()
 
         self.head_type = head_type
@@ -578,7 +588,6 @@ class Fock_Irreps_Head(nn.Module):
 
                 self.output_permutation = self.get_output_permutation(irreps_out)
 
-                # self.compiled_lin_out = torch.compile(self.lin_out, fullgraph=True)
 
     def get_output_permutation(self, output_irreps):
         """
@@ -714,9 +723,7 @@ class Fock_Irreps_Head(nn.Module):
             self.edge_m_reflection = torch.tensor(self.edge_m_reflection, dtype=edge_output.dtype, device=edge_output.device)
             return node_output, edge_output[edge_mask], edge_output[~edge_mask], self.edge_permutation, self.edge_m_reflection
         else:
-            return node_output, edge_output, None, None, None
-
-        # return node_output, edge_output[edge_mask], edge_output[~edge_mask], self.edge_permutation, self.edge_m_reflection
+            return node_output, edge_output
 
     def get_edge_permutation(self):
         """
