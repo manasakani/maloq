@@ -113,7 +113,7 @@ class ASEDataset(Dataset):
             energies=energies,
             num_atoms_in_molecule=len(atomic_numbers),
             charge=charge,
-            spin_multiplicity=spin_multiplicity,
+            spin_multiplicity=int(spin_multiplicity),
             folder_name=folder_name,
         )
 
