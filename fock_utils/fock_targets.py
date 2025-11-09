@@ -251,7 +251,7 @@ class Fock_Targets:
 
     #     return node_blocks
 
-    def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers=None):
+    def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers=None, spin_string=''):
         """
         Scale the l=0 values in the targets, and optionally all irrep degrees if extended data is available
         scales - a list of scaling factors for each l=0 irrep component
@@ -264,8 +264,8 @@ class Fock_Targets:
         if node_atomic_numbers is None:
             node_atomic_numbers = self.atomic_numbers
 
-        means = self.scale_shift_data['element_scalar_means']
-        stds = self.scale_shift_data['element_scalar_stds']
+        means = self.scale_shift_data['element_scalar_means'+spin_string]
+        stds = self.scale_shift_data['element_scalar_stds'+spin_string]
         scalar_indices = self.scale_shift_data['scalar_irrep_indices']
 
         # check for leading spin dimension (only one spin is passed in)

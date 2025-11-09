@@ -53,7 +53,11 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
     req_output_irreps = None
 
     # Extract the magnitudes of those irreps to make scaling/shifting factors
-    element_scalar_values = {}
+    if open_shell:
+        element_scalar_values_alpha = {}
+        element_scalar_values_beta = {}
+    else:
+        element_scalar_values = {}
 
     for i in range(num_molecules):
         mol = database[i]
@@ -75,8 +79,10 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
 
         elif dataset_name == "omol":
             atomic_numbers = mol.atomic_numbers
-            node_labels = mol.node_y
-            edge_labels = mol.y
+            if open_shell:
+                node_labels = [mol.node_y_alpha, mol.node_y_beta]
+            else:
+                node_labels = mol.node_y[0]
             energies = mol.energies
             # forces = mol.forces
 
@@ -114,25 +120,37 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
         # 3. Compute the scale and shift for each atomic number and irrep degree
         for atom_ind, atomic_number in enumerate(atomic_numbers):
 
-            node_block = node_labels[0] # remove spin dimension
             atomic_number = int(atomic_number.item())
 
-            if atomic_number not in element_scalar_values:
-                element_scalar_values[atomic_number] = []
+            if open_shell:
+                if atomic_number not in element_scalar_values_alpha:
+                    element_scalar_values_alpha[atomic_number] = []
+                    element_scalar_values_beta[atomic_number] = []
 
-            if not open_shell:
-                orbital_onsite_scalars = node_block[0][scalar_indices]
+                orbital_onsite_scalars_alpha = node_labels[0][atom_ind][scalar_indices]
+                orbital_onsite_scalars_beta = node_labels[1][atom_ind][scalar_indices]
+
+                element_scalar_values_alpha[atomic_number].append(orbital_onsite_scalars_alpha)
+                element_scalar_values_beta[atomic_number].append(orbital_onsite_scalars_beta)
             else:
-                orbital_onsite_scalars = node_block[scalar_indices]
-            element_scalar_values[atomic_number].append(orbital_onsite_scalars)
+                node_block = node_labels[0][atom_ind] # remove spin dimension
+                if atomic_number not in element_scalar_values:
+                    element_scalar_values[atomic_number] = []
+
+                orbital_onsite_scalars = node_block[0][scalar_indices]
+                element_scalar_values[atomic_number].append(orbital_onsite_scalars)
 
         time_end = time.perf_counter()
         print(f"Time to extract node irreps for molecule {i}: {time_end - time_start} seconds", flush=True)
 
-    print(f"Element scalar values: {element_scalar_values}")
-
-    # sort the keys in increasing order:
-    element_scalar_values = {k: element_scalar_values[k] for k in sorted(element_scalar_values.keys())}
+    if open_shell:
+        # print(f"Element scalar values [alpha]: {element_scalar_values_alpha}")
+        # print(f"Element scalar values [beta]: {element_scalar_values_beta}")
+        element_scalar_values_alpha = {k: element_scalar_values_alpha[k] for k in sorted(element_scalar_values_alpha.keys())}
+        element_scalar_values_beta = {k: element_scalar_values_beta[k] for k in sorted(element_scalar_values_beta.keys())}
+    else:
+        # print(f"Element scalar values: {element_scalar_values}")
+        element_scalar_values = {k: element_scalar_values[k] for k in sorted(element_scalar_values.keys())}
 
     # print keys on every rank:
     # dist.barrier()
@@ -144,60 +162,152 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
         rank = dist.get_rank()
         world_size = dist.get_world_size()
 
-        print(f"Rank {rank} - Allgathering element_scalar_values from all ranks...", flush=True)
-        gathered_data = [None for _ in range(world_size)]
-        dist.all_gather_object(gathered_data, element_scalar_values)
-        combined_element_scalar_values = {}
-        if rank == 0:
-            # Combine the gathered dictionaries
-            for data in gathered_data:
-                for key, value in data.items():
-                    if key not in combined_element_scalar_values:
-                        combined_element_scalar_values[key] = []
-                    combined_element_scalar_values[key].extend(value)
-            print(f"Rank {rank} - Combined element_scalar_values keys: {list(element_scalar_values.keys())}", flush=True)
+        if open_shell:
+            print(f"Rank {rank} - Allgathering element_scalar_values from all ranks...", flush=True)
+            gathered_data_alpha = [None for _ in range(world_size)]
+            gathered_data_beta = [None for _ in range(world_size)]
+            dist.all_gather_object(gathered_data_alpha, element_scalar_values_alpha)
+            dist.all_gather_object(gathered_data_beta, element_scalar_values_beta)
+            combined_element_scalar_values_alpha = {}
+            combined_element_scalar_values_beta = {}
+            if rank == 0:
+                # Combine the gathered dictionaries
+                for data in gathered_data_alpha:
+                    for key, value in data.items():
+                        if key not in combined_element_scalar_values_alpha:
+                            combined_element_scalar_values_alpha[key] = []
+                        combined_element_scalar_values_alpha[key].extend(value)
+                for data in gathered_data_beta:
+                    for key, value in data.items():
+                        if key not in combined_element_scalar_values_beta:
+                            combined_element_scalar_values_beta[key] = []
+                        combined_element_scalar_values_beta[key].extend(value)
+                print(f"Rank {rank} - Combined element_scalar_values keys [alpha]: {list(element_scalar_values_alpha.keys())}", flush=True)
+                print(f"Rank {rank} - Combined element_scalar_values keys [beta]: {list(element_scalar_values_beta.keys())}", flush=True)
 
-        # sort the keys in increasing order
-        combined_element_scalar_values = {k: combined_element_scalar_values[k] for k in sorted(combined_element_scalar_values.keys())}
+            # sort the keys in increasing order
+            combined_element_scalar_values_alpha = {k: combined_element_scalar_values_alpha[k] for k in sorted(combined_element_scalar_values_alpha.keys())}
+            combined_element_scalar_values_beta = {k: combined_element_scalar_values_beta[k] for k in sorted(combined_element_scalar_values_beta.keys())}
+
+        else:
+            print(f"Rank {rank} - Allgathering element_scalar_values from all ranks...", flush=True)
+            gathered_data = [None for _ in range(world_size)]
+            dist.all_gather_object(gathered_data, element_scalar_values)
+            combined_element_scalar_values = {}
+            if rank == 0:
+                # Combine the gathered dictionaries
+                for data in gathered_data:
+                    for key, value in data.items():
+                        if key not in combined_element_scalar_values:
+                            combined_element_scalar_values[key] = []
+                        combined_element_scalar_values[key].extend(value)
+                print(f"Rank {rank} - Combined element_scalar_values keys: {list(element_scalar_values.keys())}", flush=True)
+
+            # sort the keys in increasing order
+            combined_element_scalar_values = {k: combined_element_scalar_values[k] for k in sorted(combined_element_scalar_values.keys())}
     else:
         rank = 0
-        combined_element_scalar_values = element_scalar_values
+        if open_shell:
+            combined_element_scalar_values_alpha = element_scalar_values_alpha
+            combined_element_scalar_values_beta = element_scalar_values_beta
+        else:
+            combined_element_scalar_values = element_scalar_values
 
     if rank == 0:
 
-        # get the mean/std per element
-        element_scalar_means = {}
-        element_scalar_stds = {}
+        if open_shell:
+            # get the mean/std per element
+            element_scalar_means_alpha = {}
+            element_scalar_means_beta = {}
+            element_scalar_stds_alpha = {}
+            element_scalar_stds_beta = {}
 
-        for Z, tensor_list in combined_element_scalar_values.items():
+            for Z, tensor_list in combined_element_scalar_values_alpha.items():
 
-            # Stack into a single 2D tensor: shape [num_molecules, num_scalars_per_atom]
-            stacked = torch.stack(tensor_list)  # shape: [N, 6] for example with H2O
+                # Stack into a single 2D tensor: shape [num_molecules, num_scalars_per_atom]
+                stacked = torch.stack(tensor_list)  # shape: [N, 6] for example with H2O
 
-            means = stacked.mean(dim=0)  # shape: [6]
-            stds = stacked.std(dim=0, unbiased=False)
+                means = stacked.mean(dim=0)  # shape: [6]
+                stds = stacked.std(dim=0, unbiased=False)
 
-            # Fix always-zero positions
-            threshold = 1e-4
-            zero_mask = (means == 0.0)
-            means[zero_mask] = 0.0
-            zero_mask = (stds < threshold)
-            stds[zero_mask] = 1.0
+                # Fix always-zero positions
+                threshold = 1e-4
+                zero_mask = (means == 0.0)
+                means[zero_mask] = 0.0
+                zero_mask = (stds < threshold)
+                stds[zero_mask] = 1.0
 
-            element_scalar_means[Z] = means.tolist()
-            element_scalar_stds[Z] = stds.tolist()
+                element_scalar_means_alpha[Z] = means.tolist()
+                element_scalar_stds_alpha[Z] = stds.tolist()
 
-        print(f"Indices of scalar components: {scalar_indices}")
-        print(f"Element scalar means (averaged): {element_scalar_means}")
-        print(f"Element scalar stds (averaged): {element_scalar_stds}")
+            for Z, tensor_list in combined_element_scalar_values_beta.items():
 
-        scale_shift_data = {
-            "element_scalar_means": element_scalar_means,  # dict[int -> list[float]]
-            "element_scalar_stds": element_scalar_stds,    # dict[int -> list[float]]
-            "scalar_irrep_indices": scalar_indices         # list[int]
-        }
-        torch.save(scale_shift_data, "./fock_datasets/"+filename)
-        print("Saved scale_shift_data to ./fock_datasets/"+filename, flush=True)
+                # Stack into a single 2D tensor: shape [num_molecules, num_scalars_per_atom]
+                stacked = torch.stack(tensor_list)  # shape: [N, 6] for example with H2O
+
+                means = stacked.mean(dim=0)  # shape: [6]
+                stds = stacked.std(dim=0, unbiased=False)
+
+                # Fix always-zero positions
+                threshold = 1e-4
+                zero_mask = (means == 0.0)
+                means[zero_mask] = 0.0
+                zero_mask = (stds < threshold)
+                stds[zero_mask] = 1.0
+
+                element_scalar_means_beta[Z] = means.tolist()
+                element_scalar_stds_beta[Z] = stds.tolist()
+
+            print(f"Indices of scalar components: {scalar_indices}")
+            print(f"Element scalar means (averaged) [alpha]: {element_scalar_means_alpha}")
+            print(f"Element scalar means (averaged) [beta]: {element_scalar_means_beta}")
+            print(f"Element scalar stds (averaged) [alpha]: {element_scalar_stds_alpha}")
+            print(f"Element scalar stds (averaged) [beta]: {element_scalar_stds_beta}")
+
+            scale_shift_data = {
+                "element_scalar_means_alpha": element_scalar_means_alpha,  # dict[int -> list[float]]
+                "element_scalar_means_beta": element_scalar_means_beta,  # dict[int -> list[float]]
+                "element_scalar_stds_alpha": element_scalar_stds_alpha,    # dict[int -> list[float]]
+                "element_scalar_stds_beta": element_scalar_stds_beta,    # dict[int -> list[float]]
+                "scalar_irrep_indices": scalar_indices         # list[int]
+            }
+            torch.save(scale_shift_data, "./fock_datasets/"+filename)
+            print("Saved scale_shift_data to ./fock_datasets/"+filename, flush=True)
+
+        else:
+            # get the mean/std per element
+            element_scalar_means = {}
+            element_scalar_stds = {}
+
+            for Z, tensor_list in combined_element_scalar_values.items():
+
+                # Stack into a single 2D tensor: shape [num_molecules, num_scalars_per_atom]
+                stacked = torch.stack(tensor_list)  # shape: [N, 6] for example with H2O
+
+                means = stacked.mean(dim=0)  # shape: [6]
+                stds = stacked.std(dim=0, unbiased=False)
+
+                # Fix always-zero positions
+                threshold = 1e-4
+                zero_mask = (means == 0.0)
+                means[zero_mask] = 0.0
+                zero_mask = (stds < threshold)
+                stds[zero_mask] = 1.0
+
+                element_scalar_means[Z] = means.tolist()
+                element_scalar_stds[Z] = stds.tolist()
+
+            print(f"Indices of scalar components: {scalar_indices}")
+            print(f"Element scalar means (averaged): {element_scalar_means}")
+            print(f"Element scalar stds (averaged): {element_scalar_stds}")
+
+            scale_shift_data = {
+                "element_scalar_means": element_scalar_means,  # dict[int -> list[float]]
+                "element_scalar_stds": element_scalar_stds,    # dict[int -> list[float]]
+                "scalar_irrep_indices": scalar_indices         # list[int]
+            }
+            torch.save(scale_shift_data, "./fock_datasets/"+filename)
+            print("Saved scale_shift_data to ./fock_datasets/"+filename, flush=True)
 
 
 def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=False, open_shell=False, train_or_eval='train'):
@@ -245,16 +355,15 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
             print(f"Scaling and shifting the node labels in database[{i}]", flush=True)
             start_time = time.perf_counter()
 
-
             # Check if open shell:
             if hasattr(data_obj, "node_y_alpha") and hasattr(data_obj, "node_y_beta"):
                 print(f"Node labels [alpha] before scaling molecule {i}: max={data_obj.node_y_alpha.max().item():.6f}, min={data_obj.node_y_alpha.min().item():.6f}", flush=True)
                 print(f"Node labels [beta] before scaling molecule {i}: max={data_obj.node_y_beta.max().item():.6f}, min={data_obj.node_y_beta.min().item():.6f}", flush=True)
                 scaled_node_y_alpha = data_obj.fock_target_object.scale_shift_node_blocks(
-                    data_obj.node_y_alpha, data_obj.atomic_numbers
+                    data_obj.node_y_alpha, data_obj.atomic_numbers, spin_string='_alpha'
                 )
                 scaled_node_y_beta = data_obj.fock_target_object.scale_shift_node_blocks(
-                    data_obj.node_y_beta, data_obj.atomic_numbers
+                    data_obj.node_y_beta, data_obj.atomic_numbers, spin_string='_beta'
                 )
                 data_obj.node_y_alpha = scaled_node_y_alpha
                 data_obj.node_y_beta = scaled_node_y_beta

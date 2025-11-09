@@ -763,21 +763,24 @@ class SplitTrainer():
 
         # If open shell, sum the loss over the alpha and beta spaces
         if self.open_shell:
-            output_alpha = torch.cat([node_output[0], edge_output[0]], dim=0)
-            output_beta = torch.cat([node_output[1], edge_output[1]], dim=0)
-            labels_alpha = torch.cat([this_node_target[0], this_edge_target[0]], dim=0)
-            labels_beta = torch.cat([this_node_target[1], this_edge_target[1]], dim=0)
+            output = torch.cat([node_output[0], node_output[1], edge_output[0], edge_output[1]], dim=0)
+            labels = torch.cat([this_node_target[0], this_node_target[1], this_edge_target[0], this_edge_target[1]], dim=0)
+            node_outputs_spin = torch.cat([node_output[0], node_output[1]], dim=0)
+            edge_outputs_spin = torch.cat([edge_output[0], edge_output[1]], dim=0)
+            this_node_target_spin = torch.cat([this_node_target[0], this_node_target[1]], dim=0)
+            this_edge_target_spin = torch.cat([this_edge_target[0], this_edge_target[1]], dim=0)
 
             # Transform from direct sum of irreps to matrix elements (simplify this into a single gemm!)
             if compute_uncoupled_loss:
-                output_alpha = basis_transform.get_H(output_alpha)
-                output_beta = basis_transform.get_H(output_beta)
-                labels_alpha = basis_transform.get_H(labels_alpha)
-                labels_beta = basis_transform.get_H(labels_beta)
+                output = basis_transform.get_H(output)
+                labels = basis_transform.get_H(labels)
+                node_outputs_spin = basis_transform.get_H(node_outputs_spin)
+                edge_outputs_spin = basis_transform.get_H(edge_outputs_spin)
+                this_node_target_spin = basis_transform.get_H(this_node_target_spin)
+                this_edge_target_spin = basis_transform.get_H(this_edge_target_spin)
 
-            loss_node = loss_fxn(node_output[0], this_node_target[0], self.head_irreps) + loss_fxn(node_output[1], this_node_target[1], self.head_irreps)
-            loss_edge = loss_fxn(edge_output[0], this_edge_target[0], self.head_irreps) + loss_fxn(edge_output[1], this_edge_target[1], self.head_irreps)
-            loss = loss_fxn(output_alpha, labels_alpha, self.head_irreps) + loss_fxn(output_beta, labels_beta, self.head_irreps)
+            loss_node = loss_fxn(node_outputs_spin, this_node_target_spin, self.head_irreps)
+            loss_edge = loss_fxn(edge_outputs_spin, this_edge_target_spin, self.head_irreps)
 
         # if closed shell, remove the spin dimension [spin, num_atoms/edges, target_size]
         else:
@@ -795,7 +798,8 @@ class SplitTrainer():
 
             loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
             loss_edge = loss_fxn(edge_output, this_edge_target, self.head_irreps)
-            loss = loss_fxn(output, labels, self.head_irreps)
+
+        loss = loss_fxn(output, labels, self.head_irreps)
 
         return loss_node, loss_edge, loss
 
