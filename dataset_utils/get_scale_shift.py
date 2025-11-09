@@ -12,7 +12,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset, Batch
 import torch.distributed as dist
 
-def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduce_edge=False, rank=0, filename='scale_shifts.pt'):
+def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduce_edge=False, rank=0, filename='scale_shifts.pt', open_shell=False):
     """
     Compute scaling and shifting factors for the scalar components of the hamiltonian datasets and save them to file
     """
@@ -37,42 +37,24 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
     _, required_irreps, simplified_out_irreps, _, _, _, _ = utils_tensor_decomp.make_output_irreps(orbital_basis)
     required_irreps = Irreps(required_irreps)
 
-    # Compute indices for all irrep degrees (l=0, 1, 2, ..., lmax)
-    irrep_indices_by_l = {}  # l -> list of indices for that degree
-    scalar_indices = []  # Keep for backwards compatibility
+    # Find the indices of l=0 elements in the labels
+    scalar_indices = []
     irrep_track = 0
-
-    for mul, irrep in required_irreps:
+    for _, irrep in required_irreps:
         l = irrep.l
-        if l not in irrep_indices_by_l:
-            irrep_indices_by_l[l] = []
-
-        # Store indices for this irrep degree
-        for m in range(2 * l + 1):
-            irrep_indices_by_l[l].append(irrep_track + m)
-
-        # Keep scalar indices for backwards compatibility
         if l == 0:
-            for m in range(2 * l + 1):
-                scalar_indices.append(irrep_track + m)
-
+            scalar_indices.append(irrep_track)
         irrep_track += 2 * l + 1
 
-    # Determine lmax from the irreps
-    lmax = max(irrep_indices_by_l.keys()) if irrep_indices_by_l else 0
-
     # Fock matrix analysis parameters:
-    equivariant_blocks = None
+    orbital_template = None
     orbital_starts = None
-    basis_transformation = None
+    out_js_list = None
+    req_output_irreps = None
 
     # Extract the magnitudes of those irreps to make scaling/shifting factors
-    element_scalar_values = {}  # Keep for backwards compatibility (l=0 only)
-    element_irrep_values = {}   # New: all irrep degrees {l: {element: [values]}}
+    element_scalar_values = {}
 
-    # Initialize storage for all irrep degrees
-    for l in range(lmax + 1):
-        element_irrep_values[l] = {}
     for i in range(num_molecules):
         mol = database[i]
 
@@ -112,176 +94,113 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
                 hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate
 
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, half_edges=reduce_edge,
-                                                    equivariant_blocks=equivariant_blocks,
+                                                    orbital_template=equivarianorbital_templatet_blocks,
                                                     orbital_starts=orbital_starts,
-                                                    basis_transformation=basis_transformation)
+                                                    req_output_irreps=req_output_irreps,
+                                                    out_js_list=out_js_list)
 
             # Save the analysis objects to use for the next structure (these depend only on the basis)
-            equivariant_blocks = graph_targets.equivariant_blocks
+            orbital_template = graph_targets.orbital_template
             orbital_starts = graph_targets.orbital_starts
-            basis_transformation = graph_targets.basis_transformation
+            out_js_list = graph_targets.out_js_list
+            req_output_irreps = graph_targets.req_output_irreps
 
             # Shift back all the diffuse orbitals (which were incremented by 10 in utils_tensor_decomp.py)
             for atom, orbitals in orbital_basis.items():
                 orbital_basis[atom] = [orb % 10 for orb in orbitals]
 
-            node_labels = graph_targets.node_labels
+            node_labels = graph_targets.node_labels[0] # Extract spin dimension
 
         # 3. Compute the scale and shift for each atomic number and irrep degree
-        for atomic_number, node_block in zip(atomic_numbers, node_labels):
+        for atom_ind, atomic_number in enumerate(atomic_numbers):
+
+            node_block = node_labels[0] # remove spin dimension
             atomic_number = int(atomic_number.item())
 
-            # Process all irrep degrees
-            for l in range(lmax + 1):
-                if l not in irrep_indices_by_l:
-                    continue
+            if atomic_number not in element_scalar_values:
+                element_scalar_values[atomic_number] = []
 
-                # Initialize element storage if needed
-                if atomic_number not in element_irrep_values[l]:
-                    element_irrep_values[l][atomic_number] = []
-
-                # Get irrep components for this degree
-                irrep_components = node_block[irrep_indices_by_l[l]]
-
-                if l == 0:
-                    # For scalars (l=0), use values directly
-                    irrep_value = irrep_components
-
-                    # Also store in backwards compatibility dict
-                    if atomic_number not in element_scalar_values:
-                        element_scalar_values[atomic_number] = []
-                    element_scalar_values[atomic_number].append(irrep_value)
-
-                else:
-                    # For higher l, compute norm of the irrep
-                    # Reshape to group by irreps: [num_irreps, 2*l+1]
-                    num_components = len(irrep_components)
-                    components_per_irrep = 2 * l + 1
-                    num_irreps = num_components // components_per_irrep
-
-                    if num_irreps > 0:
-                        irrep_reshaped = irrep_components[:num_irreps * components_per_irrep].view(num_irreps, components_per_irrep)
-                        # Compute norm for each irrep: sqrt(sum of squares)
-                        irrep_norms = torch.norm(irrep_reshaped, dim=1)
-                        irrep_value = irrep_norms
-                    else:
-                        irrep_value = torch.tensor([])
-
-                element_irrep_values[l][atomic_number].append(irrep_value)
+            if not open_shell:
+                orbital_onsite_scalars = node_block[0][scalar_indices]
+            else:
+                orbital_onsite_scalars = node_block[scalar_indices]
+            element_scalar_values[atomic_number].append(orbital_onsite_scalars)
 
         time_end = time.perf_counter()
         print(f"Time to extract node irreps for molecule {i}: {time_end - time_start} seconds", flush=True)
 
-    # print(f"Element scalar values: {element_scalar_values}")
+    print(f"Element scalar values: {element_scalar_values}")
 
     # sort the keys in increasing order:
     element_scalar_values = {k: element_scalar_values[k] for k in sorted(element_scalar_values.keys())}
 
     # print keys on every rank:
     # dist.barrier()
-    print(f"Rank {rank} - Element scalar values keys: {list(element_scalar_values.keys())}", flush=True)
+    # print(f"Rank {rank} - Element scalar values keys: {list(element_scalar_values.keys())}", flush=True)
     # dist.barrier()
 
-    # if distributed, allgather the element_irrep_values dictionary
+    # if distributed, allgather the element_scalar_values dictionary
     if dist.is_available() and dist.is_initialized():
         rank = dist.get_rank()
         world_size = dist.get_world_size()
 
-        print(f"Rank {rank} - Allgathering element_irrep_values from all ranks...", flush=True)
+        print(f"Rank {rank} - Allgathering element_scalar_values from all ranks...", flush=True)
         gathered_data = [None for _ in range(world_size)]
-        dist.all_gather_object(gathered_data, element_irrep_values)
-        combined_element_irrep_values = {}
-
+        dist.all_gather_object(gathered_data, element_scalar_values)
+        combined_element_scalar_values = {}
         if rank == 0:
-            # Initialize combined storage
-            for l in range(lmax + 1):
-                combined_element_irrep_values[l] = {}
-
             # Combine the gathered dictionaries
             for data in gathered_data:
-                for l in range(lmax + 1):
-                    if l in data:
-                        for key, value in data[l].items():
-                            if key not in combined_element_irrep_values[l]:
-                                combined_element_irrep_values[l][key] = []
-                            combined_element_irrep_values[l][key].extend(value)
+                for key, value in data.items():
+                    if key not in combined_element_scalar_values:
+                        combined_element_scalar_values[key] = []
+                    combined_element_scalar_values[key].extend(value)
+            print(f"Rank {rank} - Combined element_scalar_values keys: {list(element_scalar_values.keys())}", flush=True)
 
-            print(f"Rank {rank} - Combined element_irrep_values keys for l=0: {list(combined_element_irrep_values[0].keys())}", flush=True)
-
-        # Sort the keys in increasing order for all l
-        if rank == 0:
-            for l in range(lmax + 1):
-                combined_element_irrep_values[l] = {k: combined_element_irrep_values[l][k] for k in sorted(combined_element_irrep_values[l].keys())}
-
-        # Also create backwards compatible combined_element_scalar_values
-        combined_element_scalar_values = combined_element_irrep_values[0] if rank == 0 else {}
+        # sort the keys in increasing order
+        combined_element_scalar_values = {k: combined_element_scalar_values[k] for k in sorted(combined_element_scalar_values.keys())}
     else:
         rank = 0
-        combined_element_irrep_values = element_irrep_values
         combined_element_scalar_values = element_scalar_values
 
     if rank == 0:
 
-        # get the mean/std per element for all irrep degrees
-        element_scalar_means = {}  # Backwards compatibility (l=0 only)
-        element_scalar_stds = {}   # Backwards compatibility (l=0 only)
-        element_irrep_means = {}   # New: {l: {element: [means]}}
-        element_irrep_stds = {}    # New: {l: {element: [stds]}}
+        # get the mean/std per element
+        element_scalar_means = {}
+        element_scalar_stds = {}
 
-        for l in range(lmax + 1):
-            element_irrep_means[l] = {}
-            element_irrep_stds[l] = {}
+        for Z, tensor_list in combined_element_scalar_values.items():
 
-            for Z, tensor_list in combined_element_irrep_values[l].items():
-                if not tensor_list:  # Skip if no data for this element
-                    continue
+            # Stack into a single 2D tensor: shape [num_molecules, num_scalars_per_atom]
+            stacked = torch.stack(tensor_list)  # shape: [N, 6] for example with H2O
 
-                # Stack into a single 2D tensor: shape [num_molecules, num_irreps_per_atom]
-                stacked = torch.stack(tensor_list)  # shape: [N, num_irreps]
+            means = stacked.mean(dim=0)  # shape: [6]
+            stds = stacked.std(dim=0, unbiased=False)
 
-                means = stacked.mean(dim=0)
-                stds = stacked.std(dim=0, unbiased=False)
+            # Fix always-zero positions
+            threshold = 1e-4
+            zero_mask = (means == 0.0)
+            means[zero_mask] = 0.0
+            zero_mask = (stds < threshold)
+            stds[zero_mask] = 1.0
 
-                # Fix always-zero positions
-                threshold = 1e-4
-                zero_mask = (means == 0.0)
-                means[zero_mask] = 0.0
-                zero_mask = (stds < threshold)
-                stds[zero_mask] = 1.0
-
-                element_irrep_means[l][Z] = means.tolist()
-                element_irrep_stds[l][Z] = stds.tolist()
-
-                # Store in backwards compatibility dicts for l=0
-                if l == 0:
-                    element_scalar_means[Z] = means.tolist()
-                    element_scalar_stds[Z] = stds.tolist()
+            element_scalar_means[Z] = means.tolist()
+            element_scalar_stds[Z] = stds.tolist()
 
         print(f"Indices of scalar components: {scalar_indices}")
-        print(f"Irrep indices by l: {irrep_indices_by_l}")
-        print(f"Element scalar means (l=0, averaged): {element_scalar_means}")
-        print(f"Element scalar stds (l=0, averaged): {element_scalar_stds}")
-        print(f"Element irrep means for all l: {element_irrep_means}")
-        print(f"Element irrep stds for all l: {element_irrep_stds}")
+        print(f"Element scalar means (averaged): {element_scalar_means}")
+        print(f"Element scalar stds (averaged): {element_scalar_stds}")
 
         scale_shift_data = {
-            # Backwards compatibility fields
-            "element_scalar_means": element_scalar_means,  # dict[int -> list[float]] (l=0 only)
-            "element_scalar_stds": element_scalar_stds,    # dict[int -> list[float]] (l=0 only)
-            "scalar_irrep_indices": scalar_indices,        # list[int] (l=0 only)
-
-            # New fields for all irrep degrees
-            "element_irrep_means": element_irrep_means,    # dict[int -> dict[int -> list[float]]] (l -> element -> means)
-            "element_irrep_stds": element_irrep_stds,      # dict[int -> dict[int -> list[float]]] (l -> element -> stds)
-            "irrep_indices_by_l": irrep_indices_by_l,     # dict[int -> list[int]] (l -> indices)
-            "lmax": lmax                                   # int
+            "element_scalar_means": element_scalar_means,  # dict[int -> list[float]]
+            "element_scalar_stds": element_scalar_stds,    # dict[int -> list[float]]
+            "scalar_irrep_indices": scalar_indices         # list[int]
         }
         torch.save(scale_shift_data, "./fock_datasets/"+filename)
         print("Saved scale_shift_data to ./fock_datasets/"+filename, flush=True)
-    dist.barrier()
 
 
-def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=False, train_or_eval='train'):
+def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=False, open_shell=False, train_or_eval='train'):
     """
     Scale and shift the node labels in the database using the scale_shift_data
     """
@@ -330,6 +249,7 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
             # Check if open shell:
             if hasattr(data_obj, "node_y_alpha") and hasattr(data_obj, "node_y_beta"):
                 print(f"Node labels [alpha] before scaling molecule {i}: max={data_obj.node_y_alpha.max().item():.6f}, min={data_obj.node_y_alpha.min().item():.6f}", flush=True)
+                print(f"Node labels [beta] before scaling molecule {i}: max={data_obj.node_y_beta.max().item():.6f}, min={data_obj.node_y_beta.min().item():.6f}", flush=True)
                 scaled_node_y_alpha = data_obj.fock_target_object.scale_shift_node_blocks(
                     data_obj.node_y_alpha, data_obj.atomic_numbers
                 )
@@ -339,6 +259,7 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
                 data_obj.node_y_alpha = scaled_node_y_alpha
                 data_obj.node_y_beta = scaled_node_y_beta
                 print(f"Node labels [alpha]  after scaling molecule {i}: max={data_obj.node_y_alpha.max().item():.6f}, min={data_obj.node_y_alpha.min().item():.6f}", flush=True)
+                print(f"Node labels [beta]  after scaling molecule {i}: max={data_obj.node_y_beta.max().item():.6f}, min={data_obj.node_y_beta.min().item():.6f}", flush=True)
             else:
                 print(f"Node labels before scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)
                 scaled_node_y = data_obj.fock_target_object.scale_shift_node_blocks(

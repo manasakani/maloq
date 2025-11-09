@@ -264,83 +264,28 @@ class Fock_Targets:
         if node_atomic_numbers is None:
             node_atomic_numbers = self.atomic_numbers
 
-        # Check if we have extended multi-degree scaling data
-        if 'element_irrep_means' in self.scale_shift_data and 'irrep_indices_by_l' in self.scale_shift_data:
-            # Use new multi-degree scaling
-            element_means = self.scale_shift_data['element_irrep_means']
-            element_stds = self.scale_shift_data['element_irrep_stds']
-            irrep_indices_by_l = self.scale_shift_data['irrep_indices_by_l']
-            lmax = self.scale_shift_data['lmax']
+        means = self.scale_shift_data['element_scalar_means']
+        stds = self.scale_shift_data['element_scalar_stds']
+        scalar_indices = self.scale_shift_data['scalar_irrep_indices']
 
-            # Process each node block
-            for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
-                z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
+        # check for leading spin dimension (only one spin is passed in)
+        unsqueeze = False
+        if node_blocks.ndim == 3:
+            unsqueeze = True
+            node_blocks = node_blocks[0]
 
-                # Scale each irrep degree
-                for l in range(lmax + 1):
-                    if l not in irrep_indices_by_l or z not in element_means[l]:
-                        continue
+        # Process each node block
+        for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
+            z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
+            mean_vals = means[z]
+            std_vals = stds[z]
 
-                    irrep_indices = irrep_indices_by_l[l]
-                    mean_vals = element_means[l][z]
-                    std_vals = element_stds[l][z]
+            # Scale and shift the l=0 values in the node block
+            for idx_offset, idx in enumerate(scalar_indices):
+                node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
 
-                    if l == 0:
-                        # For l=0 (scalars), scale components directly
-                        for idx_offset, idx in enumerate(irrep_indices):
-                            node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
-
-                    else:
-                        # For l>0, scale the norms while preserving directions
-                        irrep_start_idx = 0
-                        for irrep_idx in range(len(mean_vals)):
-                            # Get indices for this irrep (2*l+1 components)
-                            irrep_size = 2 * l + 1
-                            start_idx = irrep_indices[irrep_start_idx]
-                            end_idx = irrep_indices[irrep_start_idx + irrep_size - 1] + 1
-
-                            # Extract irrep components
-                            irrep_components = node_block[start_idx:end_idx]
-
-                            # Compute current norm
-                            current_norm = torch.norm(irrep_components)
-
-                            # Scale the norm
-                            if current_norm > 1e-10:  # Avoid division by zero
-                                target_norm = (current_norm - mean_vals[irrep_idx]) / std_vals[irrep_idx]
-                                scale_factor = target_norm / current_norm
-                                node_block[start_idx:end_idx] = irrep_components * scale_factor
-                            else:
-                                # For zero norms, just apply the scaling to the mean
-                                scaled_mean = -mean_vals[irrep_idx] / std_vals[irrep_idx]
-                                node_block[start_idx:end_idx] = scaled_mean / torch.sqrt(torch.tensor(irrep_size, dtype=node_block.dtype))
-
-                            irrep_start_idx += irrep_size
-
-        else:
-            # Fallback to original l=0 only scaling for backwards compatibility
-            means = self.scale_shift_data['element_scalar_means']
-            stds = self.scale_shift_data['element_scalar_stds']
-            scalar_indices = self.scale_shift_data['scalar_irrep_indices']
-
-            # check for leading spin dimension (only one spin is passed in)
-            unsqueeze = False
-            if node_blocks.ndim == 3:
-                unsqueeze = True
-                node_blocks = node_blocks[0]
-
-            # Process each node block
-            for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
-                z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
-                mean_vals = means[z]
-                std_vals = stds[z]
-
-                # Scale and shift the l=0 values in the node block
-                for idx_offset, idx in enumerate(scalar_indices):
-                    node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
-
-            if unsqueeze:
-                node_blocks = node_blocks.unsqueeze(0)
+        if unsqueeze:
+            node_blocks = node_blocks.unsqueeze(0)
 
         return node_blocks
 
