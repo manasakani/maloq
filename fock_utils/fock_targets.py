@@ -6,6 +6,7 @@ import time
 from ase.neighborlist import NeighborList
 import random
 import cupy as cp
+import pickle, os
 
 class Fock_Targets:
     """
@@ -83,9 +84,27 @@ class Fock_Targets:
 
         # --> Analyze structure of orbital interactions
         if orbital_template is None or out_js_list is None or req_output_irreps is None:
-            targets, self.req_output_irreps, simplified_out_irreps, ls_list, self.out_js_list, self.orbital_starts, full_orb_interaction_list = utils_tensor_decomp.make_output_irreps(self.orbital_basis)
-            equivariant_blocks = utils_tensor_decomp.process_targets(self.orbital_basis, targets, ls_list, self.out_js_list, full_orb_interaction_list)
-            self.orbital_template = matrix2labels_kernels.get_orbital_template(equivariant_blocks, self.orbital_starts)
+            cache_path = "orbital_cache.pkl"
+            if os.path.exists(cache_path):
+                print("Reading orbital info from cache")
+                with open(cache_path, "rb") as f:
+                    cache = pickle.load(f)
+                self.req_output_irreps = cache["req_output_irreps"]
+                self.out_js_list = cache["out_js_list"]
+                self.orbital_starts = cache["orbital_starts"]
+                self.orbital_template = cache["orbital_template"]
+            else:
+                targets, self.req_output_irreps, simplified_out_irreps, ls_list, self.out_js_list, self.orbital_starts, full_orb_interaction_list = utils_tensor_decomp.make_output_irreps(self.orbital_basis)
+                equivariant_blocks = utils_tensor_decomp.process_targets(self.orbital_basis, targets, ls_list, self.out_js_list, full_orb_interaction_list)
+                self.orbital_template = matrix2labels_kernels.get_orbital_template(equivariant_blocks, self.orbital_starts)
+                cache = {
+                    "req_output_irreps": self.req_output_irreps,
+                    "out_js_list": self.out_js_list,
+                    "orbital_starts": self.orbital_starts,
+                    "orbital_template": self.orbital_template,
+                }
+                with open(cache_path, "wb") as f:
+                    pickle.dump(cache, f)
         else:
             self.orbital_template = orbital_template
             self.orbital_starts = orbital_starts

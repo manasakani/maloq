@@ -117,11 +117,11 @@ class eSEN_Backbone(nn.Module):
             self.max_num_elements, self.sphere_channels
         )
         #  For charge: possible values are -10 to +10 (21 values)
-        self.abs_max_charge = 10
+        self.abs_max_charge = 11
         self.charge_embedding = nn.Embedding(
             2*self.abs_max_charge + 1, self.sphere_channels
         )
-        self.max_spin_multiplicity = 12
+        self.max_spin_multiplicity = 20
         self.spin_embedding = nn.Embedding(
             self.max_spin_multiplicity, self.sphere_channels
         )
@@ -311,16 +311,14 @@ class eSEN_Backbone(nn.Module):
             dtype=data_dict["pos"].dtype,
         )
         # set l = 0 components to the element embeddings + charge + spin:
-        charge_idx = data_dict["charges"] + self.abs_max_charge  # shift to 0-based index
-        spin_idx = data_dict["spin_multiplicity"]
 
         # Seperate batch nodes into their molecules
         molecule_indices = torch.cat([
-            torch.full((num_atoms,), i, dtype=torch.long, device=batch.charge.device)
-            for i, num_atoms in enumerate(batch.num_atoms_in_molecule)
+            torch.full((data_dict['natoms'],), i, dtype=torch.long, device=data_dict["pos"].device)
+            for i, data_dict['natoms'] in enumerate(data_dict["num_atoms_in_molecule"])
         ])
-        atom_charges = batch.charge[molecule_indices]  # shape: [total_num_atoms]
-        atom_spins = batch.spin_multiplicity[molecule_indices]  # shape: [total_num_atoms]
+        atom_charges = data_dict["charges"][molecule_indices] + self.abs_max_charge         # shape: [total_num_atoms]
+        atom_spins = data_dict["spin_multiplicity"][molecule_indices]                       # shape: [total_num_atoms]
 
         element_emb = self.sphere_embedding(data_dict["atomic_numbers"])
         charge_emb = self.charge_embedding(atom_charges)

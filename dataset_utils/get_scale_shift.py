@@ -326,26 +326,27 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
             print(f"Scaling and shifting the node labels in database[{i}]", flush=True)
             start_time = time.perf_counter()
 
-            print(f"Node labels before scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)
 
-            # Check if open shell (then it has dim [2*spin, nodes/edges, target_len])
-            if data_obj.node_y.ndim == 3 and data_obj.node_y.shape[0] > 1:
+            # Check if open shell:
+            if hasattr(data_obj, "node_y_alpha") and hasattr(data_obj, "node_y_beta"):
+                print(f"Node labels [alpha] before scaling molecule {i}: max={data_obj.node_y_alpha.max().item():.6f}, min={data_obj.node_y_alpha.min().item():.6f}", flush=True)
                 scaled_node_y_alpha = data_obj.fock_target_object.scale_shift_node_blocks(
-                    data_obj.node_y[0], data_obj.atomic_numbers
+                    data_obj.node_y_alpha, data_obj.atomic_numbers
                 )
                 scaled_node_y_beta = data_obj.fock_target_object.scale_shift_node_blocks(
-                    data_obj.node_y[1], data_obj.atomic_numbers
+                    data_obj.node_y_beta, data_obj.atomic_numbers
                 )
-                data_obj.node_y = torch.stack([scaled_node_y_alpha, scaled_node_y_beta], dim=0)
-
+                data_obj.node_y_alpha = scaled_node_y_alpha
+                data_obj.node_y_beta = scaled_node_y_beta
+                print(f"Node labels [alpha]  after scaling molecule {i}: max={data_obj.node_y_alpha.max().item():.6f}, min={data_obj.node_y_alpha.min().item():.6f}", flush=True)
             else:
+                print(f"Node labels before scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)
                 scaled_node_y = data_obj.fock_target_object.scale_shift_node_blocks(
                     data_obj.node_y, data_obj.atomic_numbers
                 )
                 data_obj.node_y = scaled_node_y
-
+                print(f"Node labels after scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)
             end_time = time.perf_counter()
-            print(f"Node labels after scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)
 
         data_list.append(data_obj)
 

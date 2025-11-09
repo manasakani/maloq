@@ -79,11 +79,6 @@ class ASEDataset(Dataset):
         # dipole = torch.tensor(structure.data['multipoles'][1])  # XX, YY, ZZ components
         # quadrupole = torch.tensor(structure.data['multipoles'][2])  # XY, XZ, YZ components
 
-        # Handle individual closed-shell molecules in open-shell training by setting alphafock==betafock:
-        if self.open_shell and node_labels.ndim == 3 and node_labels.shape[0] == 1:
-            node_labels = node_labels.repeat(2, 1, 1)
-            edge_labels = edge_labels.repeat(2, 1, 1)
-
         # Legacy closed-shell databases (does not contain spin dimension, so we add it):
         if node_labels.ndim == 2:
             node_labels = node_labels.unsqueeze(0)
@@ -94,28 +89,57 @@ class ASEDataset(Dataset):
             charge = structure.data['charge']
             spin_multiplicity = structure.data['spin_multiplicity']
 
+        # Handle individual closed-shell molecules in open-shell training by setting alphafock==betafock:
+        if self.open_shell and node_labels.ndim == 3 and node_labels.shape[0] == 1:
+            print("[Adding 2nd spin dimension to closed shell molecule for open shell training]")
+            node_labels = node_labels.repeat(2, 1, 1)
+            edge_labels = edge_labels.repeat(2, 1, 1)
+
         # metadata:
         folder_name = structure.data['folder_name']
 
-        # Create PyTorch Geometric Data object
-        data = Data(
-            pos=torch.tensor(positions, dtype=self.dtype),
-            x=torch.tensor(atomic_numbers),
-            edge_index=edge_index,
-            edge_attr=edge_dist,
-            edge_mask=edge_mask,
-            reverse_edge_map=reverse_edge_map,
-            y=edge_labels,
-            node_y=node_labels,
-            atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
-            nedges=len(edge_index[0]),
-            natoms=len(atomic_numbers),
-            energies=energies,
-            num_atoms_in_molecule=len(atomic_numbers),
-            charge=charge,
-            spin_multiplicity=int(spin_multiplicity),
-            folder_name=folder_name,
-        )
+        # Create PyTorch Geometric Data object with alpha/beta targets if open shell
+        # NOTE: the alpha and beta targets are seperated to make collation easier
+        if not self.open_shell:
+            data = Data(
+                pos=torch.tensor(positions, dtype=self.dtype),
+                x=torch.tensor(atomic_numbers),
+                edge_index=edge_index,
+                edge_attr=edge_dist,
+                edge_mask=edge_mask,
+                reverse_edge_map=reverse_edge_map,
+                y=edge_labels,
+                node_y=node_labels,
+                atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
+                nedges=len(edge_index[0]),
+                natoms=len(atomic_numbers),
+                energies=energies,
+                num_atoms_in_molecule=len(atomic_numbers),
+                charge=charge,
+                spin_multiplicity=int(spin_multiplicity),
+                folder_name=folder_name,
+            )
+        else:
+            data = Data(
+                pos=torch.tensor(positions, dtype=self.dtype),
+                x=torch.tensor(atomic_numbers),
+                edge_index=edge_index,
+                edge_attr=edge_dist,
+                edge_mask=edge_mask,
+                reverse_edge_map=reverse_edge_map,
+                y_alpha=edge_labels[0],
+                y_beta=edge_labels[1],
+                node_y_alpha=node_labels[0],
+                node_y_beta=node_labels[1],
+                atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
+                nedges=len(edge_index[0]),
+                natoms=len(atomic_numbers),
+                energies=energies,
+                num_atoms_in_molecule=len(atomic_numbers),
+                charge=charge,
+                spin_multiplicity=int(spin_multiplicity),
+                folder_name=folder_name,
+            )
 
         # Store orbital basis (dictionary)
         data.orbital_basis = self.orbital_basis
