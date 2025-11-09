@@ -143,7 +143,6 @@ class ASEDataset(Dataset):
 
         # Store orbital basis (dictionary)
         data.orbital_basis = self.orbital_basis
-        # data.required_irreps = structure.data["required_irreps"]
 
         return data
 
@@ -159,16 +158,6 @@ def sample_collate_fn(batch):
     return Batch.from_data_list(batch)
 
 # The following is directly copied from [https://github.com/atomistic-machine-learning/schnetpack/blob/master/src/schnetpack/data/atoms.py#L36] to avoid installing schnetpack
-# class AtomsDataFormat(Enum):
-#     """Enumeration of data formats"""
-
-#     ASE = "ase"
-
-# class AtomsDataError(Exception):
-#     pass
-
-# extension_map = {AtomsDataFormat.ASE: ".db"}
-
 class Transform(nn.Module):
     """
     Base class for all transforms.

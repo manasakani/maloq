@@ -143,13 +143,17 @@ def parse_output(
         desired_data["spins"] = spins
 
         # Handle spin inputs
-        spin_multiplicity = get_finalms(orca_output_path)
-        if spin_multiplicity is None:
-            spin_multiplicity = desired_data["total_spin"]
-        desired_data["finalms"] = spin_multiplicity
+        finalms = get_finalms(orca_output_path)
+        if finalms is None:
+            desired_data["spin_multiplicity"] = desired_data["total_spin"]
+        else:
+            desired_data["spin_multiplicity"] = 2 * abs(finalms) + 1
 
     else:
         desired_data["finalms"] = 0.0
+        desired_data["spin_multiplicity"] = 1.0
+
+    print("Spin multiplicity: ", desired_data["spin_multiplicity"])
     desired_data["n_scf_steps"] = len(orca_props.scfvalues[0]) - 1
 
     if (core_hours := orca_props.metadata.get("cpu_time")) is not None:

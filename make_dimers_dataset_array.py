@@ -7,6 +7,7 @@ import time
 import numpy as np
 import torch
 from pathlib import Path
+import math
 
 # Your existing imports
 from ase import Atoms
@@ -94,8 +95,8 @@ def main():
     # Process structures
     for folder_idx, structure_folder in enumerate(structures_to_process):
         try:
-            if folder_idx % 10 == 0:
-                print(f"Job {args.job_id}: Processing folder {folder_idx}/{len(structures_to_process)}: {structure_folder}", flush=True)
+            # if folder_idx % 10 == 0:
+            print(f"Job {args.job_id}: Processing folder {folder_idx}/{len(structures_to_process)}: {structure_folder}", flush=True)
 
             time_start = time.perf_counter()
 
@@ -109,8 +110,7 @@ def main():
             parsed_orca_output = utils_orca_out.parse_output(Path(orca_output_filepath), source='manasakani')
 
             open_shell = parsed_orca_output["unrestricted"]
-            finalms = parsed_orca_output["finalms"]
-            spin_multiplicity = 2 * abs(finalms) + 1
+            spin_multiplicity = parsed_orca_output["spin_multiplicity"]
             charge = parsed_orca_output["total_charge"]
 
             # Atomic and electronic structure:
@@ -124,6 +124,25 @@ def main():
                 fock_matrix, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath)
                 basis = {element: full_basis[element] for element in elements} # Get basis (for this structure) for rearranging the matrix:
                 fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
+
+            if open_shell:
+                if (
+                    alpha_fock_matrix.max().item() > 500 or
+                    beta_fock_matrix.max().item() > 500 or
+                    math.isnan(alpha_fock_matrix.max().item()) or
+                    math.isnan(beta_fock_matrix.max().item())
+                ):
+                    print(alpha_fock_matrix.max().item())
+                    print(beta_fock_matrix.max().item())
+                    raise ValueError("This open shell node is too big or contains NaN! Orca calculation might be corrupted")
+            else:
+                if (
+                    fock_matrix.max().item() > 500 or
+                    math.isnan(fock_matrix.max().item())
+                ):
+                    print(fock_matrix.max().item())
+                    raise ValueError("This closed shell node is too big or contains NaN! Orca calculation might be corrupted")
+
 
             #NOTE: The basis returned by utils_orca_out (taken from the output file) is not in the right order for the diffuse functions! So we don't use it directly.
             structure = Atoms(elements, positions=coordinates)
