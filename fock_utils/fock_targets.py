@@ -304,6 +304,12 @@ class Fock_Targets:
             stds = self.scale_shift_data['element_scalar_stds']
             scalar_indices = self.scale_shift_data['scalar_irrep_indices']
 
+            # check for leading spin dimension (only one spin is passed in)
+            unsqueeze = False
+            if node_blocks.ndim == 3:
+                unsqueeze = True
+                node_blocks = node_blocks[0]
+
             # Process each node block
             for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
                 z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
@@ -313,6 +319,9 @@ class Fock_Targets:
                 # Scale and shift the l=0 values in the node block
                 for idx_offset, idx in enumerate(scalar_indices):
                     node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
+
+            if unsqueeze:
+                node_blocks = node_blocks.unsqueeze(0)
 
         return node_blocks
 

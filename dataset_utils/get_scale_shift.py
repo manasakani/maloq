@@ -290,12 +290,16 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
     print("Making analysis fock target object for the first molecule in the database", flush=True)
     sample_structure = Atoms(symbols=database[start_mol].atomic_numbers, positions=database[start_mol].pos)
     sample_fock_target_object = fock_targets.Fock_Targets(
-        sample_structure, rcut_orbitals, orbital_basis, fock_matrix=None,
-        half_edges=reduce_edge, scale_shift_data=scale_shift_data
-    )
+                                                            sample_structure,
+                                                            rcut_orbitals,
+                                                            orbital_basis,
+                                                            fock_matrix=None,
+                                                            half_edges=reduce_edge,
+                                                            scale_shift_data=scale_shift_data
+                                                        )
     orbital_template = sample_fock_target_object.orbital_template
     orbital_starts = sample_fock_target_object.orbital_starts
-    basis_transformation = sample_fock_target_object.basis_transformation
+    out_js_list = sample_fock_target_object.out_js_list
     req_output_irreps = sample_fock_target_object.req_output_irreps
 
     data_list = []
@@ -303,21 +307,19 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
 
         data_obj = database[i]
         data_obj.fock_target_object = sample_fock_target_object
-        # print(f"Molecule {i} has {data_obj.natoms} atoms", flush=True)
 
         # If running evaluation, we need to create a structure-dependent fock target object
         if train_or_eval == 'eval':
             print("Making fock analysis object for molecule", i, flush=True)
-            # print("Not scaling node labels during evaluation", flush=True)
             structure = Atoms(symbols=data_obj.atomic_numbers, positions=data_obj.pos)
             fock_target_object = fock_targets.Fock_Targets(
-                structure, rcut_orbitals, orbital_basis, fock_matrix=None,
-                half_edges=reduce_edge, scale_shift_data=scale_shift_data,
-                orbital_template=orbital_template,
-                orbital_starts=orbital_starts,
-                basis_transformation=basis_transformation,
-                req_output_irreps=req_output_irreps
-            )
+                                                            structure, rcut_orbitals, orbital_basis, fock_matrix=None,
+                                                            half_edges=reduce_edge, scale_shift_data=scale_shift_data,
+                                                            orbital_template=orbital_template,
+                                                            orbital_starts=orbital_starts,
+                                                            out_js_list=out_js_list,
+                                                            req_output_irreps=req_output_irreps
+                                                        )
             data_obj.fock_target_object = fock_target_object
 
         if train_or_eval == 'train' and scale_nodes:
@@ -326,11 +328,21 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
 
             print(f"Node labels before scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)
 
-            original_node_y = data_obj.node_y
-            scaled_node_y = data_obj.fock_target_object.scale_shift_node_blocks(
-                data_obj.node_y, data_obj.atomic_numbers
-            )
-            data_obj.node_y = scaled_node_y
+            # Check if open shell (then it has dim [2*spin, nodes/edges, target_len])
+            if data_obj.node_y.ndim == 3 and data_obj.node_y.shape[0] > 1:
+                scaled_node_y_alpha = data_obj.fock_target_object.scale_shift_node_blocks(
+                    data_obj.node_y[0], data_obj.atomic_numbers
+                )
+                scaled_node_y_beta = data_obj.fock_target_object.scale_shift_node_blocks(
+                    data_obj.node_y[1], data_obj.atomic_numbers
+                )
+                data_obj.node_y = torch.stack([scaled_node_y_alpha, scaled_node_y_beta], dim=0)
+
+            else:
+                scaled_node_y = data_obj.fock_target_object.scale_shift_node_blocks(
+                    data_obj.node_y, data_obj.atomic_numbers
+                )
+                data_obj.node_y = scaled_node_y
 
             end_time = time.perf_counter()
             print(f"Node labels after scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)

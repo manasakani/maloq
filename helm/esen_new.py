@@ -473,6 +473,11 @@ class Fock_Irreps_Head(nn.Module):
         self.backward_irrep_track = {}                      # helper dict to keep track of where to find the forward onsite orbital edges when we expand them out later
         print("ls_list for output head: ", self.ls_list)
 
+        if open_shell:                                      # output two sets of labels for alpha/beta fock
+            self.num_spins = 2
+        else:
+            self.num_spins = 1
+
         # We make a new list of irreps (irreps_nodereduced) which contains only the unique irreps in the node blocks
         if self.reduce_node:
             irreps_nodereduced = []
