@@ -5,7 +5,7 @@ from torch_geometric.data import Data as gnnData
 from dataset_utils import get_loader
 from fock_utils import fock_targets, utils_tensor_decomp, matrix2labels_kernels
 from e3nn.o3 import Irreps
-from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head
+from helm.esen_new import eSEN_Backbone, Fock_Irreps_Head
 from ase.neighborlist import NeighborList
 
 def make_graph(atoms):

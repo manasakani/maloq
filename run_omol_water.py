@@ -13,7 +13,7 @@ from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 from torch_geometric.loader import DataLoader
 
 # Models
-from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Linear_Energy_Head     
+from helm.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Linear_Energy_Head
 from e3nn.o3 import Irreps
 
 import_end = time.perf_counter()
@@ -29,15 +29,16 @@ random.seed(42)
 # Settings (just dumping everything here for now)
 # -----------------------------------------------
 # ---------------------------
-# --> OMOL 
-dataset_folder = './water_halfedge.db'
+# --> OMOL
+dataset_folder = './water_fulledge.db'
 dtype = torch.float32
 orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
 orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
 orbital_basis = {int(k): v for k, v in orbital_basis.items()}
 
-database = ASEDataset(dataset_folder, orbital_basis, dtype=dtype)
-output_folder = 'outputs_omol_water_halfedge'
+open_shell = False
+database = ASEDataset(dataset_folder, orbital_basis, dtype=dtype, open_shell=open_shell)
+output_folder = './omol_dimers'
 dataset_name = 'omol'
 # ---------------------------
 assert not len(database) == 0
@@ -55,38 +56,41 @@ restart_optimizer = False
 # --> Training settings:
 train_or_eval = "train"
 num_val = 1                             # Number of validation structures
-num_train = 1 
-num_epochs = 3000
+num_train = 1
+num_epochs = 10000
 batch_size = 1                          # 1 for eval, 10 for train
-rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
+rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
 # Additional symmetries:
-reduce_edge = True                      # use only edges i,j where i<j (other edge labels will not be computed/stored)
-reduce_node = True                     # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = True               # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_edge = False                      # use only edges i,j where i<j (other edge labels will not be computed/stored)
+reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
 
 torch.set_default_dtype(dtype)
-lr_init = 5e-3
-patience = 100                          # for scheduler
-threshold = 1e-4                        # for scheduler
-scheduler_type = 'cosine'               # 'plateau' or 'cosine'
+lr_init = 1e-3
+patience = 200                          # for scheduler
+threshold = 1e-5                        # for scheduler
+scheduler_type = 'cosine'              # 'plateau' or 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
 eta_min = 1e-7                          # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
-head_type = 'gated'                     # linear or gated 
-train_loss_fxn = loss.rmse_mse_padded_loss   
+head_type = 'gated'                     # linear or gated
+train_loss_fxn = loss.rmse_mse_padded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
 
-scale_and_shift = False
-scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
+scale_and_shift = True
+if open_shell:
+    scale_shift_file = 'element_scale_shifts_water' + dataset_name + '_osh.pt'
+else:
+    scale_shift_file = 'element_scale_shifts_water' + dataset_name + '.pt'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
@@ -94,23 +98,18 @@ if scale_and_shift:
     print(f"Scale and shift file: {scale_shift_file}", flush=True)
     if scale_shift_file not in os.listdir('./fock_datasets/'):
         print("[Computing element scale and shift factors for the dataset]", flush=True)
-        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file)
+        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file, open_shell=open_shell)
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
         print("Done computing scale and shift factors", flush=True)
     else:
         print("[Loading element scale and shift factors from file]", flush=True)
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
-        scale_shift_data = {
-            "element_scalar_means": scale_shift_data["element_scalar_means"],  # dict[int -> list[float]]
-            "element_scalar_stds": scale_shift_data["element_scalar_stds"],    # dict[int -> list[float]]
-            "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"],  # list[int]
-        }
 else:
     print("Not scaling or shifting the dataset", flush=True)
     scale_shift_data = None
 
 # --------------------------------------------
-# Initialize compute environment 
+# Initialize compute environment
 # --------------------------------------------
 
 rank = int(os.environ['SLURM_PROCID'])
@@ -151,13 +150,17 @@ data_load_start = time.perf_counter()
 train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
 val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
 
+# print("DEBUG: Rank, num_mol, start_mol, end_mol: ", rank, train_local_num_mol, train_start_mol, train_end_mol, flush=True)
+# print("UNCOMMENT ME")
+# val_start_mol = 0
+# val_end_mol = num_val
 val_start_mol += num_train  # the validation molecules start after training ones
 val_end_mol += num_train
 
 # Create the fock target analysis objects for each molecule in the dataset, scale and shift the node labels if required
 print("Processing the dataset, creating fock analysis objects ...", flush=True)
-train_data = get_scale_shift.scale_shift_database(database, train_start_mol, train_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
-val_data = get_scale_shift.scale_shift_database(database, val_start_mol, val_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
+train_data = get_scale_shift.scale_shift_database(database, train_start_mol, train_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval, open_shell=open_shell)
+val_data = get_scale_shift.scale_shift_database(database, val_start_mol, val_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval, open_shell=open_shell)
 
 # Create the dataloaders for each GPU's data
 train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0)
@@ -179,7 +182,7 @@ print("orbital_basis: ", orbital_basis)
 print("required_irreps: ", required_irreps)
 print("simplified_out_irreps: ", Irreps(required_irreps).sort()[0].simplify())
 
-irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
+irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)])
 
 # determine output irreps from target type:
 if loss_target == 'fock_matrix':
@@ -217,15 +220,16 @@ backbone = eSEN_Backbone(
             )
 
 if loss_target == "fock_matrix":
-    head = Fock_Irreps_Head(irreps_in=irreps_in, 
-                            irreps_out=output_irreps, 
-                            lmax=required_irreps.lmax, 
+    head = Fock_Irreps_Head(irreps_in=irreps_in,
+                            irreps_out=output_irreps,
+                            lmax=required_irreps.lmax,
                             sphere_channels=l_embedding_dim,
                             half_edges=reduce_edge,
                             ls_list=ls_list,
                             reduce_node=reduce_node,
                             reduce_node_intra=reduce_node_intra,
-                            orbital_basis=orbital_basis)
+                            orbital_basis=orbital_basis,
+                            open_shell=open_shell)
 elif loss_target == "forces":
     head = Linear_Force_Head(backbone)
 
@@ -240,12 +244,12 @@ if train_backbone and train_head:
     optimizer = torch.optim.Adam(list(backbone.parameters()) + list(head.parameters()), lr=lr_init)
 
 elif train_head:                            # freeze backbone model
-    for param in backbone.parameters(): 
+    for param in backbone.parameters():
         param.requires_grad = False
     optimizer = torch.optim.Adam(head.parameters(), lr=lr_init)
 
 elif train_backbone:                        # freeze output head
-    for param in head.parameters():     
+    for param in head.parameters():
         param.requires_grad = False
     optimizer = torch.optim.Adam(backbone.parameters(), lr=lr_init)
 
@@ -260,11 +264,11 @@ if restart_backbone:
     print("Restarting backbone model from :", restart_file)
     checkpoint = torch.load(restart_file)
     state_dict = checkpoint['model_state_dict']
-    
+
     # Get rid of module prefix if saved with DDP
     new_state_dict = {}
     for key, value in state_dict.items():
-        new_key = key.replace('module.', '')  
+        new_key = key.replace('module.', '')
         new_state_dict[new_key] = value
     backbone.load_state_dict(new_state_dict)
 
@@ -276,14 +280,14 @@ if restart_head:
 
     if restart_optimizer:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    
+
     # Get rid of module prefix if saved with DDP
     new_state_dict = {}
     for key, value in state_dict.items():
-        new_key = key.replace('module.', '')  
+        new_key = key.replace('module.', '')
         new_state_dict[new_key] = value
     head.load_state_dict(new_state_dict)
-    
+
 
 # --------------------------------------------
 # Run Training or Evaluation
@@ -295,24 +299,24 @@ elif scheduler_type == 'cosine':
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min, verbose=True)
 else:
     raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
- 
+
 print("Going to training or evaluation", flush=True)
 # scheduler = loss_scheduler(optimizer, lag_epochs=100)
-trainer = splittrainer.SplitTrainer(backbone=backbone, 
+trainer = splittrainer.SplitTrainer(backbone=backbone,
                                     head=head,
                                     head_irreps=output_irreps,
                                     run_name='omol_single',
                                     save_frequency=50)
 
 if train_or_eval == "train":
-    trainer.train(num_epochs, 
-                    train_loss_fxn, 
+    trainer.train(num_epochs,
+                    train_loss_fxn,
                     optimizer,
-                    scheduler, 
+                    scheduler,
                     device,
                     train_loader=train_loader,
                     loss_target_string=loss_target,
-                    node_target_name=node_target, 
+                    node_target_name=node_target,
                     edge_target_name=edge_target,
                     output_folder=output_folder,
                     val_loader=val_loader,
@@ -325,8 +329,8 @@ else:
                     val_loader,
                     loss_target_string=loss_target,
                     node_target_name=node_target,
-                    edge_target_name=edge_target, 
+                    edge_target_name=edge_target,
                     basis_transform=basis_transformation,
                     output_folder=output_folder,
+                    orbital_basis=orbital_basis
                     )
-        

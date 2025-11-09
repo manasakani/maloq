@@ -44,14 +44,14 @@ def main():
 
     # Setup
     structures_dir = args.structures_dir
-    structure_folders = [f for f in os.listdir(structures_dir)
-                        if os.path.isdir(os.path.join(structures_dir, f)) ]
+    # structure_folders = [f for f in os.listdir(structures_dir)
+    #                     if os.path.isdir(os.path.join(structures_dir, f)) ]
 
     # structure_folders = [f for f in os.listdir(structures_dir)
     #                     if len(os.listdir(os.path.join(structures_dir, f))) > 0 and
     #                     os.path.isdir(os.path.join(structures_dir, f)) ]
-    # num_folders = args.end_idx - args.start_idx
-    # structure_folders = get_subdirs(structures_dir, num_folders)
+    num_folders = args.end_idx - args.start_idx
+    structure_folders = get_subdirs(structures_dir, num_folders)
 
     orca_file = 'orca.out'
     cutoff = 6.0

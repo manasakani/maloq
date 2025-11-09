@@ -29,9 +29,9 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> OMOL
-# dataset_folder = '/checkpoint/ocp/manasakani/omol_dimers/dimer_subset.db'
-dataset_folder = 'test.db'
-output_folder = './omol_dimers'
+dataset_folder = '/checkpoint/ocp/manasakani/omol_dimers/omol_dimers_7k.db'
+# dataset_folder = '/checkpoint/ocp/manasakani/omol_dimers/test_dimers_58.db'
+output_folder = 'outputs_omol_dimers'
 dataset_name = 'omol'
 
 open_shell = True
@@ -55,10 +55,10 @@ restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 1                             # Number of validation structures
-num_train = 1
+num_val = 10                             # Number of validation structures
+num_train = len(database) - num_val
 num_epochs = 10000
-batch_size = 10                          # 1 for eval, 10 for train
+batch_size = 1000                          # 1 for eval, 10 for train
 rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -70,9 +70,10 @@ reduce_node_intra = False               # intra-orbital interactions are enforce
 
 train_backbone = True
 train_head = True
+save_frequency = 10
 
 torch.set_default_dtype(dtype)
-lr_init = 1e-3
+lr_init = 1e-4
 patience = 200                          # for scheduler
 threshold = 1e-5                        # for scheduler
 scheduler_type = 'cosine'              # 'plateau' or 'cosine'
@@ -86,8 +87,8 @@ loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
 
-scale_and_shift = False
-scale_shift_file = 'element_scale_shifts_' + dataset_name + '.pt'
+scale_and_shift = True
+scale_shift_file = 'element_scale_shifts_dimers_' + dataset_name + '_osh.pt'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
@@ -95,17 +96,12 @@ if scale_and_shift:
     print(f"Scale and shift file: {scale_shift_file}", flush=True)
     if scale_shift_file not in os.listdir('./fock_datasets/'):
         print("[Computing element scale and shift factors for the dataset]", flush=True)
-        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file)
+        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file, open_shell=open_shell)
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
         print("Done computing scale and shift factors", flush=True)
     else:
         print("[Loading element scale and shift factors from file]", flush=True)
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
-        scale_shift_data = {
-            "element_scalar_means": scale_shift_data["element_scalar_means"],  # dict[int -> list[float]]
-            "element_scalar_stds": scale_shift_data["element_scalar_stds"],    # dict[int -> list[float]]
-            "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"],  # list[int]
-        }
 else:
     print("Not scaling or shifting the dataset", flush=True)
     scale_shift_data = None
@@ -161,8 +157,8 @@ val_end_mol += num_train
 
 # Create the fock target analysis objects for each molecule in the dataset, scale and shift the node labels if required
 print("Processing the dataset, creating fock analysis objects ...", flush=True)
-train_data = get_scale_shift.scale_shift_database(database, train_start_mol, train_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
-val_data = get_scale_shift.scale_shift_database(database, val_start_mol, val_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval)
+train_data = get_scale_shift.scale_shift_database(database, train_start_mol, train_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval, open_shell=open_shell)
+val_data = get_scale_shift.scale_shift_database(database, val_start_mol, val_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval, open_shell=open_shell)
 
 # Create the dataloaders for each GPU's data
 train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0)
@@ -172,7 +168,6 @@ data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
 print("Size of train loader: ", len(train_loader))
 print("Size of val loader: ", len(val_loader))
-
 
 # --> Irrep information for the targets
 required_irreps = train_data[0].fock_target_object.req_output_irreps
@@ -294,23 +289,22 @@ if restart_head:
 # --------------------------------------------
 # Run Training or Evaluation
 # --------------------------------------------
-
-if scheduler_type == 'plateau':
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
-elif scheduler_type == 'cosine':
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min, verbose=True)
-else:
-    raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
-
 print("Going to training or evaluation", flush=True)
-# scheduler = loss_scheduler(optimizer, lag_epochs=100)
 trainer = splittrainer.SplitTrainer(backbone=backbone,
                                     head=head,
                                     head_irreps=output_irreps,
                                     run_name='omol_single',
-                                    save_frequency=50)
+                                    save_frequency=save_frequency)
 
 if train_or_eval == "train":
+
+    if scheduler_type == 'plateau':
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
+    elif scheduler_type == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min, verbose=True)
+    else:
+        raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
+
     trainer.train(num_epochs,
                     train_loss_fxn,
                     optimizer,
