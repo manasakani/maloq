@@ -180,14 +180,14 @@ class Fock_Targets:
         target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
         fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(self.orbitals_per_atom)])
 
-        # initialize tensors for node and edge labels for training
+        # initialize tensors for node and edge labels for training (all other values are 0!)
         num_spins = 2 if open_shell else 1
-        self.node_labels = torch.empty((num_spins, num_atoms, self.target_len), device=self.device)
-        self.edge_labels = torch.empty((num_spins, num_edges, self.target_len), device=self.device)
+        self.node_labels = torch.zeros((num_spins, num_atoms, self.target_len), device=self.device)
+        self.edge_labels = torch.zeros((num_spins, num_edges, self.target_len), device=self.device)
 
         for spin in range(num_spins):
 
-            labels = torch.empty((num_edges + num_atoms, self.target_len), device=self.device)
+            labels = torch.zeros((num_edges + num_atoms, self.target_len), device=self.device)
             matrix = self.fock_matrix[spin] if open_shell else self.fock_matrix
             matrix = torch.from_numpy(matrix).to(self.device)
 

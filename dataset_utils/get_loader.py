@@ -19,9 +19,10 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     assert end_idx > start_idx
 
     # Fock matrix analysis parameters:
-    orbital_starts = None
-    out_js_list = None
-    orbital_template = None
+    # orbital_starts = None
+    # out_js_list = None
+    # orbital_template = None
+    # req_output_irreps = None
 
     datalist = []
     for i in range(start_idx, end_idx):
@@ -42,7 +43,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
 
         else:
-            print("Unknown database!")
+            raise ValueError("Unknown database!")
 
         # 1. Make the atomic structure
         mol_atoms = Atoms(symbols=atomic_numbers, positions=positions)
@@ -53,13 +54,15 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
                 hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate
 
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, half_edges=half_edges,
-                                                      scale_shift_data=scale_shift_data,
-                                                      orbital_starts=orbital_starts,
-                                                      out_js_list=out_js_list,
-                                                      orbital_template=orbital_template)
-            orbital_starts = graph_targets.orbital_starts
-            out_js_list = graph_targets.out_js_list
-            orbital_template = graph_targets.orbital_template
+                                                      scale_shift_data=scale_shift_data)
+                                                    #   orbital_starts=orbital_starts,
+                                                    #   out_js_list=out_js_list,
+                                                    #   orbital_template=orbital_template,
+                                                    #   req_output_irreps=req_output_irreps)
+            # orbital_starts = graph_targets.orbital_starts
+            # out_js_list = graph_targets.out_js_list
+            # orbital_template = graph_targets.orbital_template
+            # req_output_irreps = graph_targets.req_output_irreps
 
         else:
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, None, dtype=dtype, half_edges=half_edges,
@@ -69,9 +72,13 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         forward_edge_mask = graph_targets.forward_edge_mask
         reverse_edge_map = graph_targets.reverse_edge_map
 
-        # closed shell, needed for custom collate
-        edge_labels = graph_targets.edge_labels[0]
-        node_labels = graph_targets.node_labels[0]
+        # closed shell only, needed for custom collate
+        if graph_targets.node_labels.ndim == 3:
+            edge_labels = graph_targets.edge_labels[0]
+            node_labels = graph_targets.node_labels[0]
+        else:
+            edge_labels = graph_targets.edge_labels
+            node_labels = graph_targets.node_labels
 
         # 3. Make the data object
         data = gnnData(

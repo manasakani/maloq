@@ -76,7 +76,6 @@ class SplitTrainer():
             min_lr=1e-10):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}", flush=True)
-        self.open_shell = self.head.num_spins > 1
 
         # Torch compile:
         # self.backbone = torch.compile(self.backbone, fullgraph=True)
@@ -105,6 +104,7 @@ class SplitTrainer():
         include_edges = False
         if edge_target_name:
             include_edges = True
+            self.open_shell = self.head.module.num_spins > 1
 
         initial_lr = optimizer.param_groups[0]['lr']
 
@@ -605,6 +605,11 @@ class SplitTrainer():
 
                 # Compute the eigenvalues and eigenvalue error
                 if compute_eigenvalues:
+
+                    # cupy -> numpy (cpu)
+                    output_fock_matrix = output_fock_matrix.get()
+                    label_fock_matrix = label_fock_matrix.get()
+
                     print("Solving generalized eigenvalue problem...", flush=True)
                     if hasattr(batch, 'overlap_matrix') and batch.overlap_matrix is not None:
                         overlap_matrix = batch.overlap_matrix.detach().cpu().numpy()
@@ -640,9 +645,10 @@ class SplitTrainer():
                 # Compute error in total energy from predicted and label Fock matrices:
                 if compute_total_energy:
 
-                    # cupy -> numpy (cpu)
-                    output_fock_matrix = output_fock_matrix.get()
-                    label_fock_matrix = label_fock_matrix.get()
+                    if not compute_eigenvalues:
+                        # cupy -> numpy (cpu)
+                        output_fock_matrix = output_fock_matrix.get()
+                        label_fock_matrix = label_fock_matrix.get()
 
                     print("Computing total energy...", flush=True)
                     total_energy_label = self.get_total_energy(batch, label_fock_matrix, orbital_basis, dataset_name, overlap_matrix=overlap_matrix, save_density=save_density, key='output')
