@@ -2,7 +2,6 @@
 import torch
 import numpy as np
 from torch_geometric.data import Data as gnnData
-from dataset_utils import get_loader
 from fock_utils import fock_targets, utils_tensor_decomp, matrix2labels_kernels
 from e3nn.o3 import Irreps
 from helm.esen_new import eSEN_Backbone, Fock_Irreps_Head
@@ -16,7 +15,7 @@ def make_graph(atoms):
     atomic_numbers = atoms.get_atomic_numbers()
     positions = atoms.get_positions()
 
-    rcut = 8.0                     # connectivity cutoff (=2xrcut)
+    rcut = 10.0                     # connectivity cutoff (=2xrcut)
     dtype = torch.float64
 
     num_atoms = len(atoms)
@@ -42,7 +41,7 @@ def make_graph(atoms):
                 )
     return atom_graph
 
-def load_models(backbone_checkpoint, head_checkpoint, orbital_basis):
+def load_models(backbone_checkpoint, head_checkpoint, orbital_basis, dataset_name='nablaDFT', node_ref_file=None):
 
     device = torch.device('cuda')
     dtype = torch.float64
@@ -52,21 +51,41 @@ def load_models(backbone_checkpoint, head_checkpoint, orbital_basis):
     num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
     hidden_dim = l_embedding_dim
     num_mp_layers = 3
-    rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
+    rcut_orbitals = 10.0                     # connectivity cutoff (=2xrcut)
     rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
     gaussian_width = 1.0                    # width of gaussians used to expand edge distance
     basis = 'def2-svp'
-    functional = 'pbe'
+    functional = 'wb97x-d'
+    reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
+    reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
+    cache_path = "orbital_cache_"+str(dataset_name)+".pkl"
 
-    # --> Orbital analysis for Fock head:
+    # --> Orbital analysis for Fock head (read from cache instead!):
     targets, required_irreps, simplified_out_irreps, ls_list, out_js_list, orbital_starts, full_orb_interaction_list = utils_tensor_decomp.make_output_irreps(orbital_basis)
     equivariant_blocks = utils_tensor_decomp.process_targets(orbital_basis, targets, ls_list, out_js_list, full_orb_interaction_list)
+    orbital_template = matrix2labels_kernels.get_orbital_template(equivariant_blocks, orbital_starts)
     basis_transformation = utils_tensor_decomp.e3TensorDecomp(required_irreps,
                                                                 out_js_list,
                                                                 default_dtype_torch=dtype,
                                                                 if_sort=False,
                                                                 device_torch=device)
-    orbital_template = matrix2labels_kernels.get_orbital_template(equivariant_blocks, orbital_starts)
+
+    # ls list will define the max basis needed (eg, for OMOL: tensor([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 0, 1, 2])
+    ls_list = []
+    for l in range(20): # large to account for possible diffuse functions which are incremented by 10
+        counts = [torch.sum(torch.tensor(orbital_basis[el]) == l) for el in orbital_basis]
+        max_count = max(counts).item()
+        ls_list.append(torch.tensor(max_count * [l], dtype=torch.int))
+
+    # Shift back all the diffuse orbitals (which were incremented by 10 in utils_tensor_decomp.py)
+    for atom, orbitals in orbital_basis.items():
+        orbital_basis[atom] = [orb % 10 for orb in orbitals]
+
+    for atom, orbitals in orbital_basis.items():
+        orbital_basis[atom] = [orb % 10 for orb in orbitals]
+
+    ls_list = torch.cat(ls_list)        # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2].
+    ls_list = ls_list % 10         # for OMOL: tensor([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 0, 1, 2]
 
     # --> Initialize backbone and output head:
     irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)])
@@ -94,8 +113,8 @@ def load_models(backbone_checkpoint, head_checkpoint, orbital_basis):
                             half_edges=False,
                             head_type='gated',
                             ls_list=ls_list,
-                            reduce_node=False,
-                            reduce_node_intra=False,
+                            reduce_node=reduce_node,
+                            reduce_node_intra=reduce_node_intra,
                             orbital_basis=orbital_basis)
 
     backbone = backbone.to(device)
@@ -124,13 +143,22 @@ def load_models(backbone_checkpoint, head_checkpoint, orbital_basis):
         new_state_dict[new_key] = value
     head.load_state_dict(new_state_dict)
 
+    # Scale and shift the orbital self-interaction scalar components of the dataset
+    if node_ref_file:
+        print("Getting scale and shift factors...", flush=True)
+        scale_shift_data = torch.load(node_ref_file)
+    else:
+        print("Not scaling or shifting the dataset")
+        scale_shift_data = None
+
     HELM = {'backbone': backbone,
             "head": head,
             "basis": basis,
             "functional": functional,
             "orbital_basis": orbital_basis,
             "basis_transform": basis_transformation,
-            "orbital_template": orbital_template}
+            "orbital_template": orbital_template,
+            "node_scale_shifts": scale_shift_data}
 
     return HELM
 
@@ -146,21 +174,18 @@ def run_HELM_fock(atom_graph, HELM):
 
     with torch.no_grad():
         backbone_out = HELM['backbone'](atom_graph)
-        node_output, edge_output, edge_output_bwd, edge_perm, edge_refl  = HELM['head'](backbone_out, atom_graph)
+        node_output, edge_output  = HELM['head'](backbone_out, atom_graph)
 
     atom_graph = atom_graph.cpu()
-
-    node_reference_file = None #config['node_reference_file']
-    scale_shift_data = None #torch.load(node_reference_file)
     atomic_numbers = atom_graph.atomic_numbers
     num_atoms = len(atomic_numbers)
 
     # Scalar irrep referencing
-    if scale_shift_data:
+    if HELM['node_scale_shifts']:
         new_node_blocks = node_output.clone()
-        means = scale_shift_data['element_scalar_means']
-        stds = scale_shift_data['element_scalar_stds']
-        scalar_indices = scale_shift_data['scalar_irrep_indices']
+        means = HELM['node_scale_shifts']['element_scalar_means']
+        stds = HELM['node_scale_shifts']['element_scalar_stds']
+        scalar_indices = HELM['node_scale_shifts']['scalar_irrep_indices']
 
         for i, (node_block, z) in enumerate(zip(node_output, atomic_numbers)):
             z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
