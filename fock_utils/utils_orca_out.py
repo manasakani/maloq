@@ -153,7 +153,7 @@ def parse_output(
         desired_data["finalms"] = 0.0
         desired_data["spin_multiplicity"] = 1.0
 
-    print("Spin multiplicity: ", desired_data["spin_multiplicity"])
+    # print("Spin multiplicity: ", desired_data["spin_multiplicity"])
     desired_data["n_scf_steps"] = len(orca_props.scfvalues[0]) - 1
 
     if (core_hours := orca_props.metadata.get("cpu_time")) is not None:

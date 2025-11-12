@@ -71,6 +71,7 @@ def main():
     orbital_template = None
     req_output_irreps = None
     out_js_list = None
+    ls_list = None
 
     print(f"Job {args.job_id}: Total structure folders available: {len(structure_folders)}", flush=True)
 
@@ -98,6 +99,15 @@ def main():
             # if folder_idx % 10 == 0:
             print(f"Job {args.job_id}: Processing folder {folder_idx}/{len(structures_to_process)}: {structure_folder}", flush=True)
 
+            # # specific for dimers dataset, which has folder name convention Element1_Element2_dist_charge_spin
+            # elements_from_folder = structure_folder.split('_')[:2]
+            # if int(utils_orca_out.periodic_table[elements_from_folder[0]]) not in hconfbr or int(utils_orca_out.periodic_table[elements_from_folder[1]]) not in hconfbr:
+            #     print(f"Skipping {structure_folder}: {elements_from_folder} not in selected elements", flush=True)
+            #     continue
+
+            if not all(utils_orca_out.periodic_table[element] in full_basis for element in elements_from_folder):
+                print(f"Skipping {structure_folder}: {elements_from_folder} not in basis", flush=True)
+                continue
             time_start = time.perf_counter()
 
             # Read ORCA output
@@ -127,8 +137,8 @@ def main():
 
             if open_shell:
                 if (
-                    alpha_fock_matrix.max().item() > 500 or
-                    beta_fock_matrix.max().item() > 500 or
+                    alpha_fock_matrix.max().item() > 1000 or
+                    beta_fock_matrix.max().item() > 1000 or
                     math.isnan(alpha_fock_matrix.max().item()) or
                     math.isnan(beta_fock_matrix.max().item())
                 ):
@@ -137,7 +147,7 @@ def main():
                     raise ValueError("This open shell node is too big or contains NaN! Orca calculation might be corrupted")
             else:
                 if (
-                    fock_matrix.max().item() > 500 or
+                    fock_matrix.max().item() > 1000 or
                     math.isnan(fock_matrix.max().item())
                 ):
                     print(fock_matrix.max().item())
@@ -158,7 +168,7 @@ def main():
             if open_shell:
                 fock_matrix = [alpha_fock_matrix, beta_fock_matrix]
 
-            fock_target = fock_targets.Fock_Targets(structure, cutoff, full_basis,
+            fock_target = fock_targets.Fock_Targets(structure, cutoff, full_basis, dataset_name='omol',
                                                     charge=charge,
                                                     spin_multiplicity=spin_multiplicity,
                                                     fock_matrix=fock_matrix, half_edges=half_edges,
@@ -166,13 +176,15 @@ def main():
                                                     orbital_starts=orbital_starts,
                                                     orbital_template=orbital_template,
                                                     req_output_irreps=req_output_irreps,
-                                                    out_js_list=out_js_list)
+                                                    out_js_list=out_js_list,
+                                                    ls_list=ls_list)
 
             # Save the analysis objects to use for the next structure (these depend only on the basis)
             orbital_starts = fock_target.orbital_starts
             orbital_template = fock_target.orbital_template
             req_output_irreps = fock_target.req_output_irreps
             out_js_list = fock_target.out_js_list
+            ls_list = fock_target.ls_list
 
             target_time_end = time.perf_counter()
 

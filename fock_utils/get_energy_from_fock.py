@@ -143,7 +143,7 @@ def get_density_from_fock(atom_graph, Fock, HELM, label='0'):
     S = mol.intor('int1e_ovlp')
 
     # filter small eigenvalues
-    tol = 1e-3 # 1e-1
+    tol = 1e-2 # 1e-1
     s, U = sp.linalg.eigh(S)
     keep = s > tol
     s_kept = s[keep]
@@ -205,17 +205,44 @@ def get_integrals(mol:gto.Mole,
     else:
         raise ValueError(f"Functional {functional} not implemented.")
 
-def save_density_cube(mol, P, filename='density.cube', nx=50, ny=50, nz=50):
+def save_density_cube(mol, P, filename='density.cube',
+                     grid_spacing=0.4,   # Angstroms per voxel
+                     margin=3.0,         # Angstroms of padding around molecule
+                     save_density=True
+                    ):
     """
     Save the electron density to a cube file for visualization.
     :param mol: PySCF molecule object
     :param P: Density matrix (AO basis)
     :param filename: Output filename
-    :param nx, ny, nz: Number of grid points along each axis
+    :param grid_spacing: Desired grid spacing in Angstroms
+    :param margin: Padding (in Angstroms) to add around the molecule
     """
+
+    # Get atomic coordinates in Angstroms
+    coords = mol.atom_coords(unit='Angstrom')
+    min_corner = coords.min(axis=0) - margin
+    max_corner = coords.max(axis=0) + margin
+    box_lengths = max_corner - min_corner
+
+    # Calculate number of grid points along each axis
+    nx, ny, nz = np.ceil(box_lengths / grid_spacing).astype(int)
+
+    # # Generate grid points
+    # xs = np.linspace(min_corner[0], max_corner[0], nx)
+    # ys = np.linspace(min_corner[1], max_corner[1], ny)
+    # zs = np.linspace(min_corner[2], max_corner[2], nz)
+    # grid = np.array(np.meshgrid(xs, ys, zs, indexing='ij')).reshape(3, -1).T
+
+    # # Compute density at each grid point
+    # ao = mol.eval_gto('GTOval_sph', grid)
+    # rho = np.einsum('pi,ij,pj->p', ao, P, ao)
+    # density_grid = rho.reshape((nx, ny, nz))
+
     # PySCF's built-in cube file writer
-    tools.cubegen.density(mol, filename, P, nx, ny, nz)
-    print(f"Electron density cube file written to {filename}")
+    if save_density:
+        tools.cubegen.density(mol, filename, P, nx, ny, nz)
+        print(f"Electron density cube file written to {filename}")
 
 def save_xyz(mol, filename='structure.xyz'):
     """
