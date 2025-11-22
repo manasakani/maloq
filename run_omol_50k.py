@@ -15,7 +15,7 @@ from ase.db import connect
 from ase import Atoms
 
 # Models
-from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Linear_Energy_Head
+from helm.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Linear_Energy_Head
 from e3nn.o3 import Irreps
 
 import_end = time.perf_counter()

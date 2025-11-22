@@ -3,18 +3,16 @@ import_start = time.perf_counter()
 import os, sys, random
 import numpy as np
 import torch
-from ase import Atoms
+from e3nn.o3 import Irreps
 
-from fock_utils import utils_orca_out, fock_targets, basis_sets
+from fock_utils import utils_orca_out, fock_targets
 from train_utils import loss, utils_compute, splittrainer
-from dataset_utils import get_loader, dataset_analysis, get_scale_shift
-from dataset_utils.ASEDataset import ASEAtomsData, ASEDataset
+from dataset_utils import get_loader, get_scale_shift, dataset_analysis
+from dataset_utils.ASEDataset import ASEAtomsData
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
-from torch_geometric.loader import DataLoader
 
 # Models
-from helm.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Linear_Energy_Head
-from e3nn.o3 import Irreps
+from helm.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Energy_Head
 
 import_end = time.perf_counter()
 print("Time to do imports: ", import_end - import_start)
@@ -23,89 +21,99 @@ print("Time to do imports: ", import_end - import_start)
 torch.manual_seed(42)
 np.random.seed(42)
 random.seed(42)
-# torch.autograd.set_detect_anomaly(True)
 
 # -----------------------------------------------
 # Settings (just dumping everything here for now)
 # -----------------------------------------------
 # ---------------------------
-# --> OMOL
-dataset_folder = './omol_dimers/water_job_0.db'
-dtype = torch.float32
-orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
-orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
-orbital_basis = {int(k): v for k, v in orbital_basis.items()}
-
-open_shell = False
-database = ASEDataset(dataset_folder, orbital_basis, dtype=dtype, open_shell=open_shell)
-output_folder = './omol_water_test'
-dataset_name = 'omol'
+# --> QM7
+dbpath = 'fock_datasets/QM7/schnorb_hamiltonian_water.db'
+database = ASEAtomsData(dbpath)
+dataset_name = 'QM7'
+output_folder = 'QM7_water_test'#'ICLR_2025/MD17_final_Hamiltonian_models/outputs_QM7_water_new'
 # ---------------------------
-assert not len(database) == 0
+
+# --> Shuffle:
+print("Not shuffling database, using the first molecule only for debugging")
+# print("Shuffling database...")
+# indices = list(range(len(database)))
+# random.shuffle(indices)
+# database = [database[i] for i in indices]
 
 # --> Model settings:
 l_embedding_dim = 128                   # sphere channels
-num_distance_basis = l_embedding_dim    # number of gaussian basis functions used to expand the edge distance
+num_distance_basis = 128                # number of gaussian basis functions used to expand the edge distance
 hidden_dim = l_embedding_dim
 num_mp_layers = 3
-model_name = 'esen'
 restart_backbone = False
 restart_head = False
 restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
-num_val = 1                             # Number of validation structures
-num_train = 1
+num_val = 50#500                           # Number of validation structures
+num_train = 50#500
+num_test = len(database) - num_train - num_val  # Number of test structures
 num_epochs = 10000
-batch_size = 1                          # 1 for eval, 10 for train
-rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
+batch_size = 5                          # 1 for eval, 10 for train
+optimizer_type = "adamw"                # "adam" or "adamw"
+rcut_orbitals = 8.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
 
-# Additional symmetries:
-reduce_edge = False                      # use only edges i,j where i<j (other edge labels will not be computed/stored)
+# Symmetry reduction settings:
+reduce_edge = False                      # use only edge orbital blocks for edge i,j where i<j as labels (edges will be symmetrized in the output head)
 reduce_node = False                     # inter-orbital forward/backward interactions are enforced to be equal
 reduce_node_intra = False               # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
 
+dtype = torch.float64
 torch.set_default_dtype(dtype)
-lr_init = 1e-3
-patience = 200                          # for scheduler
-threshold = 1e-5                        # for scheduler
-scheduler_type = 'cosine'              # 'plateau' or 'cosine'
+lr_init = 1e-4
+weight_decay = 1e-4                     # weight decay for AdamW (L2 regularization)
+patience = 100                          # if ReduceLROnPlateau scheduler
+threshold = 1e-5                        # if ReduceLROnPlateau scheduler
+scheduler_type = 'plateau'               # 'plateau', 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
-eta_min = 1e-7                          # for cosine scheduler - minimum learning rate
+eta_min = 1e-8                         # for cosine scheduler - minimum learning rate
 
 loss_target = 'fock_matrix'
-head_type = 'gated'                     # linear or gated
 train_loss_fxn = loss.rmse_mse_padded_loss
+test_loss_fxn = loss.l1_unpadded_loss
 loss_scheduler = loss.MonotonicDecreaseScheduler
 backbone_checkpoint = 'backbone.pt'
 head_checkpoint = 'head.pt'
+head_type = 'gated'                   # 'linear' or 'gated'
+include_edges = True
+
+if reduce_edge and batch_size != 1:
+    raise ValueError("If using reduce_edge, batch size must be 1! Reverse_edge map is not collated.")
+
+# dataset_analysis.dataset_analysis(database, dataset_name, rcut=rcut_orbitals, dtype=torch.float64, reduce_edge=False)
 
 scale_and_shift = False
-if open_shell:
-    scale_shift_file = 'element_scale_shifts_water' + dataset_name + '_osh.pt'
-else:
-    scale_shift_file = 'element_scale_shifts_water' + dataset_name + '.pt'
+scale_shift_file = 'element_scale_shifts_QM7water_' + dataset_name + '.pt'
 
 # Scale and shift the orbital self-interaction scalar components of the dataset
 if scale_and_shift:
-    print("Getting scale and shift factors...", flush=True)
-    print(f"Scale and shift file: {scale_shift_file}", flush=True)
-    if scale_shift_file not in os.listdir('./fock_datasets/'):
-        print("[Computing element scale and shift factors for the dataset]", flush=True)
-        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file, open_shell=open_shell)
+    print("Getting scale and shift factors...")
+    if scale_shift_file not in os.listdir('./fock_datasets'):
+        print("[Computing element scale and shift factors for the dataset]")
+        get_scale_shift.get_scale_shift(database, dataset_name, rcut_orbitals, dtype=dtype, reduce_edge=reduce_edge, filename=scale_shift_file)
+        print("Done computing scale and shift factors, saving to file:", scale_shift_file)
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
-        print("Done computing scale and shift factors", flush=True)
     else:
-        print("[Loading element scale and shift factors from file]", flush=True)
+        print("[Loading element scale and shift factors from file]")
         scale_shift_data = torch.load('./fock_datasets/' + scale_shift_file)
+        scale_shift_data = {
+            "element_scalar_means": scale_shift_data["element_scalar_means"],  # dict[int -> list[float]]
+            "element_scalar_stds": scale_shift_data["element_scalar_stds"],    # dict[int -> list[float]]
+            "scalar_irrep_indices": scale_shift_data["scalar_irrep_indices"]   # list[int]
+        }
 else:
-    print("Not scaling or shifting the dataset", flush=True)
+    print("Not scaling or shifting the dataset")
     scale_shift_data = None
 
 # --------------------------------------------
@@ -114,6 +122,7 @@ else:
 
 rank = int(os.environ['SLURM_PROCID'])
 world_size = int(os.environ['SLURM_NTASKS'])
+print(f"Running on rank {rank} of {world_size} total ranks", flush=True)
 
 if rank == 0:
     print(f"Dataset: {dataset_name}, writing results to {output_folder}", flush=True)
@@ -121,24 +130,28 @@ if rank == 0:
     print(f"Dataset - Num molecules used for validation: {num_val}", flush=True)
     print(f"Dataset - Edge cutoff distance for orbital blocks: {2*rcut_orbitals}", flush=True)
     print(f"Dataset - Edge cutoff distance for gaussian basis: {rcut_gaussian}", flush=True)
+    print(f"Dataset - Scale and shift dataset: {scale_and_shift}", flush=True)
     print(f"Model - Num of Message Passing layers: {num_mp_layers}", flush=True)
     print(f"Model - Embedding dimension: {l_embedding_dim}", flush=True)
-    print(f"Model - Using half edges?: {reduce_edge}", flush=True)
+    print(f"Model - # Distance basis functions: {num_distance_basis}", flush=True)
+    print(f"Model - Edge reduction: {reduce_edge}")
+    print(f"Model - Node reduction - interorbital: {reduce_node}")
+    print(f"Model - Node reduction - intraorbital: {reduce_node_intra}")
     print(f"Training - Loss target: {loss_target}", flush=True)
     print(f"Training - Loss function: {train_loss_fxn}", flush=True)
+    print(f"Training - Optimizer: {optimizer_type.upper()}", flush=True)
     print(f"Training - Initial learning rate: {lr_init}", flush=True)
+    if optimizer_type.lower() == "adamw":
+        print(f"Training - Weight decay: {weight_decay}", flush=True)
+    print(f"Training - Scheduler type: {scheduler_type}", flush=True)
 
 compute_start = time.perf_counter()
 device = utils_compute.setup_env(rank, world_size)
 compute_end = time.perf_counter()
-print("Time to setup distributed environment: ", compute_end - compute_start)
+print("Time to setup distributed environment: ", compute_end - compute_start, flush=True)
 
 if rank == 0 and not os.path.exists(output_folder):
     os.makedirs(output_folder)
-
-# dataset_analysis.dataset_analysis(database, dataset_name, rcut=rcut_orbitals, dtype=dtype, reduce_edge=False, scale_shift_data=scale_shift_data, rank=rank)
-# print("plotted dataset element scaling factors")
-# exit()
 
 # --------------------------------------------
 # Prepare data
@@ -146,42 +159,40 @@ if rank == 0 and not os.path.exists(output_folder):
 
 data_load_start = time.perf_counter()
 
-# Split data between GPUs
 train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
 val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
+test_start_mol, test_end_mol, test_local_num_mol = utils_compute.split_indices(rank, world_size, num_test)
 
-# print("DEBUG: Rank, num_mol, start_mol, end_mol: ", rank, train_local_num_mol, train_start_mol, train_end_mol, flush=True)
-# print("UNCOMMENT ME")
-# val_start_mol = 0
-# val_end_mol = num_val
 val_start_mol += num_train  # the validation molecules start after training ones
 val_end_mol += num_train
 
-# Create the fock target analysis objects for each molecule in the dataset, scale and shift the node labels if required
-print("Processing the dataset, creating fock analysis objects ...", flush=True)
-train_data = get_scale_shift.scale_shift_database(database, train_start_mol, train_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval, open_shell=open_shell)
-val_data = get_scale_shift.scale_shift_database(database, val_start_mol, val_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval, open_shell=open_shell)
+test_start_mol += num_train+num_val
+test_end_mol += num_train+num_val
 
-# Create the dataloaders for each GPU's data
-train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0)
-val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0)
+### DEBUG ###
+# print("USING THE DEBUG MOLECULE", flush=True)
+# train_start_mol = 0
+# train_end_mol = 1
+# val_start_mol = 0
+# val_end_mol = 1
+# test_start_mol = 0
+# test_end_mol = 1
+### DEBUG ###
+
+if train_or_eval == 'train':
+    train_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
+    val_loader, _, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
+    print("Size of train loader: ", len(train_loader), flush=True)
+    print("Size of val loader: ", len(val_loader), flush=True)
+else:
+    batch_size = 1
+    test_loader, required_irreps, basis_transformation, orbital_basis, ls_list, orbital_template = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
+    print("Size of test loader: ", len(test_loader), flush=True)
 
 data_load_end = time.perf_counter()
-print("Time to load dataset: ", data_load_end - data_load_start)
-print("Size of train loader: ", len(train_loader))
-print("Size of val loader: ", len(val_loader))
+print("Time to load dataset: ", data_load_end - data_load_start, flush=True)
 
-
-# --> Irrep information for the targets
-required_irreps = train_data[0].fock_target_object.req_output_irreps
-ls_list = train_data[0].fock_target_object.ls_list
-basis_transformation = train_data[0].fock_target_object.basis_transformation
-orbital_basis = {k: torch.tensor(v) for k, v in orbital_basis.items()}
-
-print("orbital_basis: ", orbital_basis)
-print("required_irreps: ", required_irreps)
-print("simplified_out_irreps: ", Irreps(required_irreps).sort()[0].simplify())
-
+# ls_list = train_loader.dataset[0].fock_target_object.ls_list
 irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)])
 
 # determine output irreps from target type:
@@ -200,7 +211,7 @@ else:
 
 
 # --------------------------------------------
-# Get model
+# Get model backbone + head
 # --------------------------------------------
 
 backbone = eSEN_Backbone(
@@ -216,7 +227,8 @@ backbone = eSEN_Backbone(
                 act_type='gate',
                 mlp_type = 'spectral',
                 num_distance_basis=num_distance_basis,
-                gaussian_width=gaussian_width
+                gaussian_width=gaussian_width,
+                include_edges=include_edges
             )
 
 if loss_target == "fock_matrix":
@@ -225,43 +237,54 @@ if loss_target == "fock_matrix":
                             lmax=required_irreps.lmax,
                             sphere_channels=l_embedding_dim,
                             half_edges=reduce_edge,
+                            head_type=head_type,
                             ls_list=ls_list,
                             reduce_node=reduce_node,
                             reduce_node_intra=reduce_node_intra,
-                            orbital_basis=orbital_basis,
-                            open_shell=open_shell)
+                            orbital_basis=orbital_basis)
+
 elif loss_target == "forces":
     head = Linear_Force_Head(backbone)
+    # head = Convolution_Force_Head(backbone)
+    # head = Gated_Force_Head(backbone, irreps_in)
 
 elif loss_target == "energy":
     print("To be implemented!")
-
 
 backbone = backbone.to(device)
 head = head.to(device)
 
 if train_backbone and train_head:
-    optimizer = torch.optim.Adam(list(backbone.parameters()) + list(head.parameters()), lr=lr_init)
+    if optimizer_type.lower() == "adamw":
+        optimizer = torch.optim.AdamW(list(backbone.parameters()) + list(head.parameters()), lr=lr_init, weight_decay=weight_decay)
+    else:
+        optimizer = torch.optim.Adam(list(backbone.parameters()) + list(head.parameters()), lr=lr_init)
 
 elif train_head:                            # freeze backbone model
     for param in backbone.parameters():
         param.requires_grad = False
-    optimizer = torch.optim.Adam(head.parameters(), lr=lr_init)
+    if optimizer_type.lower() == "adamw":
+        optimizer = torch.optim.AdamW(head.parameters(), lr=lr_init, weight_decay=weight_decay)
+    else:
+        optimizer = torch.optim.Adam(head.parameters(), lr=lr_init)
 
 elif train_backbone:                        # freeze output head
     for param in head.parameters():
         param.requires_grad = False
-    optimizer = torch.optim.Adam(backbone.parameters(), lr=lr_init)
+    if optimizer_type.lower() == "adamw":
+        optimizer = torch.optim.AdamW(backbone.parameters(), lr=lr_init, weight_decay=weight_decay)
+    else:
+        optimizer = torch.optim.Adam(backbone.parameters(), lr=lr_init)
 
 else:
     print("Running evaluation")
 
-print("Number of parameters in backbone: ", sum(p.numel() for p in backbone.parameters()))
-print("Number of parameters in output head: ", sum(p.numel() for p in head.parameters()))
+print("Number of parameters in backbone: ", sum(p.numel() for p in backbone.parameters()), flush=True)
+print("Number of parameters in output head: ", sum(p.numel() for p in head.parameters()), flush=True)
 
 if restart_backbone:
     restart_file = output_folder + '/' + backbone_checkpoint
-    print("Restarting backbone model from :", restart_file)
+    print("Restarting backbone model from :", restart_file, flush=True)
     checkpoint = torch.load(restart_file)
     state_dict = checkpoint['model_state_dict']
 
@@ -274,7 +297,7 @@ if restart_backbone:
 
 if restart_head:
     restart_file = output_folder + '/' + head_checkpoint
-    print("Restarting output head model from :", restart_file)
+    print("Restarting output head model from :", restart_file, flush=True)
     checkpoint = torch.load(restart_file)
     state_dict = checkpoint['model_state_dict']
 
@@ -300,13 +323,11 @@ elif scheduler_type == 'cosine':
 else:
     raise ValueError(f"Unknown scheduler type: {scheduler_type}. Choose 'plateau' or 'cosine'.")
 
-print("Going to training or evaluation", flush=True)
-# scheduler = loss_scheduler(optimizer, lag_epochs=100)
 trainer = splittrainer.SplitTrainer(backbone=backbone,
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='omol_single',
-                                    save_frequency=50)
+                                    run_name='water_final',
+                                    save_frequency=10)
 
 if train_or_eval == "train":
     trainer.train(num_epochs,
@@ -322,15 +343,17 @@ if train_or_eval == "train":
                     val_loader=val_loader,
                     train_backbone=train_backbone,
                     train_head=train_head,
-                    compute_uncoupled_loss=False)
+                    basis_transform=basis_transformation,
+                    step_every_epoch=True)
 else:
-    trainer.evaluate(train_loss_fxn,
+    trainer.evaluate(test_loss_fxn,
                     device,
-                    val_loader,
+                    test_loader,
                     loss_target_string=loss_target,
                     node_target_name=node_target,
                     edge_target_name=edge_target,
                     basis_transform=basis_transformation,
                     output_folder=output_folder,
+                    dataset_name=dataset_name,
                     orbital_basis=orbital_basis
                     )

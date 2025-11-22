@@ -11,7 +11,7 @@ from dataset_utils.ASEDataset import ASEAtomsData
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
 # Models
-from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head    
+from helm.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head
 from e3nn.o3 import Irreps
 
 import_end = time.perf_counter()
@@ -27,10 +27,9 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> NablaDFT (tiny conformers)
-database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/test_100k_conformers.db")
-# database = HamiltonianDatabase("./fock_datasets/test_structures.db")
-dataset_name = 'nablaDFT' 
-output_folder = './nablaDFT_final/outputs_nablaDFT_medium'
+database = HamiltonianDatabase("/checkpoint/ocp/manasakani/fock_datasets/nabla2_DFT/test_2k_conformers.db")
+dataset_name = 'nablaDFT'
+output_folder = 'ICLR_2025/nablaDFT_final_Hamiltonian_models/outputs_nablaDFT_tiny'
 # ---------------------------
 
 # --> Model settings:
@@ -45,8 +44,9 @@ restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "eval"
+compute_total_energy = True
 num_val = 8                             # Number of validation structures
-num_train = len(database) 
+num_train = len(database)
 num_test = len(database)
 num_epochs = 50000
 batch_size = 1                          # 1 for eval, 10 for train
@@ -56,13 +56,14 @@ gaussian_width = 1.0                    # width of gaussians used to expand edge
 
 # Additional symmetries:
 reduce_edge = False                      # use only edges i,j where i<j (other edges are reflected)
-reduce_node = False                      # inter-orbital forward/backward interactions are enforced to be equal
-reduce_node_intra = False                # intra-orbital interactions are enforced to have 0 odd degrees
+reduce_node = True                      # inter-orbital forward/backward interactions are enforced to be equal
+reduce_node_intra = True                # intra-orbital interactions are enforced to have 0 odd degrees
 
 train_backbone = True
 train_head = True
 
-dtype = torch.float64
+# dtype = torch.float64
+dtype = torch.float32
 torch.set_default_dtype(dtype)
 lr_init = 1e-4
 patience = 500                          # for scheduler
@@ -99,7 +100,7 @@ else:
     scale_shift_data = None
 
 # --------------------------------------------
-# Initialize compute environment 
+# Initialize compute environment
 # --------------------------------------------
 
 rank = int(os.environ['SLURM_PROCID'])
@@ -139,15 +140,13 @@ test_start_mol, test_end_mol, test_local_num_mol = utils_compute.split_indices(r
 
 ## DEBUG ### - 22 is the first molecule with a Br atom
 # print("Starting molecule for test!!: ", test_start_mol, flush=True)
-# test_start_mol = 22 
+# test_start_mol = 22
 # test_end_mol = test_start_mol + test_local_num_mol
 ## DEBUG ###
 
 if train_or_eval == 'train':
     train_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, train_start_mol, train_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge,  scale_shift_data=scale_shift_data)
-    # val_loader, _, _, _ = get_loader.get_loader(database, val_start_mol, val_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
     print("Size of train loader: ", len(train_loader))
-    # print("Size of val loader: ", len(val_loader))
 else:
     batch_size = 1
     test_loader, required_irreps, basis_transformation, orbital_basis, ls_list = get_loader.get_loader(database, test_start_mol, test_end_mol, dataset_name, rcut_orbitals, batch_size, dtype=dtype, half_edges=reduce_edge, scale_shift_data=scale_shift_data)
@@ -156,7 +155,7 @@ else:
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
 
-irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)]) 
+irreps_in = Irreps([(l_embedding_dim, (l, 1)) for l in range(required_irreps.lmax + 1)])
 
 # determine output irreps from target type:
 if loss_target == "fock_matrix":
@@ -194,9 +193,9 @@ backbone = eSEN_Backbone(
             )
 
 if loss_target == "fock_matrix":
-    head = Fock_Irreps_Head(irreps_in=irreps_in, 
-                            irreps_out=output_irreps, 
-                            lmax=required_irreps.lmax, 
+    head = Fock_Irreps_Head(irreps_in=irreps_in,
+                            irreps_out=output_irreps,
+                            lmax=required_irreps.lmax,
                             sphere_channels=l_embedding_dim,
                             half_edges=reduce_edge,
                             ls_list=ls_list,
@@ -239,11 +238,11 @@ if restart_backbone:
     print("Restarting backbone model from :", restart_file)
     checkpoint = torch.load(restart_file)
     state_dict = checkpoint['model_state_dict']
-    
+
     # Get rid of module prefix if saved with DDP
     new_state_dict = {}
     for key, value in state_dict.items():
-        new_key = key.replace('module.', '')  
+        new_key = key.replace('module.', '')
         new_state_dict[new_key] = value
     backbone.load_state_dict(new_state_dict)
 
@@ -255,14 +254,14 @@ if restart_head:
 
     if restart_optimizer:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    
+
     # Get rid of module prefix if saved with DDP
     new_state_dict = {}
     for key, value in state_dict.items():
-        new_key = key.replace('module.', '')  
+        new_key = key.replace('module.', '')
         new_state_dict[new_key] = value
     head.load_state_dict(new_state_dict)
-    
+
 
 # --------------------------------------------
 # Run Training or Evaluation
@@ -270,21 +269,21 @@ if restart_head:
 
 # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience, threshold=threshold, verbose=True)
 scheduler = loss_scheduler(optimizer)
-trainer = splittrainer.SplitTrainer(backbone=backbone, 
+trainer = splittrainer.SplitTrainer(backbone=backbone,
                                     head=head,
                                     head_irreps=output_irreps,
                                     run_name='nablaDFT_eval',
                                     save_frequency=20)
 
 if train_or_eval == "train":
-    trainer.train(num_epochs, 
-                    train_loss_fxn, 
+    trainer.train(num_epochs,
+                    train_loss_fxn,
                     optimizer,
-                    scheduler, 
+                    scheduler,
                     device,
                     train_loader=train_loader,
                     loss_target_string=loss_target,
-                    node_target_name=node_target, 
+                    node_target_name=node_target,
                     edge_target_name=edge_target,
                     output_folder=output_folder,
                     val_loader=val_loader,
@@ -292,12 +291,16 @@ if train_or_eval == "train":
                     train_head=train_head,
                     basis_transform=basis_transformation)
 else:
+
     trainer.evaluate(test_loss_fxn,
                     device,
                     test_loader,
                     loss_target_string=loss_target,
                     node_target_name=node_target,
-                    edge_target_name=edge_target, 
+                    edge_target_name=edge_target,
+                    dataset_name=dataset_name,
                     basis_transform=basis_transformation,
+                    compute_total_energy=compute_total_energy,
                     output_folder=output_folder,
+                    orbital_basis=orbital_basis
                     )

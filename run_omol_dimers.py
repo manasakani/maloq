@@ -29,10 +29,11 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> OMOL
-dataset_folder = '/checkpoint/ocp/manasakani/omol_dimers/omol_dimers_7k.db'
-# dataset_folder = '/checkpoint/ocp/manasakani/omol_dimers/test_dimers_58.db'
-output_folder = 'outputs_omol_dimers'
+dataset_folder = './omol_dimers/dimers_hconfbr_job_0.db'
+
+output_folder = 'outputs_omol_dimers_hconfbr'
 dataset_name = 'omol'
+run_name = 'omol_dimers'
 
 open_shell = True
 dtype = torch.float32
@@ -57,8 +58,8 @@ restart_optimizer = False
 train_or_eval = "train"
 num_val = 10                             # Number of validation structures
 num_train = len(database) - num_val
-num_epochs = 10000
-batch_size = 1000                          # 1 for eval, 10 for train
+num_epochs = 1000
+batch_size = 10000                          # 1 for eval, 10 for train
 rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -71,12 +72,13 @@ reduce_node_intra = False               # intra-orbital interactions are enforce
 train_backbone = True
 train_head = True
 save_frequency = 10
+step_every_epoch = True # change this later
 
 torch.set_default_dtype(dtype)
 lr_init = 1e-4
 patience = 200                          # for scheduler
-threshold = 1e-5                        # for scheduler
-scheduler_type = 'cosine'              # 'plateau' or 'cosine'
+threshold = 1e-4                        # for scheduler
+scheduler_type = 'cosine'               # 'plateau' or 'cosine'
 T_max = num_epochs                      # for cosine scheduler - period of cosine annealing
 eta_min = 1e-7                          # for cosine scheduler - minimum learning rate
 
@@ -157,12 +159,12 @@ val_end_mol += num_train
 
 # Create the fock target analysis objects for each molecule in the dataset, scale and shift the node labels if required
 print("Processing the dataset, creating fock analysis objects ...", flush=True)
-train_data = get_scale_shift.scale_shift_database(database, train_start_mol, train_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval, open_shell=open_shell)
-val_data = get_scale_shift.scale_shift_database(database, val_start_mol, val_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=scale_and_shift, train_or_eval=train_or_eval, open_shell=open_shell)
+train_data = get_scale_shift.scale_shift_database(database, train_start_mol, train_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, dataset_name=dataset_name, scale_nodes=scale_and_shift, train_or_eval=train_or_eval, open_shell=open_shell)
+val_data = get_scale_shift.scale_shift_database(database, val_start_mol, val_end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, dataset_name=dataset_name, scale_nodes=scale_and_shift, train_or_eval=train_or_eval, open_shell=open_shell)
 
 # Create the dataloaders for each GPU's data
-train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0)
-val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0)
+train_loader = DataLoader(train_data, batch_size=batch_size, num_workers=0, shuffle=True)
+val_loader = DataLoader(val_data, batch_size=batch_size, num_workers=0, shuffle=True)
 
 data_load_end = time.perf_counter()
 print("Time to load dataset: ", data_load_end - data_load_start)
@@ -213,7 +215,8 @@ backbone = eSEN_Backbone(
                 act_type='gate',
                 mlp_type = 'spectral',
                 num_distance_basis=num_distance_basis,
-                gaussian_width=gaussian_width
+                gaussian_width=gaussian_width,
+                open_shell=open_shell
             )
 
 if loss_target == "fock_matrix":
@@ -293,7 +296,7 @@ print("Going to training or evaluation", flush=True)
 trainer = splittrainer.SplitTrainer(backbone=backbone,
                                     head=head,
                                     head_irreps=output_irreps,
-                                    run_name='omol_single',
+                                    run_name=run_name,
                                     save_frequency=save_frequency)
 
 if train_or_eval == "train":
@@ -318,7 +321,8 @@ if train_or_eval == "train":
                     val_loader=val_loader,
                     train_backbone=train_backbone,
                     train_head=train_head,
-                    compute_uncoupled_loss=False)
+                    compute_uncoupled_loss=False,
+                    step_every_epoch=step_every_epoch)
 else:
     trainer.evaluate(train_loss_fxn,
                     device,

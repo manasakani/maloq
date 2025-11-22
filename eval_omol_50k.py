@@ -15,7 +15,7 @@ from ase.db import connect
 from ase import Atoms
 
 # Models
-from esen_full.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Linear_Energy_Head
+from helm.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head, Linear_Energy_Head
 from e3nn.o3 import Irreps
 
 import_end = time.perf_counter()
@@ -69,7 +69,7 @@ restart_optimizer = False
 # --> Training settings:
 train_or_eval = "eval"
 compute_total_energy = False
-num_val = 1#total_rows - 1                # Number of validation structures (250 for embedding visualization)
+num_val = total_rows - 1                # Number of validation structures (250 for embedding visualization)
 num_train = 2                           # Number of training structures - need equal batches on every gpu (use 840 molecules per gpu if doing a mol-wise split)
 num_epochs = 300
 batch_size = 1                          # 1 for not oom (molecule-wise batching for evals)
