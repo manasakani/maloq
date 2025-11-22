@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>Electronically-trained molecular properties.</strong>
+  <strong>Electronically-informed molecular properties.</strong>
 </p>
 
 ---
