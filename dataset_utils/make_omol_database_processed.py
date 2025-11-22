@@ -105,6 +105,7 @@ def main():
             #     print(f"Skipping {structure_folder}: {elements_from_folder} not in selected elements", flush=True)
             #     continue
 
+            elements_from_folder = structure_folder.split('_')[:2]
             if not all(utils_orca_out.periodic_table[element] in full_basis for element in elements_from_folder):
                 print(f"Skipping {structure_folder}: {elements_from_folder} not in basis", flush=True)
                 continue
@@ -135,6 +136,7 @@ def main():
                 basis = {element: full_basis[element] for element in elements} # Get basis (for this structure) for rearranging the matrix:
                 fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
 
+            # Filtering for errors in Fock matrix
             if open_shell:
                 if (
                     alpha_fock_matrix.max().item() > 1000 or
