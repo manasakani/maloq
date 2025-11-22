@@ -55,6 +55,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
                 hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate
 
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, half_edges=half_edges,
+                                                      dataset_name=dataset_name,
                                                       scale_shift_data=scale_shift_data,
                                                       orbital_starts=orbital_starts,
                                                       out_js_list=out_js_list,

@@ -15,6 +15,7 @@ import torch.distributed as dist
 def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduce_edge=False, rank=0, filename='scale_shifts.pt', open_shell=False):
     """
     Compute scaling and shifting factors for the scalar components of the hamiltonian datasets and save them to file
+    NOTE: Distributed scale calculation is not verified! Need to test that.
     """
 
     num_molecules = len(database)
@@ -310,7 +311,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             print("Saved scale_shift_data to ./fock_datasets/"+filename, flush=True)
 
 
-def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, scale_nodes=False, open_shell=False, train_or_eval='train'):
+def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, dataset_name='', scale_nodes=False, open_shell=False, train_or_eval='train'):
     """
     Scale and shift the node labels in the database using the scale_shift_data
     """
@@ -323,6 +324,7 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
                                                             rcut_orbitals,
                                                             orbital_basis,
                                                             fock_matrix=None,
+                                                            dataset_name=dataset_name,
                                                             half_edges=reduce_edge,
                                                             scale_shift_data=scale_shift_data
                                                         )
@@ -343,6 +345,7 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
             structure = Atoms(symbols=data_obj.atomic_numbers, positions=data_obj.pos)
             fock_target_object = fock_targets.Fock_Targets(
                                                             structure, rcut_orbitals, orbital_basis, fock_matrix=None,
+                                                            dataset_name=dataset_name,
                                                             half_edges=reduce_edge, scale_shift_data=scale_shift_data,
                                                             orbital_template=orbital_template,
                                                             orbital_starts=orbital_starts,
@@ -369,6 +372,10 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
                 data_obj.node_y_beta = scaled_node_y_beta
                 print(f"Node labels [alpha]  after scaling molecule {i}: max={data_obj.node_y_alpha.max().item():.6f}, min={data_obj.node_y_alpha.min().item():.6f}", flush=True)
                 print(f"Node labels [beta]  after scaling molecule {i}: max={data_obj.node_y_beta.max().item():.6f}, min={data_obj.node_y_beta.min().item():.6f}", flush=True)
+
+                if data_obj.node_y_alpha.max().item() > 500 or data_obj.node_y_beta.max().item() > 500:
+                    print("WARNING: This node is too big [openshell]!")
+                    # exit()
             else:
                 print(f"Node labels before scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)
                 scaled_node_y = data_obj.fock_target_object.scale_shift_node_blocks(
@@ -376,6 +383,11 @@ def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_ba
                 )
                 data_obj.node_y = scaled_node_y
                 print(f"Node labels after scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)
+
+                if data_obj.node_y.max().item() > 500:
+                    print("WARNING: This node is too big [closedshell]!")
+                    # exit()
+
             end_time = time.perf_counter()
 
         data_list.append(data_obj)

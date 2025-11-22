@@ -77,7 +77,8 @@ class eSEN_Backbone(nn.Module):
         act_type: str = "gate",
         mlp_type: str = "spectral",
         gaussian_width = 1.0,
-        include_edges=True
+        include_edges=True,
+        open_shell=False
     ):
         super().__init__()
 
@@ -95,6 +96,11 @@ class eSEN_Backbone(nn.Module):
         self.regress_stress = regress_stress
         self.mlp_type = mlp_type
         self.include_edges = include_edges      # whether to use embeddings for the edges as well
+
+        if open_shell:                                      # output two sets of labels for alpha/beta fock
+            self.num_spins = 2
+        else:
+            self.num_spins = 1
 
         # rotation utils
         Jd_list = torch.load(os.path.join(os.path.dirname(__file__), "Jd.pt"))
@@ -117,14 +123,17 @@ class eSEN_Backbone(nn.Module):
             self.max_num_elements, self.sphere_channels
         )
         #  For charge: possible values are -10 to +10 (21 values)
-        self.abs_max_charge = 11
+        self.abs_max_charge = 10
         self.charge_embedding = nn.Embedding(
             2*self.abs_max_charge + 1, self.sphere_channels
         )
-        self.max_spin_multiplicity = 20
+        self.max_spin_multiplicity = 11
         self.spin_embedding = nn.Embedding(
             self.max_spin_multiplicity, self.sphere_channels
         )
+
+        # # These three will be combined together with a linear layer:
+        self.scalar_node_embedding = nn.Linear(3 * self.sphere_channels, self.sphere_channels)
 
         # edge distance embedding
         self.cutoff = cutoff
@@ -164,19 +173,22 @@ class eSEN_Backbone(nn.Module):
             self.edge_channels,
         ]
 
-        self.edge_degree_embedding = EdgeDegreeEmbedding(
-            sphere_channels=self.sphere_channels,
-            lmax=self.lmax,
-            mmax=self.mmax,
-            max_num_elements=self.max_num_elements,
-            edge_channels_list=self.edge_channels_list,
-            rescale_factor=5.0,
-            cutoff=self.cutoff,
-            mappingReduced=self.mappingReduced,
-            out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
-                self.lmax, self.mmax
-            )
-        )
+        self.edge_degree_embedding = nn.ModuleList() # this is now spin resolved
+        for spin in range(self.num_spins):
+
+            self.edge_degree_embedding.append( EdgeDegreeEmbedding(
+                sphere_channels=self.sphere_channels,
+                lmax=self.lmax,
+                mmax=self.mmax,
+                max_num_elements=self.max_num_elements,
+                edge_channels_list=self.edge_channels_list,
+                rescale_factor=5.0,
+                cutoff=self.cutoff,
+                mappingReduced=self.mappingReduced,
+                out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
+                    self.lmax, self.mmax
+                )
+            ) )
 
         self.num_layers = num_layers
         self.hidden_channels = hidden_channels
@@ -189,26 +201,14 @@ class eSEN_Backbone(nn.Module):
         if self.include_edges:
             self.edge_blocks = nn.ModuleList()
 
-        for _ in range(self.num_layers):
-            node_block = eSEN_Block(
-                self.sphere_channels,
-                self.hidden_channels,
-                self.lmax,
-                self.mmax,
-                self.mappingReduced,
-                self.SO3_grid,
-                self.edge_channels_list,
-                self.cutoff,
-                self.norm_type,
-                self.act_type,
-                self.mlp_type,
-                self.include_edges,
-                node_or_edge='node'
-            )
-            self.node_blocks.append(node_block)
+        for spin in range(self.num_spins):
 
+            node_block_layers = nn.ModuleList()
             if self.include_edges:
-                edge_block = eSEN_Block(
+                edge_block_layers = nn.ModuleList()
+
+            for _ in range(self.num_layers):
+                node_block = eSEN_Block(
                     self.sphere_channels,
                     self.hidden_channels,
                     self.lmax,
@@ -221,9 +221,30 @@ class eSEN_Backbone(nn.Module):
                     self.act_type,
                     self.mlp_type,
                     self.include_edges,
-                    node_or_edge='edge'
+                    node_or_edge='node'
                 )
-                self.edge_blocks.append(edge_block)
+                node_block_layers.append(node_block)
+
+                if self.include_edges:
+                    edge_block = eSEN_Block(
+                        self.sphere_channels,
+                        self.hidden_channels,
+                        self.lmax,
+                        self.mmax,
+                        self.mappingReduced,
+                        self.SO3_grid,
+                        self.edge_channels_list,
+                        self.cutoff,
+                        self.norm_type,
+                        self.act_type,
+                        self.mlp_type,
+                        self.include_edges,
+                        node_or_edge='edge'
+                    )
+                    edge_block_layers.append(edge_block)
+
+            self.node_blocks.append(node_block_layers)
+            self.edge_blocks.append(edge_block_layers)
 
         self.norm = get_normalization_layer(
             self.norm_type,
@@ -304,6 +325,7 @@ class eSEN_Backbone(nn.Module):
 
         # x_message: [data_dict["pos"].shape[0] = #nodes, self.sph_feature_size = (l_max+1)**2, self.sphere_channels = E]
         x_message_node = torch.zeros(
+            self.num_spins,
             data_dict["pos"].shape[0],
             self.sph_feature_size,
             self.sphere_channels,
@@ -324,21 +346,30 @@ class eSEN_Backbone(nn.Module):
         charge_emb = self.charge_embedding(atom_charges)
         spin_emb = self.spin_embedding(atom_spins)
 
-        x_message_node[:, 0, :] = element_emb + charge_emb + spin_emb
+        # x_message_node[:, :, 0, :] = element_emb + charge_emb + spin_emb # dims: [spin, nodes, l, E]
 
-        if self.include_edges:
-            # x_message_edge: [#edges considered, self.sph_feature_size = (l_max+1)**2, self.sphere_channels = E]
-            x_message_edge = torch.zeros(
-                data_dict["nedges"],
-                self.sph_feature_size,
-                self.num_distance_basis, #self.sphere_channels,
-                device=data_dict["pos"].device,
-                dtype=data_dict["pos"].dtype,
-            )
-            # set l = 0 components to the distance expansion
-            x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"])
-        else:
-            x_message_edge = None
+        # Concatenate along the last dimension
+        combined_emb = torch.cat([element_emb, charge_emb, spin_emb], dim=-1) # [num_atoms, 3 * sphere_channels]
+        final_emb = self.scalar_node_embedding(combined_emb)                  # [num_atoms, sphere_channels]
+        x_message_node[:, :, 0, :] = final_emb
+
+        for spin in range(self.num_spins):
+            # x_message_node[spin, :, 0, :] = element_emb + charge_emb + spin_emb
+
+            if self.include_edges:
+                # x_message_edge: [#edges considered, self.sph_feature_size = (l_max+1)**2, self.sphere_channels = E]
+                x_message_edge = torch.zeros(
+                    self.num_spins,
+                    data_dict["nedges"],
+                    self.sph_feature_size,
+                    self.num_distance_basis, #self.sphere_channels,
+                    device=data_dict["pos"].device,
+                    dtype=data_dict["pos"].dtype,
+                )
+                # set l = 0 components to the distance expansion
+                x_message_edge[spin, :, 0, :] = self.distance_expansion(graph_dict["edge_distance"])
+            else:
+                x_message_edge = None
 
         # edge embedding: [num_edges, num gaussian basis functions]
         # source_embedding, target_embedding: [num_edges, self.sphere_channels]
@@ -356,50 +387,38 @@ class eSEN_Backbone(nn.Module):
 
         x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) #+ torch.cat((target_embedding, edge_distance_embedding, source_embedding), dim=1)      # symmetrized
 
-        # do edge degree embeddings for both nodes and edges:
-        x_message_node = self.edge_degree_embedding(
-            x_message_node,
-            x_edge,
-            graph_dict["edge_distance"],
-            graph_dict["edge_index"],
-            graph_dict["forward_edge_mask"],
-            wigner_inv,
-            node_or_edge='node'
-        )
+        # outer spin dimension
+        for spin in range(self.num_spins):
 
-        if self.include_edges:
-            x_message_edge = self.edge_degree_embedding(
-                x_message_node,
+            # do edge degree embeddings for both nodes and edges:
+            x_message_node[spin, :, :, :] = self.edge_degree_embedding[spin]( # spin resolved
+                x_message_node[spin, :, :, :],
                 x_edge,
                 graph_dict["edge_distance"],
                 graph_dict["edge_index"],
                 graph_dict["forward_edge_mask"],
                 wigner_inv,
-                node_or_edge='edge'
-            )
-
-        ###############################################################
-        # Update spherical node embeddings
-        ###############################################################
-        for i in range(self.num_layers):
-            x_message_node = self.node_blocks[i](
-                x_message_node,
-                x_message_edge,
-                x_edge,
-                forward_edges,
-                graph_dict["edge_distance"],
-                graph_dict["edge_index"],
-                graph_dict["forward_edge_mask"],
-                graph_dict["reverse_edge_map"],
-                wigner,
-                wigner_inv,
-                node_or_edge='node',
+                node_or_edge='node'
             )
 
             if self.include_edges:
-                x_message_edge = self.edge_blocks[i](
-                    x_message_node,
-                    x_message_edge,
+                x_message_edge[spin, :, :, :] = self.edge_degree_embedding[spin](
+                    x_message_node[spin, :, :, :],
+                    x_edge,
+                    graph_dict["edge_distance"],
+                    graph_dict["edge_index"],
+                    graph_dict["forward_edge_mask"],
+                    wigner_inv,
+                    node_or_edge='edge'
+                )
+
+            ###############################################################
+            # Update spherical node embeddings
+            ###############################################################
+            for i in range(self.num_layers):
+                x_message_node[spin, :, :, :]  = self.node_blocks[spin][i](
+                    x_message_node[spin, :, :, :] ,
+                    x_message_edge[spin, :, :, :] ,
                     x_edge,
                     forward_edges,
                     graph_dict["edge_distance"],
@@ -408,14 +427,29 @@ class eSEN_Backbone(nn.Module):
                     graph_dict["reverse_edge_map"],
                     wigner,
                     wigner_inv,
-                    node_or_edge='edge',
+                    node_or_edge='node',
                 )
 
-        # Final layer norm
-        x_message_node = self.norm(x_message_node)
+                if self.include_edges:
+                    x_message_edge[spin, :, :, :]  = self.edge_blocks[spin][i](
+                        x_message_node[spin, :, :, :] ,
+                        x_message_edge[spin, :, :, :] ,
+                        x_edge,
+                        forward_edges,
+                        graph_dict["edge_distance"],
+                        graph_dict["edge_index"],
+                        graph_dict["forward_edge_mask"],
+                        graph_dict["reverse_edge_map"],
+                        wigner,
+                        wigner_inv,
+                        node_or_edge='edge',
+                    )
 
-        if self.include_edges:
-            x_message_edge = self.norm(x_message_edge)
+            # Final layer norm
+            x_message_node[spin, :, :, :]  = self.norm(x_message_node[spin, :, :, :] )
+
+            if self.include_edges:
+                x_message_edge[spin, :, :, :]  = self.norm(x_message_edge[spin, :, :, :] )
 
         # Return the output
         if self.include_edges: # all we need for the fock output head
@@ -424,6 +458,8 @@ class eSEN_Backbone(nn.Module):
                     "edge_embeddings": x_message_edge,
                 }
         else:
+            print("Error: figure out how to handle the spin dimension in the energy head before using this!")
+            exit()
             out = {
                     "node_embeddings": x_message_node,
                     "edge_embeddings": x_message_edge,
@@ -612,6 +648,12 @@ class Fock_Irreps_Head(nn.Module):
                     irreps_out_l = f"{mul_out}x{l}e"
                     print("Creating linear output map for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out = ", irreps_out_l, flush=True)
                     lin_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
+                    # layers = nn.Sequential( # more weights
+                    #     e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_in_l, biases=True),
+                    #     e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_in_l, biases=True),
+                    #     e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True)
+                    # )
+                    # lin_layers.append(layers)
 
                 self.lin_out_layers.append(lin_layers)
 
@@ -706,8 +748,8 @@ class Fock_Irreps_Head(nn.Module):
         node_outputs = []
         edge_outputs = []
         for spin in range(self.num_spins):
-            node_embeddings_spin = self.stack_irreps(node_embeddings)
-            edge_embeddings_spin = self.stack_irreps(edge_embeddings)
+            node_embeddings_spin = self.stack_irreps(node_embeddings[spin])
+            edge_embeddings_spin = self.stack_irreps(edge_embeddings[spin])
             node_output = self.process(node_embeddings_spin, edge_index, 'node', spin)
             edge_output = self.process(edge_embeddings_spin, edge_index, 'edge', spin)
 

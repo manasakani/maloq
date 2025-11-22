@@ -516,30 +516,19 @@ class SplitTrainer():
                 target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
                 fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(batch.fock_target_object[0].orbitals_per_atom)])
 
-                output_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
-                edge_output_cupy = cp.from_dlpack(uncoupled_edge_outputs)
-                node_output_cupy = cp.from_dlpack(uncoupled_node_outputs)
-                output_targets = cp.concatenate([edge_output_cupy, node_output_cupy])
+                # output_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
+                # edge_output_cupy = cp.from_dlpack(uncoupled_edge_outputs)
+                # node_output_cupy = cp.from_dlpack(uncoupled_node_outputs)
+                # output_targets = cp.concatenate([edge_output_cupy, node_output_cupy])
 
-                label_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
-                edge_label_cupy = cp.from_dlpack(uncoupled_edge_labels)
-                node_label_cupy = cp.from_dlpack(uncoupled_node_labels)
-                label_targets = cp.concatenate([edge_label_cupy, node_label_cupy])
+                # label_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
+                # edge_label_cupy = cp.from_dlpack(uncoupled_edge_labels)
+                # node_label_cupy = cp.from_dlpack(uncoupled_node_labels)
+                # label_targets = cp.concatenate([edge_label_cupy, node_label_cupy])
 
-                # output_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
-                # output_targets = np.concatenate([uncoupled_edge_outputs.detach().cpu().numpy(), uncoupled_node_outputs.detach().cpu().numpy()])
-                # matrix2labels_kernels.numpy_single_matrix2label(
-                #     orbital_template,
-                #     fock_block_offsets,
-                #     batch.fock_target_object[0].atomic_numbers,
-                #     src_idxes,
-                #     target_idxes,
-                #     output_fock_matrix,
-                #     output_targets,
-                #     forward=False
-                # )
-
-                matrix2labels_kernels.cupy_single_matrix2label(
+                output_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
+                output_targets = np.concatenate([uncoupled_edge_outputs.detach().cpu().numpy(), uncoupled_node_outputs.detach().cpu().numpy()])
+                matrix2labels_kernels.numpy_single_matrix2label(
                     orbital_template,
                     fock_block_offsets,
                     batch.fock_target_object[0].atomic_numbers,
@@ -547,24 +536,24 @@ class SplitTrainer():
                     target_idxes,
                     output_fock_matrix,
                     output_targets,
-                    orbital_template_ptrs,
                     forward=False
                 )
 
-                # label_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
-                # label_targets = np.concatenate([uncoupled_edge_labels.detach().cpu().numpy(), uncoupled_node_labels.detach().cpu().numpy()])
-                # matrix2labels_kernels.numpy_single_matrix2label(
+                # matrix2labels_kernels.cupy_single_matrix2label(
                 #     orbital_template,
                 #     fock_block_offsets,
                 #     batch.fock_target_object[0].atomic_numbers,
                 #     src_idxes,
                 #     target_idxes,
-                #     label_fock_matrix,
-                #     label_targets,
+                #     output_fock_matrix,
+                #     output_targets,
+                #     orbital_template_ptrs,
                 #     forward=False
                 # )
 
-                matrix2labels_kernels.cupy_single_matrix2label(
+                label_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
+                label_targets = np.concatenate([uncoupled_edge_labels.detach().cpu().numpy(), uncoupled_node_labels.detach().cpu().numpy()])
+                matrix2labels_kernels.numpy_single_matrix2label(
                     orbital_template,
                     fock_block_offsets,
                     batch.fock_target_object[0].atomic_numbers,
@@ -572,9 +561,20 @@ class SplitTrainer():
                     target_idxes,
                     label_fock_matrix,
                     label_targets,
-                    orbital_template_ptrs,
                     forward=False
                 )
+
+                # matrix2labels_kernels.cupy_single_matrix2label(
+                #     orbital_template,
+                #     fock_block_offsets,
+                #     batch.fock_target_object[0].atomic_numbers,
+                #     src_idxes,
+                #     target_idxes,
+                #     label_fock_matrix,
+                #     label_targets,
+                #     orbital_template_ptrs,
+                #     forward=False
+                # )
                 end_conversion = time.perf_counter()
                 output_fock_matrix = (output_fock_matrix + output_fock_matrix.T) / 2
                 label_fock_matrix = (label_fock_matrix + label_fock_matrix.T) / 2
@@ -607,8 +607,8 @@ class SplitTrainer():
                 if compute_eigenvalues:
 
                     # cupy -> numpy (cpu)
-                    output_fock_matrix = output_fock_matrix.get()
-                    label_fock_matrix = label_fock_matrix.get()
+                    # output_fock_matrix = output_fock_matrix.get()
+                    # label_fock_matrix = label_fock_matrix.get()
 
                     print("Solving generalized eigenvalue problem...", flush=True)
                     if hasattr(batch, 'overlap_matrix') and batch.overlap_matrix is not None:

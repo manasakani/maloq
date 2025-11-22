@@ -13,7 +13,7 @@ def setup_env(rank, world_size):
     #         timeout=timeout,
     #     )
 
-    print("Initializing distributed process group... ", flush=True)    
+    print("Initializing distributed process group... ", flush=True)
     dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
     # dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
     print("Initialized distributed process group", flush=True)
@@ -23,14 +23,14 @@ def setup_env(rank, world_size):
 
     # !! make sure visibility is restricted to "gpu 0" in .sh file !!
     gpu_id = 0
-    torch.cuda.set_device(gpu_id) 
+    torch.cuda.set_device(gpu_id)
     device = torch.device('cuda:'+ str(gpu_id))
-    
+
     return device
 
 def split_indices(rank, world_size, total_num_idx):
     """
-    Split data indices 
+    Split data indices
     """
 
     assert dist.is_initialized()
@@ -40,7 +40,7 @@ def split_indices(rank, world_size, total_num_idx):
 
     local_num_idx = total_num_idx//world_size
     counts = np.array([local_num_idx]*world_size, dtype=np.int32)
-    
+
     print(f"IMPORTANT NOTE: Ignoring {total_num_idx % world_size} indices to make the distribution even!")
     # for i in range(total_num_idx % world_size):
     #     counts[i] += 1
@@ -52,9 +52,8 @@ def split_indices(rank, world_size, total_num_idx):
     start_idx = displacements[rank]
     end_idx = displacements[rank] + counts[rank]
     local_num_idx = counts[rank]
-    
+
     print(f"Rank {rank} does indices {start_idx} to {end_idx}", flush=True)
-    dist.barrier() 
+    dist.barrier()
 
     return start_idx, end_idx, local_num_idx
-

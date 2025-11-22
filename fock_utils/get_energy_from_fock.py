@@ -143,7 +143,7 @@ def get_density_from_fock(atom_graph, Fock, HELM, label='0'):
     S = mol.intor('int1e_ovlp')
 
     # filter small eigenvalues
-    tol = 1e-2 # 1e-1
+    tol = 1e-3 # 1e-1
     s, U = sp.linalg.eigh(S)
     keep = s > tol
     s_kept = s[keep]
