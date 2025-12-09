@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>Physics at scale.</strong>
+  <strong>Orbital interactions at scale.</strong>
 </p>
 
 ---
