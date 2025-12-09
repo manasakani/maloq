@@ -1,11 +1,11 @@
-# HELM - Hamiltonian-trained Electronic-structure Learning for Molecules
+# MALOQ - Massively Accelerated Learning of Operators for Quantum-transport
 
 <p align="center">
-  <img src="/images/helm.png" alt="Helm Logo" width="150" />
+  <img src="/images/maloq.png" alt="MALOQ Logo" width="150" />
 </p>
 
 <p align="center">
-  <strong>Electronically-informed molecular properties.</strong>
+  <strong>Physics at scale.</strong>
 </p>
 
 ---
