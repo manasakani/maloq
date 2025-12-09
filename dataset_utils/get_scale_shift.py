@@ -101,7 +101,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
                 hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate
 
             graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, half_edges=reduce_edge,
-                                                    orbital_template=equivarianorbital_templatet_blocks,
+                                                    orbital_template=orbital_template,
                                                     orbital_starts=orbital_starts,
                                                     req_output_irreps=req_output_irreps,
                                                     out_js_list=out_js_list)

@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
 from e3nn.o3 import Irreps
-import wandb
+# import wandb
 import matplotlib.pyplot as plt
 import os
 from dataset_utils import get_scale_shift
@@ -46,11 +46,11 @@ class SplitTrainer():
         # config: any dictionary, add the training parameters
         config = {}
 
-        wandb.init(config=config,
-                   id=run_id,
-                   name=run_name,
-                   project='fockmatrices',
-                   entity='manasakani')
+        # wandb.init(config=config,
+        #            id=run_id,
+        #            name=run_name,
+        #            project='fockmatrices',
+        #            entity='manasakani')
 
     # -- Train model --
     # @disable_amp
@@ -341,13 +341,13 @@ class SplitTrainer():
 
             # log to wandb:
             # if (epoch + 1) % self.save_frequency == 0:
-            update_dict = {"node_loss": float(track_loss_node[-1]),
-                        "node_val_loss": float(track_loss_node_val[-1]),
-                        "learning_rate": float(current_lr)}
-            if loss_target_string == 'fock_matrix':
-                update_dict.update({"edge_loss": float(track_loss_edge[-1]),
-                                    "edge_val_loss": float(track_loss_edge_val[-1])})
-            wandb.log(update_dict)
+            # update_dict = {"node_loss": float(track_loss_node[-1]),
+            #             "node_val_loss": float(track_loss_node_val[-1]),
+            #             "learning_rate": float(current_lr)}
+            # if loss_target_string == 'fock_matrix':
+            #     update_dict.update({"edge_loss": float(track_loss_edge[-1]),
+            #                         "edge_val_loss": float(track_loss_edge_val[-1])})
+            # wandb.log(update_dict)
 
             # save state
             if rank == 0:

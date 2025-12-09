@@ -1,8 +1,8 @@
 *.db
-*.pt
 *.txt
 *.png
 *.out
+*.pkl
 
 data_runs/*
 outputs_*
@@ -11,6 +11,7 @@ slurm-*
 *.db
 *.err
 *.sh
+*.pyc
 wandb/
 plot_env/
 ICLR_2025
