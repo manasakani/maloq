@@ -333,8 +333,8 @@ def cupy_multiple_matrix2label(
     )
     end_kernel = time.perf_counter()
     cp.cuda.Stream.null.synchronize()
-    print(f"Label -> Matrix time [preprocess]: {end_preprocess - start_preprocess:.4f}s", flush=True)
-    print(f"Label -> Matrix time [kernel]: {end_kernel - start_kernel:.4f}s", flush=True)
+    # print(f"Label -> Matrix time [preprocess]: {end_preprocess - start_preprocess:.4f}s", flush=True)
+    # print(f"Label -> Matrix time [kernel]: {end_kernel - start_kernel:.4f}s", flush=True)
 
 _single_matrix2label = cp.RawKernel(r'''
 #define MAX_ELEMENTS 100

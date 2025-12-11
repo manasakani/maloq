@@ -12,6 +12,8 @@
 #SBATCH --output=outputs_full/output_%j.txt
 #SBATCH --error=error_file.err 
 
+# srun --account=lp82 --gres=gpu:1 --time=00:30:00 --partition=debug --pty bash
+
 # START ENVIRONMENT SETUP
 uenv start --view=modules prgenv-gnu/24.11:v1 
 
@@ -44,6 +46,8 @@ export MASTER_PORT=29500
 
 source /users/mkanisel/miniconda3/bin/activate helm_env
 # END ENVIRONMENT SETUP
+
+# Profile: nsys profile -o my_profile_report --trace=cuda,nvtx python run_nablaDFT.py
 
 srun --cpu-bind=socket bash -c 'export MPICH_GPU_SUPPORT_ENABLED=1; export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID;
 python run_QM7_water.py'
