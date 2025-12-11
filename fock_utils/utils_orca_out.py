@@ -63,6 +63,71 @@ def get_finalms(file_path):
         print(f"Error extracting finalms: {e}")
         return None
 
+def extract_multiplicity_from_output(orca_output_path: Path) -> int:
+    """
+    Reads the ORCA output file and extracts the Multiplicity value (M).
+    An ORCA output file usually contains a section echoing the input, e.g.:
+    Multiplicity: 2
+    """
+    with open(orca_output_path, 'r') as f:
+        for line in f:
+            # Matches "Multiplicity: X" where X is a digit
+            match = re.search(r'Multiplicity:\s+(\d+)', line)
+            if match:
+                return int(match.group(1))
+    return 1  # Default to 1 (Singlet) if not found
+
+def extract_charge_and_spin_from_path(orca_output_path: Path) -> tuple[int | None, int | None]:
+    """
+    Extracts charge and spin from the parent directory name, which is assumed
+    to be in the format: ..._charge_spin (e.g., ammonium_mol182_1_1 -> charge=1, spin=1)
+    """
+    # 1. Get the name of the informative directory: 'ammonium_mol182_1_1'
+    # The parent of the .out file is 'step5'. The parent of 'step5' is the one we want.
+    informative_folder_name = orca_output_path.parent.parent.name
+    
+    # 2. Use regex to find the last two integer components separated by underscores.
+    # Pattern: finds one or more digits (\d+) followed by an underscore,
+    # and then another set of digits at the end of the string ($).
+    match = re.search(r'_(\d+)_(\d+)$', informative_folder_name)
+    
+    if match:
+        # Group 1 is the first digit (charge), Group 2 is the second digit (spin)
+        charge = int(match.group(1))
+        # The 'spin' value here is typically the Multiplicity (2S+1), not the spin quantum number S.
+        multiplicity = int(match.group(2))
+        return charge, multiplicity
+    else:
+        print(f"Warning: Could not reliably parse charge/spin from path: {informative_folder_name}")
+        return None, None
+
+def manually_parse_output(
+    orca_output_path: Path,
+    source: str,
+) -> dict[str, Any]:
+    """
+    Reads the Orca output file at the input path and returns a dictionary
+    of the important fields extracted from it. Manual version.
+    """
+    desired_data = {}
+
+    total_energy = extract_total_energy_manual(orca_output_path)
+    print(f"Manually extracted total energy: {total_energy} Eh")    
+
+    desired_data["total_energy [Eh]"] = total_energy
+
+    # Check for open-shell calculations
+    multiplicity = extract_multiplicity_from_output(orca_output_path)
+    desired_data["unrestricted"] = multiplicity > 1
+
+    charge, multiplicity_path = extract_charge_and_spin_from_path(orca_output_path)
+    desired_data["total_charge"] = charge
+    desired_data["spin_multiplicity"] = multiplicity_path
+
+    print("Extracted data: open_shell =", desired_data["unrestricted"], " charge =", desired_data["total_charge"], " multiplicity =", desired_data["spin_multiplicity"])
+
+    return desired_data
+
 # from https://github.com/facebookexternal/ocp-modeling-dev/blob/master/foundation_models/data/omol/process/orca_parsing.py#L295
 def parse_output(
     orca_output_path: Path,

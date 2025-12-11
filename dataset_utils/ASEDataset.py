@@ -75,7 +75,7 @@ class ASEDataset(Dataset):
         node_labels = torch.tensor(structure.data['node_labels'], dtype=self.dtype)
         edge_labels = torch.tensor(structure.data['edge_labels'], dtype=self.dtype)
         energies = torch.tensor(structure.data['total_energy [Eh]'])
-        forces = torch.tensor(structure.data['gradient [Eh/bohr]'])
+        # forces = torch.tensor(structure.data['gradient [Eh/bohr]'])
         # dipole = torch.tensor(structure.data['multipoles'][1])  # XX, YY, ZZ components
         # quadrupole = torch.tensor(structure.data['multipoles'][2])  # XY, XZ, YZ components
 
@@ -108,8 +108,8 @@ class ASEDataset(Dataset):
                 edge_attr=edge_dist,
                 edge_mask=edge_mask,
                 reverse_edge_map=reverse_edge_map,
-                y=edge_labels,
-                node_y=node_labels,
+                y=edge_labels[0],
+                node_y=node_labels[0],
                 atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
                 nedges=len(edge_index[0]),
                 natoms=len(atomic_numbers),
