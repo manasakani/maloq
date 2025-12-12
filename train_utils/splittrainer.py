@@ -793,6 +793,9 @@ class SplitTrainer():
             if this_node_target.ndim == 3:
                 this_node_target = this_node_target[0]
                 this_edge_target = this_edge_target[0]
+            if node_output.ndim == 3:
+                node_output = node_output[0]
+                edge_output = edge_output[0]
 
             output = torch.cat([node_output, edge_output], dim=0)
             labels = torch.cat([this_node_target, this_edge_target], dim=0)
