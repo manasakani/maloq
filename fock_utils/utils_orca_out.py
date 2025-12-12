@@ -80,21 +80,21 @@ def extract_multiplicity_from_output(orca_output_path: Path) -> int:
 def extract_charge_and_spin_from_path(orca_output_path: Path) -> tuple[int | None, int | None]:
     """
     Extracts charge and spin from the parent directory name, which is assumed
-    to be in the format: ..._charge_spin (e.g., ammonium_mol182_1_1 -> charge=1, spin=1)
+    to be in the format: ..._charge_spin (e.g., hexahydroantimonate_mol527_-1_1 -> charge=-1, spin=1)
     """
-    # 1. Get the name of the informative directory: 'ammonium_mol182_1_1'
-    # The parent of the .out file is 'step5'. The parent of 'step5' is the one we want.
+    # 1. Get the name of the informative directory: 'hexahydroantimonate_mol527_-1_1'
+    # The parent of the .out file is 'stepX'. The parent of 'stepX' is the one we want.
     informative_folder_name = orca_output_path.parent.parent.name
     
     # 2. Use regex to find the last two integer components separated by underscores.
-    # Pattern: finds one or more digits (\d+) followed by an underscore,
-    # and then another set of digits at the end of the string ($).
-    match = re.search(r'_(\d+)_(\d+)$', informative_folder_name)
+    # FIXED PATTERN: Allows an optional minus sign (-) before the first group of digits.
+    # (-?) matches zero or one minus sign.
+    match = re.search(r'_(-?\d+)_(\d+)$', informative_folder_name)
     
     if match:
-        # Group 1 is the first digit (charge), Group 2 is the second digit (spin)
+        # Group 1 is the charge (now handles negative values)
         charge = int(match.group(1))
-        # The 'spin' value here is typically the Multiplicity (2S+1), not the spin quantum number S.
+        # Group 2 is the multiplicity (should always be positive)
         multiplicity = int(match.group(2))
         return charge, multiplicity
     else:

@@ -4,6 +4,7 @@ import os, sys, random
 import numpy as np
 import torch
 from ase import Atoms
+from ase.db import connect
 
 from fock_utils import utils_orca_out, fock_targets, basis_sets
 from train_utils import loss, utils_compute, splittrainer
@@ -33,15 +34,11 @@ dataset_folder = '/capstor/store/cscs/pasc/c33/manasa/omol_datasets/omol_4mil_am
 output_folder = 'outputs_omol'
 dataset_name = 'omol'
 run_name = 'omol_electrolytes'
-
 open_shell = False
-dtype = torch.float32
-orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
-orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
-orbital_basis = {int(k): v for k, v in orbital_basis.items()}
-database = ASEDataset(dataset_folder, orbital_basis, dtype=dtype, open_shell=open_shell)
+
+db = connect(dataset_folder)
+total_rows = db.count()
 # ---------------------------
-assert not len(database) == 0
 
 # --> Model settings:
 l_embedding_dim = 128                   # sphere channels
@@ -49,16 +46,16 @@ num_distance_basis = l_embedding_dim    # number of gaussian basis functions use
 hidden_dim = l_embedding_dim
 num_mp_layers = 3
 model_name = 'esen'
-restart_backbone = False
-restart_head = False
+restart_backbone = True
+restart_head = True
 restart_optimizer = False
 
 # --> Training settings:
 train_or_eval = "train"
 num_val = 5                             # Number of validation structures
-num_train = len(database) - num_val
+num_train = total_rows - num_val
 num_epochs = 1000
-batch_size = 10                         # 1 for eval, 10 for train
+batch_size = 5                         # 1 for eval, 10 for train
 rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
@@ -73,6 +70,7 @@ train_head = True
 save_frequency = 5
 step_every_epoch = True                 # change this later
 
+dtype = torch.float32
 torch.set_default_dtype(dtype)
 lr_init = 1e-4
 patience = 200                          # for scheduler
@@ -143,16 +141,17 @@ if rank == 0 and not os.path.exists(output_folder):
 # Prepare data
 # --------------------------------------------
 
+orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
+orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
+orbital_basis = {int(k): v for k, v in orbital_basis.items()}
+database = ASEDataset(dataset_folder, orbital_basis, dtype=dtype, open_shell=open_shell)
+
 data_load_start = time.perf_counter()
 
 # Split data between GPUs
 train_start_mol, train_end_mol, train_local_num_mol = utils_compute.split_indices(rank, world_size, num_train)
 val_start_mol, val_end_mol, val_local_num_mol  = utils_compute.split_indices(rank, world_size, num_val)
 
-# print("DEBUG: Rank, num_mol, start_mol, end_mol: ", rank, train_local_num_mol, train_start_mol, train_end_mol, flush=True)
-# print("UNCOMMENT ME")
-# val_start_mol = 0
-# val_end_mol = num_val
 val_start_mol += num_train  # the validation molecules start after training ones
 val_end_mol += num_train
 
