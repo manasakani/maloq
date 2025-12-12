@@ -29,7 +29,7 @@ random.seed(42)
 # -----------------------------------------------
 # ---------------------------
 # --> OMOL
-dataset_folder = '/capstor/store/cscs/pasc/c33/manasa/omol_datasets/omol_4mil_ammonium_100x.db'
+dataset_folder = '/capstor/store/cscs/pasc/c33/manasa/omol_datasets/omol_4mil_ammonium.db'
 output_folder = 'outputs_omol'
 dataset_name = 'omol'
 run_name = 'omol_electrolytes'
@@ -58,7 +58,7 @@ train_or_eval = "train"
 num_val = 5                             # Number of validation structures
 num_train = len(database) - num_val
 num_epochs = 1000
-batch_size = 50                         # 1 for eval, 10 for train
+batch_size = 10                         # 1 for eval, 10 for train
 rcut_orbitals = 6.0                     # connectivity cutoff (=2xrcut)
 rcut_gaussian = rcut_orbitals*2         # connectivity cutoff (=2xrcut)
 gaussian_width = 1.0                    # width of gaussians used to expand edge distance
