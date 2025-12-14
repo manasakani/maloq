@@ -63,43 +63,56 @@ def get_finalms(file_path):
         print(f"Error extracting finalms: {e}")
         return None
 
-def extract_multiplicity_from_output(orca_output_path: Path) -> int:
-    """
-    Reads the ORCA output file and extracts the Multiplicity value (M).
-    An ORCA output file usually contains a section echoing the input, e.g.:
-    Multiplicity: 2
-    """
-    with open(orca_output_path, 'r') as f:
-        for line in f:
-            # Matches "Multiplicity: X" where X is a digit
-            match = re.search(r'Multiplicity:\s+(\d+)', line)
-            if match:
-                return int(match.group(1))
-    return 1  # Default to 1 (Singlet) if not found
+# def extract_multiplicity_from_output(orca_output_path: Path) -> int:
+#     """
+#     Reads the ORCA output file and extracts the Multiplicity value (M).
+#     An ORCA output file usually contains a section echoing the input, e.g.:
+#     Multiplicity: 2
+#     """
+#     with open(orca_output_path, 'r') as f:
+#         for line in f:
+#             # Matches "Multiplicity: X" where X is a digit
+#             match = re.search(r'Multiplicity:\s+(\d+)', line)
+#             if match:
+#                 return int(match.group(1))
+#     return 1  # Default to 1 (Singlet) if not found
 
 def extract_charge_and_spin_from_path(orca_output_path: Path) -> tuple[int | None, int | None]:
     """
-    Extracts charge and spin from the parent directory name, which is assumed
-    to be in the format: ..._charge_spin (e.g., hexahydroantimonate_mol527_-1_1 -> charge=-1, spin=1)
+    Extracts charge and spin from a parent directory name.
+    It iteratively checks up to 3 parent directories (e.g., in case of
+    'orca.out', 'step1/orca.out', or 'run_x/step1/orca.out' structures)
+    until a match is found.
     """
-    # 1. Get the name of the informative directory: 'hexahydroantimonate_mol527_-1_1'
-    # The parent of the .out file is 'stepX'. The parent of 'stepX' is the one we want.
-    informative_folder_name = orca_output_path.parent.parent.name
+    # Start the search from the direct parent of the file
+    current_path = orca_output_path.parent 
     
-    # 2. Use regex to find the last two integer components separated by underscores.
-    # FIXED PATTERN: Allows an optional minus sign (-) before the first group of digits.
-    # (-?) matches zero or one minus sign.
-    match = re.search(r'_(-?\d+)_(\d+)$', informative_folder_name)
-    
-    if match:
-        # Group 1 is the charge (now handles negative values)
-        charge = int(match.group(1))
-        # Group 2 is the multiplicity (should always be positive)
-        multiplicity = int(match.group(2))
-        return charge, multiplicity
-    else:
-        print(f"Warning: Could not reliably parse charge/spin from path: {informative_folder_name}")
-        return None, None
+    # Check the current folder, its parent, and its grandparent (3 levels up)
+    for _ in range(3):
+        informative_folder_name = current_path.name
+
+        # FIXED PATTERN: Allows an optional minus sign (-) before the first group of digits.
+        # It still looks for the pattern anchored to the end of the folder name.
+        match = re.search(r'_(-?\d+)_(\d+)$', informative_folder_name)
+        
+        if match:
+            # Match found! Extract and return
+            charge = int(match.group(1))
+            multiplicity = int(match.group(2))
+            
+            # Note: We return multiplicity (M) not spin (S), where M = 2S + 1
+            return charge, multiplicity
+        
+        # If no match, move up to the next parent directory for the next iteration
+        current_path = current_path.parent
+        
+        # Safety break: stop if we hit the file system root (path.parent == path)
+        if current_path.parent == current_path:
+            break
+            
+    # If the loop finishes without finding a match
+    print(f"Warning: Could not reliably parse charge/spin from path in the vicinity of: {orca_output_path}")
+    return None, None
 
 def manually_parse_output(
     orca_output_path: Path,
@@ -117,12 +130,10 @@ def manually_parse_output(
     desired_data["total_energy [Eh]"] = total_energy
 
     # Check for open-shell calculations
-    multiplicity = extract_multiplicity_from_output(orca_output_path)
-    desired_data["unrestricted"] = multiplicity > 1
-
     charge, multiplicity_path = extract_charge_and_spin_from_path(orca_output_path)
     desired_data["total_charge"] = charge
     desired_data["spin_multiplicity"] = multiplicity_path
+    desired_data["unrestricted"] = desired_data["spin_multiplicity"] > 1
 
     print("Extracted data: open_shell =", desired_data["unrestricted"], " charge =", desired_data["total_charge"], " multiplicity =", desired_data["spin_multiplicity"])
 

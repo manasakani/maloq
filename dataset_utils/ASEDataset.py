@@ -2,6 +2,7 @@ import ase.db
 from torch_geometric.data import Data, Dataset, DataLoader
 import torch
 import numpy as np
+import math
 
 from typing import Optional, List, Dict, Any, Iterable, Union, Tuple
 from abc import ABC, abstractmethod
@@ -12,7 +13,7 @@ from ase.db import connect
 from . import schnetpack_properties as structure
 
 class ASEDataset(Dataset):
-    def __init__(self, db_path, orbital_basis, dtype=torch.float32, open_shell=False, world_size=1, rank=0, start_idx=0, end_idx=None):
+    def __init__(self, db_path, orbital_basis, dtype=torch.float32, open_shell=False, start_idx=0, end_idx=None):
 
         print("Connecting to database...")
         self.db = ase.db.connect(db_path)
@@ -35,8 +36,6 @@ class ASEDataset(Dataset):
             self.ids.append(row.id)
 
         self.dtype = dtype
-
-        print("Rank", rank, "will read structure IDs:", self.ids, flush=True)
 
     def _get_ids(self):
         """
@@ -156,6 +155,135 @@ class sampleDataset(torch.utils.data.Dataset):
 
 def sample_collate_fn(batch):
     return Batch.from_data_list(batch)
+
+def distribute_data(base_folder, N_db_files, world_size, rank, N_global_train, N_global_val):
+    """
+    Calculates the file and index ranges for a single rank to load its portion
+    of the global dataset, based on predefined total counts for training and validation.
+
+    It assumes the first N_global_train molecules, followed by the next N_global_val 
+    molecules, constitute the total dataset to be used.
+
+    Args:
+        base_folder (str): The common path prefix for the database files.
+        N_db_files (int): Total number of database files (e.g., 16).
+        world_size (int): Total number of training ranks (e.g., 64).
+        rank (int): The current rank's index (0 to world_size - 1).
+        N_global_train (int): The TOTAL number of molecules to be used for training.
+        N_global_val (int): The TOTAL number of molecules to be used for validation.
+
+    Returns:
+        tuple: (train_entries, val_entries)
+               Each entry is a list of dicts: {'db_file': str, 'start_idx': int, 'end_idx': int}
+    """
+
+    # --- Step 1: Calculate Global Index Map ---
+    # This map records the global index start for each database file.
+
+    global_map = []
+    current_global_idx = 0
+    total_molecules_available = 0
+
+    for i in range(N_db_files):
+        db_file = os.path.join(base_folder, f'omol_electrolytes_unsolvated_job_{i}.db')
+
+        try:
+            db = ase.db.connect(db_file)
+            count = db.count()
+        except Exception as e:
+            print(f"Warning: Could not open {db_file}. Skipping. Error: {e}")
+            count = 0
+
+        if count > 0:
+            global_map.append({
+                'db_file': db_file,
+                'total_count': count,
+                'global_start': current_global_idx
+            })
+            current_global_idx += count
+            total_molecules_available += count
+    
+    # Safety Check
+    if N_global_train + N_global_val > total_molecules_available:
+        raise ValueError(
+            f"Requested total molecules ({N_global_train + N_global_val}) exceeds "
+            f"total available molecules ({total_molecules_available})."
+        )
+    
+    N_global_total_used = N_global_train + N_global_val
+
+    # --- Step 2: Determine Rank's Global Range for Training and Validation ---
+
+    # Training Range (Indices [0, N_global_train) of the used dataset)
+    N_train_per_rank = math.ceil(N_global_train / world_size)
+    rank_train_start = rank * N_train_per_rank
+    rank_train_end = min(rank_train_start + N_train_per_rank, N_global_train)
+
+    # Validation Range (Indices [N_global_train, N_global_total_used) of the used dataset)
+    N_val_per_rank = math.ceil(N_global_val / world_size)
+    rank_val_start = N_global_train + rank * N_val_per_rank
+    rank_val_end = min(rank_val_start + N_val_per_rank, N_global_total_used)
+
+    # --- Step 3: Map Global Indices to Local DB Files (Training & Validation) ---
+
+    train_entries = []
+    val_entries = []
+
+    # Iterate through the global map to find all necessary segments
+    for entry in global_map:
+        db_file = entry['db_file']
+        db_global_start = entry['global_start']
+        db_global_end = db_global_start + entry['total_count']
+
+        # ----------------------------------------
+        # A. Training Split Mapping
+        # The global training set occupies the indices [0, N_global_train)
+        
+        # Segment of the DB file that belongs to the global training set
+        db_train_end_limit = min(db_global_end, N_global_train)
+        
+        # Check for overlap between rank's training range and DB file's training segment
+        # The rank's range is relative to the start of the global training set (index 0)
+        # We need to shift the rank's range into the overall global index space [0, total_molecules_available)
+        
+        global_train_overlap_start = max(rank_train_start, db_global_start)
+        global_train_overlap_end = min(rank_train_end, db_train_end_limit)
+
+        if global_train_overlap_start < global_train_overlap_end:
+            # Calculate local indices (offset from the file's start, row 0)
+            local_start_idx = global_train_overlap_start - db_global_start
+            local_end_idx = local_start_idx + (global_train_overlap_end - global_train_overlap_start)
+
+            train_entries.append({
+                'db_file': db_file,
+                'start_idx': local_start_idx,
+                'end_idx': local_end_idx
+            })
+
+        # ----------------------------------------
+        # B. Validation Split Mapping
+        # The global validation set occupies the indices [N_global_train, N_global_total_used)
+        
+        # Segment of the DB file that belongs to the global validation set
+        db_val_start_limit = max(db_global_start, N_global_train)
+        db_val_end_limit = min(db_global_end, N_global_total_used)
+        
+        # Check for overlap between rank's validation range and DB file's validation segment
+        global_val_overlap_start = max(rank_val_start, db_val_start_limit)
+        global_val_overlap_end = min(rank_val_end, db_val_end_limit)
+
+        if global_val_overlap_start < global_val_overlap_end:
+            # Calculate local indices
+            local_start_idx = global_val_overlap_start - db_global_start
+            local_end_idx = local_start_idx + (global_val_overlap_end - global_val_overlap_start)
+
+            val_entries.append({
+                'db_file': db_file,
+                'start_idx': local_start_idx,
+                'end_idx': local_end_idx
+            })
+
+    return train_entries, val_entries
 
 # The following is directly copied from [https://github.com/atomistic-machine-learning/schnetpack/blob/master/src/schnetpack/data/atoms.py#L36] to avoid installing schnetpack
 class Transform(nn.Module):
