@@ -83,7 +83,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             if open_shell:
                 node_labels = [mol.node_y_alpha, mol.node_y_beta]
             else:
-                node_labels = mol.node_y[0]
+                node_labels = mol.node_y
             energies = mol.energies
             # forces = mol.forces
 
@@ -134,11 +134,11 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
                 element_scalar_values_alpha[atomic_number].append(orbital_onsite_scalars_alpha)
                 element_scalar_values_beta[atomic_number].append(orbital_onsite_scalars_beta)
             else:
-                node_block = node_labels[0][atom_ind] # remove spin dimension
+                node_block = node_labels[atom_ind] # remove spin dimension
                 if atomic_number not in element_scalar_values:
                     element_scalar_values[atomic_number] = []
 
-                orbital_onsite_scalars = node_block[0][scalar_indices]
+                orbital_onsite_scalars = node_block[scalar_indices]
                 element_scalar_values[atomic_number].append(orbital_onsite_scalars)
 
         time_end = time.perf_counter()
@@ -307,8 +307,8 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
                 "element_scalar_stds": element_scalar_stds,    # dict[int -> list[float]]
                 "scalar_irrep_indices": scalar_indices         # list[int]
             }
-            torch.save(scale_shift_data, "./fock_datasets/"+filename)
-            print("Saved scale_shift_data to ./fock_datasets/"+filename, flush=True)
+            torch.save(scale_shift_data, "./fock_utils/"+filename)
+            print("Saved scale_shift_data to ./fock_utils/"+filename, flush=True)
 
 
 def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, dataset_name='', scale_nodes=False, open_shell=False, train_or_eval='train'):

@@ -13,6 +13,7 @@ import os
 from dataset_utils import get_scale_shift
 from fock_utils.get_energy_from_fock import build_density, get_integrals, get_permute_phase, permute_mat
 from fock_utils.utils_orca_out import periodic_table_number, sort_by_m, read_orca_out, periodic_table
+from fock_utils.utils_orca_out import extract_charge_and_spin_from_path
 from fock_utils import basis_sets, matrix2labels_kernels
 import json
 from pyscf import gto, scf
@@ -53,7 +54,6 @@ class SplitTrainer():
         #            entity='manasakani')
 
     # -- Train model --
-    # @disable_amp
     def train(self,
             num_epochs,
             loss_fxn,
@@ -486,6 +486,10 @@ class SplitTrainer():
                     this_node_target = this_node_target[0]
                     this_edge_target = this_edge_target[0]
 
+                if not self.open_shell and node_output.ndim == 3:
+                    node_output = node_output[0]
+                    edge_output = edge_output[0]
+                
                 # Undo scale/shift layers on output:
                 print("Undoing scale/shift...", flush=True)
                 node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
@@ -946,17 +950,12 @@ class SplitTrainer():
             functional = 'wb97m-v'
             folder_name = batch.folder_name[0]
 
-            # the folder name has the format "X_1_1_...'", where the end is _charge_spin
-            pattern = r'_(-?\d+)_(\d+)(?:_|$)'
-            match = re.search(pattern, folder_name)
-            if match:
-                charge = int(match.group(1))
-                spin = int(match.group(2))
-            else:
+            # # the folder name has the format "X_1_1_...'", where the end is _charge_spin
+            charge, spin = extract_charge_and_spin_from_path(folder_name)
+            if charge == None or spin == None:
                 print("Warning: folder name not in expected format, assuming neutral molecule.")
                 charge = 0
                 spin = 1
-
 
             # Create molecule
             mol = gto.M(

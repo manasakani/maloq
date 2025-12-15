@@ -156,7 +156,7 @@ class sampleDataset(torch.utils.data.Dataset):
 def sample_collate_fn(batch):
     return Batch.from_data_list(batch)
 
-def distribute_data(base_folder, N_db_files, world_size, rank, N_global_train, N_global_val):
+def distribute_data(base_folder, world_size, rank, N_global_train, N_global_val):
     """
     Calculates the file and index ranges for a single rank to load its portion
     of the global dataset, based on predefined total counts for training and validation.
@@ -166,7 +166,6 @@ def distribute_data(base_folder, N_db_files, world_size, rank, N_global_train, N
 
     Args:
         base_folder (str): The common path prefix for the database files.
-        N_db_files (int): Total number of database files (e.g., 16).
         world_size (int): Total number of training ranks (e.g., 64).
         rank (int): The current rank's index (0 to world_size - 1).
         N_global_train (int): The TOTAL number of molecules to be used for training.
@@ -184,12 +183,17 @@ def distribute_data(base_folder, N_db_files, world_size, rank, N_global_train, N
     current_global_idx = 0
     total_molecules_available = 0
 
-    for i in range(N_db_files):
-        db_file = os.path.join(base_folder, f'omol_electrolytes_unsolvated_job_{i}.db')
+    # extract all the .db file names inside base folder:
+    num_db_files = len([f for f in os.listdir(base_folder) if f.endswith('.db')])
+    db_files = [f for f in os.listdir(base_folder) if f.endswith('.db')]
+
+    for i, db_file in enumerate(db_files):
+        db_file = os.path.join(base_folder, db_file)
 
         try:
             db = ase.db.connect(db_file)
             count = db.count()
+            print("Found ", count, " molecules in ", db_file)
         except Exception as e:
             print(f"Warning: Could not open {db_file}. Skipping. Error: {e}")
             count = 0
