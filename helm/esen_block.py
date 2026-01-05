@@ -57,8 +57,13 @@ class Edgewise(torch.nn.Module):
         self.include_edges = include_edges
 
         if self.act_type == "gate":
-            self.act = GateActivation(
-                lmax=self.lmax, mmax=self.mmax, num_channels=self.hidden_channels
+            # Get permutation to rearrange the gate scalars from l to m order
+            l_to_m_permute = self.mappingReduced.l_harmonic[
+                torch.argmax(self.mappingReduced.to_m, dim=1)
+            ]
+
+            self.act = GateActivation( # in m-major
+                lmax=self.lmax, mmax=self.mmax, num_channels=self.hidden_channels, outer_dim='m', l_to_m_permute=l_to_m_permute
             )
             extra_m0_output_channels = self.lmax * self.hidden_channels
         else:
@@ -152,23 +157,12 @@ class Edgewise(torch.nn.Module):
         # Rotate the irreps to align with the edge
         x_message = torch.bmm(wigner, x_message)
 
-        # SO2 convolution
-        # print("fully checkpointed convs", flush=True)
-        # x_message, x_0_gating = self.so2_conv_1(x_message, x_edge) 
-        x_message, x_0_gating = checkpoint(
-            self.so2_conv_1, 
-            x_message, 
-            x_edge,
-            use_reentrant=False  # More memory efficient for newer PyTorch versions
-        )
+        # SO2 convolutions + Gating
+        x_message = torch.einsum("nac,ba->nbc", x_message, self.mappingReduced.to_m) # l-major -> m-major
+        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge) 
         x_message = self.act(x_0_gating, x_message)
-        # x_message = self.so2_conv_2(x_message, x_edge)
-        x_message = checkpoint(
-            self.so2_conv_2, 
-            x_message,
-            x_edge,
-            use_reentrant=False  
-        )
+        x_message = self.so2_conv_2(x_message, x_edge)
+        x_message = torch.einsum("nac,ab->nbc", x_message, self.mappingReduced.to_m) # m-major -> l-major
 
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
@@ -197,6 +191,8 @@ class Edgewise(torch.nn.Module):
         wigner,
         wigner_inv
     ):
+
+        torch.cuda.nvtx.range_push("Create messages") # <--- START
         
         x_source = x[edge_index[0]]
         x_target = x[edge_index[1]]
@@ -204,30 +200,40 @@ class Edgewise(torch.nn.Module):
         # Create regular messages
         x_message = torch.cat((x_source, x_target), dim=2) 
 
+        torch.cuda.nvtx.range_pop() # <--- END
+
         # Rotate the irreps to align with the edge
+        torch.cuda.nvtx.range_push("Rotate") # <--- START
         x_message = torch.bmm(wigner, x_message)
+        torch.cuda.nvtx.range_pop() # <--- END
+
+        torch.cuda.nvtx.range_push("l->m") # <--- START
+        x_message = torch.einsum("nac,ba->nbc", x_message, self.mappingReduced.to_m) # l-major -> m-major
+        torch.cuda.nvtx.range_pop() # <--- END
 
         # SO2 convolution #1
-        x_message, x_0_gating = checkpoint(
-            self.so2_conv_1, 
-            x_message, 
-            x_edge,
-            use_reentrant=False  # for newer PyTorch versions
-        )
+        torch.cuda.nvtx.range_push("So2 conv 1") # <--- START
+        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
+        torch.cuda.nvtx.range_pop() # <--- END
                     
         # Gate activation
+        torch.cuda.nvtx.range_push("Gate") # <--- START
         x_message = self.act(x_0_gating, x_message)
+        torch.cuda.nvtx.range_pop() # <--- END
 
         # SO2 convolution #2
-        x_message = checkpoint(
-            self.so2_conv_2, 
-            x_message,
-            x_edge,
-            use_reentrant=False  
-        )
+        torch.cuda.nvtx.range_push("So2 conv 2") # <--- START
+        x_message = self.so2_conv_2(x_message, x_edge)
+        torch.cuda.nvtx.range_pop() # <--- END
+
+        torch.cuda.nvtx.range_push("m->l") # <--- START
+        x_message = torch.einsum("nac,ab->nbc", x_message, self.mappingReduced.to_m) # m-major -> l-major
+        torch.cuda.nvtx.range_pop() # <--- END
 
         # Rotate back the irreps
+        torch.cuda.nvtx.range_push("Rotate back") # <--- START
         x_message = torch.bmm(wigner_inv, x_message)
+        torch.cuda.nvtx.range_pop() # <--- END
 
         # return new_embedding
         return x_message
@@ -268,11 +274,9 @@ class SpectralAtomwise(torch.nn.Module):
 
     def forward(self, x):
         gating_scalars = self.scalar_mlp(x.narrow(1, 0, 1))
-        # x = self.so3_linear_1(x)
-        x = checkpoint(self.so3_linear_1, x, use_reentrant=False)
+        x = self.so3_linear_1(x)
         x = self.act(gating_scalars, x)
-        # return self.so3_linear_2(x)
-        return checkpoint(self.so3_linear_2, x, use_reentrant=False)
+        return self.so3_linear_2(x)
 
 
 class eSEN_Block(torch.nn.Module):
@@ -369,6 +373,7 @@ class eSEN_Block(torch.nn.Module):
         else:
             x_res = x_message_edge
 
+            torch.cuda.nvtx.range_push("Edgewise") # <--- START
             x_message_edge = self.edge_wise(
                 x_message_node,
                 x_message_edge,
@@ -381,12 +386,16 @@ class eSEN_Block(torch.nn.Module):
                 wigner_inv,
                 node_or_edge,
             )
+            torch.cuda.nvtx.range_pop() # <--- END
             x_message_edge = self.norm_1(x_message_edge) 
 
             x_message_edge = x_message_edge + x_res
             x_res = x_message_edge 
 
             x_message_edge = self.norm_2(x_message_edge)
+
+            torch.cuda.nvtx.range_push("Atomwise") # <--- START
             x_message_edge = self.atom_wise(x_message_edge)
+            torch.cuda.nvtx.range_pop() # <--- END
 
             return x_message_edge + x_res

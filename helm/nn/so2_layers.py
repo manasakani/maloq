@@ -146,20 +146,24 @@ class SO2_Convolution(torch.nn.Module):
         out = []
 
         # Reshape the spherical harmonics based on m (order)
-        x = torch.einsum("nac,ba->nbc", x, self.mappingReduced.to_m)
+        # x = torch.einsum("nac,ba->nbc", x, self.mappingReduced.to_m)
 
         # radial function - this is now antisymmetrized (no bias, tanh)!
+        torch.cuda.nvtx.range_push("radial function") # <--- START
         if self.rad_func is not None:
             x_edge = self.rad_func(x_edge)
         offset_rad = 0
+        torch.cuda.nvtx.range_pop() # <--- END
 
         # Compute m=0 coefficients separately since they only have real values (no imaginary)
+        torch.cuda.nvtx.range_push("m = 0") # <--- START
         x_0 = x.narrow(1, 0, self.mappingReduced.m_size[0])
         x_0 = x_0.reshape(num_edges, -1)
         if self.rad_func is not None:
             x_edge_0 = x_edge.narrow(1, 0, self.fc_m0.in_features)
             x_0 = x_0 * x_edge_0
         x_0 = self.fc_m0(x_0)
+        torch.cuda.nvtx.range_pop() # <--- END
 
         x_0_extra = None
         # extract extra m0 features
@@ -179,6 +183,7 @@ class SO2_Convolution(torch.nn.Module):
         # Compute the values for the m > 0 coefficients
         offset = self.mappingReduced.m_size[0]
         for m in range(1, self.mmax + 1):
+            torch.cuda.nvtx.range_push("next m") # <--- START
             # Get the m order coefficients
             x_m = x.narrow(1, offset, 2 * self.mappingReduced.m_size[m])
             x_m = x_m.reshape(num_edges, 2, -1)
@@ -198,10 +203,11 @@ class SO2_Convolution(torch.nn.Module):
             out.append(x_m)
             offset = offset + 2 * self.mappingReduced.m_size[m]
             offset_rad = offset_rad + self.so2_m_conv[m - 1].fc.in_features
+            torch.cuda.nvtx.range_pop() # <--- END
 
         out = torch.cat(out, dim=1)
         # Reshape the spherical harmonics based on l (degree)
-        out = torch.einsum("nac,ab->nbc", out, self.mappingReduced.to_m)
+        # out = torch.einsum("nac,ab->nbc", out, self.mappingReduced.to_m)
 
         if self.extra_m0_output_channels is not None:
             return out, x_0_extra

@@ -11,25 +11,42 @@ import torch
 
 
 class GateActivation(torch.nn.Module):
-    def __init__(self, lmax: int, mmax: int, num_channels: int) -> None:
+    def __init__(self, lmax: int, mmax: int, num_channels: int, outer_dim='l', l_to_m_permute=None) -> None:
         super().__init__()
 
         self.lmax = lmax
         self.mmax = mmax
         self.num_channels = num_channels
 
+        # if outer_dim == 'm', check that l_to_m_permute is provided
+        if outer_dim == 'm':
+            assert l_to_m_permute is not None, "l_to_m_permute must be provided when outer_dim is 'm'!"
+
         # compute `expand_index` based on `lmax` and `mmax`
-        num_components = 0
-        for lval in range(1, self.lmax + 1):
-            num_m_components = min((2 * lval + 1), (2 * self.mmax + 1))
-            num_components = num_components + num_m_components
-        expand_index = torch.zeros([num_components]).long()
-        start_idx = 0
-        for lval in range(1, self.lmax + 1):
-            length = min((2 * lval + 1), (2 * self.mmax + 1))
-            expand_index[start_idx : (start_idx + length)] = lval - 1
-            start_idx = start_idx + length
-        self.register_buffer("expand_index", expand_index)
+        if outer_dim == 'l':
+            num_components = 0
+            for lval in range(1, self.lmax + 1):
+                num_m_components = min((2 * lval + 1), (2 * self.mmax + 1))
+                num_components = num_components + num_m_components
+            expand_index = torch.zeros([num_components]).long()
+            start_idx = 0
+            for lval in range(1, self.lmax + 1):
+                length = min((2 * lval + 1), (2 * self.mmax + 1))
+                expand_index[start_idx : (start_idx + length)] = lval - 1
+                start_idx = start_idx + length
+            self.register_buffer("expand_index", expand_index)
+            # print("expand_index (l):", self.expand_index)
+
+        else:  # outer_dim == 'm'
+            # Skip scalar (ℓ = 0, m = 0)
+            num_components = l_to_m_permute.numel() - 1
+            expand_index = torch.zeros(num_components, dtype=torch.long)
+
+            for i in range(1, l_to_m_permute.numel()):
+                l = l_to_m_permute[i]
+                expand_index[i - 1] = l - 1 # -1 to account for scalar skip
+            self.register_buffer("expand_index", expand_index)
+            # print("expand_index (m):", self.expand_index)
 
         self.scalar_act = (
             torch.nn.SiLU()

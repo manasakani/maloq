@@ -250,16 +250,17 @@ def main():
         if open_shell:
             matrix = [alpha_matrix, beta_matrix]
 
-        fock_target = fock_targets.Fock_Targets(structure, cutoff, full_basis, dataset_name='omol',
-                                                charge=charge,
-                                                spin_multiplicity=spin_multiplicity,
-                                                fock_matrix=matrix, half_edges=half_edges,
-                                                dtype=torch.float32,
-                                                orbital_starts=orbital_starts,
-                                                orbital_template=orbital_template,
-                                                req_output_irreps=req_output_irreps,
-                                                out_js_list=out_js_list,
-                                                ls_list=ls_list)
+        with torch.no_grad():
+            fock_target = fock_targets.Fock_Targets(structure, cutoff, full_basis, dataset_name='omol',
+                                                    charge=charge,
+                                                    spin_multiplicity=spin_multiplicity,
+                                                    fock_matrix=matrix, half_edges=half_edges,
+                                                    dtype=torch.float32,
+                                                    orbital_starts=orbital_starts,
+                                                    orbital_template=orbital_template,
+                                                    req_output_irreps=req_output_irreps,
+                                                    out_js_list=out_js_list,
+                                                    ls_list=ls_list)
 
         # Save the analysis objects to use for the next structure (these depend only on the basis)
         orbital_starts = fock_target.orbital_starts
@@ -267,6 +268,7 @@ def main():
         req_output_irreps = fock_target.req_output_irreps
         out_js_list = fock_target.out_js_list
         ls_list = fock_target.ls_list
+        fock_target.to('cpu')        
 
         target_time_end = time.perf_counter()
 
@@ -288,6 +290,16 @@ def main():
         #     print(f"ERROR: Job {args.job_id} skipping structure {structure_folder} due to error: {str(e)}", flush=True)
         #     skipped_structures.append(structure_folder)
         #     continue
+
+        current_mem = torch.cuda.memory_allocated() / (1024 * 1024)
+        peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024)
+        print(f"Current: {current_mem:.2f} MB, Peak: {peak_mem:.2f} MB")
+        if open_shell:
+            del alpha_matrix, beta_matrix, fock_target  # Explicitly delete large local vars
+        else:
+            del matrix, fock_target
+        torch.cuda.empty_cache()                            # Release unoccupied cached memory to GPU
+        
 
     big_time_end = time.perf_counter()
     successful_structures = len(structures)
