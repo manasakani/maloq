@@ -40,31 +40,22 @@ class TrainingWorkflow:
             return None
 
         dataset_name = self.config['dataset_name']
-
-        # Unified pathing: check both possible locations or use a default
         filename = f"element_scale_shifts_{dataset_name}.pt"
-        potential_paths = ['./fock_datasets/', './fock_utils/', './']
-        
-        found_path = None
-        for p in potential_paths:
-            if os.path.exists(os.path.join(p, filename)):
-                found_path = os.path.join(p, filename)
-                break
+        target_path = os.path.join("./fock_utils/", filename)
+        file_exists = os.path.exists(target_path)
 
-        if found_path is None:
-            if self.rank == 0:
-                print(f"[Computing scale/shift factors for {dataset_name}]")
-                get_scale_shift.get_scale_shift(
-                    database, dataset_name, self.config['rcut_orbitals'], 
-                    dtype=self.config['dtype'], reduce_edge=self.config['reduce_edge']
-                )
-            # After computing, it should be in the current directory or specified path
-            found_path = filename 
-
-        if self.rank == 0:
-            print(f"[Loading scale and shift factors from {found_path}]")
-        
-        data = torch.load(found_path)
+        if file_exists:
+            data = torch.load(target_path)
+            
+        # Recompute scale/shift factors for this dataset
+        else:
+            print(f"[Computing scale/shift factors for {dataset_name}]")
+            data = get_scale_shift.get_scale_shift(
+                database, dataset_name, self.config['rcut_orbitals'], 
+                dtype=self.config['dtype'], reduce_edge=self.config['reduce_edge'], 
+                filename=filename
+            )
+            
         return {
             "element_scalar_means": data["element_scalar_means"],
             "element_scalar_stds": data["element_scalar_stds"],
@@ -84,7 +75,7 @@ class TrainingWorkflow:
         val_start += c['num_train']; val_end += c['num_train']
         test_start += (c['num_train'] + c['num_val']); test_end += (c['num_train'] + c['num_val'])
 
-        # 3. Handle Scale/Shift
+        # 3. Get Scale/Shift
         scale_shift_data = self._handle_scale_shift(database)
         
         # 4. Data loading logic

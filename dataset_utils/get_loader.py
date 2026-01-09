@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-from fock_utils import utils_orca_out, fock_targets, matrix2labels_kernels, basis_sets
+from fock_utils import utils_orca_out, fock_targets_batched, matrix2labels_kernels, basis_sets
 from dataset_utils.ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
 from ase import Atoms
 from ase.neighborlist import NeighborList
@@ -16,90 +16,77 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     NOTE: closedshell only
     """
     rank = dist.get_rank()
-    assert end_idx > start_idx
-
-    # Fock matrix analysis parameters:
-    orbital_starts = None
-    out_js_list = None
-    orbital_template = None
-    req_output_irreps = None
-    ls_list = None
+    num_molecules_to_process = end_idx - start_idx
 
     datalist = []
-    for i in range(start_idx, end_idx):
-        # print(f"Rank {rank} making molecule {i}")
-        mol = database[i]
 
-        if dataset_name == "QM7":
-            energy = mol['energy']
-            forces = mol['forces']
-            hamiltonian = mol['hamiltonian'].numpy()
-            overlap = mol['overlap'].numpy()
-            atomic_numbers = mol['_atomic_numbers'].numpy()
-            positions=mol['_positions'].numpy()
-            orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
+    if dataset_name == "QM7":
+        orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
+        energy = [database[i]['energy'] for i in range(start_idx, end_idx)]
+        forces = [database[i]['forces'] for i in range(start_idx, end_idx)]
+        atomic_numbers = [database[i]['_atomic_numbers'].numpy() for i in range(start_idx, end_idx)]
+        positions = [database[i]['_positions'].numpy() for i in range(start_idx, end_idx)]
 
-        elif dataset_name == "nablaDFT":
-            atomic_numbers, positions, energy, forces, hamiltonian, overlap, coeff_matrix, moses_id, conformation_id = database[i]
-            orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
+        hamiltonians = [database[i]['hamiltonian'].numpy() for i in range(start_idx, end_idx)]
+        hamiltonians = [utils_orca_out.sort_by_m(h, orbital_basis, z) for h, z in zip(hamiltonians, atomic_numbers)] # QM7 comes in zxy coordinates from ORCA, so need to rotate
 
-        else:
-            raise ValueError("Unknown database!")
+        overlaps = [database[i]['overlap'].numpy() for i in range(start_idx, end_idx)] # we don't rotate the overlap
 
-        # 1. Make the atomic structure
-        mol_atoms = Atoms(symbols=atomic_numbers, positions=positions)
+    elif dataset_name == "nablaDFT":
+        # atomic_numbers, positions, energy, forces, hamiltonian, overlap, coeff_matrix, moses_id, conformation_id = database[i]
+        orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
+        
+        atomic_numbers = []
+        positions = []
+        energy = []
+        forces = []
+        hamiltonians = []
+        overlaps = []
+        
+        for i in range(start_idx, end_idx):
+            z, pos, en, f, ham, ov, coeff, m_id, c_id = database[i]
+            atomic_numbers.append(z)
+            positions.append(pos)
+            energy.append(en)
+            forces.append(f)
+            hamiltonians.append(ham)
+            overlaps.append(ov)
 
-        # 2. Set up the Graph targets
-        if make_fock_targets:
-            if dataset_name == "QM7":
-                hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate
+    else:
+        raise ValueError("Unknown database!")
 
-            graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, half_edges=half_edges,
-                                                      dataset_name=dataset_name,
-                                                      scale_shift_data=scale_shift_data,
-                                                      orbital_starts=orbital_starts,
-                                                      out_js_list=out_js_list,
-                                                      orbital_template=orbital_template,
-                                                      req_output_irreps=req_output_irreps,
-                                                      ls_list=ls_list)
+    # Set up the Graph targets
+    if make_fock_targets:
+        
+        graph_targets = fock_targets_batched.Fock_Targets(atomic_numbers, positions, rcut, orbital_basis, hamiltonians, 
+                                                        dtype=dtype, 
+                                                        dataset_name=dataset_name,
+                                                        scale_shift_data=scale_shift_data)
 
-            orbital_starts = graph_targets.orbital_starts
-            out_js_list = graph_targets.out_js_list
-            orbital_template = graph_targets.orbital_template
-            req_output_irreps = graph_targets.req_output_irreps
-            ls_list = graph_targets.ls_list
-
-        else:
-            graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, None, dtype=dtype, half_edges=half_edges,
-                                                      scale_shift_data=scale_shift_data)
-
-        # collect only a subset of the edges (use reflection symmetry in the network)
-        forward_edge_mask = graph_targets.forward_edge_mask
-        reverse_edge_map = graph_targets.reverse_edge_map
+    # Add the molecules into the dataloader
+    for i in range(num_molecules_to_process):
 
         # closed shell only, needed for custom collate
-        if graph_targets.node_labels.ndim == 3:
-            edge_labels = graph_targets.edge_labels[0]
-            node_labels = graph_targets.node_labels[0]
+        if graph_targets.node_labels_list[i].ndim == 3:
+            edge_labels = graph_targets.edge_labels_list[i][0]
+            node_labels = graph_targets.node_labels_list[i][0]
         else:
-            edge_labels = graph_targets.edge_labels
-            node_labels = graph_targets.node_labels
+            edge_labels = graph_targets.edge_labels_list[i]
+            node_labels = graph_targets.node_labels_list[i]
 
         # 3. Make the data object
         data = gnnData(
-                        pos=torch.tensor(graph_targets.atoms.positions, dtype=dtype),
-                        edge_index=torch.tensor(graph_targets.neighbour_list),
-                        edge_mask=torch.tensor(forward_edge_mask),
-                        reverse_edge_map=torch.tensor(reverse_edge_map),
-                        edge_attr=graph_targets.edge_dist,
+                        pos=torch.tensor(graph_targets.atomic_positions_list[i], dtype=dtype),
+                        edge_index=torch.tensor(graph_targets.neighbour_list_list[i]),
+                        edge_attr=graph_targets.edge_dist_list[i],
                         y=edge_labels,
                         node_y=node_labels,
-                        atomic_numbers=torch.tensor(graph_targets.atomic_numbers, dtype=torch.long).cpu(),
-                        energies=torch.tensor(energy, dtype=dtype),
-                        forces=torch.tensor(forces, dtype=dtype),                                      # Hartree/Angstrom
-                        num_atoms_in_molecule=len(graph_targets.atomic_numbers),
+                        atomic_numbers=torch.tensor(graph_targets.atomic_numbers_list[i], dtype=torch.long).cpu(),
+                        energies=torch.tensor(energy[i], dtype=dtype),
+                        forces=torch.tensor(forces[i], dtype=dtype),                                      # Hartree/Angstrom
+                        num_atoms_in_molecule=len(graph_targets.atomic_numbers_list[i]),
                         fock_target_object=graph_targets,
-                        overlap_matrix=torch.tensor(overlap, dtype=dtype) if make_fock_targets else None,
+                        overlap_matrix=torch.tensor(overlaps[i], dtype=dtype) if make_fock_targets else None,
                     )
         datalist.append(data)
 
@@ -115,6 +102,8 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     data_loader = DataLoader(dataset, batch_size=batch_size)
 
     return data_loader, required_irreps, basis_transform, orbital_basis, ls_list
+
+
 
 def get_datalist(dataset, start_idx, end_idx, dataset_name, rcut, element_references, dtype=torch.float32, half_edges=True, make_fock_targets=True, scale_shift_data=None):
     """

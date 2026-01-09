@@ -272,8 +272,8 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
                 "element_scalar_stds_beta": element_scalar_stds_beta,    # dict[int -> list[float]]
                 "scalar_irrep_indices": scalar_indices         # list[int]
             }
-            torch.save(scale_shift_data, "./fock_datasets/"+filename)
-            print("Saved scale_shift_data to ./fock_datasets/"+filename, flush=True)
+            torch.save(scale_shift_data, "./fock_utils/"+filename)
+            print("Saved scale_shift_data to ./fock_utils/"+filename, flush=True)
 
         else:
             # get the mean/std per element
@@ -309,6 +309,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             }
             torch.save(scale_shift_data, "./fock_utils/"+filename)
             print("Saved scale_shift_data to ./fock_utils/"+filename, flush=True)
+    return scale_shift_data
 
 
 def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, dataset_name='', scale_nodes=False, open_shell=False, train_or_eval='train'):
@@ -660,6 +661,7 @@ def create_edge_balanced_batches(data_list, target_edges_per_batch, tolerance=0.
 
         # If we couldn't add any molecule, just add the first remaining one
         # (this handles cases where a single molecule has more edges than target)
+        print("Current batch edges:", current_batch_edges, "Remaining molecules:", len(remaining_molecules), " - not adding the rest!!!")
         if not current_batch and remaining_molecules:
             mol_idx, mol_edges, mol_data = remaining_molecules.pop(0)
             current_batch.append(mol_data)
