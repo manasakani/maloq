@@ -51,6 +51,19 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             hamiltonians.append(ham)
             overlaps.append(ov)
 
+    elif dataset_name == "omol":
+        orbital_basis = basis_sets.def2_tzvpd
+        orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
+        orbital_basis = {int(k): v for k, v in orbital_basis.items()}
+        
+        positions = [database[i]['pos'] for i in range(start_idx, end_idx)]
+        atomic_numbers = [database[i]['atomic_numbers'] for i in range(start_idx, end_idx)]
+        energy = [database[i]['energies'] for i in range(start_idx, end_idx)]
+        forces = [0 for i in range(start_idx, end_idx)]  # dummy forces for now!!!
+
+        hamiltonians = [database[i]['fock_matrix'] for i in range(start_idx, end_idx)]
+        overlaps = [0 for i in range(start_idx, end_idx)]
+
     else:
         raise ValueError("Unknown database!")
 
@@ -58,9 +71,9 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     if make_fock_targets:
         
         graph_targets = fock_targets_batched.Fock_Targets(atomic_numbers, positions, rcut, orbital_basis, hamiltonians, 
-                                                        dtype=dtype, 
-                                                        dataset_name=dataset_name,
-                                                        scale_shift_data=scale_shift_data)
+                                                            dtype=dtype, 
+                                                            dataset_name=dataset_name,
+                                                            scale_shift_data=scale_shift_data)
 
     # Add the molecules into the dataloader
     for i in range(num_molecules_to_process):
@@ -90,15 +103,15 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         datalist.append(data)
 
     orbital_basis = {k: torch.tensor(v) for k, v in graph_targets.orbital_basis.items()}
+
     ls_list = graph_targets.ls_list
     required_irreps = graph_targets.req_output_irreps
-    print("required irreps: ", required_irreps)
-
     basis_transform = graph_targets.basis_transformation
     orbital_starts = graph_targets.orbital_starts
 
     dataset = sampleDataset(datalist)
     data_loader = DataLoader(dataset, batch_size=batch_size)
+    print("required irreps: ", required_irreps)
 
     return data_loader, required_irreps, basis_transform, orbital_basis, ls_list
 

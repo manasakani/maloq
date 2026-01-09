@@ -4,7 +4,7 @@ from train_utils import loss, training_workflow
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
 # ---------------------------------------------------------
-# nablaDFT Dataset Configuration
+# nablaDFT Dataset Training & Evaluation
 # ---------------------------------------------------------
 config = {
     # Dataset Paths & Naming
@@ -52,6 +52,9 @@ config = {
     "backbone_checkpoint": 'backbone.pt',
     "head_checkpoint": 'head.pt',
     "scale_and_shift": True,         # Scale & shift the node labels
+
+    # Evals
+    "compute_total_energy": False,
 
     # Model Architecture
     "l_embedding_dim": 128,

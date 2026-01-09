@@ -391,9 +391,9 @@ class SplitTrainer():
         self.backbone.eval()
         self.head.eval()
 
-        dump_plots = True
+        dump_plots = False
         dump_embeddings = False
-        compute_eigenvalues = True
+        compute_eigenvalues = False
         save_density = False
 
         if dist.is_available() and dist.is_initialized():
@@ -490,13 +490,17 @@ class SplitTrainer():
                     node_output = node_output[0]
                     edge_output = edge_output[0]
                 
+                neighbour_list = batch.fock_target_object[0].neighbour_list_list[index]
+                atomic_numbers = batch.fock_target_object[0].atomic_numbers_list[index]
+                orbitals_per_atom = batch.fock_target_object[0].orbitals_per_atom_list[index]
+                
                 # Undo scale/shift layers on output:
                 print("Undoing scale/shift...", flush=True)
-                node_output = batch.fock_target_object[0].undo_scale_shift(node_output)
+                node_output = batch.fock_target_object[0].undo_scale_shift(node_output, atomic_numbers)
 
                 # for nabladft, we left the node scaling in
                 if dataset_name == 'nablaDFT':
-                    this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target) # note: remove node scaling from evals
+                    this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target, atomic_numbers) # note: remove node scaling from evals
 
                 # Transform back to uncoupled basis:
                 print("Transforming to uncoupled basis...", flush=True)
@@ -511,14 +515,14 @@ class SplitTrainer():
 
                 ## LABEL -> MATRIX START ##
                 start_conversion = time.perf_counter()
-                matrix_size = batch.fock_target_object[0].block_starts[-1]
+                matrix_size = batch.fock_target_object[0].block_starts_list[index][-1]
 
                 # Augment neighbor list with node self-neighbors, because we will stack the nodes together with the edges
-                src_idx, target_idx = batch.fock_target_object[0].neighbour_list[0], batch.fock_target_object[0].neighbour_list[1]
-                num_atoms = len(batch.fock_target_object[0].atomic_numbers)
+                src_idx, target_idx = neighbour_list[0], neighbour_list[1]
+                num_atoms = len(atomic_numbers)
                 src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
                 target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
-                fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(batch.fock_target_object[0].orbitals_per_atom)])
+                fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(orbitals_per_atom)])
 
                 # output_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
                 # edge_output_cupy = cp.from_dlpack(uncoupled_edge_outputs)
@@ -535,7 +539,7 @@ class SplitTrainer():
                 matrix2labels_kernels.numpy_single_matrix2label(
                     orbital_template,
                     fock_block_offsets,
-                    batch.fock_target_object[0].atomic_numbers,
+                    atomic_numbers,
                     src_idxes,
                     target_idxes,
                     output_fock_matrix,
@@ -560,7 +564,7 @@ class SplitTrainer():
                 matrix2labels_kernels.numpy_single_matrix2label(
                     orbital_template,
                     fock_block_offsets,
-                    batch.fock_target_object[0].atomic_numbers,
+                    atomic_numbers,
                     src_idxes,
                     target_idxes,
                     label_fock_matrix,
@@ -694,7 +698,6 @@ class SplitTrainer():
             if loss_target_string == 'fock_matrix':
 
                 print("Tracking loss for batch ", index, flush=True)
-                edge_multiplier = 2 if batch.fock_target_object[0].half_edges else 1
                 total_node_element_loss = 0
                 total_edge_element_loss = 0
                 num_node_block_elements = 0

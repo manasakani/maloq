@@ -17,7 +17,6 @@ class ASEDataset(Dataset):
 
         print("Connecting to database...")
         self.db = ase.db.connect(db_path)
-        print("connected.")
         total_rows = self.db.count()
         print(f"Total rows in database: {total_rows}")
 
@@ -45,9 +44,7 @@ class ASEDataset(Dataset):
         for row in self.db.select():
             print("Getting row..", flush=True)
             ids.append(row.id)
-            # limit number to read
-            # if len(ids) > limit:
-            #     break
+            
         return ids
 
     def __len__(self):
@@ -63,83 +60,52 @@ class ASEDataset(Dataset):
         positions = atoms.positions
         atomic_numbers = atoms.numbers
 
-        # Convert numpy arrays from structure.data to PyTorch tensors
-        neighbour_list = structure.data['edge_index']
-        edge_dist = torch.tensor(structure.data['edge_dist'], dtype=self.dtype)
-        edge_index = torch.tensor(neighbour_list, dtype=torch.long)
-        edge_mask = torch.tensor(structure.data['edge_mask']) if 'edge_mask' in structure.data else None
-        reverse_edge_map = torch.tensor(structure.data['reverse_edge_map']) if 'reverse_edge_map' in structure.data else None
-
         # Targets
-        node_labels = torch.tensor(structure.data['node_labels'], dtype=self.dtype)
-        edge_labels = torch.tensor(structure.data['edge_labels'], dtype=self.dtype)
-        energies = torch.tensor(structure.data['total_energy [Eh]'])
-        # forces = torch.tensor(structure.data['gradient [Eh/bohr]'])
-        # dipole = torch.tensor(structure.data['multipoles'][1])  # XX, YY, ZZ components
-        # quadrupole = torch.tensor(structure.data['multipoles'][2])  # XY, XZ, YZ components
+        fock_matrix = torch.tensor(structure.data['fock_matrix'], dtype=self.dtype)
+        density_matrix = torch.tensor(structure.data['density_matrix'], dtype=self.dtype)
+        energies = structure.data['total_energy [Eh]']
 
-        # Legacy closed-shell databases (does not contain spin dimension, so we add it):
-        if node_labels.ndim == 2:
-            node_labels = node_labels.unsqueeze(0)
-            edge_labels = edge_labels.unsqueeze(0)
-            charge = 0
-            spin_multiplicity = 1
-        else:
+        is_open_shell = structure.data['is_open_shell']
+        if is_open_shell:
             charge = structure.data['charge']
             spin_multiplicity = structure.data['spin_multiplicity']
+        else:
+            charge = 0
+            spin_multiplicity = 1
 
-        # Handle individual closed-shell molecules in open-shell training by setting alphafock==betafock:
-        if self.open_shell and node_labels.ndim == 3 and node_labels.shape[0] == 1:
-            print("[Adding 2nd spin dimension to closed shell molecule for open shell training]")
-            node_labels = node_labels.repeat(2, 1, 1)
-            edge_labels = edge_labels.repeat(2, 1, 1)
+        # Legacy closed-shell databases (does not contain spin dimension, so we add it):
+        # if node_labels.ndim == 2:
+        #     node_labels = node_labels.unsqueeze(0)
+        #     edge_labels = edge_labels.unsqueeze(0)
+        #     charge = 0
+        #     spin_multiplicity = 1
+        # else:
+        #     charge = structure.data['charge']
+        #     spin_multiplicity = structure.data['spin_multiplicity']
+
+        # # Handle individual closed-shell molecules in open-shell training by setting alphafock==betafock:
+        # if self.open_shell and node_labels.ndim == 3 and node_labels.shape[0] == 1:
+        #     print("[Adding 2nd spin dimension to closed shell molecule for open shell training]")
+        #     node_labels = node_labels.repeat(2, 1, 1)
+        #     edge_labels = edge_labels.repeat(2, 1, 1)
 
         # metadata:
         folder_name = structure.data['folder_name']
 
         # Create PyTorch Geometric Data object with alpha/beta targets if open shell
-        # NOTE: the alpha and beta targets are seperated to make collation easier
-        if not self.open_shell:
-            data = Data(
-                pos=torch.tensor(positions, dtype=self.dtype),
-                x=torch.tensor(atomic_numbers),
-                edge_index=edge_index,
-                edge_attr=edge_dist,
-                edge_mask=edge_mask,
-                reverse_edge_map=reverse_edge_map,
-                y=edge_labels[0],
-                node_y=node_labels[0],
-                atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
-                nedges=len(edge_index[0]),
-                natoms=len(atomic_numbers),
-                energies=energies,
-                num_atoms_in_molecule=len(atomic_numbers),
-                charge=charge,
-                spin_multiplicity=int(spin_multiplicity),
-                folder_name=folder_name,
-            )
-        else:
-            data = Data(
-                pos=torch.tensor(positions, dtype=self.dtype),
-                x=torch.tensor(atomic_numbers),
-                edge_index=edge_index,
-                edge_attr=edge_dist,
-                edge_mask=edge_mask,
-                reverse_edge_map=reverse_edge_map,
-                y_alpha=edge_labels[0],
-                y_beta=edge_labels[1],
-                node_y_alpha=node_labels[0],
-                node_y_beta=node_labels[1],
-                atomic_numbers=torch.tensor(atomic_numbers, dtype=torch.long),
-                nedges=len(edge_index[0]),
-                natoms=len(atomic_numbers),
-                energies=energies,
-                num_atoms_in_molecule=len(atomic_numbers),
-                charge=charge,
-                spin_multiplicity=int(spin_multiplicity),
-                folder_name=folder_name,
-            )
-
+        # NOTE: the alpha and beta targets are seperated to make collation easier (??)
+        data = Data(
+            pos=positions,
+            atomic_numbers=atomic_numbers,
+            fock_matrix=fock_matrix,
+            density_matrix=density_matrix,
+            energies=energies,
+            num_atoms_in_molecule=len(atomic_numbers),
+            charge=charge,
+            spin_multiplicity=int(spin_multiplicity),
+            folder_name=folder_name,
+        )
+        
         # Store orbital basis (dictionary)
         data.orbital_basis = self.orbital_basis
 

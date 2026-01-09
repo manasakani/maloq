@@ -192,9 +192,14 @@ class Fock_Targets:
         orbital_template_ptrs = cp.array(
             orbital_template_ptrs, dtype=cp.uintp
         )
+        cupy_dtype = self.torch_dtype_to_cupy_dtype(self.dtype)
 
         for i, fock_matrix in enumerate(fock_matrices):
-            fock_matrix = torch.from_numpy(fock_matrix).to(self.device)
+
+            # Move fock matrix to device
+            if not isinstance(fock_matrix, torch.Tensor):
+                fock_matrix = torch.from_numpy(fock_matrix)
+            fock_matrix = fock_matrix.to(device=self.device)
 
             neighbour_list = self.neighbour_list_list[i]
             num_atoms = len(self.atomic_numbers_list[i])
@@ -232,8 +237,8 @@ class Fock_Targets:
                 #                                                     forward=True
                 #                                                 )
 
-                matrix = cp.array(fock_matrix[spin]) if open_shell else cp.array(fock_matrix)
-                labels = cp.zeros((num_edges + num_atoms, self.target_len), dtype=self.torch_dtype_to_cupy_dtype(self.dtype))
+                matrix = cp.array(fock_matrix[spin], dtype=cupy_dtype) if open_shell else cp.array(fock_matrix, dtype=cupy_dtype)
+                labels = cp.zeros((num_edges + num_atoms, self.target_len), dtype=cupy_dtype)
                 matrix2labels_kernels.cupy_single_matrix2label(
                                                                 self.orbital_template,
                                                                 fock_block_offsets,
@@ -317,14 +322,11 @@ class Fock_Targets:
 
         return node_blocks
 
-    def unscale_shift_node_blocks(self, node_blocks, atomic_numbers=None):
+    def unscale_shift_node_blocks(self, node_blocks, atomic_numbers):
         """
         Undo the scaling and shifting applied to the targets (l=0 values and optionally all irrep degrees).
         """
 
-        if self.scale_shift_data is None:
-            print("Possible Error! No scale/shift data provided! Not unscaling")
-            return node_blocks
 
         new_node_blocks = node_blocks.clone()  # Create a copy to avoid modifying the original list
 
@@ -332,7 +334,7 @@ class Fock_Targets:
         stds = self.scale_shift_data['element_scalar_stds']
         scalar_indices = self.scale_shift_data['scalar_irrep_indices']
 
-        for i, (node_block, z) in enumerate(zip(node_blocks, self.atomic_numbers)):
+        for i, (node_block, z) in enumerate(zip(node_blocks, atomic_numbers)):
             z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
 
             mean_vals = means[z]
@@ -358,7 +360,7 @@ class Fock_Targets:
 
         return N**2
 
-    def undo_scale_shift(self, node_blocks):
+    def undo_scale_shift(self, node_blocks, atomic_numbers):
 
         # Unscale and shift the node blocks!
         if self.scale_shift_data is None:
@@ -366,7 +368,7 @@ class Fock_Targets:
             return node_blocks
         else:
             print("Unscaling node blocks with scale/shift data")
-            return self.unscale_shift_node_blocks(node_blocks)
+            return self.unscale_shift_node_blocks(node_blocks, atomic_numbers)
     
     def to(self, device):
         """

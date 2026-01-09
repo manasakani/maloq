@@ -237,7 +237,7 @@ class TrainingWorkflow:
             trainer.evaluate(
                 self.config['test_loss_fxn'], self.device, loader,
                 loss_target_string=self.config['loss_target'],
-                node_target_name=node_target, edge_target_name=edge_target,
+                node_target_name=node_target, edge_target_name=edge_target, compute_total_energy=self.config['compute_total_energy'],
                 basis_transform=basis_trans, output_folder=self.config['output_folder'],
                 dataset_name=self.config['dataset_name'], orbital_basis=orb_basis
             )
