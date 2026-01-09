@@ -391,7 +391,7 @@ class SplitTrainer():
         self.backbone.eval()
         self.head.eval()
 
-        dump_plots = False
+        dump_plots = True
         dump_embeddings = False
         compute_eigenvalues = True
         save_density = False
@@ -738,7 +738,7 @@ class SplitTrainer():
         # -- Output dump --
         if loss_target_string == 'fock_matrix':
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
-                f.write(f"Edge_MAE\tNode_MAE\tTotal_MAE\tEigenvalue_MAE\tTotal_Energy_Error\tNum_Atoms\n")
+                f.write(f"Total_MAE\tEigenvalue_MAE\tTotal_Energy_Error\tNum_Atoms\n")
                 for total, eig, energy, num_atoms in zip(track_loss, eigenvalue_maes, total_energy_errors, num_atoms_in_molecule_list):
                     f.write(f"{total:.10f}\t{eig:.10f}\t{energy:.10f}\t{num_atoms}\n")
         else:

@@ -144,7 +144,6 @@ class Fock_Targets:
                                                                        device_torch=self.device)
 
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
-        # print(f'Simplified irreps: {self.simplified_out_irreps}')
         self.scale_shift_data = scale_shift_data
 
         # If the fock targets should be computed on-the-fly rather than loaded from the db:
@@ -492,6 +491,38 @@ class Fock_Targets:
         else:
             print("Unscaling node blocks with scale/shift data")
             return self.unscale_shift_node_blocks(node_blocks)
+    
+    def to(self, device):
+        """
+        Moves all internal torch tensors to the specified device.
+        """
+        self.device = torch.device(device)
+        
+        # Move primary data tensors
+        if self.node_labels is not None:
+            self.node_labels = self.node_labels.to(device)
+        if self.edge_labels is not None:
+            self.edge_labels = self.edge_labels.to(device)
+        if self.edge_dist is not None:
+            self.edge_dist = self.edge_dist.to(device)
+            
+        # Move basis/metadata tensors
+        if isinstance(self.ls_list, torch.Tensor):
+            self.ls_list = self.ls_list.to(device)
+            
+        # Clear the large input matrix if it's a tensor
+        if isinstance(self.fock_matrix, torch.Tensor):
+            self.fock_matrix = self.fock_matrix.to(device)
+        elif isinstance(self.fock_matrix, list):
+            self.fock_matrix = [
+                m.to(device) if isinstance(m, torch.Tensor) else m 
+                for m in self.fock_matrix
+            ]
+            
+        # # If basis_transformation has internal buffers/parameters
+        # if hasattr(self, 'basis_transformation'):
+        
+        return self
 
     # def reconstruct_matrix(self, node_blocks, edge_blocks, symmetrize_matrix_if_needed=False):
     #     """

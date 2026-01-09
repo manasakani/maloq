@@ -111,8 +111,8 @@ def extract_charge_and_spin_from_path(orca_output_path: Path) -> tuple[int | Non
             break
             
     # If the loop finishes without finding a match
-    print(f"Warning: Could not reliably parse charge/spin from path in the vicinity of: {orca_output_path}")
-    return None, None
+    print(f"Warning: Could not reliably parse charge/spin from path in the vicinity of: {orca_output_path}, setting charge=0, multiplicity=1")
+    return 0, 1
 
 def manually_parse_output(
     orca_output_path: Path,
@@ -277,7 +277,7 @@ def get_fock_size(elements, basis):
 
     return N
 
-def read_orca_out(orca_file, unrestricted=False):
+def read_orca_out(orca_file, unrestricted=False, get_fock=True):
     """
     Get structure information (elements, coordinates, basis) and fock matrix from orca output file
     If unrestricted=True, returns {'alpha': ..., 'beta': ...} for the Fock matrices.
@@ -321,77 +321,81 @@ def read_orca_out(orca_file, unrestricted=False):
 
         # note: matrix cols are spread across multiple lines, we re-parse cols when new idx are found
         # if 'FOCK' in line:
-        if line.strip() == 'FOCK':
-            assert(N != 0)
-            fock_matrix = np.zeros((N, N))
+        if get_fock:
+            if line.strip() == 'FOCK':
+                assert(N != 0)
+                fock_matrix = np.zeros((N, N))
 
-            # get column size:
-            cols = [int(x) for x in orca_out[idx+2:][0].split()]
-            cols_per_line = len(cols)
+                # get column size:
+                cols = [int(x) for x in orca_out[idx+2:][0].split()]
+                cols_per_line = len(cols)
 
-            line_idx = idx + 3
-            for line in orca_out[idx+3:]:
-                if len(line.split()) == 0:
-                    break
+                line_idx = idx + 3
+                for line in orca_out[idx+3:]:
+                    if len(line.split()) == 0:
+                        break
 
-                # new columns in file:
-                if len(line.split()) != cols_per_line + 1:
-                    cols = [int(x) for x in line.split()]
-                    cols_per_line = len(cols)
+                    # new columns in file:
+                    if len(line.split()) != cols_per_line + 1:
+                        cols = [int(x) for x in line.split()]
+                        cols_per_line = len(cols)
 
-                # matrix entries:
-                else:
-                    row = int(line.split()[0])
-                    vals = [float(x) for x in line.split()[1:]]
-                    fock_matrix[row, cols] = vals
-
-                line_idx += 1
-
-            fock_matrices.append(fock_matrix)
-
-            # If unrestricted, parse the second Fock matrix (beta)
-            if unrestricted:
-
-                # Skip empty lines after first matrix
-                while line_idx < len(orca_out) and len(orca_out[line_idx].split()) == 0:
-                    line_idx += 1
-
-                # The next non-empty line should be column headers for second matrix
-                if line_idx < len(orca_out):
-                    fock_matrix_beta = np.zeros((N, N))
-
-                    # get column size for beta matrix:
-                    cols = [int(x) for x in orca_out[line_idx].split()]
-                    cols_per_line = len(cols)
+                    # matrix entries:
+                    else:
+                        row = int(line.split()[0])
+                        vals = [float(x) for x in line.split()[1:]]
+                        fock_matrix[row, cols] = vals
 
                     line_idx += 1
-                    for line in orca_out[line_idx:]:
-                        if len(line.split()) == 0:
-                            break
 
-                        # new columns in file:
-                        if len(line.split()) != cols_per_line + 1:
-                            cols = [int(x) for x in line.split()]
-                            cols_per_line = len(cols)
+                fock_matrices.append(fock_matrix)
 
-                        # matrix entries:
-                        else:
-                            row = int(line.split()[0])
-                            vals = [float(x) for x in line.split()[1:]]
-                            fock_matrix_beta[row, cols] = vals
+                # If unrestricted, parse the second Fock matrix (beta)
+                if unrestricted:
 
-                    fock_matrices.append(fock_matrix_beta)
+                    # Skip empty lines after first matrix
+                    while line_idx < len(orca_out) and len(orca_out[line_idx].split()) == 0:
+                        line_idx += 1
 
-            break  # Found and parsed all needed matrices
+                    # The next non-empty line should be column headers for second matrix
+                    if line_idx < len(orca_out):
+                        fock_matrix_beta = np.zeros((N, N))
 
-    if unrestricted:
-        if len(fock_matrices) != 2:
-            raise ValueError(f"Expected 2 Fock matrices for unrestricted calculation, but found {len(fock_matrices)}")
-        return {'alpha': fock_matrices[0], 'beta': fock_matrices[1]}, elements, coordinates, basis
+                        # get column size for beta matrix:
+                        cols = [int(x) for x in orca_out[line_idx].split()]
+                        cols_per_line = len(cols)
+
+                        line_idx += 1
+                        for line in orca_out[line_idx:]:
+                            if len(line.split()) == 0:
+                                break
+
+                            # new columns in file:
+                            if len(line.split()) != cols_per_line + 1:
+                                cols = [int(x) for x in line.split()]
+                                cols_per_line = len(cols)
+
+                            # matrix entries:
+                            else:
+                                row = int(line.split()[0])
+                                vals = [float(x) for x in line.split()[1:]]
+                                fock_matrix_beta[row, cols] = vals
+
+                        fock_matrices.append(fock_matrix_beta)
+
+                break  # Found and parsed all needed matrices
+
+    if get_fock:
+        if unrestricted:
+            if len(fock_matrices) != 2:
+                raise ValueError(f"Expected 2 Fock matrices for unrestricted calculation, but found {len(fock_matrices)}")
+            return {'alpha': fock_matrices[0], 'beta': fock_matrices[1]}, elements, coordinates, basis
+        else:
+            if len(fock_matrices) == 0:
+                raise ValueError("No Fock matrix found in ORCA output file")
+            return fock_matrices[0], elements, coordinates, basis
     else:
-        if len(fock_matrices) == 0:
-            raise ValueError("No Fock matrix found in ORCA output file")
-        return fock_matrices[0], elements, coordinates, basis
+        return None, elements, coordinates, basis
 
 def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3nn"):
     """
