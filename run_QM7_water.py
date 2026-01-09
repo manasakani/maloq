@@ -9,7 +9,7 @@ config = {
     # Dataset Paths & Naming
     "dataset_name": 'QM7',
     "dbpath": '/capstor/store/cscs/userlab/lp16/gnn_datasets/datasets/schnorb_hamiltonian_water.db',
-    "output_folder": 'outputs_QM7_water_trained',
+    "output_folder": 'outputs_QM7_water_test',
     "run_name": 'water_final',
     
     # Execution Mode
@@ -23,16 +23,6 @@ config = {
     "num_test": 100,
     "batch_size": 10,          # 1 for eval, 10 for train (set to 1 for water script)
     
-    # Model Architecture
-    "l_embedding_dim": 128,
-    "num_distance_basis": 128,
-    "num_mp_layers": 3,
-    "rcut_orbitals": 8.0,
-    "rcut_gaussian": 16.0,    # rcut_orbitals * 2
-    "gaussian_width": 1.0,
-    "include_edges": True,
-    "head_type": 'gated',     # 'linear' or 'gated'
-    
     # Symmetry Reductions
     "reduce_edge": False,
     "reduce_node": False,
@@ -40,8 +30,8 @@ config = {
     
     # Training Hyperparameters
     "num_epochs": 20000,
-    "dtype": torch.float64,
-    "lr_init": 1e-4,
+    "dtype": torch.float32, # torch.float64!
+    "lr_init": 1e-5,
     "optimizer_type": "adamw",
     "weight_decay": 1e-4,
     "scheduler_type": 'plateau', # 'plateau' or 'cosine'
@@ -57,10 +47,20 @@ config = {
     "save_frequency": 10,
     "restart_backbone": True,
     "restart_head": True,
-    "restart_optimizer": False,
+    "restart_optimizer": True,
     "backbone_checkpoint": 'backbone.pt',
     "head_checkpoint": 'head.pt',
-    "scale_and_shift": False,   # Set to True to enable scaling
+    "scale_and_shift": True,   # Set to True to enable scaling
+
+    # Model Architecture
+    "l_embedding_dim": 128,
+    "num_distance_basis": 128,
+    "num_mp_layers": 3,
+    "rcut_orbitals": 8.0,
+    "rcut_gaussian": 16.0,    # rcut_orbitals * 2
+    "gaussian_width": 1.0,
+    "include_edges": True,
+    "head_type": 'gated',     # 'linear' or 'gated'
 }
 
 if __name__ == "__main__":
@@ -70,6 +70,11 @@ if __name__ == "__main__":
     # Initialize and run the workflow
     workflow = training_workflow.TrainingWorkflow(config)
     workflow.run(database)
+
+
+
+
+
 
 # import time
 # import_start = time.perf_counter()
