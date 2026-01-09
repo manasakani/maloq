@@ -33,7 +33,6 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         overlaps = [database[i]['overlap'].numpy() for i in range(start_idx, end_idx)] # we don't rotate the overlap
 
     elif dataset_name == "nablaDFT":
-        # atomic_numbers, positions, energy, forces, hamiltonian, overlap, coeff_matrix, moses_id, conformation_id = database[i]
         orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
         
         atomic_numbers = []

@@ -512,19 +512,3 @@ def sort_by_l(hamiltonian, orbital_basis, atomic_numbers):
     permuted_hamiltonian = hamiltonian[permutation, :]
     permuted_hamiltonian = permuted_hamiltonian[:, permutation]
     return permuted_hamiltonian
-
-
-def delete_rows_and_columns(matrix, indices):
-    """
-    Delete specified rows and columns from a matrix.
-    Parameters:
-    - matrix: The input matrix (2D NumPy array).
-    - indices: A list of row/column indices to delete.
-    Returns:
-    - A new matrix with the specified rows and columns removed.
-    """
-    # Convert the list of indices to a NumPy array
-    indices = np.array(indices)
-    matrix_reduced = np.delete(matrix, indices, axis=0)
-    matrix_reduced = np.delete(matrix_reduced, indices, axis=1)
-    return matrix_reduced

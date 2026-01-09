@@ -119,11 +119,10 @@ class Fock_Targets:
         # If the fock targets should be computed on-the-fly rather than loaded from the db:
         self.node_labels_list = []
         self.edge_labels_list = []
+        self.target_len = None
+
+        # Decompose the Fock matrix into orbital blocks and insert them into the targets
         if fock_matrices is not None:
-
-            self.target_len = None
-
-            # Decompose the Fock matrix into orbital blocks and insert them into the targets
             self.make_targets(fock_matrices)
 
 
