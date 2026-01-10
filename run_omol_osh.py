@@ -5,15 +5,15 @@ from fock_utils import basis_sets
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
 # ---------------------------------------------------------
-# OMol Dataset Configuration - closed shell version
+# OMol Dataset Configuration - open shell version
 # ---------------------------------------------------------
 config = {
     # Dataset Paths & Naming
     "dataset_name": 'omol',
-    "dbpath": "./omol_elytes_unsolvated_raw/",
-    "output_folder": 'outputs_omol_elytes',
+    "dbpath": "./omol_elytes_redox_raw/",
+    "output_folder": 'outputs_omol_redox',
     "run_name": 'omol',
-    "open_shell": False,
+    "open_shell": True,
     
     # Execution Mode
     "train_or_eval": "train",        # Set to "train" to start learning
@@ -23,7 +23,7 @@ config = {
     # Data Splitting
     "num_train": 8000,#28900,
     "num_val": 32,
-    "num_test": 1,
+    "num_test": 0,
     "batch_size": 1,                 # 1 for eval, usually 10 for train
     
     # Symmetry Reductions 
@@ -32,8 +32,8 @@ config = {
     "reduce_node_intra": True,       # Enforce 0 odd degrees for intra-orbital
     
     # Training Hyperparameters
-    "num_epochs": 50,
-    "dtype": torch.float32,          # nablaDFT often uses float64 - 32 here for cupy kernel
+    "num_epochs": 1000,
+    "dtype": torch.float32,          # use float32 for the omol datasets
     "lr_init": 5e-4,
     "optimizer_type": "adam",        # standard Adam
     "weight_decay": 0.0,
@@ -48,9 +48,9 @@ config = {
     "train_loss_fxn": loss.rmse_mse_padded_loss,
     "test_loss_fxn": loss.l1_unpadded_loss,
     "save_frequency": 1,
-    "restart_backbone": True,       # Restart options
-    "restart_head": True,
-    "restart_optimizer": True,      
+    "restart_backbone": False,       # Restart options
+    "restart_head": False,
+    "restart_optimizer": False,      
     "backbone_checkpoint": 'backbone.pt',
     "head_checkpoint": 'head.pt',
     "scale_and_shift": True,         # Scale & shift the node labels

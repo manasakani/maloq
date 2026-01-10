@@ -9,7 +9,7 @@ from torch.utils.data import ConcatDataset
 from train_utils import loss, utils_compute, splittrainer
 from dataset_utils import get_loader, get_scale_shift
 from dataset_utils.ASEDataset import distribute_data, ASEDataset
-from helm.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head
+from helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head
 
 class TrainingWorkflow:
     def __init__(self, config):
@@ -42,7 +42,12 @@ class TrainingWorkflow:
             return None
 
         dataset_name = self.config['dataset_name']
-        filename = f"element_scale_shifts_{dataset_name}.pt"
+
+        if self.config['open_shell']:
+            filename = f"element_scale_shifts_osh_{dataset_name}.pt"
+        else:
+            filename = f"element_scale_shifts_{dataset_name}.pt"
+
         target_path = os.path.join("./fock_utils/", filename)
         file_exists = os.path.exists(target_path)
 
@@ -57,12 +62,22 @@ class TrainingWorkflow:
                 dtype=self.config['dtype'], reduce_edge=self.config['reduce_edge'], 
                 filename=filename
             )
+        
+        if self.config['open_shell']:
+            return {
+                "element_scalar_means_alpha": data["element_scalar_means_alpha"],  
+                "element_scalar_means_beta": data["element_scalar_means_beta"],   
+                "element_scalar_stds_alpha": data["element_scalar_stds_alpha"],   
+                "element_scalar_stds_beta": data["element_scalar_stds_beta"],    
+                "scalar_irrep_indices": data["scalar_irrep_indices"]  
+            }
+        else:
+            return {
+                "element_scalar_means": data["element_scalar_means"],
+                "element_scalar_stds": data["element_scalar_stds"],
+                "scalar_irrep_indices": data["scalar_irrep_indices"]
+            }
             
-        return {
-            "element_scalar_means": data["element_scalar_means"],
-            "element_scalar_stds": data["element_scalar_stds"],
-            "scalar_irrep_indices": data["scalar_irrep_indices"]
-        }
 
     def prepare_loaders(self, database_input=None):
         """
@@ -165,6 +180,8 @@ class TrainingWorkflow:
                 batch_size=c['batch_size'],
                 dtype=c['dtype'],
                 half_edges=c['reduce_edge'],
+                loss_target_string=c['loss_target'],
+                is_open_shell=c['open_shell'],
                 scale_shift_data=scale_shift_data
             )
             
@@ -177,14 +194,20 @@ class TrainingWorkflow:
                 batch_size=c['batch_size'],
                 dtype=c['dtype'],
                 half_edges=c['reduce_edge'],
+                loss_target_string=c['loss_target'],
+                is_open_shell=c['open_shell'],
                 scale_shift_data=scale_shift_data
             )
             return train_loader, val_loader, required_irreps, basis_trans, orb_basis, ls_list
             
         else:
+            print("Using validation set for testing/evaluation.")
+            test_start = val_start 
+            test_end = val_end 
+
             # Eval mode: force batch_size to 1
             test_loader, required_irreps, basis_trans, orb_basis, ls_list = get_loader.get_loader(
-                database=database_input,
+                database=val_database,
                 start_idx=test_start,
                 end_idx=test_end,
                 dataset_name=c['dataset_name'],
@@ -192,6 +215,8 @@ class TrainingWorkflow:
                 batch_size=1, 
                 dtype=c['dtype'],
                 half_edges=c['reduce_edge'],
+                loss_target_string=c['loss_target'],
+                is_open_shell=c['open_shell'],
                 scale_shift_data=scale_shift_data
             )
         
@@ -209,17 +234,18 @@ class TrainingWorkflow:
             edge_channels=c['l_embedding_dim'], num_layers=c['num_mp_layers'],
             act_type='gate', mlp_type='spectral', 
             num_distance_basis=c['num_distance_basis'],
-            gaussian_width=c['gaussian_width'], include_edges=c['include_edges']
+            gaussian_width=c['gaussian_width'], include_edges=c['include_edges'],
+            open_shell=c['open_shell']
         ).to(self.device)
 
         # 2. Head
         irreps_in = Irreps([(c['l_embedding_dim'], (l, 1)) for l in range(required_irreps.lmax + 1)])
         
-        if c['loss_target'] == 'fock_matrix':
+        if c['loss_target'] == 'fock_matrix' or c['loss_target'] == 'density_matrix':
             head = Fock_Irreps_Head(
                 irreps_in=irreps_in, irreps_out=required_irreps,
                 lmax=required_irreps.lmax, sphere_channels=c['l_embedding_dim'],
-                half_edges=c['reduce_edge'], head_type=c['head_type'],
+                half_edges=c['reduce_edge'], head_type=c['head_type'], open_shell=c['open_shell'],
                 ls_list=ls_list, reduce_node=c['reduce_node'],
                 reduce_node_intra=c['reduce_node_intra'], orbital_basis=orb_basis
             )
@@ -292,10 +318,15 @@ class TrainingWorkflow:
 
         target_map = {
             'fock_matrix': ('node_y', 'y'),
+            'density_matrix': ('node_y', 'y'),
             'forces': ('forces', None),
             'energy': ('energy', None)
         }
         node_target, edge_target = target_map[self.config['loss_target']]
+
+        # if self.config['open_shell']:
+        #     # add _alpha and _beta suffixes
+        #     if node_target: node_target += '_alpha' 
 
         if self.config['train_or_eval'] == "train":
             trainer.train(

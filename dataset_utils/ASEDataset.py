@@ -111,9 +111,6 @@ class ASEDataset(Dataset):
             folder_name=folder_name,
         )
         
-        # Store orbital basis (dictionary)
-        # data.orbital_basis = self.orbital_basis
-
         return data
 
 class sampleDataset(torch.utils.data.Dataset):

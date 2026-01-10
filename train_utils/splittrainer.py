@@ -138,7 +138,7 @@ class SplitTrainer():
                 backbone_out = self.backbone(batch)
                 backbone_end = time.perf_counter()
 
-                if loss_target_string == 'fock_matrix':
+                if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                     node_output, edge_output = self.head(backbone_out, batch)
                     head_end = time.perf_counter()
 
@@ -206,7 +206,7 @@ class SplitTrainer():
                         print("Current learning rate: ", current_lr)
 
                 # Garbage collection
-                if loss_target_string == 'fock_matrix':
+                if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                     del node_output, edge_output, this_node_target, this_edge_target
                     del loss_node, loss_edge, loss
                 else:
@@ -218,14 +218,14 @@ class SplitTrainer():
                     print("Time for backward pass: ", backward_end - backward_start, flush=True)
 
             # -- Output dump --
-            if loss_target_string == 'fock_matrix':
+            if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                 track_loss_node.append(train_loss_node/num_train_batches)
                 track_loss_edge.append(train_loss_edge/num_train_batches)
             else:
                 track_loss_node.append(train_loss_node/num_train_batches)
 
             if rank == 0:
-                if loss_target_string == 'fock_matrix':
+                if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                     print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]} [edge] {track_loss_edge[-1]}", flush=True)
                 else:
                     print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]}", flush=True)
@@ -246,7 +246,7 @@ class SplitTrainer():
                     backbone_out = self.backbone(batch)
 
                     # -- Loss --
-                    if loss_target_string == 'fock_matrix':
+                    if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                         node_output, edge_output = self.head(backbone_out, batch)
 
                         if self.open_shell:
@@ -288,7 +288,7 @@ class SplitTrainer():
                     val_loss += loss.item()
 
                     # Garbage collection for validation stuff
-                    if loss_target_string == 'fock_matrix':
+                    if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                         del node_output, edge_output, this_node_target, this_edge_target
                         del loss_node, loss_edge, loss
                     else:
@@ -298,14 +298,14 @@ class SplitTrainer():
                     # torch.cuda.synchronize()
 
             # -- Output dump --
-            if loss_target_string == 'fock_matrix':
+            if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                 track_loss_node_val.append(val_loss_node/num_val_batches)
                 track_loss_edge_val.append(val_loss_edge/num_val_batches)
             else:
                 track_loss_node_val.append(val_loss_node/num_val_batches)
 
             if rank == 0:
-                if loss_target_string == 'fock_matrix':
+                if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                     print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)
                 else:
                     print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]}", flush=True)
@@ -352,7 +352,7 @@ class SplitTrainer():
             # save state
             if rank == 0:
                 if (epoch + 1) % self.save_frequency == 0:
-                    if loss_target_string == 'fock_matrix':
+                    if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                         self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
                         self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)
                     else:
@@ -363,7 +363,7 @@ class SplitTrainer():
             min_lr_reached = torch.tensor(float(current_lr == min_lr), device='cuda')
             if min_lr_reached:
                 print("Reached minimum learning rate, finished training.")
-                if loss_target_string == 'fock_matrix':
+                if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                     self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
                     self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)
                 else:
@@ -415,7 +415,7 @@ class SplitTrainer():
         # -- Evaluate everything in the train_loader --
 
         # Transform orbital template into cupy version:
-        if loss_target_string == 'fock_matrix':
+        if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
             print("Creating orbital template pointers")
             first_batch = next(iter(eval_loader))
             orbital_template = first_batch.fock_target_object[0].orbital_template
@@ -445,7 +445,7 @@ class SplitTrainer():
         eigenvalue_maes = []
         total_energy_errors = []
         num_atoms_in_molecule_list = []
-        if loss_target_string == 'fock_matrix':
+        if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
             edge_outputs = {}
             edge_labels = {}
 
@@ -469,7 +469,7 @@ class SplitTrainer():
                 self.visualize_embeddings(backbone_out["edge_embeddings"], output_folder, keyword='edge')
 
             # pass all the batches through:
-            if loss_target_string == 'fock_matrix':
+            if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
 
                 with torch.no_grad():
                     start_head = time.perf_counter()
@@ -695,7 +695,7 @@ class SplitTrainer():
                     print("To be implemented!")
 
             # -- Track --
-            if loss_target_string == 'fock_matrix':
+            if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
 
                 print("Tracking loss for batch ", index, flush=True)
                 total_node_element_loss = 0
@@ -714,7 +714,7 @@ class SplitTrainer():
                 track_loss.append(loss.item())
 
             # do output dump in append mode:
-            if loss_target_string == 'fock_matrix':
+            if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                 with open(output_folder + "/" + 'model_fock_' + '_eval_' + str(rank) + '.txt', 'a') as f:
                     f.write(f"{track_loss[-1]:.10f}\t{eigenvalue_maes[-1]:.10f}\t{total_energy_errors[-1]:.10f}\t{num_atoms_in_molecule_list[-1]}\n")
             elif loss_target_string == 'energies':
@@ -739,7 +739,7 @@ class SplitTrainer():
         print(f"Writing eval outputs to file in {output_folder}...", flush=True)
 
         # -- Output dump --
-        if loss_target_string == 'fock_matrix':
+        if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                 f.write(f"Total_MAE\tEigenvalue_MAE\tTotal_Energy_Error\tNum_Atoms\n")
                 for total, eig, energy, num_atoms in zip(track_loss, eigenvalue_maes, total_energy_errors, num_atoms_in_molecule_list):

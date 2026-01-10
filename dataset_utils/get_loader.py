@@ -10,11 +10,10 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
 import torch.distributed as dist
 
-def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, half_edges=True, make_fock_targets=True, scale_shift_data=None):
+def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, half_edges=True, make_fock_targets=True, scale_shift_data=None, is_open_shell=False, loss_target_string='fock_matrix'):
     """
     Make dataloader with the given indices of the mocules in the input database
     Currently set up for three datasets: QM7, nablaDFT, omol. Need to modify for others.
-    NOTE: closedshell only
     """
     rank = dist.get_rank()
     num_molecules_to_process = end_idx - start_idx
@@ -27,6 +26,8 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         forces = [database[i]['forces'] for i in range(start_idx, end_idx)]
         atomic_numbers = [database[i]['_atomic_numbers'].numpy() for i in range(start_idx, end_idx)]
         positions = [database[i]['_positions'].numpy() for i in range(start_idx, end_idx)]
+        charge = [0 for i in range(start_idx, end_idx)]
+        spins = [1 for i in range(start_idx, end_idx)]
 
         hamiltonians = [database[i]['hamiltonian'].numpy() for i in range(start_idx, end_idx)]
         hamiltonians = [utils_orca_out.sort_by_m(h, orbital_basis, z) for h, z in zip(hamiltonians, atomic_numbers)] # QM7 comes in zxy coordinates from ORCA, so need to rotate
@@ -51,6 +52,8 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             forces.append(f)
             hamiltonians.append(ham)
             overlaps.append(ov)
+            charge.append(0)
+            spins.append(1)
 
     elif dataset_name == "omol":
         orbital_basis = basis_sets.def2_tzvpd
@@ -61,8 +64,10 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         atomic_numbers = [database[i]['atomic_numbers'] for i in range(start_idx, end_idx)]
         energy = [database[i]['energies'] for i in range(start_idx, end_idx)]
         forces = [0 for i in range(start_idx, end_idx)]  # dummy forces for now!!!
+        charges = [database[i]['charge'] for i in range(start_idx, end_idx)]
+        spins = [database[i]['spin_multiplicity'] for i in range(start_idx, end_idx)]
 
-        hamiltonians = [database[i]['fock_matrix'] for i in range(start_idx, end_idx)]
+        hamiltonians = [database[i][loss_target_string] for i in range(start_idx, end_idx)]
         overlaps = [0 for i in range(start_idx, end_idx)]
 
     else:
@@ -79,27 +84,43 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     # Add the molecules into the dataloader
     for i in range(num_molecules_to_process):
 
-        # closed shell only, needed for custom collate
-        if graph_targets.node_labels_list[i].ndim == 3:
-            edge_labels = graph_targets.edge_labels_list[i][0]
-            node_labels = graph_targets.node_labels_list[i][0]
-        else:
-            edge_labels = graph_targets.edge_labels_list[i]
-            node_labels = graph_targets.node_labels_list[i]
+        if is_open_shell:
+            assert graph_targets.node_labels_list[i].shape[0] == 2, "Open shell requested, but did not find two spins!"
 
         # 3. Make the data object
-        data = gnnData(
+        if not is_open_shell:
+            data = gnnData(
                         pos=torch.tensor(graph_targets.atomic_positions_list[i], dtype=dtype),
                         edge_index=torch.tensor(graph_targets.neighbour_list_list[i]),
                         edge_attr=graph_targets.edge_dist_list[i],
-                        y=edge_labels,
-                        node_y=node_labels,
+                        y=graph_targets.edge_labels_list[i][0],
+                        node_y=graph_targets.node_labels_list[i][0],
                         atomic_numbers=torch.tensor(graph_targets.atomic_numbers_list[i], dtype=torch.long).cpu(),
                         energies=torch.tensor(energy[i], dtype=dtype),
                         forces=torch.tensor(forces[i], dtype=dtype),                                      # Hartree/Angstrom
                         num_atoms_in_molecule=len(graph_targets.atomic_numbers_list[i]),
                         fock_target_object=graph_targets,
                         overlap_matrix=torch.tensor(overlaps[i], dtype=dtype) if make_fock_targets else None,
+                        charge=charges[i],
+                        spin_multiplicity=spins[i],
+                    )
+        else:
+            data = gnnData(
+                        pos=torch.tensor(graph_targets.atomic_positions_list[i], dtype=dtype),
+                        edge_index=torch.tensor(graph_targets.neighbour_list_list[i]),
+                        edge_attr=graph_targets.edge_dist_list[i],
+                        y_alpha=graph_targets.edge_labels_list[i][0],
+                        y_beta=graph_targets.edge_labels_list[i][1],
+                        node_y_alpha=graph_targets.node_labels_list[i][0],
+                        node_y_beta=graph_targets.node_labels_list[i][1],
+                        atomic_numbers=torch.tensor(graph_targets.atomic_numbers_list[i], dtype=torch.long).cpu(),
+                        energies=torch.tensor(energy[i], dtype=dtype),
+                        forces=torch.tensor(forces[i], dtype=dtype),                                      # Hartree/Angstrom
+                        num_atoms_in_molecule=len(graph_targets.atomic_numbers_list[i]),
+                        fock_target_object=graph_targets,
+                        overlap_matrix=torch.tensor(overlaps[i], dtype=dtype) if make_fock_targets else None,
+                        charge=charges[i],
+                        spin_multiplicity=spins[i],
                     )
         datalist.append(data)
 
@@ -179,3 +200,277 @@ def get_datalist(dataset, start_idx, end_idx, dataset_name, rcut, element_refere
         datalist.append(data)
 
     return datalist
+
+# --------------------------------------------
+# Loading balancing batches 
+# --------------------------------------------
+
+def create_atom_balanced_batches(data_list, target_atoms_per_batch, tolerance=0.1):
+    """
+    Create batches where each batch has approximately the same total number of atoms.
+
+    Args:
+        data_list: List of molecular data objects
+        target_atoms_per_batch: Target total atoms per batch
+        tolerance: Tolerance for batch size (0.1 = 10% tolerance)
+
+    Returns:
+        List of batches, where each batch has similar total atom counts
+    """
+
+    # Get molecule sizes and sort by size (largest first for better packing)
+    molecule_data = [(i, len(data.atomic_numbers), data) for i, data in enumerate(data_list)]
+    molecule_data.sort(key=lambda x: x[1], reverse=True)  # Sort by atoms (largest first)
+
+    print(f"Molecule size distribution:")
+    sizes = [size for _, size, _ in molecule_data]
+    print(f"  Min atoms: {min(sizes)}, Max atoms: {max(sizes)}")
+    print(f"  Mean atoms: {sum(sizes)/len(sizes):.1f}, Total atoms: {sum(sizes)}")
+    print(f"  Target atoms per batch: {target_atoms_per_batch}")
+
+    batches = []
+    remaining_molecules = molecule_data.copy()
+
+    while remaining_molecules:
+        current_batch = []
+        current_batch_atoms = 0
+        max_atoms = int(target_atoms_per_batch * (1 + tolerance))
+        min_atoms = int(target_atoms_per_batch * (1 - tolerance))
+
+        # Try to fill current batch to target size
+        i = 0
+        while i < len(remaining_molecules):
+            mol_idx, mol_size, mol_data = remaining_molecules[i]
+
+            # Check if adding this molecule would exceed the maximum
+            if current_batch_atoms + mol_size <= max_atoms:
+                # Add molecule to current batch
+                current_batch.append(mol_data)
+                current_batch_atoms += mol_size
+                remaining_molecules.pop(i)  # Remove from remaining
+
+                # If we've reached a good batch size, stop adding
+                if current_batch_atoms >= min_atoms:
+                    break
+            else:
+                i += 1  # Try next molecule
+
+        # If we couldn't add any molecule, just add the first remaining one
+        # (this handles cases where a single molecule is larger than target)
+        if not current_batch and remaining_molecules:
+            mol_idx, mol_size, mol_data = remaining_molecules.pop(0)
+            current_batch.append(mol_data)
+            current_batch_atoms = mol_size
+
+        if current_batch:
+            batches.append(current_batch)
+
+    # Print batch statistics
+    print(f"\nCreated {len(batches)} atom-balanced batches:")
+    total_atoms_all = 0
+    atom_counts = []
+
+    for i, batch in enumerate(batches):
+        batch_sizes = [len(data.atomic_numbers) for data in batch]
+        total_atoms = sum(batch_sizes)
+        atom_counts.append(total_atoms)
+        total_atoms_all += total_atoms
+
+        if i < 10:  # Show first 10 batches
+            print(f"  Batch {i}: {len(batch)} molecules, {total_atoms} total atoms, "
+                  f"size range: {min(batch_sizes)}-{max(batch_sizes)}")
+
+    if len(batches) > 10:
+        print(f"  ... and {len(batches) - 10} more batches")
+
+    print(f"\nBatch atom count statistics:")
+    print(f"  Target: {target_atoms_per_batch}, Mean: {np.mean(atom_counts):.1f}")
+    print(f"  Min: {min(atom_counts)}, Max: {max(atom_counts)}")
+    print(f"  Std dev: {np.std(atom_counts):.1f}")
+
+    return batches
+
+def create_atom_balanced_dataloader(data_list, target_atoms_per_batch, tolerance=0.1,
+                                  shuffle=True, num_workers=0):
+    """
+    Create a single DataLoader with atom-balanced batches.
+    """
+
+    # Create balanced batches
+    batches = create_atom_balanced_batches(data_list, target_atoms_per_batch, tolerance)
+
+    # Convert each batch to PyTorch Geometric Batch objects immediately
+    batched_data = []
+    for i, molecule_list in enumerate(batches):
+        try:
+            batch_obj = Batch.from_data_list(molecule_list)
+            batched_data.append(batch_obj)
+            print(f"Created batch {i}: {type(batch_obj)}, {len(molecule_list)} molecules")
+        except Exception as e:
+            print(f"Error creating batch {i}: {e}")
+            raise
+
+    # Now shuffle the pre-created batches if requested
+    if shuffle:
+        import random
+        random.shuffle(batched_data)
+
+    print(f"Created {len(batched_data)} pre-batched PyG Batch objects")
+
+    return SimpleBatchIterator(batched_data)
+
+def create_edge_balanced_batches(data_list, target_edges_per_batch, tolerance=0.1):
+    """
+    Create batches where each batch has approximately the same total number of edges.
+
+    Args:
+        data_list: List of molecular data objects with .nedges attribute
+        target_edges_per_batch: Target total edges per batch
+        tolerance: Tolerance for batch size (0.1 = 10% tolerance)
+
+    Returns:
+        List of batches, where each batch has similar total edge counts
+    """
+
+    # Get molecule edge counts and sort by size (largest first for better packing)
+    molecule_data = [(i, data.nedges, data) for i, data in enumerate(data_list)]
+    molecule_data.sort(key=lambda x: x[1], reverse=True)  # Sort by edges (largest first)
+
+    print(f"Molecule edge distribution:")
+    edge_counts = [nedges for _, nedges, _ in molecule_data]
+    print(f"  Min edges: {min(edge_counts)}, Max edges: {max(edge_counts)}")
+    print(f"  Mean edges: {sum(edge_counts)/len(edge_counts):.1f}, Total edges: {sum(edge_counts)}")
+    print(f"  Target edges per batch: {target_edges_per_batch}")
+
+    batches = []
+    remaining_molecules = molecule_data.copy()
+
+    # Remove molecules that are too large upfront
+    max_edges = int(target_edges_per_batch)
+
+    # Filter out molecules that are too large
+    valid_molecules = []
+    removed_count = 0
+
+    for i, data in enumerate(data_list):
+        if data.nedges <= max_edges:
+            valid_molecules.append((i, data.nedges, data))
+        else:
+            removed_count += 1
+
+    print(f"Removed {removed_count} molecules with >{max_edges} edges")
+    print(f"Processing {len(valid_molecules)} molecules")
+
+    # Sort by size (largest first for better packing)
+    molecule_data = sorted(valid_molecules, key=lambda x: x[1], reverse=True)
+
+    while remaining_molecules:
+        current_batch = []
+        current_batch_edges = 0
+        max_edges = int(target_edges_per_batch * (1 + tolerance))
+        min_edges = int(target_edges_per_batch * (1 - tolerance))
+
+        # Try to fill current batch to target size
+        i = 0
+        while i < len(remaining_molecules):
+            mol_idx, mol_edges, mol_data = remaining_molecules[i]
+
+            # Check if adding this molecule would exceed the maximum
+            if current_batch_edges + mol_edges <= max_edges:
+                # Add molecule to current batch
+                current_batch.append(mol_data)
+                current_batch_edges += mol_edges
+                remaining_molecules.pop(i)  # Remove from remaining
+
+                # If we've reached a good batch size, stop adding
+                if current_batch_edges >= min_edges:
+                    break
+            else:
+                i += 1  # Try next molecule
+
+        # If we couldn't add any molecule, just add the first remaining one
+        # (this handles cases where a single molecule has more edges than target)
+        print("Current batch edges:", current_batch_edges, "Remaining molecules:", len(remaining_molecules), " - not adding the rest!!!")
+        if not current_batch and remaining_molecules:
+            mol_idx, mol_edges, mol_data = remaining_molecules.pop(0)
+            current_batch.append(mol_data)
+            current_batch_edges = mol_edges
+
+        if current_batch:
+            batches.append(current_batch)
+
+    # Print batch statistics
+    print(f"\nCreated {len(batches)} edge-balanced batches:")
+    total_edges_all = 0
+    batch_edge_counts = []
+
+    for i, batch in enumerate(batches):
+        batch_edges = [data.nedges for data in batch]
+        total_edges = sum(batch_edges)
+        batch_edge_counts.append(total_edges)
+        total_edges_all += total_edges
+
+        if i < 10:  # Show first 10 batches
+            print(f"  Batch {i}: {len(batch)} molecules, {total_edges} total edges, "
+                  f"edge range: {min(batch_edges)}-{max(batch_edges)}")
+
+    if len(batches) > 10:
+        print(f"  ... and {len(batches) - 10} more batches")
+
+    print(f"\nBatch edge count statistics:")
+    print(f"  Target: {target_edges_per_batch}, Mean: {np.mean(batch_edge_counts):.1f}")
+    print(f"  Min: {min(batch_edge_counts)}, Max: {max(batch_edge_counts)}")
+    print(f"  Std dev: {np.std(batch_edge_counts):.1f}")
+
+    return batches
+
+def create_edge_balanced_dataloader(data_list, target_edges_per_batch, tolerance=0.1,
+                                   shuffle=True, num_workers=0):
+    """
+    Create a dataloader with edge-balanced batches using the existing SimpleBatchIterator.
+    """
+
+    # Create balanced batches
+    batches = create_edge_balanced_batches(data_list, target_edges_per_batch, tolerance)
+
+    # Convert each batch to PyTorch Geometric Batch objects immediately
+    batched_data = []
+    for i, molecule_list in enumerate(batches):
+        try:
+            batch_obj = Batch.from_data_list(molecule_list)
+            batched_data.append(batch_obj)
+            print(f"Created batch {i}: {type(batch_obj)}, {len(molecule_list)} molecules, "
+                  f"{sum(data.nedges for data in molecule_list)} total edges")
+        except Exception as e:
+            print(f"Error creating batch {i}: {e}")
+            raise
+
+    # Now shuffle the pre-created batches if requested
+    if shuffle:
+        import random
+        random.shuffle(batched_data)
+
+    print(f"Created {len(batched_data)} edge-balanced PyG Batch objects")
+
+    # Use the existing SimpleBatchIterator
+    return SimpleBatchIterator(batched_data)
+
+# Return a simple list-based iterator instead of DataLoader
+class SimpleBatchIterator:
+    def __init__(self, batches):
+        self.batches = batches
+        self.index = 0
+
+    def __iter__(self):
+        self.index = 0
+        return self
+
+    def __next__(self):
+        if self.index >= len(self.batches):
+            raise StopIteration
+        batch = self.batches[self.index]
+        self.index += 1
+        return batch
+
+    def __len__(self):
+        return len(self.batches)
