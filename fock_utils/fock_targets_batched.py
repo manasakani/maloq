@@ -8,6 +8,7 @@ import random
 import cupy as cp
 import pickle, os
 from ase import Atoms
+from torch.utils.dlpack import from_dlpack
 
 class Fock_Targets:
     """
@@ -44,14 +45,14 @@ class Fock_Targets:
         self.orbital_basis = orbital_basis
         self.dtype = dtype
 
-        # Create structures and neighbor lists
+        # Create structures and neighbor lists (outer index is the molecule index)
         self.atomic_numbers_list = []
         self.atomic_positions_list = []
         self.neighbour_list_list = []
         self.edge_dist_list = []
         self.orbitals_per_atom_list = []
         self.block_starts_list = []
-        self.make_structures(atomic_numbers, atomic_positions, cutoff)
+        self.make_atomic_graphs(atomic_numbers, atomic_positions, cutoff)
 
         # --> Analyze structure of orbital interactions
         if orbital_template is None or out_js_list is None or req_output_irreps is None or ls_list is None:
@@ -126,7 +127,7 @@ class Fock_Targets:
             self.make_targets(fock_matrices)
 
 
-    def make_structures(self, atomic_numbers, atomic_positions, cutoff):
+    def make_atomic_graphs(self, atomic_numbers, atomic_positions, cutoff):
 
         # The outer most index is the molecule index
         num_molecules = len(atomic_numbers)
@@ -169,32 +170,35 @@ class Fock_Targets:
         Creates padded node/edge labels from the fock matrix
         """
 
-        open_shell = False
+        method = 'cupy_kernel' # 'numpy_kernel' or 'cupy_kernel' 
 
         # each target should fit in a NxN matrix (to be flattened)
         self.target_len = self.get_target_len()
 
-        print("Creating orbital template pointers for matrix->label kernel... ")
-        orbital_template_ptrs = []
-        orbital_template_tmp = []
-        for o in self.orbital_template:
-            inner_size = 5 * len(o)
-            tmp = cp.zeros((inner_size,), dtype=cp.int32)
-            for j, (row_slice, col_slice, output_slice) in enumerate(o):
-                tmp[j * 5 + 0] = row_slice.start
-                tmp[j * 5 + 1] = row_slice.stop
-                tmp[j * 5 + 2] = col_slice.start
-                tmp[j * 5 + 3] = col_slice.stop
-                tmp[j * 5 + 4] = output_slice.start
-            orbital_template_tmp.append(tmp)
-            orbital_template_ptrs.append(matrix2labels_kernels.get_ptr(tmp))
+        if method == 'cupy_kernel':
+            print("Creating orbital template pointers for matrix->label kernel... ")
+            orbital_template_ptrs = []
+            orbital_template_tmp = []
+            for o in self.orbital_template:
+                inner_size = 5 * len(o)
+                tmp = cp.zeros((inner_size,), dtype=cp.int32)
+                for j, (row_slice, col_slice, output_slice) in enumerate(o):
+                    tmp[j * 5 + 0] = row_slice.start
+                    tmp[j * 5 + 1] = row_slice.stop
+                    tmp[j * 5 + 2] = col_slice.start
+                    tmp[j * 5 + 3] = col_slice.stop
+                    tmp[j * 5 + 4] = output_slice.start
+                orbital_template_tmp.append(tmp)
+                orbital_template_ptrs.append(matrix2labels_kernels.get_ptr(tmp))
 
-        orbital_template_ptrs = cp.array(
-            orbital_template_ptrs, dtype=cp.uintp
-        )
-        cupy_dtype = self.torch_dtype_to_cupy_dtype(self.dtype)
+            orbital_template_ptrs = cp.array(orbital_template_ptrs, dtype=cp.uintp)
+            cp.cuda.Stream.null.synchronize()
+
+            cupy_dtype = self.torch_dtype_to_cupy_dtype(self.dtype)
 
         for i, fock_matrix in enumerate(fock_matrices):
+
+            open_shell = fock_matrix.ndim == 3
 
             # Move fock matrix to device
             if not isinstance(fock_matrix, torch.Tensor):
@@ -219,40 +223,39 @@ class Fock_Targets:
 
             mol_atomic_numbers = self.atomic_numbers_list[i]
 
+            # Populate the matrix elements into the correct positions in the labels
             for spin in range(num_spins):
 
-                # Populate the matrix elements into the correct positions in the labels
-
-                # labels = torch.zeros((num_edges + num_atoms, self.target_len), device=self.device)
-                # matrix = fock_matrix[spin] if open_shell else fock_matrix
-                # matrix = torch.from_numpy(matrix).to(self.device)
-                # matrix2labels_kernels.numpy_single_matrix2label(
-                #                                                     self.orbital_template,
-                #                                                     fock_block_offsets,
-                #                                                     mol_atomic_numbers,
-                #                                                     src_idxes,
-                #                                                     target_idxes,
-                #                                                     matrix,
-                #                                                     labels,
-                #                                                     forward=True
-                #                                                 )
-
-                matrix = cp.array(fock_matrix[spin], dtype=cupy_dtype) if open_shell else cp.array(fock_matrix, dtype=cupy_dtype)
-                labels = cp.zeros((num_edges + num_atoms, self.target_len), dtype=cupy_dtype)
-                matrix2labels_kernels.cupy_single_matrix2label(
-                                                                self.orbital_template,
-                                                                fock_block_offsets,
-                                                                mol_atomic_numbers,
-                                                                src_idxes,
-                                                                target_idxes,
-                                                                matrix,
-                                                                labels,
-                                                                orbital_template_ptrs,
-                                                                forward=True
-                                                            )
-                # cupy -> torch
-                labels = labels.get()
-                labels = torch.from_numpy(labels).to(self.device)
+                if method == 'numpy_kernel':
+                    labels = torch.zeros((num_edges + num_atoms, self.target_len), device=self.device)
+                    matrix = fock_matrix[spin] if open_shell else fock_matrix
+                    matrix2labels_kernels.numpy_single_matrix2label(
+                                                                        self.orbital_template,
+                                                                        fock_block_offsets,
+                                                                        mol_atomic_numbers,
+                                                                        src_idxes,
+                                                                        target_idxes,
+                                                                        matrix,
+                                                                        labels,
+                                                                        forward=True
+                                                                    )
+                # call cupy kernel
+                else: 
+                    matrix = cp.array(fock_matrix[spin], dtype=cupy_dtype) if open_shell else cp.array(fock_matrix, dtype=cupy_dtype)
+                    labels = cp.zeros((num_edges + num_atoms, self.target_len), dtype=cupy_dtype)
+                    matrix2labels_kernels.cupy_single_matrix2label(
+                                                                    self.orbital_template,
+                                                                    fock_block_offsets,
+                                                                    mol_atomic_numbers,
+                                                                    src_idxes,
+                                                                    target_idxes,
+                                                                    matrix,
+                                                                    labels,
+                                                                    orbital_template_ptrs,
+                                                                    forward=True
+                                                                )
+                    # cupy -> torch
+                    labels = from_dlpack(labels.toDlpack())
 
                 # Basis transformation:
                 labels = self.basis_transformation.get_net_out(labels)
@@ -263,13 +266,13 @@ class Fock_Targets:
                 # ----------------------------------------------
 
                 # scale and shift the node labels (l=0 irreps) in the targets
-                print("max and min before scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item())
+                print("max and min before scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
                 if self.scale_shift_data is not None:
                     if open_shell:
                         node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], mol_atomic_numbers, spin_string=spin_strings[spin])
                     else:
                         node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], mol_atomic_numbers)
-                print("max and min after scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item())
+                print("max and min after scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
 
             self.node_labels_list.append(node_labels)
             self.edge_labels_list.append(edge_labels)

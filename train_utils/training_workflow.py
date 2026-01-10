@@ -4,9 +4,11 @@ import random
 import numpy as np
 import torch
 from e3nn.o3 import Irreps
+from torch.utils.data import ConcatDataset
 
 from train_utils import loss, utils_compute, splittrainer
 from dataset_utils import get_loader, get_scale_shift
+from dataset_utils.ASEDataset import distribute_data, ASEDataset
 from helm.esen_new import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head
 
 class TrainingWorkflow:
@@ -62,27 +64,100 @@ class TrainingWorkflow:
             "scalar_irrep_indices": data["scalar_irrep_indices"]
         }
 
-    def prepare_loaders(self, database):
-        """Calculates splits and returns the appropriate DataLoaders."""
+    def prepare_loaders(self, database_input=None):
+        """
+        Calculates splits and returns the appropriate DataLoaders.
+        database_input can be a single file path, a folder path, or a pre-loaded ASEDataset.
+        """
         c = self.config
-        
-        # 1. Calculate split indices
-        tr_start, tr_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_train'])
-        val_start, val_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_val'])
-        test_start, test_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_test'])
 
-        # 2. Offset validation and test to ensure unique molecules
-        val_start += c['num_train']; val_end += c['num_train']
-        test_start += (c['num_train'] + c['num_val']); test_end += (c['num_train'] + c['num_val'])
-
-        # 3. Get Scale/Shift
-        scale_shift_data = self._handle_scale_shift(database)
+        db_source = database_input if database_input is not None else c['dbpath']
+        is_folder = isinstance(db_source, str) and os.path.isdir(db_source)
         
+        if is_folder:
+            print(f"Rank {self.rank}: Loading data from folder {db_source}")
+
+            # --- FOLDER MODE ---
+            # --- 1. Distribute Data across ranks ---
+            train_data_dict, val_data_dict = distribute_data(
+                base_folder=db_source,
+                world_size=self.world_size,
+                rank=self.rank,
+                N_global_train=c['num_train'],
+                N_global_val=c['num_val']
+            )
+            print("train_data_dict:", train_data_dict)
+
+            # --- 2. Load Training Segments ---
+            train_datasets = []
+            for entry in train_data_dict:
+                ds = ASEDataset(
+                    db_path=entry['db_file'],
+                    dtype=c['dtype'],
+                    open_shell=c['open_shell'],
+                    start_idx=entry['start_idx'], 
+                    end_idx=entry['end_idx']     
+                )
+                train_datasets.append(ds)
+            train_database = ConcatDataset(train_datasets)
+
+            # --- 3. Load Validation Segments ---
+            val_datasets = []
+            for entry in val_data_dict:
+                ds = ASEDataset(
+                    db_path=entry['db_file'],
+                    dtype=c['dtype'],
+                    open_shell=c['open_shell'],
+                    start_idx=entry['start_idx'],
+                    end_idx=entry['end_idx']
+                )
+                val_datasets.append(ds)
+            val_database = ConcatDataset(val_datasets) if val_datasets else None
+
+            # When using ConcatDataset, the database is already sliced for the rank.
+            # We process the entire local concat object.
+            tr_start, tr_end = 0, len(train_database)
+            val_start, val_end = 0, len(val_database) if val_database else 0
+            
+            # Determine Scale/Shift using the local training shard
+            scale_shift_data = self._handle_scale_shift(train_database)
+            
+        else:
+            print(f"Rank {self.rank}: Loading data from single file {db_source}")
+
+            # We must ensure we have a valid Dataset object here
+            # Eg: omol single DB file
+            if isinstance(db_source, str):
+                print(f"Rank {self.rank}: Initializing ASEDataset from {db_source}")
+                db_obj = ASEDataset(
+                    db_source, dtype=c['dtype'], open_shell=c['open_shell']
+                )
+            else:
+                db_obj = db_source
+            
+            if db_obj is None:
+                raise ValueError("No database source provided in config or arguments.")
+
+            # --- SINGLE DB FILE MODE ---
+            # 1. Calculate split indices
+            tr_start, tr_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_train'])
+            val_start, val_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_val'])
+            test_start, test_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_test'])
+
+            # 2. Offset validation and test to ensure unique molecules
+            val_start += c['num_train']; val_end += c['num_train']
+            test_start += (c['num_train'] + c['num_val']); test_end += (c['num_train'] + c['num_val'])
+
+            # 3. Get Scale/Shift
+            train_database = db_obj
+            val_database = db_obj
+            scale_shift_data = self._handle_scale_shift(db_obj)        
+
         # 4. Data loading logic
         if c['train_or_eval'] == 'train':
             # Note: argument name in get_loader is 'rcut', not 'rcut_orbitals'
             train_loader, required_irreps, basis_trans, orb_basis, ls_list = get_loader.get_loader(
-                database=database,
+                database=train_database,
                 start_idx=tr_start,
                 end_idx=tr_end,
                 dataset_name=c['dataset_name'],
@@ -94,7 +169,7 @@ class TrainingWorkflow:
             )
             
             val_loader, *_ = get_loader.get_loader(
-                database=database,
+                database=val_database,
                 start_idx=val_start,
                 end_idx=val_end,
                 dataset_name=c['dataset_name'],
@@ -109,7 +184,7 @@ class TrainingWorkflow:
         else:
             # Eval mode: force batch_size to 1
             test_loader, required_irreps, basis_trans, orb_basis, ls_list = get_loader.get_loader(
-                database=database,
+                database=database_input,
                 start_idx=test_start,
                 end_idx=test_end,
                 dataset_name=c['dataset_name'],
@@ -202,7 +277,7 @@ class TrainingWorkflow:
                 if optimizer and 'optimizer_state_dict' in ckpt:
                     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
 
-    def run(self, database):
+    def run(self, database=None):
 
         """Main execution loop."""
         loader, val_loader, irreps, basis_trans, orb_basis, ls_list = self.prepare_loaders(database)

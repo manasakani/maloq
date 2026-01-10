@@ -13,14 +13,14 @@ from ase.db import connect
 from . import schnetpack_properties as structure
 
 class ASEDataset(Dataset):
-    def __init__(self, db_path, orbital_basis, dtype=torch.float32, open_shell=False, start_idx=0, end_idx=None):
+    def __init__(self, db_path, dtype=torch.float32, open_shell=False, start_idx=0, end_idx=None):
 
         print("Connecting to database...")
         self.db = ase.db.connect(db_path)
         total_rows = self.db.count()
         print(f"Total rows in database: {total_rows}")
 
-        self.orbital_basis = orbital_basis
+        # self.orbital_basis = orbital_basis
         self.open_shell = open_shell
 
         if end_idx is None:
@@ -83,11 +83,16 @@ class ASEDataset(Dataset):
         #     charge = structure.data['charge']
         #     spin_multiplicity = structure.data['spin_multiplicity']
 
-        # # Handle individual closed-shell molecules in open-shell training by setting alphafock==betafock:
-        # if self.open_shell and node_labels.ndim == 3 and node_labels.shape[0] == 1:
-        #     print("[Adding 2nd spin dimension to closed shell molecule for open shell training]")
-        #     node_labels = node_labels.repeat(2, 1, 1)
-        #     edge_labels = edge_labels.repeat(2, 1, 1)
+        # Handle individual closed-shell molecules in open-shell training by setting alphafock==betafock:
+        if self.open_shell and not is_open_shell:
+            print("Adding second spin dimension to closed shell molecule for open shell training")
+            fock_matrix = fock_matrix.repeat(2, 1, 1)
+            density_matrix = density_matrix.repeat(2, 1, 1)
+        # Handle individual open-shell molecules in closed-shell training by taking only alpha:
+        elif not self.open_shell and is_open_shell:
+            print("Taking only alpha spin dimension from open shell molecule for closed shell training")
+            fock_matrix = fock_matrix[0, :, :]
+            density_matrix = density_matrix[0, :, :]
 
         # metadata:
         folder_name = structure.data['folder_name']
@@ -107,7 +112,7 @@ class ASEDataset(Dataset):
         )
         
         # Store orbital basis (dictionary)
-        data.orbital_basis = self.orbital_basis
+        # data.orbital_basis = self.orbital_basis
 
         return data
 

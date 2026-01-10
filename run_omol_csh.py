@@ -3,7 +3,6 @@ import os
 from train_utils import loss, training_workflow
 from fock_utils import basis_sets
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
-from dataset_utils.ASEDataset import ASEDataset
 
 # ---------------------------------------------------------
 # nablaDFT Dataset Configuration
@@ -11,7 +10,7 @@ from dataset_utils.ASEDataset import ASEDataset
 config = {
     # Dataset Paths & Naming
     "dataset_name": 'omol',
-    "dbpath": "./created_omol_database/omol_electrolytes_unsolvated_test_raw_job_0.db",
+    "dbpath": "./omol_elytes_unsolvated_raw/",
     "output_folder": 'outputs_omol_elytes',
     "run_name": 'omol',
     
@@ -21,8 +20,8 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    "num_train": 7,
-    "num_val": 3,
+    "num_train": 28900,
+    "num_val": 32,
     "num_test": 0,
     "batch_size": 1,                 # 1 for eval, usually 10 for train
     
@@ -73,8 +72,7 @@ if __name__ == "__main__":
 
     # Initialize the omol specific database
     orbital_basis = basis_sets.def2_tzvpd
-    database = ASEDataset(config['dbpath'], orbital_basis, dtype=config['dtype'], open_shell=config['open_shell'])
     
     # Initialize and run the workflow
     workflow = training_workflow.TrainingWorkflow(config)
-    workflow.run(database)
+    workflow.run()

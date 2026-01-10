@@ -518,24 +518,6 @@ def cupy_single_matrix2label(
         dtype=cp.int32
     )
 
-    # orbital_template_ptrs = []
-    # orbital_template_tmp = []
-    # for orbital_template in orbital_templates:
-    #     inner_size = 5 * len(orbital_template)
-    #     tmp = cp.zeros((inner_size,), dtype=cp.int32)
-    #     for j, (row_slice, col_slice, output_slice) in enumerate(orbital_template):
-    #         tmp[j * 5 + 0] = row_slice.start
-    #         tmp[j * 5 + 1] = row_slice.stop
-    #         tmp[j * 5 + 2] = col_slice.start
-    #         tmp[j * 5 + 3] = col_slice.stop
-    #         tmp[j * 5 + 4] = output_slice.start
-    #     orbital_template_tmp.append(tmp)
-    #     orbital_template_ptrs.append(get_ptr(tmp))
-
-    # orbital_template_ptrs = cp.array(
-    #     orbital_template_ptrs, dtype=cp.uintp
-    # )
-
     blocks_per_grid = len(fock_block_rows)
 
     max_block_size = np.max(np.diff(fock_block_offsets.get()))

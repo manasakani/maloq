@@ -13,6 +13,7 @@ import torch.distributed as dist
 def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, half_edges=True, make_fock_targets=True, scale_shift_data=None):
     """
     Make dataloader with the given indices of the mocules in the input database
+    Currently set up for three datasets: QM7, nablaDFT, omol. Need to modify for others.
     NOTE: closedshell only
     """
     rank = dist.get_rank()
