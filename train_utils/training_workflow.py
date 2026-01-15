@@ -5,10 +5,12 @@ import numpy as np
 import torch
 from e3nn.o3 import Irreps
 from torch.utils.data import ConcatDataset
+import torch.distributed as dist
 
 from train_utils import loss, utils_compute, splittrainer
 from dataset_utils import get_loader, get_scale_shift
-from dataset_utils.ASEDataset import distribute_data, ASEDataset
+from dataset_utils.ASEDataset import distribute_data, ASEDataset, ASEAtomsData
+from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 from helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head
 
 class TrainingWorkflow:
@@ -35,6 +37,7 @@ class TrainingWorkflow:
             print(f"Time to setup distributed environment: {compute_end - compute_start:.4f}s")
             if not os.path.exists(self.config['output_folder']):
                 os.makedirs(self.config['output_folder'])
+        dist.barrier()
 
     def _handle_scale_shift(self, database):
         """Manages the computation or loading of scale/shift factors."""
@@ -139,6 +142,7 @@ class TrainingWorkflow:
             
         else:
             print(f"Rank {self.rank}: Loading data from single file {db_source}")
+            dist.barrier()
 
             # We must ensure we have a valid Dataset object here
             # Eg: omol single DB file
@@ -150,9 +154,6 @@ class TrainingWorkflow:
             else:
                 db_obj = db_source
             
-            if db_obj is None:
-                raise ValueError("No database source provided in config or arguments.")
-
             # --- SINGLE DB FILE MODE ---
             # 1. Calculate split indices
             tr_start, tr_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_train'])
@@ -166,7 +167,8 @@ class TrainingWorkflow:
             # 3. Get Scale/Shift
             train_database = db_obj
             val_database = db_obj
-            scale_shift_data = self._handle_scale_shift(db_obj)        
+            scale_shift_data = self._handle_scale_shift(db_obj)  
+            print("Got scaling/shifting factors for this dataset.", flush=True)      
 
         # 4. Data loading logic
         if c['train_or_eval'] == 'train':
@@ -303,7 +305,17 @@ class TrainingWorkflow:
                 if optimizer and 'optimizer_state_dict' in ckpt:
                     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
 
-    def run(self, database=None):
+    def run(self):
+
+        # HELM's data and training pipeline supports these datasets:
+        if self.config['dataset_name'] == 'QM7':
+            database = ASEAtomsData(self.config['dbpath'])
+        elif self.config['dataset_name'] == 'nablaDFT':
+            database = HamiltonianDatabase(self.config['dbpath'])
+        elif self.config['dataset_name'] == 'omol':
+            database = None
+        else:
+            raise ValueError(f"Unknown dataset name: {self.config['dataset_name']}")
 
         """Main execution loop."""
         loader, val_loader, irreps, basis_trans, orb_basis, ls_list = self.prepare_loaders(database)

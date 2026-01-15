@@ -1,7 +1,6 @@
 import torch
-import os
+# import os
 from train_utils import loss, training_workflow
-from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
 # ---------------------------------------------------------
 # nablaDFT Dataset Training & Evaluation
@@ -12,6 +11,7 @@ config = {
     "dbpath": "/capstor/store/cscs/pasc/c33/manasa/nablaDFT_datasets/train_2k.db",
     "output_folder": 'outputs_nablaDFT',
     "run_name": 'nabla_2k',
+    "open_shell": False,
     
     # Execution Mode
     "train_or_eval": "train",         # Set to "train" to start learning
@@ -19,8 +19,8 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    "num_train": 12081,
-    "num_val": 64,
+    "num_train": 5, #12081,
+    "num_val": 2, #64,
     "num_test": 0,
     "batch_size": 1,                 # 1 for eval, usually 10 for train
     
@@ -68,15 +68,9 @@ config = {
 }
 
 if __name__ == "__main__":
-    
-    os.makedirs(config['output_folder'], exist_ok=True)
 
-    # Initialize the nablaDFT-specific database
-    database = HamiltonianDatabase(config['dbpath'])
-    
-    # Initialize and run the workflow
     workflow = training_workflow.TrainingWorkflow(config)
-    workflow.run(database)
+    workflow.run()
 
 
 # import time

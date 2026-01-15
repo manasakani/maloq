@@ -16,23 +16,41 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     Currently set up for three datasets: QM7, nablaDFT, omol. Need to modify for others.
     """
     rank = dist.get_rank()
+    world_size = dist.get_world_size()
     num_molecules_to_process = end_idx - start_idx
 
     datalist = []
 
     if dataset_name == "QM7":
+
         orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
-        energy = [database[i]['energy'] for i in range(start_idx, end_idx)]
-        forces = [database[i]['forces'] for i in range(start_idx, end_idx)]
-        atomic_numbers = [database[i]['_atomic_numbers'].numpy() for i in range(start_idx, end_idx)]
-        positions = [database[i]['_positions'].numpy() for i in range(start_idx, end_idx)]
-        charge = [0 for i in range(start_idx, end_idx)]
+
+        # Extract all the data on every rank (avoids strange indexing errors for the QM7 databases)
+        all_counts = [None] * world_size
+        dist.all_gather_object(all_counts, num_molecules_to_process)
+        total_num_molecules = sum(all_counts)
+
+        # get rank 0's start idx and end idx on all ranks:
+        global_start_idx = torch.tensor(start_idx) if rank == 0 else torch.tensor(0)
+        dist.broadcast(global_start_idx, src=0)
+        global_start_idx = global_start_idx.item()
+        global_end_idx = global_start_idx + total_num_molecules
+        all_data = [database[i] for i in range(global_start_idx, global_end_idx)]
+        
+        local_start = start_idx - global_start_idx
+        local_end = end_idx - global_start_idx
+        local_data = all_data[local_start : local_end]
+
+        energy = [row['energy'] for row in local_data]
+        forces = [row['forces'] for row in local_data]
+        atomic_numbers = [row['_atomic_numbers'].numpy() for row in local_data]
+        positions = [row['_positions'].numpy() for row in local_data]
+        charges = [0 for i in range(start_idx, end_idx)]
         spins = [1 for i in range(start_idx, end_idx)]
 
-        hamiltonians = [database[i]['hamiltonian'].numpy() for i in range(start_idx, end_idx)]
+        hamiltonians = [row['hamiltonian'].numpy() for row in local_data]
         hamiltonians = [utils_orca_out.sort_by_m(h, orbital_basis, z) for h, z in zip(hamiltonians, atomic_numbers)] # QM7 comes in zxy coordinates from ORCA, so need to rotate
-
-        overlaps = [database[i]['overlap'].numpy() for i in range(start_idx, end_idx)] # we don't rotate the overlap
+        overlaps = [row['overlap'].numpy() for row in local_data] # we don't rotate the overlap
 
     elif dataset_name == "nablaDFT":
         orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
@@ -43,6 +61,8 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         forces = []
         hamiltonians = []
         overlaps = []
+        charges = []
+        spins = []
         
         for i in range(start_idx, end_idx):
             z, pos, en, f, ham, ov, coeff, m_id, c_id = database[i]
@@ -52,7 +72,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             forces.append(f)
             hamiltonians.append(ham)
             overlaps.append(ov)
-            charge.append(0)
+            charges.append(0)
             spins.append(1)
 
     elif dataset_name == "omol":
