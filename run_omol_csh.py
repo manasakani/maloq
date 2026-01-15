@@ -32,9 +32,9 @@ config = {
     "reduce_node_intra": True,       # Enforce 0 odd degrees for intra-orbital
     
     # Training Hyperparameters
-    "num_epochs": 50,
+    "num_epochs": 100,
     "dtype": torch.float32,          # nablaDFT often uses float64 - 32 here for cupy kernel
-    "lr_init": 5e-4,
+    "lr_init": 1e-4,
     "optimizer_type": "adam",        # standard Adam
     "weight_decay": 0.0,
     "scheduler_type": 'cosine',      # 'plateau' or 'cosine'
@@ -48,9 +48,9 @@ config = {
     "train_loss_fxn": loss.rmse_mse_padded_loss,
     "test_loss_fxn": loss.l1_unpadded_loss,
     "save_frequency": 1,
-    "restart_backbone": True,       # Restart options
-    "restart_head": True,
-    "restart_optimizer": True,      
+    "restart_backbone": False,       # Restart options
+    "restart_head": False,
+    "restart_optimizer": False,      
     "backbone_checkpoint": 'backbone.pt',
     "head_checkpoint": 'head.pt',
     "scale_and_shift": True,         # Scale & shift the node labels
@@ -70,8 +70,7 @@ config = {
 }
 
 if __name__ == "__main__":
-    if not os.path.exists(config['output_folder']):
-        os.makedirs(config['output_folder'])
+    os.makedirs(config['output_folder'], exist_ok=True)
     
     # Initialize and run the workflow
     workflow = training_workflow.TrainingWorkflow(config)

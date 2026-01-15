@@ -68,8 +68,8 @@ config = {
 }
 
 if __name__ == "__main__":
-    if not os.path.exists(config['output_folder']):
-        os.makedirs(config['output_folder'])
+    
+    os.makedirs(config['output_folder'], exist_ok=True)
 
     # Initialize the nablaDFT-specific database
     database = HamiltonianDatabase(config['dbpath'])

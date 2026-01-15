@@ -26,6 +26,8 @@ def parse_args():
                        help='End index for structure processing')
     parser.add_argument('--job_id', type=int, required=True,
                        help='SLURM array job ID')
+    parser.add_argument('--matrix_type', type=str, default='fock',
+                       help='Type of matrix to process (default: fock, other: densitymat)')
     return parser.parse_args()
 
 def get_subdirs(parent_dir, n):
@@ -38,6 +40,19 @@ def get_subdirs(parent_dir, n):
                     break
     return subdirs
 
+def check_elements(elements, basis_set):
+    for element in elements:
+        if element not in basis_set:
+            return False
+    return True
+
+def expand_density_mat(P):
+    n = int((np.sqrt(8 * len(P) + 1) - 1) // 2)
+    mat = np.zeros((n,n))
+    mat[np.triu_indices(n)] = P
+    mat = mat + mat.T - np.diag(mat.diagonal())
+    return mat
+
 def main():
     args = parse_args()
 
@@ -45,18 +60,37 @@ def main():
 
     # Setup
     structures_dir = args.structures_dir
-    # structure_folders = [f for f in os.listdir(structures_dir)
-    #                     if os.path.isdir(os.path.join(structures_dir, f)) ]
-
-    # structure_folders = [f for f in os.listdir(structures_dir)
-    #                     if len(os.listdir(os.path.join(structures_dir, f))) > 0 and
-    #                     os.path.isdir(os.path.join(structures_dir, f)) ]
     num_folders = args.end_idx - args.start_idx
-    structure_folders = get_subdirs(structures_dir, num_folders)
 
+    # Ammonium dataset:
+    # structure_folders = [
+    #     os.path.join(os.path.join(structures_dir, top_d), sub_d)
+    #     for top_d in os.listdir(structures_dir)
+    #     if top_d.startswith("ammonium_") and os.path.isdir(os.path.join(structures_dir, top_d))
+    #     for sub_d in os.listdir(os.path.join(structures_dir, top_d))
+    #     if os.path.isdir(os.path.join(os.path.join(structures_dir, top_d), sub_d))
+    # ]
+    
+    # Electrolytes unsolvated:
+    # structure_folders = [
+    #     os.path.join(os.path.join(structures_dir, top_d), sub_d)
+    #     for top_d in os.listdir(structures_dir)
+    #     if os.path.isdir(os.path.join(structures_dir, top_d))
+    #     for sub_d in os.listdir(os.path.join(structures_dir, top_d))
+    #     if os.path.isdir(os.path.join(os.path.join(structures_dir, top_d), sub_d))
+    # ]
+
+    # Electrolytes redox:
+    structure_folders = [d for d in os.listdir(structures_dir) if os.path.isdir(os.path.join(structures_dir, d))]
+    print("Number of structure folders found:", len(structure_folders), flush=True)
+
+    # orca file and density matrix files always have the same names
     orca_file = 'orca.out'
+    density_mat_file = 'density_mat.npz'
     cutoff = 6.0
     dataset_name = 'omol'
+
+    get_fock = True if args.matrix_type == 'fock' else False
 
     # --> whether to make labels for only half the edges (i,j) where i<j, or all edges (i,j) and (j,i)
     half_edges = False
@@ -95,85 +129,104 @@ def main():
 
     # Process structures
     for folder_idx, structure_folder in enumerate(structures_to_process):
-        try:
-            # if folder_idx % 10 == 0:
-            print(f"Job {args.job_id}: Processing folder {folder_idx}/{len(structures_to_process)}: {structure_folder}", flush=True)
+        # try:
+        # if folder_idx % 10 == 0:
+        print(f"Job {args.job_id}: Processing folder {folder_idx}/{len(structures_to_process)}: {structure_folder}", flush=True)
 
-            # # specific for dimers dataset, which has folder name convention Element1_Element2_dist_charge_spin
-            # elements_from_folder = structure_folder.split('_')[:2]
-            # if int(utils_orca_out.periodic_table[elements_from_folder[0]]) not in hconfbr or int(utils_orca_out.periodic_table[elements_from_folder[1]]) not in hconfbr:
-            #     print(f"Skipping {structure_folder}: {elements_from_folder} not in selected elements", flush=True)
-            #     continue
+        time_start = time.perf_counter()
 
-            elements_from_folder = structure_folder.split('_')[:2]
-            if not all(utils_orca_out.periodic_table[element] in full_basis for element in elements_from_folder):
-                print(f"Skipping {structure_folder}: {elements_from_folder} not in basis", flush=True)
-                continue
-            time_start = time.perf_counter()
+        # Read ORCA output
+        orca_output_filepath = os.path.join(structures_dir, structure_folder, orca_file)
+        if not os.path.exists(orca_output_filepath):
+            raise FileNotFoundError(f"ORCA output file not found: {orca_output_filepath}", flush=True)
 
-            # Read ORCA output
-            orca_output_filepath = os.path.join(structures_dir, structure_folder, orca_file)
-            if not os.path.exists(orca_output_filepath):
-                raise FileNotFoundError(f"ORCA output file not found: {orca_output_filepath}", flush=True)
+        # General ORCA output file elements:
+        read_time_start = time.perf_counter()
+        parsed_orca_output = utils_orca_out.manually_parse_output(Path(orca_output_filepath), source='manasakani')
 
-            # General ORCA output file elements:
-            read_time_start = time.perf_counter()
-            parsed_orca_output = utils_orca_out.parse_output(Path(orca_output_filepath), source='manasakani')
+        open_shell = parsed_orca_output["unrestricted"]
+        spin_multiplicity = parsed_orca_output["spin_multiplicity"]
+        charge = parsed_orca_output["total_charge"]
 
-            open_shell = parsed_orca_output["unrestricted"]
-            spin_multiplicity = parsed_orca_output["spin_multiplicity"]
-            charge = parsed_orca_output["total_charge"]
-
-            # Atomic and electronic structure:
-            if open_shell:
-                print("Loading data from open shell calculation...")
-                fock_matrices, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath, unrestricted=True)
-                basis = {element: full_basis[element] for element in elements} # Get basis (for this structure) for rearranging the matrix:
-                alpha_fock_matrix = utils_orca_out.sort_by_m(fock_matrices['alpha'], basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
-                beta_fock_matrix = utils_orca_out.sort_by_m(fock_matrices['beta'], basis, np.array(elements))
+        # Get elements, coordinates, and matrices for this structure:
+        matrices, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath, unrestricted=open_shell, get_fock=get_fock)
+    
+        # Check if the elements exist, or skip this structure:
+        if check_elements(elements, full_basis) == False:
+            print(f"Skipping {structure_folder}: {elements} not in basis", flush=True)
+            continue
+        basis = {element: full_basis[element] for element in elements} # Get basis (for this structure) for rearranging the matrix:
+        
+        # If using density instead of fock matrices, then 'matrices' was empty, so load density mat file:
+        if not get_fock:
+            print("Processing density matrix...")
+            density_output_filepath = os.path.join(structures_dir, structure_folder, density_mat_file)
+            matrices = np.load(density_output_filepath)
+        
+        if open_shell:
+            if get_fock:
+                alpha_matrix = matrices['alpha']
+                beta_matrix = matrices['beta']
             else:
-                fock_matrix, elements, coordinates, _ = utils_orca_out.read_orca_out(orca_output_filepath)
-                basis = {element: full_basis[element] for element in elements} # Get basis (for this structure) for rearranging the matrix:
-                fock_matrix = utils_orca_out.sort_by_m(fock_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
-
-            # Filtering for errors in Fock matrix
-            if open_shell:
-                if (
-                    alpha_fock_matrix.max().item() > 1000 or
-                    beta_fock_matrix.max().item() > 1000 or
-                    math.isnan(alpha_fock_matrix.max().item()) or
-                    math.isnan(beta_fock_matrix.max().item())
-                ):
-                    print(alpha_fock_matrix.max().item())
-                    print(beta_fock_matrix.max().item())
-                    raise ValueError("This open shell node is too big or contains NaN! Orca calculation might be corrupted")
+                Ptotal = expand_density_mat(matrices['orca.scfp'])
+                Pspin = expand_density_mat(matrices['orca.scfr'])
+                alpha_matrix = 0.5 * (Ptotal + Pspin)
+                beta_matrix = 0.5 * (Ptotal - Pspin)
+        else:
+            if get_fock:
+                matrix = matrices
             else:
-                if (
-                    fock_matrix.max().item() > 1000 or
-                    math.isnan(fock_matrix.max().item())
-                ):
-                    print(fock_matrix.max().item())
-                    raise ValueError("This closed shell node is too big or contains NaN! Orca calculation might be corrupted")
+                matrix = expand_density_mat(matrices['orca.scfp'])
+        
+        # process the matri(ces)
+        if open_shell:
+            alpha_matrix = utils_orca_out.sort_by_m(alpha_matrix, basis, np.array(elements))  # Re-arrange matrix blocks to yzx notation (m=0 is in the middle)
+            beta_matrix = utils_orca_out.sort_by_m(beta_matrix, basis, np.array(elements))
+        else:
+            matrix = utils_orca_out.sort_by_m(matrix, basis, np.array(elements))
 
 
-            #NOTE: The basis returned by utils_orca_out (taken from the output file) is not in the right order for the diffuse functions! So we don't use it directly.
-            structure = Atoms(elements, positions=coordinates)
-            read_time_end = time.perf_counter()
+        # Filtering for errors in Fock matrix
+        if open_shell:
+            if (
+                alpha_matrix.max().item() > 10000 or
+                beta_matrix.max().item() > 10000 or
+                math.isnan(alpha_matrix.max().item()) or
+                math.isnan(beta_matrix.max().item())
+            ):
+                print(alpha_matrix.max().item())
+                print(beta_matrix.max().item())
+                raise ValueError("This open shell node is too big or contains NaN! Orca calculation might be corrupted")
+        else:
+            if (
+                matrix.max().item() > 10000 or
+                math.isnan(matrix.max().item())
+            ):
+                print(matrix.max().item())
+                raise ValueError("This closed shell node is too big or contains NaN! Orca calculation might be corrupted")
 
-            if folder_idx % 10 == 0:
-                print(f"Job {args.job_id}: Time to make atoms and get matrix: {read_time_end - read_time_start}", flush=True)
-                print(f"Job {args.job_id}: Structure: {structure}", flush=True)
 
-            # Create fock targets:
-            target_time_start = time.perf_counter()
+        #NOTE: The basis returned by utils_orca_out (taken from the output file) is not in the right order for the diffuse functions! So we don't use it directly.
+        structure = Atoms(elements, positions=coordinates)
+        read_time_end = time.perf_counter()
 
-            if open_shell:
-                fock_matrix = [alpha_fock_matrix, beta_fock_matrix]
+        print("Number of atoms:", len(elements), flush=True)
 
+        if folder_idx % 10 == 0:
+            print(f"Job {args.job_id}: Time to make atoms and get matrix: {read_time_end - read_time_start}", flush=True)
+            print(f"Job {args.job_id}: Structure: {structure}", flush=True)
+
+        # Create fock targets:
+        target_time_start = time.perf_counter()
+
+        if open_shell:
+            matrix = [alpha_matrix, beta_matrix]
+
+        with torch.no_grad():
             fock_target = fock_targets.Fock_Targets(structure, cutoff, full_basis, dataset_name='omol',
                                                     charge=charge,
                                                     spin_multiplicity=spin_multiplicity,
-                                                    fock_matrix=fock_matrix, half_edges=half_edges,
+                                                    fock_matrix=matrix, half_edges=half_edges,
                                                     dtype=torch.float32,
                                                     orbital_starts=orbital_starts,
                                                     orbital_template=orbital_template,
@@ -181,35 +234,44 @@ def main():
                                                     out_js_list=out_js_list,
                                                     ls_list=ls_list)
 
-            # Save the analysis objects to use for the next structure (these depend only on the basis)
-            orbital_starts = fock_target.orbital_starts
-            orbital_template = fock_target.orbital_template
-            req_output_irreps = fock_target.req_output_irreps
-            out_js_list = fock_target.out_js_list
-            ls_list = fock_target.ls_list
+        # Save the analysis objects to use for the next structure (these depend only on the basis)
+        orbital_starts = fock_target.orbital_starts
+        orbital_template = fock_target.orbital_template
+        req_output_irreps = fock_target.req_output_irreps
+        out_js_list = fock_target.out_js_list
+        ls_list = fock_target.ls_list
+        fock_target.to('cpu')        
 
-            target_time_end = time.perf_counter()
+        target_time_end = time.perf_counter()
 
-            if folder_idx % 10 == 0:
-                print(f"Job {args.job_id}: Time to make targets: {target_time_end - target_time_start}", flush=True)
+        print(f"Job {args.job_id}: Time to make targets: {target_time_end - target_time_start}", flush=True)
 
-            # Shift back diffuse orbitals
-            for atom, orbitals in full_basis.items():
-                full_basis[atom] = [orb % 10 for orb in orbitals]
+        # Shift back diffuse orbitals
+        for atom, orbitals in full_basis.items():
+            full_basis[atom] = [orb % 10 for orb in orbitals]
 
-            # Store successful structure
-            structures.append(fock_target)
-            orca_output_list.append(parsed_orca_output)
-            local_folder_name_strings.append(structure_folder)
+        # Store successful structure
+        structures.append(fock_target)
+        orca_output_list.append(parsed_orca_output)
+        local_folder_name_strings.append(structure_folder)
 
-            time_end = time.perf_counter()
-            if folder_idx % 10 == 0:
-                print(f"Job {args.job_id}: Total time for one structure: {time_end - time_start}", flush=True)
+        time_end = time.perf_counter()
+        print(f"Job {args.job_id}: Total time for one structure: {time_end - time_start}", flush=True)
 
-        except Exception as e:
-            print(f"ERROR: Job {args.job_id} skipping structure {structure_folder} due to error: {str(e)}", flush=True)
-            skipped_structures.append(structure_folder)
-            continue
+        # except Exception as e:
+        #     print(f"ERROR: Job {args.job_id} skipping structure {structure_folder} due to error: {str(e)}", flush=True)
+        #     skipped_structures.append(structure_folder)
+        #     continue
+
+        current_mem = torch.cuda.memory_allocated() / (1024 * 1024)
+        peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024)
+        print(f"Current: {current_mem:.2f} MB, Peak: {peak_mem:.2f} MB")
+        if open_shell:
+            del alpha_matrix, beta_matrix, fock_target  # Explicitly delete large local vars
+        else:
+            del matrix, fock_target
+        torch.cuda.empty_cache()                            # Release unoccupied cached memory to GPU
+        
 
     big_time_end = time.perf_counter()
     successful_structures = len(structures)
@@ -222,8 +284,7 @@ def main():
     print(f"Job {args.job_id}: Time to process {total_attempted} structures: {big_time_end - big_time_start}", flush=True)
 
     # Write to database
-    output_db_filename = f"omol_dimers/{args.output_db_name}_job_{args.job_id}.db"
-    # output_db_filename = f"test.db"
+    output_db_filename = f"created_omol_database/{args.output_db_name}_{args.matrix_type}_job_{args.job_id}.db"
     print(f"Job {args.job_id}: Writing to {output_db_filename}", flush=True)
 
     try:
@@ -253,7 +314,7 @@ def main():
                         "node_labels": structure.node_labels.detach().cpu().numpy(),
                         "edge_labels": structure.edge_labels.detach().cpu().numpy(),
                         "total_energy [Eh]": orca_output_dict["total_energy [Eh]"],
-                        "gradient [Eh/bohr]": orca_output_dict["gradient [Eh/bohr]"],
+                        # "gradient [Eh/bohr]": orca_output_dict["gradient [Eh/bohr]"],
                         "half_edges": structure.half_edges,
                         "is_open_shell": is_open_shell,
                         "cutoff": cutoff,

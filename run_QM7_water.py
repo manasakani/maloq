@@ -68,6 +68,9 @@ config = {
 }
 
 if __name__ == "__main__":
+
+    os.makedirs(config['output_folder'], exist_ok=True)
+    
     # Initialize the specific database type
     database = ASEAtomsData(config['dbpath'])
     
