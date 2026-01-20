@@ -11,6 +11,7 @@ from ase import Atoms
 from torch.utils.dlpack import from_dlpack
 import torch.distributed as dist
 from mpi4py import MPI
+from collections import defaultdict
 
 class Fock_Targets:
     """
@@ -53,17 +54,18 @@ class Fock_Targets:
         self.orbital_basis = orbital_basis
         self.dtype = dtype
 
-        # Create structures and neighbor lists (outer index is the molecule index)
+        # Create structures and neighbor lists (outer index is the molecule index) - follows the fock matrices owned by each rank
+        self.atomic_numbers_list = []
+        self.atomic_positions_list = []
+        self.neighbour_list_list = []
+        self.edge_dist_list = []
+        self.orbitals_per_atom_list = []
+        self.block_starts_list = []
+        self.make_atomic_graphs(atomic_numbers, atomic_positions, cutoff)
+
+        # Create a merged distributed graph
         if self.distribute_graphs:
             self.make_distributed_atomic_graph(atomic_numbers, atomic_positions, cutoff)
-        else:
-            self.atomic_numbers_list = []
-            self.atomic_positions_list = []
-            self.neighbour_list_list = []
-            self.edge_dist_list = []
-            self.orbitals_per_atom_list = []
-            self.block_starts_list = []
-            self.make_atomic_graphs(atomic_numbers, atomic_positions, cutoff)
 
         # --> Analyze structure of orbital interactions
         if orbital_template is None or out_js_list is None or req_output_irreps is None or ls_list is None:
@@ -129,8 +131,6 @@ class Fock_Targets:
         self.scale_shift_data = scale_shift_data
 
         # If the fock targets should be computed on-the-fly rather than loaded from the db:
-        self.node_labels_list = []
-        self.edge_labels_list = []
         self.target_len = None
 
         # Decompose the Fock matrix into orbital blocks and insert them into the targets
@@ -195,7 +195,7 @@ class Fock_Targets:
             nb_matrix = nl.get_connectivity_matrix(sparse=True).tocoo()
             edge_index = np.vstack([nb_matrix.row, nb_matrix.col])
             
-            # # Calculate block starts for Fock targets later
+            # Calculate block starts for Fock targets later
             # orbitals_per_atom = [sum([(2*l+1) for l in self.orbital_basis[z]]) for z in atoms.get_atomic_numbers()]
             # block_starts = np.hstack([0, np.cumsum(orbitals_per_atom)])
 
@@ -212,6 +212,27 @@ class Fock_Targets:
         global_mol_data_list = [None for _ in range(self.world_size)]
         dist.all_gather_object(global_mol_data_list, local_mol_data)
         all_molecules = [mol for rank_list in global_mol_data_list for mol in rank_list]
+
+        # Track offsets of where this molecule's fock blocks start in the global graph
+        self.global_fock_ii_start_offsets = []
+        self.global_fock_ij_start_offsets = []
+        self.global_fock_ii_end_offsets = []
+        self.global_fock_ij_end_offsets = []
+        node_offset = 0
+        edge_offset = 0
+        for mol in global_mol_data_list:
+            self.global_fock_ii_start_offsets.append(node_offset)
+            self.global_fock_ij_start_offsets.append(edge_offset)
+            for m in mol:
+                node_offset += len(m['z'])
+                edge_offset += m['edge_index'].shape[1]
+            self.global_fock_ii_end_offsets.append(node_offset)
+            self.global_fock_ij_end_offsets.append(edge_offset)
+            
+        print(f"Offsets for global node indices: {self.global_fock_ii_start_offsets}")
+        print(f"Offsets for global edge indices: {self.global_fock_ij_start_offsets}")
+        print(f"End Offsets for global node indices: {self.global_fock_ii_end_offsets}")
+        print(f"End Offsets for global edge indices: {self.global_fock_ij_end_offsets}")
 
         # --- 3: Merging into a Global Super-Graph ---
         all_z = []
@@ -233,13 +254,11 @@ class Fock_Targets:
         global_structure_pos = np.concatenate(all_pos)
         global_structure_edges = np.hstack(global_edges)
 
-        # --- STEP 4: Domain Decomposition ---
-        merged_atomic_graph = MergedStructure(global_structure_z, global_structure_edges)
-        
-        # This initializes the comm patterns and splits nodes/edges among ranks
-        self.domain = Domain_Decomp(merged_atomic_graph, device=self.device)
+        # --- 4: Domain Decomposition ---
+        self.merged_atomic_graph = MergedStructure(global_structure_z, global_structure_edges)
+        self.domain = Domain_Decomp(self.merged_atomic_graph, device=self.device)
 
-        # --- STEP 5: Assign Local Properties ---
+        # --- 5: Assign Local Properties ---
         # Now that Domain_Decomp has decided which nodes this rank owns:
         self.local_node_indices = self.domain.local_node_index
         self.local_atomic_numbers = torch.tensor(global_structure_z[self.local_node_indices], device=self.device)
@@ -253,10 +272,6 @@ class Fock_Targets:
             print(f"Global graph created with {len(global_structure_z)} nodes and {global_structure_edges.shape[1]} edges.")
         self.domain.print_info()
 
-        dist.barrier()
-        print("exiting")
-        exit()
-
     def make_targets(self, fock_matrices):
         """
         Creates padded node/edge labels from the fock matrix
@@ -266,6 +281,13 @@ class Fock_Targets:
 
         # each target should fit in a NxN matrix (to be flattened)
         self.target_len = self.get_target_len()
+
+        if self.distribute_graphs:
+            node_labels_list = []
+            edge_labels_list = []
+
+        self.node_labels_list = []
+        self.edge_labels_list = []
 
         if method == 'cupy_kernel':
             print("Creating orbital template pointers for matrix->label kernel... ")
@@ -366,8 +388,121 @@ class Fock_Targets:
                         node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], mol_atomic_numbers)
                 print("max and min after scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
 
-            self.node_labels_list.append(node_labels)
-            self.edge_labels_list.append(edge_labels)
+            # No distribution, store directly
+            if not self.distribute_graphs:
+                self.node_labels_list.append(node_labels)
+                self.edge_labels_list.append(edge_labels)
+            else:
+                node_labels_list.append(node_labels)
+                edge_labels_list.append(edge_labels)
+        
+        # --------------------------- Redistribute targets based on domain decomposition ---------------------------
+
+        # In this case, need to communicate the targets to the correct ranks based on the domain decomposition
+        if self.distribute_graphs:
+
+            comm = self.domain.comm
+            num_local_fock_matrices = len(fock_matrices)
+            total_num_fock_matrices = comm.allreduce(len(fock_matrices), op=MPI.SUM)
+
+            # these are the indices of this rank's local fock matrix blocks in the global index space
+            local_fock_ii_idxes = range(sum([len(self.atomic_numbers_list[i]) for i in range(num_local_fock_matrices)]))
+            local_fock_ii_idxes = [i + self.global_fock_ii_start_offsets[self.rank] for i in local_fock_ii_idxes]
+            local_fock_ij_idxes = range(sum([len(self.neighbour_list_list[i][0]) for i in range(num_local_fock_matrices)]))
+            local_fock_ij_idxes = [i + self.global_fock_ij_start_offsets[self.rank] for i in local_fock_ij_idxes]
+
+            # print("self.global_fock_ii_start_offsets: ", self.global_fock_ii_start_offsets, flush=True)
+            # print(f"Rank {self.rank} has local fock_ii indices: {local_fock_ii_idxes}", flush=True)
+            # print(f"Rank {self.rank} has local fock_ij indices: {local_fock_ij_idxes}", flush=True)
+            # print(f"rank {self.rank} needs fock_ii indices: ", range(self.domain.start_node, self.domain.end_node), flush=True)
+            # print(f"rank {self.rank} needs fock_ij indices: ", 
+
+
+            # flatten node labels list to remove the molecule dimension:    
+            # NOTE: Figure out how to add spin dimension back in later!
+            node_labels_list = torch.cat(node_labels_list, dim=1).squeeze(0) 
+            edge_labels_list = torch.cat(edge_labels_list, dim=1).squeeze(0)
+
+            print(f"Rank {self.rank} initial node_labels_list: ", node_labels_list[:, :5], flush=True)
+
+            # ------------ Figure out the node re-distribution --------------
+
+            # Need to recieve from rank "key" node_idx value(0) to position value(1)
+            nodes_to_recv = defaultdict(list)
+            self.node_labels_list = [None for _ in range(self.domain.local_num_nodes)]
+            local_start = self.global_fock_ii_start_offsets[self.rank]
+            local_end = self.global_fock_ii_end_offsets[self.rank]
+
+            for pos_idx, node_idx in enumerate(range(self.domain.start_node, self.domain.end_node)):
+                # This rank already owns the fock matrix that contains this node
+                if local_start <= node_idx < local_end:
+                    local_idx = node_idx - local_start
+                    self.node_labels_list[pos_idx] = node_labels_list[local_idx]
+                    
+                # Fock label is not owned by this rank, need to recieve from another rank
+                else:
+                    for rank_idx in range(self.world_size):
+                        if self.global_fock_ii_start_offsets[rank_idx] <= node_idx < self.global_fock_ii_end_offsets[rank_idx]:
+                            nodes_to_recv[rank_idx].append((node_idx, pos_idx))
+                            break
+
+            print(f"Rank {self.rank} needs to recv nodes: ", nodes_to_recv, flush=True)
+
+            # Need to send global node idx "key" to rank "value"
+            nodes_to_send = defaultdict(list) 
+            for node_idx in local_fock_ii_idxes:
+                for rank_idx in range(self.world_size):
+                    if rank_idx == self.rank:
+                        continue
+
+                    rank_start = self.domain.displacements[rank_idx]
+                    rank_end = rank_start + self.domain.counts[rank_idx]
+                    if rank_start <= node_idx < rank_end:
+                        nodes_to_send[rank_idx].append(node_idx)
+                        break
+                            
+            print(f"Rank {self.rank} needs to send nodes: {dict(nodes_to_send)}", flush=True)
+
+            request_objects = []
+
+            # ------------- Perform Communication --------------
+
+            # 1. Prepare Receives 
+            recv_requests = []
+            recv_buffers = {}
+
+            for remote_rank, items in nodes_to_recv.items():
+                # We expect a list of labels equal to the number of nodes we requested
+                req = self.domain.comm.irecv(source=remote_rank, tag=11)
+                recv_requests.append(req)
+                recv_buffers[remote_rank] = req
+
+            # 2. Prepare and Post Sends
+            for remote_rank, node_indices in nodes_to_send.items():
+                data_to_send = [node_labels_list[idx - local_start] for idx in node_indices]
+                self.domain.comm.isend(data_to_send, dest=remote_rank, tag=11)
+
+            # 3. Wait and Slot Data
+            for remote_rank, req in recv_buffers.items():
+                received_data = req.wait() # This is the list of labels from remote_rank
+                
+                # Use the stored pos_idx to put the data in the right spot
+                # The order in received_data matches the order in nodes_to_recv[remote_rank]
+                for i, (g_idx, pos_idx) in enumerate(nodes_to_recv[remote_rank]):
+                    self.node_labels_list[pos_idx] = received_data[i]
+                    
+            print("Done communication")
+
+            self.node_labels_list = torch.stack(self.node_labels_list)
+            print(f"Rank {self.rank} final node_labels_list: ", self.node_labels_list[:, :5], flush=True)
+            dist.barrier()
+            exit()
+
+            # ------------ Figure out the edge re-distribution --------------
+
+
+        # now need to restructure node_labels_list in terms of the batch size.. use full batch for now (one giant molecule)
+
 
 
     def torch_dtype_to_cupy_dtype(self, torch_dtype):
@@ -521,6 +656,9 @@ class Domain_Decomp():
         displacements = np.zeros_like(counts)
         for i in range(1, len(counts)):
             displacements[i] = displacements[i-1] + counts[i-1]
+
+        self.counts = counts
+        self.displacements = displacements
 
         # --> Start with the naive partition assignment (rank 0 gets the first partition, etc)
         start_node = displacements[self.rank]
