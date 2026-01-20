@@ -128,8 +128,9 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             atom_mol_id=atom_mol_id,
             fock_target_object=graph_targets,
             overlap_matrix=None, 
-            charge=global_charges[atom_mol_id],
-            spin_multiplicity=global_spins[atom_mol_id], 
+            charge=torch.tensor(global_charges[atom_mol_id], dtype=torch.long),
+            spin_multiplicity=torch.tensor(global_spins[atom_mol_id], dtype=torch.long), 
+            distributed_graph_training=distribute_graphs,
         )
         datalist.append(data)
     

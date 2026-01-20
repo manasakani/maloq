@@ -264,6 +264,10 @@ class eSEN_Backbone(nn.Module):
     @conditional_grad(torch.enable_grad())
     def forward(self, batch, batch_index=None, output_dir=None):
 
+        torch.cuda.nvtx.range_push("Graph Setup") # <--- START
+
+        distributed_graph_training = batch.distributed_graph_training if "distributed_graph_training" in batch else False
+
         data_dict = {
             "pos": batch.pos,
             "edge_index": batch.edge_index.squeeze(0).reshape(2, -1),
@@ -275,7 +279,7 @@ class eSEN_Backbone(nn.Module):
             "atomic_numbers": batch.atomic_numbers,
             "charges": batch.charge,
             "spin_multiplicity": batch.spin_multiplicity,
-            "num_atoms_in_molecule": batch.num_atoms_in_molecule
+            "num_atoms_in_molecule": batch.num_atoms_in_molecule if not distributed_graph_training else None
         }
 
         # These are used for the case where we only make targets for half the edges
@@ -301,9 +305,15 @@ class eSEN_Backbone(nn.Module):
             "edge_distance_vec": edge_distance_vec,
         }
 
+        torch.cuda.nvtx.range_pop() # <--- END
+
+        torch.cuda.nvtx.range_push("Get wigner") # <--- START
+
         wigner, wigner_inv = self._get_rotmat_and_wigner(
             graph_dict["edge_distance_vec"]
         )
+
+        torch.cuda.nvtx.range_pop() # <--- END
 
         # --> Rotation test:
         # rotated_edges_to_z_axis = torch.bmm(edge_rot_mat, graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
@@ -313,6 +323,8 @@ class eSEN_Backbone(nn.Module):
         ###############################################################
         # Initialize node and edge embeddings
         ###############################################################
+
+        torch.cuda.nvtx.range_push("Create embeddings") # <--- START
 
         # x_message: [data_dict["pos"].shape[0] = #nodes, self.sph_feature_size = (l_max+1)**2, self.sphere_channels = E]
         x_message_node = torch.zeros(
@@ -324,17 +336,26 @@ class eSEN_Backbone(nn.Module):
         )
         # set l = 0 components to the element embeddings + charge + spin:
 
-        # Seperate batch nodes into their molecules
-        molecule_indices = torch.cat([
-            torch.full((data_dict['natoms'],), i, dtype=torch.long, device=data_dict["pos"].device)
-            for i, data_dict['natoms'] in enumerate(data_dict["num_atoms_in_molecule"])
-        ])
-        atom_charges = data_dict["charges"][molecule_indices] + self.abs_max_charge         # shape: [total_num_atoms]
-        atom_spins = data_dict["spin_multiplicity"][molecule_indices]                       # shape: [total_num_atoms]
+        if distributed_graph_training:
 
-        element_emb = self.sphere_embedding(data_dict["atomic_numbers"])
-        charge_emb = self.charge_embedding(atom_charges)
-        spin_emb = self.spin_embedding(atom_spins)
+            atom_charges = data_dict["charges"] + self.abs_max_charge
+            element_emb = self.sphere_embedding(data_dict["atomic_numbers"])
+            charge_emb = self.charge_embedding(atom_charges)
+            spin_emb = self.spin_embedding(data_dict["spin_multiplicity"])
+
+        else:
+
+            # Seperate batch nodes into their molecules
+            molecule_indices = torch.cat([
+                torch.full((data_dict['natoms'],), i, dtype=torch.long, device=data_dict["pos"].device)
+                for i, data_dict['natoms'] in enumerate(data_dict["num_atoms_in_molecule"])
+            ])
+            atom_charges = data_dict["charges"][molecule_indices] + self.abs_max_charge         # shape: [total_num_atoms]
+            atom_spins = data_dict["spin_multiplicity"][molecule_indices]                       # shape: [total_num_atoms]
+
+            element_emb = self.sphere_embedding(data_dict["atomic_numbers"])
+            charge_emb = self.charge_embedding(atom_charges)
+            spin_emb = self.spin_embedding(atom_spins)
 
         # x_message_node[:, :, 0, :] = element_emb + charge_emb + spin_emb # dims: [spin, nodes, l, E]
 
@@ -361,6 +382,10 @@ class eSEN_Backbone(nn.Module):
         # edge embedding: [num_edges, num gaussian basis functions]
         # source_embedding, target_embedding: [num_edges, self.sphere_channels]
         # x_edge: [num_edges, num gaussian basis functions + 2*self.sphere_channels]
+
+        torch.cuda.nvtx.range_pop() # <--- END
+
+        torch.cuda.nvtx.range_push("Initialize embeddings") # <--- START
 
         edge_distance_embedding = self.distance_expansion(graph_dict["edge_distance"])
 
@@ -397,10 +422,15 @@ class eSEN_Backbone(nn.Module):
                 node_or_edge='edge'
             )
 
+        torch.cuda.nvtx.range_pop() # <--- END
+
         ###############################################################
         # Update spherical node embeddings
         ###############################################################
         for i in range(self.num_layers):
+
+            torch.cuda.nvtx.range_push("Node block") # <--- START
+
             x_message_node  = self.node_blocks[i](
                 x_message_node,
                 x_message_edge,
@@ -414,6 +444,10 @@ class eSEN_Backbone(nn.Module):
                 wigner_inv,
                 node_or_edge='node',
             )
+
+            torch.cuda.nvtx.range_pop() # <--- END
+
+            torch.cuda.nvtx.range_push("Edge block") # <--- START
 
             if self.include_edges:
                 x_message_edge = self.edge_blocks[i](
@@ -429,12 +463,18 @@ class eSEN_Backbone(nn.Module):
                     wigner_inv,
                     node_or_edge='edge',
                 )
+            
+            torch.cuda.nvtx.range_pop() # <--- END
+
+        torch.cuda.nvtx.range_push("Final layer norm") # <--- START
 
         # Final layer norm
         x_message_node = self.norm(x_message_node)
 
         if self.include_edges:
             x_message_edge  = self.norm(x_message_edge)
+
+        torch.cuda.nvtx.range_pop() # <--- END
 
         # Return the output
         if self.include_edges: # all we need for the fock output head

@@ -523,11 +523,10 @@ class Fock_Targets:
                     # Pre-allocate buffer: [Count, Target_Len]
                     buf = np.empty((count, self.target_len), dtype=np.float32)
                     node_recv_buffers[src] = buf
-                    # Uppercase Irecv uses the buffer directly (no pickling)
                     node_recv_reqs.append(comm.Irecv(buf, source=src, tag=NODE_TAG))
 
             node_send_reqs = []
-            node_send_buffers = {} # Keep references alive!
+            node_send_buffers = {} 
             for target_rank, indices in nodes_to_send.items():
                 if target_rank != self.rank and len(indices) > 0:
                     # Stack indices into a contiguous numpy array
@@ -618,19 +617,18 @@ class Fock_Targets:
             all_edge_dists = comm.allgather(self.edge_dist_list)
 
             self.local_node_indices = self.domain.local_node_index
-            self.local_edge_indices = self.domain.local_edge_index
+            local_edge_range = range(self.domain.start_edge, self.domain.end_edge)
 
             global_nodes = np.concatenate(all_atomic_numbers)
             global_pos   = np.concatenate(all_atomic_positions, axis=0)
             global_dist  = torch.cat(all_edge_dists, dim=0)
 
-            self.atomic_numbers_list = [global_nodes[self.local_node_indices]]
-            self.atomic_positions_list = [global_pos[self.local_node_indices]]
-            self.neighbour_list_list = [self.local_edge_indices]
-            self.edge_dist_list = [global_dist[self.local_edge_indices]]
+            self.atomic_numbers_list = global_nodes[self.local_node_indices]
+            self.atomic_positions_list = global_pos[self.local_node_indices]
+            self.neighbour_list_list = self.domain.local_edge_index
+            self.edge_dist_list = global_dist[local_edge_range, :]
 
-            print("Final distributed atomic graph has ", len(self.atomic_numbers_list[0]), " atoms and ", self.neighbour_list_list[0].shape[1], " edges on Rank ", self.rank, flush=True)
-
+            print("Final distributed atomic graph has ", len(self.atomic_numbers_list), " atoms and ", self.neighbour_list_list.shape[1], " edges on Rank ", self.rank, flush=True)
             # print(f"Rank {self.rank} self.atomic_numbers_list after allgather: ", self.atomic_numbers_list, flush=True)
             # print(f"Rank {self.rank} self.atomic_positions_list after allgather: ", self.atomic_positions_list, flush=True)
             # print(f"Rank {self.rank} self.neighbour_list_list after allgather: ", self.neighbour_list_list, flush=True)
