@@ -21,7 +21,7 @@ def setup_env(rank, world_size):
 
     return device
 
-def split_indices(rank, world_size, total_num_idx):
+def split_indices(rank, world_size, total_num_idx, distribute_graphs):
     """
     Split data indices
     """
@@ -36,10 +36,12 @@ def split_indices(rank, world_size, total_num_idx):
     local_num_idx = total_num_idx//world_size
     counts = np.array([local_num_idx]*world_size, dtype=np.int32)
 
-    # print(f"IMPORTANT NOTE: Ignoring {total_num_idx % world_size} indices to make the distribution even!")
-    # Distribute the remainder (total_num_idx % world_size)
-    for i in range(total_num_idx % world_size):
-        counts[i] += 1
+    if distribute_graphs:
+        # Distribute the remainder (total_num_idx % world_size)
+        for i in range(total_num_idx % world_size):
+            counts[i] += 1
+    else:
+        print(f"IMPORTANT NOTE: Ignoring {total_num_idx % world_size} indices to make the distribution even!")
 
     displacements = np.zeros_like(counts)
     for i in range(1, len(counts)):

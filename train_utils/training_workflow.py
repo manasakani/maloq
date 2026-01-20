@@ -156,9 +156,9 @@ class TrainingWorkflow:
             
             # --- SINGLE DB FILE MODE ---
             # 1. Calculate split indices
-            tr_start, tr_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_train'])
-            val_start, val_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_val'])
-            test_start, test_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_test'])
+            tr_start, tr_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_train'], c['distribute_graphs'])
+            val_start, val_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_val'], c['distribute_graphs'])
+            test_start, test_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_test'], c['distribute_graphs'])
 
             # 2. Offset validation and test to ensure unique molecules
             val_start += c['num_train']; val_end += c['num_train']
@@ -184,7 +184,8 @@ class TrainingWorkflow:
                 half_edges=c['reduce_edge'],
                 loss_target_string=c['loss_target'],
                 is_open_shell=c['open_shell'],
-                scale_shift_data=scale_shift_data
+                scale_shift_data=scale_shift_data,
+                distribute_graphs=c['distribute_graphs']
             )
             
             val_loader, *_ = get_loader.get_loader(
@@ -198,7 +199,8 @@ class TrainingWorkflow:
                 half_edges=c['reduce_edge'],
                 loss_target_string=c['loss_target'],
                 is_open_shell=c['open_shell'],
-                scale_shift_data=scale_shift_data
+                scale_shift_data=scale_shift_data,
+                distribute_graphs=c['distribute_graphs']
             )
             return train_loader, val_loader, required_irreps, basis_trans, orb_basis, ls_list
             
@@ -307,7 +309,7 @@ class TrainingWorkflow:
 
     def run(self):
 
-        # HELM's data and training pipeline supports these datasets:
+        # HELM's data and training pipeline currently supports these datasets:
         if self.config['dataset_name'] == 'QM7':
             database = ASEAtomsData(self.config['dbpath'])
         elif self.config['dataset_name'] == 'nablaDFT':
@@ -335,10 +337,6 @@ class TrainingWorkflow:
             'energy': ('energy', None)
         }
         node_target, edge_target = target_map[self.config['loss_target']]
-
-        # if self.config['open_shell']:
-        #     # add _alpha and _beta suffixes
-        #     if node_target: node_target += '_alpha' 
 
         if self.config['train_or_eval'] == "train":
             trainer.train(
