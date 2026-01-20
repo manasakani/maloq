@@ -6,16 +6,9 @@ from torch.distributed.launcher.api import LaunchConfig, elastic_launch
 
 def setup_env(rank, world_size):
 
-    # dist.init_process_group(
-    #         backend=config["distributed_backend"],
-    #         rank=int(os.environ.get("RANK")),
-    #         world_size=config["world_size"],
-    #         timeout=timeout,
-    #     )
-
     print("Initializing distributed process group... ", flush=True)
-    dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
-    # dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
+    # dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+    dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
     print("Initialized distributed process group", flush=True)
 
     # barrier:
@@ -35,15 +28,18 @@ def split_indices(rank, world_size, total_num_idx):
 
     assert dist.is_initialized()
 
+    dist.barrier()
     if rank == 0:
         print(f"Processing {total_num_idx} structures between {world_size} GPUs")
+    dist.barrier()
 
     local_num_idx = total_num_idx//world_size
     counts = np.array([local_num_idx]*world_size, dtype=np.int32)
 
-    print(f"IMPORTANT NOTE: Ignoring {total_num_idx % world_size} indices to make the distribution even!")
-    # for i in range(total_num_idx % world_size):
-    #     counts[i] += 1
+    # print(f"IMPORTANT NOTE: Ignoring {total_num_idx % world_size} indices to make the distribution even!")
+    # Distribute the remainder (total_num_idx % world_size)
+    for i in range(total_num_idx % world_size):
+        counts[i] += 1
 
     displacements = np.zeros_like(counts)
     for i in range(1, len(counts)):
@@ -53,6 +49,7 @@ def split_indices(rank, world_size, total_num_idx):
     end_idx = displacements[rank] + counts[rank]
     local_num_idx = counts[rank]
 
+    dist.barrier()
     print(f"Rank {rank} does indices {start_idx} to {end_idx}", flush=True)
     dist.barrier()
 
