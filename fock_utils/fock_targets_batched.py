@@ -52,7 +52,6 @@ class Fock_Targets:
         # Graph-wise distribution of the underlying data 
         self.distribute_graphs = distribute_graphs
 
-        # self.atoms = atoms
         self.orbital_basis = orbital_basis
         self.dtype = dtype
 
@@ -260,7 +259,7 @@ class Fock_Targets:
         self.domain = Domain_Decomp(self.merged_atomic_graph, device=self.device)
 
         # Store global molecule ID of every atom this rank owns
-        self.atom_mol_id = global_mol_ids[self.domain.local_node_index]
+        self.atom_mol_id = global_mol_ids[self.domain.local_node_index]        
 
         if self.rank == 0:
             print(f"Global graph created with {len(global_structure_z)} nodes and {global_structure_edges.shape[1]} edges.")
@@ -512,7 +511,7 @@ class Fock_Targets:
 
             # ----- Nodes -----
 
-            # 1. Exchange counts: How many NODES is each rank sending?
+            # Exchange counts: How many NODES is each rank sending?
             node_send_nums = [len(nodes_to_send[r]) for r in range(self.world_size)]
             node_recv_nums = comm.alltoall(node_send_nums)
 
@@ -521,7 +520,7 @@ class Fock_Targets:
             for src, count in enumerate(node_recv_nums):
                 if count > 0 and src != self.rank:
                     # Pre-allocate buffer: [Count, Target_Len]
-                    buf = np.empty((count, self.target_len), dtype=np.float32)
+                    buf = np.empty((count, self.target_len), dtype=np.float32)  # REMOVE HARDCODED DTYPE
                     node_recv_buffers[src] = buf
                     node_recv_reqs.append(comm.Irecv(buf, source=src, tag=NODE_TAG))
 
@@ -553,7 +552,7 @@ class Fock_Targets:
 
             # ----- Edges -----
 
-            # 1. Exchange counts: How many EDGES is each rank sending?
+            # Exchange counts: How many EDGES is each rank sending?
             edge_send_nums = [len(edges_to_send[r]) for r in range(self.world_size)]
             edge_recv_nums = comm.alltoall(edge_send_nums)
 
@@ -578,7 +577,7 @@ class Fock_Targets:
                     edge_send_buffers[target_rank] = buf
                     edge_send_reqs.append(comm.Isend(buf, dest=target_rank, tag=EDGE_TAG))
 
-            # 4. Wait and Slot
+            # Wait and Slot
             if edge_recv_reqs:
                 MPI.Request.Waitall(edge_recv_reqs)
                 for src, buf in edge_recv_buffers.items():
@@ -598,6 +597,16 @@ class Fock_Targets:
             # print(f"Rank {self.rank} final node_labels_list: ", self.node_labels_list[:, :5], flush=True)
             # print(f"Rank {self.rank} final edge_labels_list: ", self.edge_labels_list[:, :5], flush=True)
             # self.comm.Barrier()
+
+            # --- 'Truly Local' edge reorder the fock edge and edge dist info to [truly local (rank owns src and dst), and the rest] ---
+            src_fock_edges = torch.cat([self.edge_labels_list[self.domain.is_truly_local_edge, :], 
+                                        self.edge_labels_list[~self.domain.is_truly_local_edge, :]], dim=0)
+            self.edge_labels_list = src_fock_edges
+
+            # src_edge_nodes = np.concatenate([self.local_edge_index[0, :][is_local], self.local_edge_index[0, :][~is_local]])
+            # dst_edge_nodes = np.concatenate([self.local_edge_index[1, :][is_local], self.local_edge_index[1, :][~is_local]])
+            # self.local_edge_index = np.stack([src_edge_nodes, dst_edge_nodes], axis=0)
+            # self.truly_local_num_edges = np.sum(is_local)
 
             # Add the molecule index back in, but we pretend this is just one big molecule (so only molecule #0 exists)
             self.comm.Barrier()
@@ -619,14 +628,31 @@ class Fock_Targets:
             self.local_node_indices = self.domain.local_node_index
             local_edge_range = range(self.domain.start_edge, self.domain.end_edge)
 
-            global_nodes = np.concatenate(all_atomic_numbers)
-            global_pos   = np.concatenate(all_atomic_positions, axis=0)
-            global_dist  = torch.cat(all_edge_dists, dim=0)
+            # print(f"Rank {self.rank} all_atomic_numbers: ", all_atomic_numbers, flush=True)
+            # print(f"Rank {self.rank} all_atomic_positions: ", all_atomic_positions, flush=True)
+            # print(f"Rank {self.rank} all_edge_dists: ", all_edge_dists, flush=True)
+            # dist.barrier()
+            
+            # filtering out any empty lists (in case some ranks had no data)
+            global_atomic_numbers = np.concatenate([x for x in all_atomic_numbers if len(x) > 0])
+            global_pos   = np.concatenate([x for x in all_atomic_positions if len(x) > 0], axis=0)
+            global_dist  = torch.cat([x for x in all_edge_dists if len(x) > 0], dim=0)
 
-            self.atomic_numbers_list = global_nodes[self.local_node_indices]
+            # dist.barrier()
+            # print(f"Rank {self.rank} global_atomic_numbers: ", global_atomic_numbers, flush=True)
+            # print(f"Rank {self.rank} global_pos: ", global_pos, flush=True)
+            # print(f"Rank {self.rank} global_dist: ", global_dist, flush=True)
+            # dist.barrier()
+
+            self.atomic_numbers_list = global_atomic_numbers[self.local_node_indices]
             self.atomic_positions_list = global_pos[self.local_node_indices]
             self.neighbour_list_list = self.domain.local_edge_index
             self.edge_dist_list = global_dist[local_edge_range, :]
+
+            # Perform Truly Local reorder on edge dists:
+            edge_dists = torch.cat([self.edge_dist_list[self.domain.is_truly_local_edge, :],
+                                    self.edge_dist_list[~self.domain.is_truly_local_edge, :]], dim=0)
+            self.edge_dist_list = edge_dists
 
             print("Final distributed atomic graph has ", len(self.atomic_numbers_list), " atoms and ", self.neighbour_list_list.shape[1], " edges on Rank ", self.rank, flush=True)
             # print(f"Rank {self.rank} self.atomic_numbers_list after allgather: ", self.atomic_numbers_list, flush=True)
@@ -654,7 +680,7 @@ class Fock_Targets:
         self.node_labels - the node labels that will be scaled
         NOTE: if an element does not have that scalar value, the corresponding mean is 0.0 and std is 1.0
         """
-
+ 
         # if node_atomic_numbers is None:
             # node_atomic_numbers = self.atomic_numbers
 
@@ -868,8 +894,7 @@ class Domain_Decomp():
         dst_edge_nodes = np.concatenate([self.local_edge_index[1, :][is_local], self.local_edge_index[1, :][~is_local]])
         self.local_edge_index = np.stack([src_edge_nodes, dst_edge_nodes], axis=0)
         self.truly_local_num_edges = np.sum(is_local)
-
-        # DO THIS REORDER ON THE FOCK EDGES
+        self.is_truly_local_edge = is_local # store to perform this reorder on the fock edges later
 
         # print("Number of truly local edges: ", self.truly_local_num_edges, flush=True)
         # print("Number of remote edges: ", np.sum(~is_local), flush=True)
@@ -1030,6 +1055,12 @@ class Domain_Decomp():
 
     def init_comm_pattern_reduce(self, edge_index):
 
+        # --> NEED TO DEBUG
+
+        dist.barrier()
+        print("Rank ", self.rank, " initializing reduce communication pattern with edge index: ", edge_index, flush=True)
+        dist.barrier()
+
         rank = dist.get_rank()
         size = dist.get_world_size()
         comm = MPI.COMM_WORLD
@@ -1044,7 +1075,7 @@ class Domain_Decomp():
         # start and end nodes on every rank:
         start_nodes = self.comm.allgather(self.start_node)
         end_nodes = self.comm.allgather(self.end_node)
-        # print("Total number of nodes: ", total_num_nodes, "rank: ", rank, "start nodes: ", start_nodes, " end nodes: ", end_nodes)
+        print("Total number of nodes: ", total_num_nodes, "rank: ", rank, "start nodes: ", start_nodes, " end nodes: ", end_nodes)
 
         # allgather the edge_indices on each rank to make a global_edge_index and counts and displacements:
         length_local_edge_idx = len(edge_index)

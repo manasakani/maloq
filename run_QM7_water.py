@@ -23,14 +23,15 @@ config = {
     "num_val": 1,
     "num_test": 1,
     "batch_size": 10,          # 1 for eval, 10 for train (set to 1 for water script)
+    "distribute_graphs": False,       # Distribute graphs and perform communication in the forward pass (ongoing implementation, not finished)
     
     # Symmetry Reductions
     "reduce_edge": False,
-    "reduce_node": False,
-    "reduce_node_intra": False,
+    "reduce_node": True,
+    "reduce_node_intra": True,
     
     # Training Hyperparameters
-    "num_epochs": 20000,
+    "num_epochs": 5,
     "dtype": torch.float32, # torch.float64!
     "lr_init": 1e-5,
     "optimizer_type": "adamw",
@@ -45,7 +46,7 @@ config = {
     "loss_target": 'fock_matrix',
     "train_loss_fxn": loss.rmse_mse_padded_loss,
     "test_loss_fxn": loss.l1_unpadded_loss,
-    "save_frequency": 10,
+    "save_frequency": 5,
     "restart_backbone": False,
     "restart_head": False,
     "restart_optimizer": False,

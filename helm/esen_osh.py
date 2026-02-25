@@ -23,6 +23,9 @@ from torch.utils.checkpoint import checkpoint
 import time
 from .nn.so3_layers import SO3_Linear
 
+import torch.distributed as dist
+from mpi4py import MPI
+
 from fairchem.core.common.registry import registry
 from fairchem.core.common.utils import conditional_grad
 e3nn.set_optimization_defaults(jit_script_fx=False)
@@ -84,6 +87,10 @@ class eSEN_Backbone(nn.Module):
 
         if not include_edges:
             print("Note: Initializing eSEN backbone without edge_embeddings!")
+
+        self.rank = dist.get_rank()
+        self.world_size = dist.get_world_size()
+        self.comm = MPI.COMM_WORLD
 
         self.max_num_elements = max_num_elements
         self.lmax = lmax
@@ -264,34 +271,20 @@ class eSEN_Backbone(nn.Module):
     @conditional_grad(torch.enable_grad())
     def forward(self, batch, batch_index=None, output_dir=None):
 
-        torch.cuda.nvtx.range_push("Graph Setup") # <--- START
 
         distributed_graph_training = batch.distributed_graph_training if "distributed_graph_training" in batch else False
 
         data_dict = {
             "pos": batch.pos,
-            "edge_index": batch.edge_index.squeeze(0).reshape(2, -1),
-            "forward_edge_mask": batch.edge_mask if "edge_mask" in batch else None,
-            "reverse_edge_map": batch.reverse_edge_map if "reverse_edge_map" in batch else None,
+            "edge_index": batch.edge_index.squeeze(0).reshape(2, -1),       # composed of local fraction of global node indices
             "edge_dist": batch.edge_attr,
             "nedges": len(batch.edge_index[0]),
             "natoms": len(batch.pos),
-            "atomic_numbers": batch.atomic_numbers,
+            "atomic_numbers": batch.atomic_numbers,                         # always global
             "charges": batch.charge,
             "spin_multiplicity": batch.spin_multiplicity,
             "num_atoms_in_molecule": batch.num_atoms_in_molecule if not distributed_graph_training else None
         }
-
-        # These are used for the case where we only make targets for half the edges
-        forward_edge_mask = data_dict["forward_edge_mask"]  # forward edges are those which have labels
-        reverse_edge_map = data_dict["reverse_edge_map"]    # the elements corresponding to T in forward_edge_mask have their own index, and the ones corresponding to F have the index of their forward edge
-                                                            # for the H2o example, reverse_edge_map = [0, 1, 2, 0, 1, 2] because the last three are the backward edges of the first three
-        forward_edges = None # need to remove this variable, it's not used
-
-        # In case these are not provided, we use all the edges
-        if forward_edge_mask is None:
-            forward_edge_mask = torch.ones(data_dict["edge_index"].shape[1], dtype=torch.bool, device=data_dict["pos"].device)
-            reverse_edge_map = torch.arange(data_dict["edge_index"].shape[1], dtype=torch.long, device=data_dict["pos"].device)
 
         # The input edges are in xyz coordinates, we need to rotate them to the yzx coordinates expected by e3nn to be consistent with the data
         edge_distance_vec = data_dict["edge_dist"][:, [2, 3, 1]]
@@ -299,21 +292,16 @@ class eSEN_Backbone(nn.Module):
 
         graph_dict = {
             "edge_index": data_dict["edge_index"],
-            "forward_edge_mask": forward_edge_mask,
-            "reverse_edge_map": reverse_edge_map,
             "edge_distance": edge_distance,
             "edge_distance_vec": edge_distance_vec,
+            "partition": batch.fock_target_object[0].domain if distributed_graph_training else None
         }
 
-        torch.cuda.nvtx.range_pop() # <--- END
-
-        torch.cuda.nvtx.range_push("Get wigner") # <--- START
 
         wigner, wigner_inv = self._get_rotmat_and_wigner(
             graph_dict["edge_distance_vec"]
         )
 
-        torch.cuda.nvtx.range_pop() # <--- END
 
         # --> Rotation test:
         # rotated_edges_to_z_axis = torch.bmm(edge_rot_mat, graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
@@ -324,7 +312,6 @@ class eSEN_Backbone(nn.Module):
         # Initialize node and edge embeddings
         ###############################################################
 
-        torch.cuda.nvtx.range_push("Create embeddings") # <--- START
 
         # x_message: [data_dict["pos"].shape[0] = #nodes, self.sph_feature_size = (l_max+1)**2, self.sphere_channels = E]
         x_message_node = torch.zeros(
@@ -338,8 +325,16 @@ class eSEN_Backbone(nn.Module):
 
         if distributed_graph_training:
 
+            start_node = graph_dict['partition'].start_node
+            end_node = graph_dict['partition'].end_node
+
+            # dist.barrier()
+            # print(f"Rank {self.rank} processing nodes from {start_node} to {end_node}", flush=True)
+            # print(f"Rank {self.rank} atomic numbers: {data_dict['atomic_numbers']}", flush=True)
+            # dist.barrier()
+
             atom_charges = data_dict["charges"] + self.abs_max_charge
-            element_emb = self.sphere_embedding(data_dict["atomic_numbers"])
+            element_emb = self.sphere_embedding(data_dict["atomic_numbers"][start_node : end_node])
             charge_emb = self.charge_embedding(atom_charges)
             spin_emb = self.spin_embedding(data_dict["spin_multiplicity"])
 
@@ -359,11 +354,14 @@ class eSEN_Backbone(nn.Module):
 
         # x_message_node[:, :, 0, :] = element_emb + charge_emb + spin_emb # dims: [spin, nodes, l, E]
 
+        # dist.barrier()
+        # print(f"Rank {self.rank} shape of element_emb: {element_emb.shape}, charge_emb: {charge_emb.shape}, spin_emb: {spin_emb.shape}", flush=True)
+        # dist.barrier()
+
         # Concatenate along the last dimension
         combined_emb = torch.cat([element_emb, charge_emb, spin_emb], dim=-1) # [num_atoms, 3 * sphere_channels]
         final_emb = self.scalar_node_embedding(combined_emb)                  # [num_atoms, sphere_channels]
         x_message_node[:, 0, :] = final_emb
-
 
         if self.include_edges:
             # x_message_edge: [#edges considered, self.sph_feature_size = (l_max+1)**2, self.sphere_channels = E]
@@ -375,7 +373,7 @@ class eSEN_Backbone(nn.Module):
                 dtype=data_dict["pos"].dtype,
             )
             # set l = 0 components to the distance expansion
-            x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"])
+            x_message_edge[:, 0, :] = self.distance_expansion(graph_dict["edge_distance"]) # maybe remove
         else:
             x_message_edge = None
 
@@ -383,9 +381,6 @@ class eSEN_Backbone(nn.Module):
         # source_embedding, target_embedding: [num_edges, self.sphere_channels]
         # x_edge: [num_edges, num gaussian basis functions + 2*self.sphere_channels]
 
-        torch.cuda.nvtx.range_pop() # <--- END
-
-        torch.cuda.nvtx.range_push("Initialize embeddings") # <--- START
 
         edge_distance_embedding = self.distance_expansion(graph_dict["edge_distance"])
 
@@ -397,7 +392,7 @@ class eSEN_Backbone(nn.Module):
             data_dict["atomic_numbers"][graph_dict["edge_index"][1]]
         )
 
-        x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) #+ torch.cat((target_embedding, edge_distance_embedding, source_embedding), dim=1)      # symmetrized
+        x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) 
 
 
         # do edge degree embeddings for both nodes and edges:
@@ -406,9 +401,9 @@ class eSEN_Backbone(nn.Module):
             x_edge,
             graph_dict["edge_distance"],
             graph_dict["edge_index"],
-            graph_dict["forward_edge_mask"],
             wigner_inv,
-            node_or_edge='node'
+            node_or_edge='node',
+            partition=graph_dict["partition"]
         )
 
         if self.include_edges:
@@ -417,64 +412,48 @@ class eSEN_Backbone(nn.Module):
                 x_edge,
                 graph_dict["edge_distance"],
                 graph_dict["edge_index"],
-                graph_dict["forward_edge_mask"],
                 wigner_inv,
-                node_or_edge='edge'
+                node_or_edge='edge',
+                partition=None
             )
 
-        torch.cuda.nvtx.range_pop() # <--- END
 
         ###############################################################
         # Update spherical node embeddings
         ###############################################################
         for i in range(self.num_layers):
 
-            torch.cuda.nvtx.range_push("Node block") # <--- START
-
             x_message_node  = self.node_blocks[i](
                 x_message_node,
                 x_message_edge,
                 x_edge,
-                forward_edges,
                 graph_dict["edge_distance"],
                 graph_dict["edge_index"],
-                graph_dict["forward_edge_mask"],
-                graph_dict["reverse_edge_map"],
                 wigner,
                 wigner_inv,
                 node_or_edge='node',
+                partition=graph_dict["partition"]
             )
-
-            torch.cuda.nvtx.range_pop() # <--- END
-
-            torch.cuda.nvtx.range_push("Edge block") # <--- START
 
             if self.include_edges:
                 x_message_edge = self.edge_blocks[i](
                     x_message_node,
                     x_message_edge,
                     x_edge,
-                    forward_edges,
                     graph_dict["edge_distance"],
                     graph_dict["edge_index"],
-                    graph_dict["forward_edge_mask"],
-                    graph_dict["reverse_edge_map"],
                     wigner,
                     wigner_inv,
                     node_or_edge='edge',
+                    partition=graph_dict["partition"]
                 )
             
-            torch.cuda.nvtx.range_pop() # <--- END
-
-        torch.cuda.nvtx.range_push("Final layer norm") # <--- START
 
         # Final layer norm
         x_message_node = self.norm(x_message_node)
 
         if self.include_edges:
             x_message_edge  = self.norm(x_message_edge)
-
-        torch.cuda.nvtx.range_pop() # <--- END
 
         # Return the output
         if self.include_edges: # all we need for the fock output head
@@ -767,7 +746,6 @@ class Fock_Irreps_Head(nn.Module):
         edge_embeddings = emb["edge_embeddings"]
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
 
-        reverse_edge_map = batch.reverse_edge_map if "reverse_edge_map" in batch else None
         edge_mask = batch.edge_mask if "edge_mask" in batch else None
 
         node_outputs = []
@@ -782,6 +760,7 @@ class Fock_Irreps_Head(nn.Module):
             # using edge_output to infer the total size of the output embeddings
             if self.reduce_node:
                 node_output = self.expand_reduced_node(node_output, edge_output)
+                        
             node_outputs.append(node_output)
             edge_outputs.append(edge_output)
 
@@ -1177,89 +1156,3 @@ class Linear_Force_Head(nn.Module):
         forces = forces.narrow(1, 1, 3)
         forces = forces.view(-1, 3).contiguous()
         return {"forces": forces}
-
-class Convolution_Force_Head(nn.Module):
-    def __init__(self, backbone):
-        super().__init__()
-
-        # self.output_node_block = eSEN_Block(
-        #                                     backbone.sphere_channels,
-        #                                     backbone.hidden_channels,
-        #                                     backbone.lmax,
-        #                                     backbone.mmax,
-        #                                     backbone.mappingReduced,
-        #                                     backbone.SO3_grid,
-        #                                     backbone.edge_channels_list,
-        #                                     backbone.cutoff,
-        #                                     backbone.norm_type,
-        #                                     backbone.act_type,
-        #                                     backbone.mlp_type,
-        #                                 )
-        self.edgewise_forward = True
-        self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
-
-    def forward(self, emb: dict[str, torch.Tensor], batch):
-
-        edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
-        edge_distance = batch.edge_attr
-        edge_mask = batch.edge_mask
-        reverse_edge_map = batch.reverse_edge_map
-
-        # edgewise forward (convolution + edgewise linear + aggregation):
-        # -------------------------------------------------------
-        if self.edgewise_forward:
-            # final_edge_output = self.output_node_block(
-            #         emb["node_embeddings"],
-            #         emb["edge_embeddings"],
-            #         emb["x_edge"],
-            #         edge_distance,
-            #         edge_index,
-            #         edge_mask,
-            #         reverse_edge_map,
-            #         emb["wigner"],
-            #         emb["wigner_inv"],
-            #         node_or_edge='edge',
-            #     )
-            final_edge_output = emb["edge_embeddings"]
-
-            edgewise_forces = self.linear(final_edge_output.narrow(1, 0, 4))
-            edgewise_forces = edgewise_forces.narrow(1, 1, 3)
-
-            # aggregate force components onto nodes:
-            aggregated_forces = torch.zeros(
-                (emb["node_embeddings"].shape[0],) + edgewise_forces.shape[1:],
-                dtype=edgewise_forces.dtype,
-                device=edgewise_forces.device,
-            )
-
-            aggregated_forces.index_add_(0, edge_index[1][edge_mask], edgewise_forces)
-            if (~edge_mask).any():                                              # if we are ignoring half the edges, need to now add the other half
-                    aggregated_forces.index_add_(0, edge_index[0][edge_mask], -1*edgewise_forces)
-
-
-        # nodewise forward (convolution + aggregation):
-        # -------------------------------------------------------
-        else:
-
-            aggregated_forces = self.output_node_block(
-                    emb["node_embeddings"],
-                    emb["edge_embeddings"],
-                    emb["x_edge"],
-                    edge_distance,
-                    edge_index,
-                    edge_mask,
-                    reverse_edge_map,
-                    emb["wigner"],
-                    emb["wigner_inv"],
-                    node_or_edge='node',
-                )
-
-            aggregated_forces = self.linear(aggregated_forces.narrow(1, 0, 4))
-            aggregated_forces = aggregated_forces.narrow(1, 1, 3)
-
-        aggregated_forces = aggregated_forces.view(-1, 3).contiguous()
-
-        # check that the forces are conserved:
-        assert torch.allclose(torch.sum(aggregated_forces), torch.tensor(0.0), atol=1e-8), f"Force conservation check failed! Edge sum: {torch.sum(aggregated_forces)}"
-
-        return {"forces": aggregated_forces}

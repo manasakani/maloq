@@ -108,10 +108,12 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         comm = graph_targets.comm
         atom_mol_id = graph_targets.atom_mol_id
 
+        all_atomic_numbers_list = comm.allgather(graph_targets.atomic_numbers_list)
         all_energies_list = comm.allgather(energy)
         all_charges_list = comm.allgather(charges)
         all_spins_list = comm.allgather(spins)
 
+        global_atomic_numbers = np.array([item for sublist in all_atomic_numbers_list for item in sublist])
         global_energy = np.array([item for sublist in all_energies_list for item in sublist])
         global_charges = np.array([item for sublist in all_charges_list for item in sublist])
         global_spins = np.array([item for sublist in all_spins_list for item in sublist])
@@ -122,7 +124,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             edge_attr=graph_targets.edge_dist_list,
             y=graph_targets.edge_labels_list, 
             node_y=graph_targets.node_labels_list,
-            atomic_numbers=torch.tensor(graph_targets.atomic_numbers_list, dtype=torch.long).cpu(),
+            atomic_numbers=torch.tensor(global_atomic_numbers, dtype=torch.long).cpu(),
             energies=torch.tensor(global_energy[atom_mol_id], dtype=dtype), 
             forces=torch.tensor(0.0, dtype=dtype), # Dummy forces for now
             atom_mol_id=atom_mol_id,
