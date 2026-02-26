@@ -549,7 +549,10 @@ class Fock_Irreps_Head(nn.Module):
         if self.reduce_node:
 
             self.reduced_to_all_indices = get_reduced_to_all_indices(self.ls_list, reduce_node_intra=self.reduce_node_intra)
-            self.parity_multiplier = torch.asarray(get_parity_multiplier(self.ls_list))
+            parity_multiplier = torch.asarray(get_parity_multiplier(self.ls_list, reduce_node_intra=self.reduce_node_intra), dtype=torch.float32)
+
+            # register buffer for parity multiplier so it can be used in the forward pass and is on the correct device/dtype
+            self.register_buffer("parity_multiplier", parity_multiplier)
 
             irreps_nodereduced = []
             irrep_pointer = 0
@@ -1030,6 +1033,9 @@ class Fock_Irreps_Head(nn.Module):
 
         # print("node_output[0]: ", node_output[0])
         # print("expanded_node_output[0]: ", expanded_node_output[0])
+        # print("expanded_node_output_val[0]: ", expanded_node_output_val[0])
+        # print("expanded_node_output[0]: ", expanded_node_output[0])
+        assert torch.allclose(expanded_node_output_val, expanded_node_output), "Error! The expanded node output does not match the expected values based on the reduced node output and parity multipliers!"
         return expanded_node_output
 
 

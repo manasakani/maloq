@@ -1,6 +1,8 @@
 """ Utilities for computing irreps."""
 
 import numpy as np
+# import e3nn
+from e3nn.o3 import Irreps
 
 
 def get_product_ls(l1, l2, kind='all'):
@@ -95,7 +97,7 @@ def get_reduced_to_all_indices(ls_list, reduce_node_intra=False):
                     else:
                         start = reduced_indices[(j, i, l)]
                         # indices.append(all_indices[(j, i, l)])
-                print(f"Adding indices for irrep {(i, j, l)}: start={start}, stop={start+length-1}")
+                # print(f"Adding indices for irrep {(i, j, l)}: start={start}, stop={start+length-1}")
                 indices.extend(range(start, start + length))
     return indices
 
@@ -115,7 +117,7 @@ def get_parity_multiplier(ls_list, reduce_node_intra=False):
                     start = all_indices[(i, j, l)]
                     length = 2 * l + 1
                     parity_multiplier[start:start+length] = [-1] * length
-                    print(f"Flipping parity for irrep {(i, j, l)}: start={start}, stop={start+length-1}")
+                    # print(f"Flipping parity for irrep {(i, j, l)}: start={start}, stop={start+length-1}")
     return parity_multiplier
 
 
