@@ -53,6 +53,8 @@ from .nn.so2_layers import SO2_Convolution
 from .nn.so3_layers import SO3_Linear
 from .nn.activation import GateActivation
 
+from .common.irreps_utils import get_reduced_to_all_indices, get_parity_multiplier
+
 @registry.register_model("esen_backbone")
 class eSEN_Backbone(nn.Module):
     def __init__(
@@ -545,6 +547,10 @@ class Fock_Irreps_Head(nn.Module):
 
         # We make a new list of irreps (irreps_nodereduced) which contains only the unique irreps in the node blocks
         if self.reduce_node:
+
+            self.reduced_to_all_indices = get_reduced_to_all_indices(self.ls_list, reduce_node_intra=self.reduce_node_intra)
+            self.parity_multiplier = torch.asarray(get_parity_multiplier(self.ls_list))
+
             irreps_nodereduced = []
             irrep_pointer = 0
             for i, l1 in enumerate(self.ls_list):
@@ -949,6 +955,9 @@ class Fock_Irreps_Head(nn.Module):
         1. The odd irreps for the orbital self-interactions
         2. The 'lower triangle' of inter-orbital interactions on this node (eg the p-s to s-p)
         """
+
+        expanded_node_output = node_output[:, self.reduced_to_all_indices] * self.parity_multiplier
+        return expanded_node_output
 
         expanded_node_output = torch.zeros(
             (node_output.shape[0],) + edge_output.shape[1:],
