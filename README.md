@@ -11,6 +11,45 @@
 ---
 
 ## 📌 About
-Submission to... 
+**MALOQ** is a scalable, equivariant Graph Neural Network (GNN) framework designed for the rapid prediction of Hamiltonian matrices and quantum operators. By leveraging $SO(3)$ equivariance and efficient message-passing, MALOQ captures complex orbital interactions across diverse chemical spaces.
+
+This repository is the official implementation for our submission to **ICLR 2026**.
 
 ---
+
+## 📊 Supported Datasets
+The model is pre-configured to work with three major Hamitlonian matrix datasets. Ensure you download the datasets and update the `dbpath` in the respective config files.
+
+| Dataset | Type | Config Script | Description |
+| :--- | :--- | :--- | :--- |
+| **QM7** | Small Molecules | `run_QM7.py` | Water and other small molecules. |
+| **nablaDFT** | DFT Benchmarks | `run_nablaDFT.py` | Druglike molecules with 30-50 atoms each, containing a few heavy atoms |
+| **Omol_CSH_58k** | Large Scale | `run_omol_csh.py` | 58k samples focused on large molecules (10-150 atoms) and complex orbital systems. |
+
+---
+
+## Getting Started
+
+### 1. Installation
+Clone the repository and install the required dependencies (see requirements.txt).
+
+git clone [https://github.com/your-username/maloq.git](https://github.com/your-username/maloq.git)
+cd maloq
+pip install -r requirements.txt
+
+### 2. Running training/evals
+
+Full config for train/evals are each each of the three config files below, which can be excuted as:
+
+# QM7 Water
+python run_QM7.py
+
+# nablaDFT
+python run_nablaDFT.py
+
+# Omol_CSH_58k
+python run_omol_csh.py
+
+### 3. Using the trained checkpoints to compute Hamiltonians/electron densities of new atomic structures
+
+Please see run_trajectory.py for an example of how to do this.
