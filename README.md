@@ -30,26 +30,10 @@ The model is pre-configured to work with three major Hamitlonian matrix datasets
 
 ## Getting Started
 
-### 1. Installation
 Clone the repository and install the required dependencies (see requirements.txt).
 
 git clone [https://github.com/your-username/maloq.git](https://github.com/your-username/maloq.git)
 cd maloq
 pip install -r requirements.txt
 
-### 2. Running training/evals
-
-Full config for train/evals are each each of the three config files below, which can be excuted as:
-
-# QM7 Water
-python run_QM7.py
-
-# nablaDFT
-python run_nablaDFT.py
-
-# Omol_CSH_58k
-python run_omol_csh.py
-
-### 3. Using the trained checkpoints to compute Hamiltonians/electron densities of new atomic structures
-
-Please see run_trajectory.py for an example of how to do this.
+python run_QM7.py or python run_nablaDFT.py or python run_omol_csh.py
