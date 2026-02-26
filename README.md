@@ -13,7 +13,7 @@
 ## 📌 About
 **MALOQ** is a scalable, equivariant Graph Neural Network (GNN) framework designed for the rapid prediction of Hamiltonian matrices and quantum operators. By leveraging $SO(2)$-equivariant kernels, symmetry reductions, and efficient data processing pipelines, MALOQ learns structure-property mappings to complex orbital interactions across diverse chemical spaces.
 
-This repository is the official implementation for our submission to **ICLR 2026**.
+This repository is the official implementation for our paper at **ICLR 2026** and upcoming submission to **SC26**
 
 ---
 

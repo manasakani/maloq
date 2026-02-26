@@ -19,11 +19,11 @@ config = {
     "train_head": True,              # Set to False to freeze the head
     
     # Data Splitting
-    "num_train": 1,
-    "num_val": 1,
-    "num_test": 1,
+    "num_train": 2,
+    "num_val": 2,
+    "num_test": 2,
     "batch_size": 10,          # 1 for eval, 10 for train (set to 1 for water script)
-    "distribute_graphs": False,       # Distribute graphs and perform communication in the forward pass (ongoing implementation, not finished)
+    "distribute_graphs": True,       # Distribute graphs and perform communication in the forward pass (ongoing implementation, not finished)
     
     # Symmetry Reductions
     "reduce_edge": False,
