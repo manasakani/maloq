@@ -21,10 +21,9 @@ class _global_nccl_comm():
 
 comm_nccl = _global_nccl_comm()
 
-def exchange_nodes(embedding, edge_index, communication_dict, comm, rank, world_size):
+def exchange_nodes(embedding, num_edges, communication_dict, comm, rank, world_size):
     """
-    Exchange node embeddings between different processes using NCCL backend, according to communication_dict,
-    and aggregate them into the provided buffer.
+    Exchange node embeddings between different processes using NCCL backend, according to communication_dict.
     """
 
     dist.barrier()
@@ -44,17 +43,28 @@ def exchange_nodes(embedding, edge_index, communication_dict, comm, rank, world_
     
     # Get precomputed communication plan
     is_local = communication_dict['is_local']
-    is_remote = expand_edge_dict['is_remote']
+    is_remote = communication_dict['is_remote']
     local_indices = communication_dict['local_indices']
+    local_indices_torch = communication_dict['local_indices_torch']
     remote_indices = communication_dict['remote_indices']
+    remote_indices_torch = communication_dict['remote_indices_torch']
     nodes_to_send = communication_dict['nodes_to_send']                
     indices_to_send = communication_dict['indices_to_send']            
     indices_to_send_cp = communication_dict['indices_to_send_cp']  
     nodes_to_recv = communication_dict['nodes_to_recv']           
     
-    dist.barrier()
-    print(f"Rank {rank}: local indices: {local_indices}, remote indices: {remote_indices}", flush=True)
-    dist.barrier()
+    # dist.barrier()
+    # print(f"Rank {rank}: local indices: {local_indices}, remote indices: {remote_indices}", flush=True)
+    # print(f"Rank {rank}: is local: {is_local}, is remote: {is_remote}", flush=True)
+    # dist.barrier()
+
+    # dist.barrier()
+    # print(f"Rank {rank}: nodes to send: ", nodes_to_send, flush=True)
+    # dist.barrier()
+
+    # dist.barrier()
+    # print(f"Rank {rank}: nodes to receive: ", nodes_to_recv, flush=True)
+    # dist.barrier()
 
     # dist.barrier()
     # print(f"Rank {rank}: messages to send: ", {k: len(v) for k, v in messages_to_send.items()}, flush=True)
@@ -111,54 +121,30 @@ def exchange_nodes(embedding, edge_index, communication_dict, comm, rank, world_
             # NOTE: This is a blocking operation and such no overlap currently
 
             dist.barrier()
-            print(f"Rank {rank}: Finished communication of embeddings. Starting aggregation.", flush=True)
+            print(f"Rank {rank}: Finished communication of embeddings.", flush=True)
             dist.barrier()
 
         # --> Slot in the local embeddings 
-        edge_embeddings = torch.empty((len(edge_index), embedding.shape[1], embedding.shape[2]), device=self.device)
+        edge_embeddings = torch.empty((num_edges, embedding.shape[1], embedding.shape[2]), device=embedding.device, dtype=embedding.dtype)
 
-    edge_embeddings[is_local] = self.embedding[local_indices_torch]
+    edge_embeddings[is_local] = embedding[local_indices_torch]
     cp.cuda.runtime.deviceSynchronize()
+
+    # dist.barrier()
+    # print(f"Rank {rank}: Finished slotting in local embeddings.", flush=True)
+    # dist.barrier()
 
     if num_nodes_to_recv:
         with torch.no_grad():
-            received_embeddings = from_dlpack(self.recv_bufs.toDlpack()).reshape(num_nodes_to_recv, self.num_coefficients, self.num_channels)
+            received_embeddings = from_dlpack(recv_bufs.toDlpack()).reshape(num_nodes_to_recv, num_coefficients, num_channels)
         
         edge_embeddings[is_remote] = received_embeddings[remote_indices_torch]    # needs gradients
     
-
-
-    # # --> aggregate the local embeddings while waiting for comm
-    # if local_indices.numel() > 0:
-    #     buffer.index_add_(0, local_indices, embedding[is_local])
-
     # dist.barrier()
-    # print(f"Rank {rank}: Finished local aggregation of embeddings. Starting remote aggregation.", flush=True)
+    # print(f"Rank {rank}: Finished slotting in remote embeddings.", flush=True)
     # dist.barrier()
-
-    # if num_nodes_to_recv:
-
-    #     with torch.no_grad():
-    #         received_embeddings = recv_bufs.reshape(num_nodes_to_recv, num_coefficients, num_channels)
-    #         received_embeddings = torch.tensor(received_embeddings, device=embedding.device)
-        
-    #     dist.barrier()
-    #     print("size of recieved embeddings: ", received_embeddings.shape, flush=True)
-    #     print("sample of recieved embeddings: ", received_embeddings[0, 0, :10], flush=True)
-    #     print("size of buffer before remote aggregation: ", buffer.shape, flush=True)
-    #     dist.barrier()
-
-    #     # --> aggregate the remote embeddings recieved
-    #     # REMOTE INDICES HERE IS INCORRECT
-    #     remote_indices = torch.tensor([0, 0], device='cuda:0')
-    #     buffer.index_add_(0, remote_indices, received_embeddings)
-
-    #     dist.barrier()
-    #     print("sample of buffer after remote aggregation: ", buffer[0, 0, :10], flush=True)
-    #     dist.barrier()
-
-    print(f"Rank {rank}: Finished communication of embeddings.", flush=True)
-    return buffer
+    
+    return edge_embeddings
 
 def flatten_embedding(embedding):
     """
