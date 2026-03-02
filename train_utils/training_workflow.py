@@ -237,7 +237,8 @@ class TrainingWorkflow:
             act_type='gate', mlp_type='spectral', 
             num_distance_basis=c['num_distance_basis'],
             gaussian_width=c['gaussian_width'], include_edges=c['include_edges'],
-            open_shell=c['open_shell']
+            open_shell=c['open_shell'],
+            wigner_backend=c.get('wigner_backend', 'torch'),
         ).to(self.device)
 
         # 2. Head

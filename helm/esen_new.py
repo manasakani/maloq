@@ -77,9 +77,14 @@ class eSEN_Backbone(nn.Module):
         act_type: str = "gate",
         mlp_type: str = "spectral",
         gaussian_width = 1.0,
-        include_edges=True
+        include_edges=True,
+        wigner_backend: str = "torch",
     ):
         super().__init__()
+
+        assert wigner_backend in ("torch", "triton"), \
+            f"wigner_backend must be 'torch' or 'triton', got '{wigner_backend}'"
+        self.wigner_backend = wigner_backend
 
         if not include_edges:
             print("Note: Initializing eSEN backbone without edge_embeddings!")
@@ -228,13 +233,19 @@ class eSEN_Backbone(nn.Module):
             for l in range(self.lmax + 1)
         ]
 
-        euler_angles = init_edge_rot_euler_angles(edge_distance_vecs)
-        wigner = eulers_to_wigner(
-            euler_angles,
-            0,
-            self.lmax,
-            Jd_buffers,
-        )
+        if self.wigner_backend == "triton":
+            from .triton_kernels import edge_vec_to_wigner_fused
+            wigner = edge_vec_to_wigner_fused(
+                edge_distance_vecs, Jd_buffers, lmax=self.lmax,
+            )
+        else:
+            euler_angles = init_edge_rot_euler_angles(edge_distance_vecs)
+            wigner = eulers_to_wigner(
+                euler_angles,
+                0,
+                self.lmax,
+                Jd_buffers,
+            )
         wigner_inv = torch.transpose(wigner, 1, 2).contiguous()
 
         return wigner, wigner_inv
@@ -351,6 +362,7 @@ class eSEN_Backbone(nn.Module):
                 wigner_inv,
                 node_or_edge='edge'
             )
+
 
         ###############################################################
         # Update spherical node embeddings

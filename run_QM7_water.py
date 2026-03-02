@@ -57,6 +57,7 @@ config = {
     "compute_total_energy": False,
 
     # Model Architecture
+    "wigner_backend": "torch",  # "triton" for fused Triton kernel (requires GPU + triton)
     "l_embedding_dim": 128,
     "num_distance_basis": 128,
     "num_mp_layers": 3,
