@@ -1,21 +1,22 @@
 #!/bin/bash -l
-#SBATCH --job-name=icv
-#SBATCH --account=lp82
-#SBATCH --time=03:00:00
+#SBATCH --job-name=test
+#SBATCH --account=lp16
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-core=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=18
-#SBATCH --partition=normal
+#SBATCH --ntasks-per-node=3
+#SBATCH --gres=gpu:3
+#SBATCH --cpus-per-task=12
+#SBATCH --partition=debug
 #SBATCH --hint=nomultithread
 #   SBATCH --hint=exclusive
-#SBATCH --output=outputs_full/output_%j.txt
+#SBATCH --output=outputs_slurm/output_%j.txt
 #SBATCH --error=error_file.err 
 
 # srun --account=lp82 --gres=gpu:1 --time=00:30:00 --partition=debug --pty bash
 
 # START ENVIRONMENT SETUP
 uenv start --view=modules prgenv-gnu/24.11:v1 
+# uenv start pytorch/v2.6.0:v1 --view=default
 
 module load cuda
 module load gcc
@@ -49,5 +50,18 @@ source /users/mkanisel/miniconda3/bin/activate helm_env
 
 # Profile: nsys profile -o my_profile_report --trace=cuda,nvtx python run_nablaDFT.py
 
+# --> Dataset creation
+# python make_omol_database_densitymat.py -f /capstor/scratch/cscs/mkanisel/omol_electrolytes_unsolvated -o omol_electrolytes_10k.db --start_idx 0 --end_idx 10000 --job_id 0
+
+# --> Training/Eval
+# srun --cpu-bind=socket bash -c 'export MPICH_GPU_SUPPORT_ENABLED=1; export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID;
+# python run_omol_elytes_unsolvated.py'
+
+# srun --cpu-bind=socket bash -c 'export MPICH_GPU_SUPPORT_ENABLED=1; export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID;
+# python run_omol_elytes_redox.py'
+
+# srun --cpu-bind=socket bash -c 'export MPICH_GPU_SUPPORT_ENABLED=1; export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID;
+# python run_nablaDFT.py'
+
 srun --cpu-bind=socket bash -c 'export MPICH_GPU_SUPPORT_ENABLED=1; export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID;
-python run_QM7_water.py'
+python run_QM7.py'

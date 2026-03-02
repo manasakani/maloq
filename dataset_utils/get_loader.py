@@ -10,7 +10,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
 import torch.distributed as dist
 
-def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, half_edges=True, make_fock_targets=True, scale_shift_data=None, is_open_shell=False, loss_target_string='fock_matrix'):
+def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, half_edges=True, make_fock_targets=True, scale_shift_data=None, is_open_shell=False, loss_target_string='fock_matrix', distribute_graphs=False):
     """
     Make dataloader with the given indices of the mocules in the input database
     Currently set up for three datasets: QM7, nablaDFT, omol. Need to modify for others.
@@ -18,8 +18,6 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     num_molecules_to_process = end_idx - start_idx
-
-    datalist = []
 
     if dataset_name == "QM7":
 
@@ -88,7 +86,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         spins = [database[i]['spin_multiplicity'] for i in range(start_idx, end_idx)]
 
         hamiltonians = [database[i][loss_target_string] for i in range(start_idx, end_idx)]
-        overlaps = [0 for i in range(start_idx, end_idx)]
+        overlaps = [0 for i in range(start_idx, end_idx)] # dummy overlaps for now!!!
 
     else:
         raise ValueError("Unknown database!")
@@ -99,50 +97,89 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         graph_targets = fock_targets_batched.Fock_Targets(atomic_numbers, positions, rcut, orbital_basis, hamiltonians, 
                                                             dtype=dtype, 
                                                             dataset_name=dataset_name,
-                                                            scale_shift_data=scale_shift_data)
+                                                            scale_shift_data=scale_shift_data,
+                                                            distribute_graphs=distribute_graphs)
 
-    # Add the molecules into the dataloader
-    for i in range(num_molecules_to_process):
+    datalist = []
 
-        if is_open_shell:
-            assert graph_targets.node_labels_list[i].shape[0] == 2, "Open shell requested, but did not find two spins!"
+    # If we are distributing, we collapse all loaded data into 1 single Graph object
+    if distribute_graphs:
 
-        # 3. Make the data object
-        if not is_open_shell:
-            data = gnnData(
-                        pos=torch.tensor(graph_targets.atomic_positions_list[i], dtype=dtype),
-                        edge_index=torch.tensor(graph_targets.neighbour_list_list[i]),
-                        edge_attr=graph_targets.edge_dist_list[i],
-                        y=graph_targets.edge_labels_list[i][0],
-                        node_y=graph_targets.node_labels_list[i][0],
-                        atomic_numbers=torch.tensor(graph_targets.atomic_numbers_list[i], dtype=torch.long).cpu(),
-                        energies=torch.tensor(energy[i], dtype=dtype),
-                        forces=torch.tensor(forces[i], dtype=dtype),                                      # Hartree/Angstrom
-                        num_atoms_in_molecule=len(graph_targets.atomic_numbers_list[i]),
-                        fock_target_object=graph_targets,
-                        overlap_matrix=torch.tensor(overlaps[i], dtype=dtype) if make_fock_targets else None,
-                        charge=charges[i],
-                        spin_multiplicity=spins[i],
-                    )
-        else:
-            data = gnnData(
-                        pos=torch.tensor(graph_targets.atomic_positions_list[i], dtype=dtype),
-                        edge_index=torch.tensor(graph_targets.neighbour_list_list[i]),
-                        edge_attr=graph_targets.edge_dist_list[i],
-                        y_alpha=graph_targets.edge_labels_list[i][0],
-                        y_beta=graph_targets.edge_labels_list[i][1],
-                        node_y_alpha=graph_targets.node_labels_list[i][0],
-                        node_y_beta=graph_targets.node_labels_list[i][1],
-                        atomic_numbers=torch.tensor(graph_targets.atomic_numbers_list[i], dtype=torch.long).cpu(),
-                        energies=torch.tensor(energy[i], dtype=dtype),
-                        forces=torch.tensor(forces[i], dtype=dtype),                                      # Hartree/Angstrom
-                        num_atoms_in_molecule=len(graph_targets.atomic_numbers_list[i]),
-                        fock_target_object=graph_targets,
-                        overlap_matrix=torch.tensor(overlaps[i], dtype=dtype) if make_fock_targets else None,
-                        charge=charges[i],
-                        spin_multiplicity=spins[i],
-                    )
+        comm = graph_targets.comm
+        atom_mol_id = graph_targets.atom_mol_id
+
+        all_atomic_numbers_list = comm.allgather(graph_targets.atomic_numbers_list)
+        all_energies_list = comm.allgather(energy)
+        all_charges_list = comm.allgather(charges)
+        all_spins_list = comm.allgather(spins)
+
+        global_atomic_numbers = np.array([item for sublist in all_atomic_numbers_list for item in sublist])
+        global_energy = np.array([item for sublist in all_energies_list for item in sublist])
+        global_charges = np.array([item for sublist in all_charges_list for item in sublist])
+        global_spins = np.array([item for sublist in all_spins_list for item in sublist])
+        
+        data = gnnData(
+            pos=torch.tensor(graph_targets.atomic_positions_list, dtype=dtype),
+            edge_index=torch.tensor(graph_targets.neighbour_list_list),
+            edge_attr=graph_targets.edge_dist_list,
+            y=graph_targets.edge_labels_list, 
+            node_y=graph_targets.node_labels_list,
+            atomic_numbers=torch.tensor(global_atomic_numbers, dtype=torch.long).cpu(),
+            energies=torch.tensor(global_energy[atom_mol_id], dtype=dtype), 
+            forces=torch.tensor(0.0, dtype=dtype), # Dummy forces for now
+            atom_mol_id=atom_mol_id,
+            fock_target_object=graph_targets,
+            overlap_matrix=None, 
+            charge=torch.tensor(global_charges[atom_mol_id], dtype=torch.long),
+            spin_multiplicity=torch.tensor(global_spins[atom_mol_id], dtype=torch.long), 
+            distributed_graph_training=distribute_graphs,
+        )
         datalist.append(data)
+    
+    else:
+
+        # Add the molecules into the dataloader
+        for i in range(num_molecules_to_process):
+
+            if is_open_shell:
+                assert graph_targets.node_labels_list[i].shape[0] == 2, "Open shell requested, but did not find two spins!"
+
+            # 3. Make the data object
+            if not is_open_shell:
+                data = gnnData(
+                            pos=torch.tensor(graph_targets.atomic_positions_list[i], dtype=dtype),
+                            edge_index=torch.tensor(graph_targets.neighbour_list_list[i]),
+                            edge_attr=graph_targets.edge_dist_list[i],
+                            y=graph_targets.edge_labels_list[i][0],
+                            node_y=graph_targets.node_labels_list[i][0],
+                            atomic_numbers=torch.tensor(graph_targets.atomic_numbers_list[i], dtype=torch.long).cpu(),
+                            energies=torch.tensor(energy[i], dtype=dtype),
+                            forces=torch.tensor(forces[i], dtype=dtype),                                      # Hartree/Angstrom
+                            num_atoms_in_molecule=len(graph_targets.atomic_numbers_list[i]),
+                            fock_target_object=graph_targets,
+                            overlap_matrix=torch.tensor(overlaps[i], dtype=dtype) if make_fock_targets else None,
+                            charge=charges[i],
+                            spin_multiplicity=spins[i],
+                        )
+            else:
+                data = gnnData(
+                            pos=torch.tensor(graph_targets.atomic_positions_list[i], dtype=dtype),
+                            edge_index=torch.tensor(graph_targets.neighbour_list_list[i]),
+                            edge_attr=graph_targets.edge_dist_list[i],
+                            y_alpha=graph_targets.edge_labels_list[i][0],
+                            y_beta=graph_targets.edge_labels_list[i][1],
+                            node_y_alpha=graph_targets.node_labels_list[i][0],
+                            node_y_beta=graph_targets.node_labels_list[i][1],
+                            atomic_numbers=torch.tensor(graph_targets.atomic_numbers_list[i], dtype=torch.long).cpu(),
+                            energies=torch.tensor(energy[i], dtype=dtype),
+                            forces=torch.tensor(forces[i], dtype=dtype),                                      # Hartree/Angstrom
+                            num_atoms_in_molecule=len(graph_targets.atomic_numbers_list[i]),
+                            fock_target_object=graph_targets,
+                            overlap_matrix=torch.tensor(overlaps[i], dtype=dtype) if make_fock_targets else None,
+                            charge=charges[i],
+                            spin_multiplicity=spins[i],
+                        )
+            datalist.append(data)
 
     orbital_basis = {k: torch.tensor(v) for k, v in graph_targets.orbital_basis.items()}
 
@@ -150,6 +187,10 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     required_irreps = graph_targets.req_output_irreps
     basis_transform = graph_targets.basis_transformation
     orbital_starts = graph_targets.orbital_starts
+
+    # when distributing graphs, we want to have one batch with all the graphs on each rank
+    if distribute_graphs:
+        batch_size = len(datalist)
 
     dataset = sampleDataset(datalist)
     data_loader = DataLoader(dataset, batch_size=batch_size)

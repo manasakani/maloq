@@ -12,7 +12,8 @@ import copy
 import torch
 
 from .radial import PolynomialEnvelope, RadialMLP
-
+import torch.distributed as dist
+from mpi4py import MPI
 
 class EdgeDegreeEmbedding(torch.nn.Module):
     """
@@ -54,6 +55,10 @@ class EdgeDegreeEmbedding(torch.nn.Module):
         self.mmax = mmax
         self.mappingReduced = mappingReduced
 
+        self.rank = dist.get_rank()
+        self.world_size = dist.get_world_size()
+        self.comm = MPI.COMM_WORLD
+
         self.m_0_num_coefficients: int = self.mappingReduced.m_size[0]
         self.m_all_num_coefficents: int = len(self.mappingReduced.l_harmonic)
 
@@ -76,9 +81,9 @@ class EdgeDegreeEmbedding(torch.nn.Module):
         x_edge,
         edge_distance,
         edge_index,
-        forward_edge_mask,
         wigner_inv,
-        node_or_edge='node'
+        node_or_edge='node',
+        partition=None
     ):
         # adds stuff to all the m=0s in all the ls
 
@@ -108,9 +113,24 @@ class EdgeDegreeEmbedding(torch.nn.Module):
 
             x_edge_embedding = x_edge_embedding.to(x.dtype)
 
-            x.index_add_(
-                0, edge_index[1], x_edge_embedding / self.rescale_factor
-            )
+            # Check if we need to communicate between partitions to collect embeddings for aggregation
+            if partition:
+
+                reduce_edge_dict = partition.reduce_edge
+                is_local = reduce_edge_dict['is_local']
+                local_indices = reduce_edge_dict['local_indices']
+
+                x.index_add_(0, local_indices, x_edge_embedding[is_local]/self.rescale_factor)
+
+                # Need to switch src/dst edges for the distributed implementation!!! Above is equivalent to:
+                # x.index_add_(
+                #     0, edge_index[0], x_edge_embedding / self.rescale_factor
+                # )
+
+            else:
+                x.index_add_(
+                    0, edge_index[1], x_edge_embedding / self.rescale_factor
+                )
 
             return x
         else:
