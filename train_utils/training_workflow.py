@@ -104,7 +104,6 @@ class TrainingWorkflow:
                 N_global_train=c['num_train'],
                 N_global_val=c['num_val']
             )
-            print("train_data_dict:", train_data_dict)
 
             # --- 2. Load Training Segments ---
             train_datasets = []
@@ -187,6 +186,15 @@ class TrainingWorkflow:
                 scale_shift_data=scale_shift_data,
                 distribute_graphs=c['distribute_graphs']
             )
+
+            dist.barrier()
+            for i in range(self.world_size):
+                if self.rank == i:
+                    for batch in train_loader:
+                        num_atoms = batch['node_y_alpha'].shape[1] if c['open_shell'] else batch['node_y'].shape[1]
+                        num_edges = batch['y_alpha'].shape[1] if c['open_shell'] else batch['y'].shape[1]
+                        print(f"Rank {self.rank}: Train batch - Num atoms: {num_atoms}, Num edges: {num_edges}", flush=True)
+                dist.barrier()
             
             val_loader, *_ = get_loader.get_loader(
                 database=val_database,
@@ -241,6 +249,7 @@ class TrainingWorkflow:
             gaussian_width=c['gaussian_width'], include_edges=c['include_edges'],
             open_shell=c['open_shell'],
             wigner_backend=c.get('wigner_backend', 'torch'),
+            distributed_graph_training=c['distribute_graphs']
         ).to(self.device)
 
         # 2. Head
@@ -255,7 +264,13 @@ class TrainingWorkflow:
                 reduce_node_intra=c['reduce_node_intra'], orbital_basis=orb_basis
             )
         elif c['loss_target'] == "forces":
+            print("Integrate other head models into the refactored version!")
+            exit()
             head = Linear_Force_Head(backbone)
+            
+        elif c['loss_target'] == "energy":
+            print("Energy head not implemented in refactored version yet!")
+            exit()
         
         head = head.to(self.device)
 

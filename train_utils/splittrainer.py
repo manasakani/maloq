@@ -20,14 +20,6 @@ from pyscf import gto, scf
 import re
 import cupy as cp
 
-# note: removing amp to get better precision for now
-def disable_amp(func):
-    def wrapper(*args, **kwargs):
-        print("Disabling torch amp")
-        with torch.cuda.amp.autocast(enabled=False):
-            return func(*args, **kwargs)
-    return wrapper
-
 def get_timestamp_uid() -> str:
     return datetime.datetime.now().strftime("%Y%m-%d%H-%M%S-") + str(uuid4())[:4]
 
@@ -134,9 +126,11 @@ class SplitTrainer():
                 forward_start = time.perf_counter()
                 batch = batch.to(device)
 
+                torch.cuda.synchronize()
                 backbone_start = time.perf_counter()
                 backbone_out = self.backbone(batch)
                 backbone_end = time.perf_counter()
+                torch.cuda.synchronize()
 
                 if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                     node_output, edge_output = self.head(backbone_out, batch)
@@ -151,11 +145,11 @@ class SplitTrainer():
 
                     loss_start = time.perf_counter()
                     loss_node, loss_edge, loss = self.compute_fock_loss(
-                        node_output, edge_output,
-                        this_node_target, this_edge_target,
-                        loss_fxn, self.head_irreps,
-                        basis_transform, compute_uncoupled_loss
-                    )
+                                                                            node_output, edge_output,
+                                                                            this_node_target, this_edge_target,
+                                                                            loss_fxn, self.head_irreps,
+                                                                            basis_transform, compute_uncoupled_loss
+                                                                        )
                     train_loss_node += loss_node.item()
                     train_loss_edge += loss_edge.item()
                     loss_end = time.perf_counter()
@@ -164,7 +158,7 @@ class SplitTrainer():
                         current_mem = torch.cuda.memory_allocated() / (1024 * 1024)
                         peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024)
                         print(f"Current: {current_mem:.2f} MB, Peak: {peak_mem:.2f} MB")
-                        print(f"Backbone time: {backbone_end - backbone_start:.4f}s, Head time: {head_end - backbone_end:.4f}s, Loss time: {loss_end - loss_start:.4f}s", flush=True)
+                    print(f"Rank {rank} Backbone time: {backbone_end - backbone_start:.4f}s, Head time: {head_end - backbone_end:.4f}s, Loss time: {loss_end - loss_start:.4f}s", flush=True)
 
                 elif loss_target_string == 'forces':
                     node_output = self.head(backbone_out, batch)
@@ -190,10 +184,12 @@ class SplitTrainer():
                 forward_end = time.perf_counter()
 
                 # -- Backwards --
+                torch.cuda.synchronize()
                 backward_start = time.perf_counter()
                 loss.backward()
                 optimizer.step()
                 backward_end = time.perf_counter()
+                torch.cuda.synchronize()
 
                 # -- Scheduler --
                 if not step_every_epoch:
@@ -309,7 +305,7 @@ class SplitTrainer():
                     print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)
                 else:
                     print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]}", flush=True)
-                print(torch.cuda.memory.memory_summary(), flush=True)
+                # print(torch.cuda.memory.memory_summary(), flush=True)
 
             if dist.is_initialized():
                 val_loss_tensor = torch.tensor(val_loss, device=device)

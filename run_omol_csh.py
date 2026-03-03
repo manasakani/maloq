@@ -21,20 +21,21 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    "num_train": 8000,#28900,
+    "num_train": 32, #28900,
     "num_val": 32,
     "num_test": 1,
     "batch_size": 1,                 # 1 for eval, usually 10 for train
-    
+    "distribute_graphs": True,       # Distribute graphs and perform communication in the forward pass (ongoing)
+
     # Symmetry Reductions 
     "reduce_edge": False,            # Unused!
-    "reduce_node": True,             # Enforce inter-orbital interactions equal
-    "reduce_node_intra": True,       # Enforce 0 odd degrees for intra-orbital
+    "reduce_node": False,             # Enforce inter-orbital interactions equal
+    "reduce_node_intra": False,       # Enforce 0 odd degrees for intra-orbital
     
     # Training Hyperparameters
     "num_epochs": 100,
     "dtype": torch.float32,          # nablaDFT often uses float64 - 32 here for cupy kernel
-    "lr_init": 1e-4,
+    "lr_init": 1e-3,
     "optimizer_type": "adam",        # standard Adam
     "weight_decay": 0.0,
     "scheduler_type": 'cosine',      # 'plateau' or 'cosine'
@@ -47,7 +48,7 @@ config = {
     "loss_target": 'fock_matrix',
     "train_loss_fxn": loss.rmse_mse_padded_loss,
     "test_loss_fxn": loss.l1_unpadded_loss,
-    "save_frequency": 1,
+    "save_frequency": 20,
     "restart_backbone": False,       # Restart options
     "restart_head": False,
     "restart_optimizer": False,      
@@ -59,7 +60,7 @@ config = {
     "l_embedding_dim": 128,
     "num_distance_basis": 128,
     "num_mp_layers": 3,
-    "rcut_orbitals": 5.0,
+    "rcut_orbitals": 6.0,
     "rcut_gaussian": 12.0,           # 2 * rcut_orbitals
     "gaussian_width": 1.0,
     "include_edges": True,           # Based on fock_matrix target

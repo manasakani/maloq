@@ -85,6 +85,7 @@ class eSEN_Backbone(nn.Module):
         include_edges=True,
         open_shell=False,
         wigner_backend: str = "torch",
+        distributed_graph_training=False
     ):
         super().__init__()
 
@@ -187,20 +188,21 @@ class eSEN_Backbone(nn.Module):
             self.edge_channels,
         ]
 
-
-        self.edge_degree_embedding = EdgeDegreeEmbedding(
-                sphere_channels=self.sphere_channels,
-                lmax=self.lmax,
-                mmax=self.mmax,
-                max_num_elements=self.max_num_elements,
-                edge_channels_list=self.edge_channels_list,
-                rescale_factor=5.0,
-                cutoff=self.cutoff,
-                mappingReduced=self.mappingReduced,
-                out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
-                    self.lmax, self.mmax
-                )
-            )
+        # TEMPORARY: edge degree embedding is currently not compatible with distributed graph training, skipping it for now!
+        # if not distributed_graph_training:
+        #     self.edge_degree_embedding = EdgeDegreeEmbedding(
+        #             sphere_channels=self.sphere_channels,
+        #             lmax=self.lmax,
+        #             mmax=self.mmax,
+        #             max_num_elements=self.max_num_elements,
+        #             edge_channels_list=self.edge_channels_list,
+        #             rescale_factor=5.0,
+        #             cutoff=self.cutoff,
+        #             mappingReduced=self.mappingReduced,
+        #             out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
+        #                 self.lmax, self.mmax
+        #             )
+        #         )
 
         self.num_layers = num_layers
         self.hidden_channels = hidden_channels
@@ -409,27 +411,30 @@ class eSEN_Backbone(nn.Module):
 
 
         # do edge degree embeddings for both nodes and edges:
-        x_message_node = self.edge_degree_embedding( 
-            x_message_node,
-            x_edge,
-            graph_dict["edge_distance"],
-            graph_dict["edge_index"],
-            wigner_inv,
-            node_or_edge='node',
-            partition=graph_dict["partition"]
-        )
+        # need to redo src/target nn mapping in the distributed graph before using this!!
+        # if graph_dict["partition"] is None:
+        #     x_message_node = self.edge_degree_embedding( 
+        #         x_message_node,
+        #         x_edge,
+        #         graph_dict["edge_distance"],
+        #         graph_dict["edge_index"],
+        #         wigner_inv,
+        #         node_or_edge='node',
+        #         partition=graph_dict["partition"]
+        #     )
 
-        if self.include_edges:
-            x_message_edge = self.edge_degree_embedding(
-                x_message_node,
-                x_edge,
-                graph_dict["edge_distance"],
-                graph_dict["edge_index"],
-                wigner_inv,
-                node_or_edge='edge',
-                partition=None
-            )
-
+        #     if self.include_edges:
+        #         x_message_edge = self.edge_degree_embedding(
+        #             x_message_node,
+        #             x_edge,
+        #             graph_dict["edge_distance"],
+        #             graph_dict["edge_index"],
+        #             wigner_inv,
+        #             node_or_edge='edge',
+        #             partition=None
+        #         )
+        # else:
+        #     print("Warning: edge degree embedding is currently not compatible with distributed graph training, skipping it for now!", flush=True)
 
         ###############################################################
         # Update spherical node embeddings
@@ -971,82 +976,6 @@ class Fock_Irreps_Head(nn.Module):
         """
 
         expanded_node_output = node_output[:, self.reduced_to_all_indices] * self.parity_multiplier
-        return expanded_node_output
-
-        expanded_node_output = torch.zeros(
-            (node_output.shape[0],) + edge_output.shape[1:],
-            dtype=node_output.dtype,
-            device=node_output.device,
-        )
-
-        output_irrep_p = 0                # pointer to track the irreps in irreps_out (from 0 to len(self.irreps_out)
-        reduced_irrep_p = 0               # pointer to track the irreps in reduced_irreps
-
-        for i, l1 in enumerate(self.ls_list):
-            for j, l2 in enumerate(self.ls_list):
-
-                # if it's an orbital self-interaction, need to slot in only the even irrep components
-                if i == j and l1 == l2 and self.reduce_node_intra:
-
-                    even_irreps = self.get_product_irreps(l1, l2, 'even')
-                    even_irreps_len = sum([2*l + 1 for l in even_irreps.ls])
-                    odd_irreps = self.get_product_irreps(l1, l2, 'odd')
-                    combined_irreps = Irreps(even_irreps + odd_irreps)
-
-                    # Extract even irreps:
-                    local_p_output = 0
-                    local_p_reduced = 0
-                    for even_l in even_irreps.ls:
-                        this_irrep_len = 2 * even_l + 1
-                        expanded_node_output[:, output_irrep_p+local_p_output:output_irrep_p+local_p_output+this_irrep_len] = node_output[:, reduced_irrep_p+local_p_reduced:reduced_irrep_p+local_p_reduced+this_irrep_len]
-
-                        # move start positions to the next even irrep
-                        local_p_output += this_irrep_len
-                        local_p_output += 2 * (even_l+1) + 1
-                        local_p_reduced += this_irrep_len
-
-                    # update output_irrep_pointer with combined_irreps size
-                    output_irrep_p += sum([2*l + 1 for l in combined_irreps.ls])
-
-                    # update reduced_irrep_pointer with even_irreps size
-                    reduced_irrep_p += sum([2*l + 1 for l in even_irreps.ls])
-
-                # if it's a forward edge, copy the next irreps directly from node_output
-                if i < j or (i == j and l1 == l2 and not self.reduce_node_intra):
-                    these_irreps = self.get_product_irreps(l1, l2)
-                    irreps_len = sum([2*l + 1 for l in these_irreps.ls])
-                    expanded_node_output[:, output_irrep_p:output_irrep_p + irreps_len] = node_output[:, reduced_irrep_p:reduced_irrep_p + irreps_len]
-
-                    output_irrep_p += irreps_len
-                    reduced_irrep_p += irreps_len
-
-                # if it's a backward edge, copy the corresponding forward edge (the location was saved in backward_irrep_track)
-                if i > j:
-                    these_irreps = self.get_product_irreps(l1, l2)
-                    irreps_len = sum([2*l + 1 for l in these_irreps.ls])
-                    forward_edge_bounds = self.backward_irrep_track[(i, j)] # contains the location of the forward edge
-
-                    forward_edge_irreps = node_output[:, forward_edge_bounds[0]:forward_edge_bounds[1]]
-
-                    # add the parity operator
-                    outer_parity = ((-1) ** (l1+l2)).item()
-                    start_l = 0
-                    for l in these_irreps.ls:
-                        inner_parity = (-1) ** l
-                        end_l = start_l + (2 * l + 1)
-                        if inner_parity != outer_parity:
-                            forward_edge_irreps[:, start_l:end_l] *= -1
-                        start_l = end_l
-
-                    expanded_node_output[:, output_irrep_p:output_irrep_p + irreps_len] = forward_edge_irreps
-
-                    output_irrep_p += sum([2*l + 1 for l in these_irreps.ls]) # only need to update the pointer along the output_irreps
-
-        # print("node_output[0]: ", node_output[0])
-        # print("expanded_node_output[0]: ", expanded_node_output[0])
-        # print("expanded_node_output_val[0]: ", expanded_node_output_val[0])
-        # print("expanded_node_output[0]: ", expanded_node_output[0])
-        assert torch.allclose(expanded_node_output_val, expanded_node_output), "Error! The expanded node output does not match the expected values based on the reduced node output and parity multipliers!"
         return expanded_node_output
 
 
