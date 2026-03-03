@@ -83,7 +83,8 @@ class eSEN_Backbone(nn.Module):
         mlp_type: str = "spectral",
         gaussian_width = 1.0,
         include_edges=True,
-        open_shell=False
+        open_shell=False,
+        distributed_graph_training=False
     ):
         super().__init__()
 
@@ -182,20 +183,21 @@ class eSEN_Backbone(nn.Module):
             self.edge_channels,
         ]
 
-
-        self.edge_degree_embedding = EdgeDegreeEmbedding(
-                sphere_channels=self.sphere_channels,
-                lmax=self.lmax,
-                mmax=self.mmax,
-                max_num_elements=self.max_num_elements,
-                edge_channels_list=self.edge_channels_list,
-                rescale_factor=5.0,
-                cutoff=self.cutoff,
-                mappingReduced=self.mappingReduced,
-                out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
-                    self.lmax, self.mmax
+        # TEMPORARY: edge degree embedding is currently not compatible with distributed graph training, skipping it for now!
+        if not distributed_graph_training:
+            self.edge_degree_embedding = EdgeDegreeEmbedding(
+                    sphere_channels=self.sphere_channels,
+                    lmax=self.lmax,
+                    mmax=self.mmax,
+                    max_num_elements=self.max_num_elements,
+                    edge_channels_list=self.edge_channels_list,
+                    rescale_factor=5.0,
+                    cutoff=self.cutoff,
+                    mappingReduced=self.mappingReduced,
+                    out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
+                        self.lmax, self.mmax
+                    )
                 )
-            )
 
         self.num_layers = num_layers
         self.hidden_channels = hidden_channels

@@ -161,11 +161,17 @@ class Fock_Targets:
             self.neighbour_list_list.append(mol_neighbour_list)
 
             # Edge distances for every molecule
-            indices0 = mol_neighbour_list[0]  # First atom indices
+            indices0 = mol_neighbour_list[0]  # First atom indices 
             indices1 = mol_neighbour_list[1]  # Second atom indices
 
+            # NOTE: in the distribution, we have swapped the labels for src and dst across every edge, 
+            # so we recover that by simply switching the order of indices when we compute the edge distances (so the vector points from src to dst in both cases)
             mol_edge_dist = torch.zeros((len(indices0), 4), dtype=self.dtype)
-            mol_edge_dist[:, 1:4] = torch.from_numpy(atoms.get_distances(indices1, indices0, vector=True))    # Vector components
+            if self.distribute_graphs:
+                mol_edge_dist[:, 1:4] = torch.from_numpy(atoms.get_distances(indices0, indices1, vector=True))    # Vector components
+                print("Computed edge distances with swapped indices for distributed graph!")
+            else:
+                mol_edge_dist[:, 1:4] = torch.from_numpy(atoms.get_distances(indices1, indices0, vector=True))    # Vector components
             mol_edge_dist[:, 0] = torch.linalg.norm(mol_edge_dist[:, 1:4], dim=-1, keepdim=False)             # Scalar distances
             self.edge_dist_list.append(mol_edge_dist)
 
@@ -255,8 +261,11 @@ class Fock_Targets:
         global_mol_ids = np.concatenate(all_mol_ids)
 
         # --- 4: Domain Decomposition ---
+        dist.barrier()
         self.merged_atomic_graph = MergedStructure(global_structure_z, global_structure_edges)
         self.domain = Domain_Decomp(self.merged_atomic_graph, device=self.device)
+        self.domain.print_info()
+        dist.barrier()
 
         # Store global molecule ID of every atom this rank owns
         self.atom_mol_id = global_mol_ids[self.domain.local_node_index]        
@@ -659,7 +668,7 @@ class Fock_Targets:
             # print(f"Rank {self.rank} self.atomic_positions_list after allgather: ", self.atomic_positions_list, flush=True)
             # print(f"Rank {self.rank} self.neighbour_list_list after allgather: ", self.neighbour_list_list, flush=True)
             # print(f"Rank {self.rank} self.edge_dist_list after allgather: ", self.edge_dist_list, flush=True)
-            # self.comm.Barrier()
+            self.comm.Barrier()
 
 
     def torch_dtype_to_cupy_dtype(self, torch_dtype):
@@ -876,8 +885,8 @@ class Domain_Decomp():
         # the numbers correspond to the full set of nodes and edges in the structure
         self.local_node_index = np.arange(start_node, end_node)
         self.local_edge_index = structure.edge_matrix[:, self.start_edge:self.end_edge]
-        global_edge_index = structure.edge_matrix
-        self.global_edge_index = torch.tensor(global_edge_index, device=self.device)
+        self.global_edge_index = structure.edge_matrix
+        # self.global_edge_index = torch.tensor(global_edge_index, device=self.device)
         self.global_atomic_numbers = torch.tensor(structure.atomic_numbers, device=self.device)
 
         # created and assigned during data creation:
@@ -922,6 +931,10 @@ class Domain_Decomp():
                 print(f"Rank {self.rank} has {self.end_node - self.start_node} nodes and {self.end_edge - self.start_edge} edges:")
                 print(f"Rank {self.rank} has nodes from {self.start_node} to {self.end_node}: {self.local_node_index}")
                 print(f"Rank {self.rank} has edges from {self.start_edge} to {self.end_edge}: {self.local_edge_index}")
+                print(f"Rank {self.rank} expand edge 0 (dst node) nodes_to_send: ", self.expand_edge_0['nodes_to_send'])
+                print(f"Rank {self.rank} expand edge 0 (dst node) nodes_to_recv: ", self.expand_edge_0['nodes_to_recv'])
+                print(f"Rank {self.rank} expand edge 1 (src node) nodes_to_send: ", self.expand_edge_1['nodes_to_send'])
+                print(f"Rank {self.rank} expand edge 1 (src node) nodes_to_recv: ", self.expand_edge_1['nodes_to_recv'])
             self.comm.Barrier()
 
 
@@ -996,18 +1009,18 @@ class Domain_Decomp():
                         indices[j] = idx
                     indices_to_send[target_rank] = indices.to(self.device)
 
-            self.comm.Barrier()
-            print("rank ", self.rank, " Nodes to send (during message creation): ", nodes_to_send)
-            print("rank ", self.rank, " Nodes to recv (during message creation): ", nodes_to_recv)
-            print("rank ", self.rank, " Indices to send (during message creation): ", indices_to_send)
-            self.comm.Barrier()
+            # self.comm.Barrier()
+            # print("rank ", self.rank, " Nodes to send (during message creation): ", nodes_to_send)
+            # print("rank ", self.rank, " Nodes to recv (during message creation): ", nodes_to_recv)
+            # print("rank ", self.rank, " Indices to send (during message creation): ", indices_to_send)
+            # self.comm.Barrier()
 
             edge_index = torch.tensor(edge_index, dtype=torch.long, device=self.device)
 
             local_node_nums = torch.tensor(local_node_nums, dtype=torch.long, device=self.device)
             is_local = torch.isin(edge_index, local_node_nums)
             local_edge_nodes = edge_index[is_local]
-            local_indices = edge_index[is_local] - self.start_node
+            local_indices = edge_index[is_local] - self.start_node                                   # indices of local embedding to slot into the new embedding
 
             remote_nodes = torch.tensor(remote_nodes, dtype=torch.long, device=self.device)
             is_remote = torch.isin(edge_index, remote_nodes)
@@ -1057,9 +1070,6 @@ class Domain_Decomp():
 
         # --> NEED TO DEBUG
 
-        dist.barrier()
-        print("Rank ", self.rank, " initializing reduce communication pattern with edge index: ", edge_index, flush=True)
-        dist.barrier()
 
         rank = dist.get_rank()
         size = dist.get_world_size()
@@ -1083,9 +1093,9 @@ class Domain_Decomp():
         counts = comm.allgather(length_local_edge_idx)
         displacements = [0] + [sum(counts[:i]) for i in range(1, size)]
 
-        total_length_edge_idx = sum(counts)
-        global_edge_index = torch.zeros(total_length_edge_idx, dtype=torch.int64)
-        comm.Allgatherv(edge_index_np, [global_edge_index, counts, displacements, MPI.LONG])
+        # total_length_edge_idx = sum(counts)
+        global_edge_index = self.global_edge_index[0, :] #torch.zeros(total_length_edge_idx, dtype=torch.int64)
+        # comm.Allgatherv(edge_index_np, [global_edge_index, counts, displacements, MPI.LONG]) # INCORRECT!!!
         
         local_edge_idx = torch.arange(self.start_edge, self.end_edge)
         local_edge_idx = local_edge_idx.to(self.device)

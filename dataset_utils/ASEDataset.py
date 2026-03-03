@@ -1,8 +1,9 @@
 import ase.db
-from torch_geometric.data import Data, Dataset, DataLoader
+from torch_geometric.data import Data, Dataset
 import torch
 import numpy as np
 import math
+import torch.distributed as dist
 
 from typing import Optional, List, Dict, Any, Iterable, Union, Tuple
 from abc import ABC, abstractmethod
@@ -15,26 +16,30 @@ from . import schnetpack_properties as structure
 class ASEDataset(Dataset):
     def __init__(self, db_path, dtype=torch.float32, open_shell=False, start_idx=0, end_idx=None):
 
-        print("Connecting to database...")
+        self.db_path = db_path
         self.db = ase.db.connect(db_path)
-        total_rows = self.db.count()
-        print(f"Total rows in database: {total_rows}")
-
-        # self.orbital_basis = orbital_basis
         self.open_shell = open_shell
-
-        if end_idx is None:
-            end_idx = total_rows
-
-        if start_idx < 0 or end_idx > total_rows or start_idx >= end_idx:
-            end_idx = total_rows
-            print("Invalid start_idx or end_idx values (probably end_idx > num rows). Setting end_idx to total rows.")
-
-        self.ids = []
-        for i, row in enumerate(self.db.select(limit=end_idx - start_idx, offset=start_idx)):
-            self.ids.append(row.id)
-
+        self.start_offset = start_idx
+        self.end_offset = end_idx if end_idx is not None else len(self.db)
         self.dtype = dtype
+
+        # READ ALL DATA ON EVERY RANK - to avoid strange sharding issues in distributed env with ASE DBs
+        print(f"Rank {dist.get_rank()} loading ALL molecules from {os.path.basename(db_path)}...")
+        
+        all_molecules = []
+        with ase.db.connect(self.db_path) as db:
+            for row in db.select():
+                all_molecules.append(row)
+
+        # shard the list with regular python
+        if end_idx is None:
+            end_idx = len(all_molecules)
+            
+        self.my_molecules = all_molecules[start_idx:end_idx]
+
+        # print(f"Rank {dist.get_rank()} shard complete: {len(self.my_molecules)} molecules assigned. "
+        #       f"First ID in shard: {self.my_molecules[0].id if self.my_molecules else 'N/A'}")
+
 
     def _get_ids(self):
         """
@@ -48,12 +53,16 @@ class ASEDataset(Dataset):
         return ids
 
     def __len__(self):
-        return len(self.ids)
+        return len(self.my_molecules)
 
     def __getitem__(self, idx):
 
-        # Get structure by id
-        structure = self.db.get(self.ids[idx])
+        structure = self.my_molecules[idx]
+
+        # print(f"DEBUG: Rank {dist.get_rank()}| "
+        #       f"start_offset: {self.start_offset} | "
+        #       f"Row ID: {structure.id} | "
+        #       f"Atoms: {structure.toatoms()}", flush=True)
 
         # Extract atom positions and atomic numbers
         atoms = structure.toatoms()
@@ -161,7 +170,8 @@ def distribute_data(base_folder, world_size, rank, N_global_train, N_global_val)
         try:
             db = ase.db.connect(db_file)
             count = db.count()
-            print("Found ", count, " molecules in ", db_file)
+            if rank == 0:
+                print("Found ", count, " molecules in ", db_file)
         except Exception as e:
             print(f"Warning: Could not open {db_file}. Skipping. Error: {e}")
             count = 0
@@ -254,6 +264,8 @@ def distribute_data(base_folder, world_size, rank, N_global_train, N_global_val)
                 'start_idx': local_start_idx,
                 'end_idx': local_end_idx
             })
+    
+    print(f"Rank {rank}: Assigned {len(train_entries)} training segments and {len(val_entries)} validation segments.")
 
     return train_entries, val_entries
 

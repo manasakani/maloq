@@ -177,15 +177,12 @@ class Edgewise(torch.nn.Module):
         # print x_target sample from every rank:
         # dist.barrier()
         # print(f"Rank {dist.get_rank()}: x_target shape: {x_target.shape}", flush=True)
-        # # print(f"Rank {dist.get_rank()}: x_target sample: {x_target[:, 0, :10]}", flush=True)
-        # print(f"Rank {dist.get_rank()}: x_target sample: {x_target[:, 0:5, :10]}", flush=True)
+        # print(f"Rank {dist.get_rank()}: new x_target sample: {x_target[:, 0, :10]}", flush=True)
+        # # print(f"Rank {dist.get_rank()}: x_target sample: {x_target[:, 0:5, :10]}", flush=True)
         # dist.barrier()
         
         local_indices_torch = partition.expand_edge_0['local_indices_torch']
         x_source = x[local_indices_torch]
-        # dist.barrier()
-        # print(f"Rank {dist.get_rank()}: is_local: {is_local}, local_indices_torch: {local_indices_torch}", flush=True)
-        # dist.barrier()
 
         # Create messages 
         x_message = torch.cat((x_source, x_target), dim=2) 
@@ -214,10 +211,16 @@ class Edgewise(torch.nn.Module):
         # aggregate messages
         is_local = partition.reduce_edge['is_local']
         local_indices = partition.reduce_edge['local_indices']
+        new_embedding.index_add_(0, local_indices, x_message[is_local])
+
         # dist.barrier()
         # print(f"Rank {dist.get_rank()}: is_local reduce: {is_local}, local_indices reduce: {local_indices}", flush=True)
         # dist.barrier()
-        new_embedding.index_add_(0, local_indices, x_message[is_local])
+
+        # # print x_target sample from every rank:
+        # dist.barrier()
+        # print(f"Rank {dist.get_rank()}: new embedding sample: {new_embedding[:, 0, :10]}", flush=True)
+        # dist.barrier()
 
         return new_embedding
 
@@ -260,7 +263,10 @@ class Edgewise(torch.nn.Module):
         )
 
         # aggregate messages
-        new_embedding.index_add_(0, edge_index[1], x_message)    
+        new_embedding.index_add_(0, edge_index[1], x_message)       
+        # dist.barrier()
+        # print(f"Rank {dist.get_rank()}: new embedding sample: {new_embedding[:, 0, :10]}", flush=True)
+        # dist.barrier()
 
         return new_embedding
 
@@ -514,9 +520,6 @@ class eSEN_Block(torch.nn.Module):
                 partition
             )
 
-            dist.barrier() 
-            print(f"Rank {dist.get_rank()}: Finished edge wise", flush=True)
-            dist.barrier()
 
             x_message_node = x_message_node + x_res
             x_res = x_message_node
@@ -524,9 +527,6 @@ class eSEN_Block(torch.nn.Module):
             x_message_node = self.norm_2(x_message_node)
             x_message_node = self.atom_wise(x_message_node)
 
-            dist.barrier() 
-            print(f"Rank {dist.get_rank()}: Finished node block", flush=True)
-            dist.barrier()
 
             return x_message_node + x_res
             

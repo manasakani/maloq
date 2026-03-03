@@ -6,18 +6,15 @@ from torch.distributed.launcher.api import LaunchConfig, elastic_launch
 
 def setup_env(rank, world_size):
 
-    print("Initializing distributed process group... ", flush=True)
-    # dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
-    dist.init_process_group(backend='gloo', rank=rank, world_size=world_size)
-    print("Initialized distributed process group", flush=True)
-
-    # barrier:
-    dist.barrier()
-
     # !! make sure visibility is restricted to "gpu 0" in .sh file !!
     gpu_id = 0
     torch.cuda.set_device(gpu_id)
     device = torch.device('cuda:'+ str(gpu_id))
+
+    dist.init_process_group(backend='nccl', rank=rank, world_size=world_size, device_id=device) #'gloo'
+    print("Initialized distributed process group", flush=True)
+
+    dist.barrier()
 
     return device
 

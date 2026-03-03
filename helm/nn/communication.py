@@ -33,13 +33,6 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm, rank, world_s
     num_nodes = embedding.shape[0]
     num_coefficients = embedding.shape[1]
     num_channels = embedding.shape[2]
-    # new_embedding = torch.zeros(
-    #                                 num_nodes,
-    #                                 num_coefficients,
-    #                                 num_channels,
-    #                                 device=embedding.device,
-    #                                 dtype=embedding.dtype,
-    #                             )
     
     # Get precomputed communication plan
     is_local = communication_dict['is_local']
@@ -53,24 +46,6 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm, rank, world_s
     indices_to_send_cp = communication_dict['indices_to_send_cp']  
     nodes_to_recv = communication_dict['nodes_to_recv']           
     
-    # dist.barrier()
-    # print(f"Rank {rank}: local indices: {local_indices}, remote indices: {remote_indices}", flush=True)
-    # print(f"Rank {rank}: is local: {is_local}, is remote: {is_remote}", flush=True)
-    # dist.barrier()
-
-    # dist.barrier()
-    # print(f"Rank {rank}: nodes to send: ", nodes_to_send, flush=True)
-    # dist.barrier()
-
-    # dist.barrier()
-    # print(f"Rank {rank}: nodes to receive: ", nodes_to_recv, flush=True)
-    # dist.barrier()
-
-    # dist.barrier()
-    # print(f"Rank {rank}: messages to send: ", {k: len(v) for k, v in messages_to_send.items()}, flush=True)
-    # dist.barrier()
-    # print(f"Rank {rank}: messages to receive: ", {k: len(v) for k, v in messages_to_recv.items()}, flush=True)
-    # dist.barrier()
 
     with torch.no_grad():
 
@@ -79,9 +54,6 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm, rank, world_s
 
         if num_nodes_to_recv:
 
-            dist.barrier()
-            print(f"Rank {rank}: Starting preparation for communication of embeddings. Number of messages to send: {sum(len(v) for v in nodes_to_send.values())}, number of messages to receive: {num_nodes_to_recv}", flush=True)
-            dist.barrier()
 
             # Prepare buffers for sends and recvs
             cupy_buffer_dtype = dtype_converter(embedding.dtype, input_library='torch', output_library='cupy')
@@ -89,10 +61,6 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm, rank, world_s
                 num_nodes_to_recv * num_coefficients * num_channels,
                 dtype=cupy_buffer_dtype
             )
-
-            dist.barrier()
-            print(f"Rank {rank}: Starting communication of embeddings. Number of messages to send: {sum(len(v) for v in nodes_to_send.values())}, number of messages to receive: {num_nodes_to_recv}", flush=True)
-            dist.barrier()
 
             sendbufs = {}
             for target_rank, nodes in nodes_to_send.items():
@@ -118,11 +86,8 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm, rank, world_s
 
             nccl.groupEnd()
             cp.cuda.runtime.deviceSynchronize()
-            # NOTE: This is a blocking operation and such no overlap currently
+            # NOTE: This is a blocking operation
 
-            dist.barrier()
-            print(f"Rank {rank}: Finished communication of embeddings.", flush=True)
-            dist.barrier()
 
         # --> Slot in the local embeddings 
         edge_embeddings = torch.empty((num_edges, embedding.shape[1], embedding.shape[2]), device=embedding.device, dtype=embedding.dtype)
