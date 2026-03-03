@@ -272,7 +272,6 @@ class Fock_Targets:
 
         if self.rank == 0:
             print(f"Global graph created with {len(global_structure_z)} nodes and {global_structure_edges.shape[1]} edges.")
-        self.domain.print_info()
 
         dist.barrier()      # Clear PyTorch/Gloo buffer
         self.comm.Barrier() # Clear MPI buffer
@@ -403,8 +402,8 @@ class Fock_Targets:
         
         # --------------------------- Redistribute targets based on domain decomposition ---------------------------
 
-        print("Redistributing fock labels based on domain decomposition... ", flush=True)
         if self.distribute_graphs:
+            print("Redistributing fock labels based on domain decomposition... ", flush=True)
 
             comm = self.domain.comm
             num_local_fock_matrices = len(fock_matrices)
@@ -1126,11 +1125,10 @@ class Domain_Decomp():
                         break
 
         # the messages are the indices of the local embeddings on the source rank
-        self.comm.Barrier()
-        print(f"Rank {rank}: messages_to_send (during message aggregation) = {messages_to_send}")
-        print(f"Rank {rank}: messages_to_recv (during message aggregation) = {messages_to_recv}")
-        self.comm.Barrier()
-        
+        # self.comm.Barrier()
+        # print(f"Rank {rank}: messages_to_send (during message aggregation) = {messages_to_send}")
+        # print(f"Rank {rank}: messages_to_recv (during message aggregation) = {messages_to_recv}")
+        # self.comm.Barrier()
 
         for dest_rank, embedding_idxs in messages_to_send.items():
             if embedding_idxs:

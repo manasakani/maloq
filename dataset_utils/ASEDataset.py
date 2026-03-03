@@ -133,6 +133,26 @@ class sampleDataset(torch.utils.data.Dataset):
 def sample_collate_fn(batch):
     return Batch.from_data_list(batch)
 
+def get_rank_range(total_count, world_size, rank, global_offset=0):
+    """
+    Calculates a balanced start and end index for a specific rank.
+    Distributes the remainder (total_count % world_size) across the first few ranks.
+    """
+    avg = total_count // world_size
+    rem = total_count % world_size
+    
+    if rank < rem:
+        # These ranks handle the 'avg + 1' workload
+        size = avg + 1
+        start = rank * size
+    else:
+        # These ranks handle the 'avg' workload
+        size = avg
+        # Start index accounts for the extra molecules assigned to ranks 0 to rem-1
+        start = (rem * (avg + 1)) + ((rank - rem) * avg)
+        
+    return global_offset + start, global_offset + start + size
+    
 def distribute_data(base_folder, world_size, rank, N_global_train, N_global_val):
     """
     Calculates the file and index ranges for a single rank to load its portion
@@ -197,14 +217,20 @@ def distribute_data(base_folder, world_size, rank, N_global_train, N_global_val)
     # --- Step 2: Determine Rank's Global Range for Training and Validation ---
 
     # Training Range (Indices [0, N_global_train) of the used dataset)
-    N_train_per_rank = math.ceil(N_global_train / world_size)
-    rank_train_start = rank * N_train_per_rank
-    rank_train_end = min(rank_train_start + N_train_per_rank, N_global_train)
+    rank_train_start, rank_train_end = get_rank_range(
+        total_count=N_global_train, 
+        world_size=world_size, 
+        rank=rank, 
+        global_offset=0
+    )
 
     # Validation Range (Indices [N_global_train, N_global_total_used) of the used dataset)
-    N_val_per_rank = math.ceil(N_global_val / world_size)
-    rank_val_start = N_global_train + rank * N_val_per_rank
-    rank_val_end = min(rank_val_start + N_val_per_rank, N_global_total_used)
+    rank_val_start, rank_val_end = get_rank_range(
+        total_count=N_global_val, 
+        world_size=world_size, 
+        rank=rank, 
+        global_offset=N_global_train
+    )
 
     # --- Step 3: Map Global Indices to Local DB Files (Training & Validation) ---
 

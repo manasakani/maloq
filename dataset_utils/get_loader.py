@@ -194,7 +194,9 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
 
     dataset = sampleDataset(datalist)
     data_loader = DataLoader(dataset, batch_size=batch_size)
-    print("required irreps: ", required_irreps)
+
+    if rank == 0:
+        print("Required irreps to cover all orbital interactions: ", required_irreps)
 
     return data_loader, required_irreps, basis_transform, orbital_basis, ls_list
 

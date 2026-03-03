@@ -188,11 +188,13 @@ class TrainingWorkflow:
             )
 
             dist.barrier()
-            for batch in train_loader:
-                num_atoms = len(batch['atomic_numbers'])
-                num_edges = batch['edge_index'].shape[1]
-                print(f"Rank {self.rank}: Train batch - Num atoms: {num_atoms}, Num edges: {num_edges}", flush=True)
-            dist.barrier()
+            for i in range(self.world_size):
+                if self.rank == i:
+                    for batch in train_loader:
+                        num_atoms = batch['node_y_alpha'].shape[1] if c['open_shell'] else batch['node_y'].shape[1]
+                        num_edges = batch['y_alpha'].shape[1] if c['open_shell'] else batch['y'].shape[1]
+                        print(f"Rank {self.rank}: Train batch - Num atoms: {num_atoms}, Num edges: {num_edges}", flush=True)
+                dist.barrier()
             
             val_loader, *_ = get_loader.get_loader(
                 database=val_database,

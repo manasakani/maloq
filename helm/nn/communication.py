@@ -54,7 +54,6 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm, rank, world_s
 
         if num_nodes_to_recv:
 
-
             # Prepare buffers for sends and recvs
             cupy_buffer_dtype = dtype_converter(embedding.dtype, input_library='torch', output_library='cupy')
             recv_bufs = cp.empty(
@@ -95,19 +94,12 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm, rank, world_s
     edge_embeddings[is_local] = embedding[local_indices_torch]
     cp.cuda.runtime.deviceSynchronize()
 
-    # dist.barrier()
-    # print(f"Rank {rank}: Finished slotting in local embeddings.", flush=True)
-    # dist.barrier()
-
+    # --> Slot in the remote embeddings 
     if num_nodes_to_recv:
         with torch.no_grad():
             received_embeddings = from_dlpack(recv_bufs.toDlpack()).reshape(num_nodes_to_recv, num_coefficients, num_channels)
         
-        edge_embeddings[is_remote] = received_embeddings[remote_indices_torch]    # needs gradients
-    
-    # dist.barrier()
-    # print(f"Rank {rank}: Finished slotting in remote embeddings.", flush=True)
-    # dist.barrier()
+        edge_embeddings[is_remote] = received_embeddings[remote_indices_torch]    
     
     return edge_embeddings
 
