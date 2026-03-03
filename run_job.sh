@@ -1,11 +1,11 @@
 #!/bin/bash -l
-#SBATCH --job-name=test
+#SBATCH --job-name=bench
 #SBATCH --account=lp16
 #SBATCH --time=00:30:00
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=3
-#SBATCH --gres=gpu:3
-#SBATCH --cpus-per-task=12
+#SBATCH --nodes=8
+#SBATCH --ntasks-per-node=4
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=72
 #SBATCH --partition=debug
 #SBATCH --hint=nomultithread
 #   SBATCH --hint=exclusive
@@ -28,9 +28,11 @@ module load cmake
 module load openblas
 module load aws-ofi-nccl
 
-export NCCL_ROOT=/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/nccl-2.22.3-1-4j6h3ffzysukqpqbvriorrzk2lm762dd  # Replace with your NCCL installation path
+export NCCL_ROOT=/user-environment/linux-sles15-neoverse_v2/gcc-13.3.0/nccl-2.22.3-1-4j6h3ffzysukqpqbvriorrzk2lm762dd 
 export NCCL_LIB_DIR=$NCCL_ROOT/lib
 export NCCL_INCLUDE_DIR=$NCCL_ROOT/include
+
+# export NCCL_DEBUG=INFO
 
 export CUDA_DIR=$CUDA_HOME
 export CUDA_PATH=$CUDA_HOME
@@ -44,6 +46,12 @@ export LD_LIBRARY_PATH=$NCCL_ROOT/lib:$LD_LIBRARY_PATH
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export MASTER_ADDR=$(hostname)
 export MASTER_PORT=29500
+
+export NCCL_NET='AWS Libfabric'
+# Disable eager messages to avoid NCCL timeouts
+export FI_CXI_RDZV_GET_MIN=0
+export FI_CXI_RDZV_THRESHOLD=0
+export FI_CXI_RDZV_EAGER_SIZE=0
 
 source /users/mkanisel/miniconda3/bin/activate helm_env
 # END ENVIRONMENT SETUP
@@ -64,4 +72,4 @@ source /users/mkanisel/miniconda3/bin/activate helm_env
 # python run_nablaDFT.py'
 
 srun --cpu-bind=socket bash -c 'export MPICH_GPU_SUPPORT_ENABLED=1; export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID;
-python run_QM7.py'
+python run_omol_csh.py'
