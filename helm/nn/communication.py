@@ -6,8 +6,7 @@ import numpy as np
 from cupy import cuda
 from cupy.cuda import nccl
 from cupyx.distributed import NCCLBackend
-from torch.utils.dlpack import to_dlpack
-from torch.utils.dlpack import from_dlpack
+from torch.utils.dlpack import to_dlpack, from_dlpack
 
 class _global_nccl_comm():
     def __init__(
@@ -21,86 +20,153 @@ class _global_nccl_comm():
 
 comm_nccl = _global_nccl_comm()
 
-def exchange_nodes(embedding, num_edges, communication_dict, comm, rank, world_size):
-    """
-    Exchange node embeddings between different processes using NCCL backend, according to communication_dict.
-    """
+# def exchange_nodes(embedding, num_edges, communication_dict, comm):
+#     """
+#     Exchange node embeddings between different processes using NCCL backend, according to communication_dict.
+#     """
 
-    dist.barrier()
-    comm = comm_nccl.comm
-    stream = comm_nccl.stream
+#     dist.barrier()
+#     comm = comm_nccl.comm
+#     stream = comm_nccl.stream
 
-    num_nodes = embedding.shape[0]
+#     num_nodes = embedding.shape[0]
+#     num_coefficients = embedding.shape[1]
+#     num_channels = embedding.shape[2]
+    
+#     # Get precomputed communication plan
+#     is_local = communication_dict['is_local']
+#     is_remote = communication_dict['is_remote']
+#     local_indices = communication_dict['local_indices']
+#     local_indices_torch = communication_dict['local_indices_torch']
+#     remote_indices = communication_dict['remote_indices']
+#     remote_indices_torch = communication_dict['remote_indices_torch']
+#     nodes_to_send = communication_dict['nodes_to_send']                
+#     indices_to_send = communication_dict['indices_to_send']            
+#     indices_to_send_cp = communication_dict['indices_to_send_cp']  
+#     nodes_to_recv = communication_dict['nodes_to_recv']           
+    
+
+#     with torch.no_grad():
+
+#         # --> Send/Receive embeddings
+#         num_nodes_to_recv = len(remote_indices)
+
+#         if num_nodes_to_recv:
+
+#             # Prepare buffers for sends and recvs
+#             cupy_buffer_dtype = dtype_converter(embedding.dtype, input_library='torch', output_library='cupy')
+#             recv_bufs = cp.empty(
+#                 num_nodes_to_recv * num_coefficients * num_channels,
+#                 dtype=cupy_buffer_dtype
+#             )
+
+#             sendbufs = {}
+#             for target_rank, nodes in nodes_to_send.items():
+#                 if nodes:
+#                     sendbufs[target_rank] = flatten_embedding(embedding[indices_to_send[target_rank]])
+
+#             cp.cuda.runtime.deviceSynchronize()
+#             nccl.groupStart()
+
+#             # Sends
+#             for target_rank, nodes in nodes_to_send.items():
+#                 if nodes:
+#                     comm.send(sendbufs[target_rank], target_rank, stream=stream)
+
+#             # Recvs
+#             recv_pointer = 0
+#             for i, (source_rank, nodes) in enumerate(nodes_to_recv.items()):
+#                 if nodes:
+#                     start_idx = recv_pointer
+#                     end_idx = start_idx + len(nodes) * num_coefficients * num_channels
+#                     comm.recv(recv_bufs[start_idx:end_idx], source_rank, stream=stream)
+#                     recv_pointer = end_idx
+
+#             nccl.groupEnd()
+#             cp.cuda.runtime.deviceSynchronize()
+#             # NOTE: This is a blocking operation
+
+
+#         # --> Slot in the local embeddings 
+#         edge_embeddings = torch.empty((num_edges, embedding.shape[1], embedding.shape[2]), device=embedding.device, dtype=embedding.dtype)
+
+#     edge_embeddings[is_local] = embedding[local_indices_torch]
+#     cp.cuda.runtime.deviceSynchronize()
+
+#     # --> Slot in the remote embeddings 
+#     if num_nodes_to_recv:
+#         with torch.no_grad():
+#             received_embeddings = from_dlpack(recv_bufs.toDlpack()).reshape(num_nodes_to_recv, num_coefficients, num_channels)
+        
+#         edge_embeddings[is_remote] = received_embeddings[remote_indices_torch]    
+    
+#     return edge_embeddings
+
+def exchange_nodes(embedding, num_edges, communication_dict, comm=None):
+    """
+    Exchange node embeddings using torch.distributed, mirrored after the original NCCL/CuPy logic.
+    """
+    # 1. Setup metadata
+    device = embedding.device
+    dtype = embedding.dtype
     num_coefficients = embedding.shape[1]
     num_channels = embedding.shape[2]
     
-    # Get precomputed communication plan
     is_local = communication_dict['is_local']
     is_remote = communication_dict['is_remote']
-    local_indices = communication_dict['local_indices']
     local_indices_torch = communication_dict['local_indices_torch']
-    remote_indices = communication_dict['remote_indices']
     remote_indices_torch = communication_dict['remote_indices_torch']
     nodes_to_send = communication_dict['nodes_to_send']                
     indices_to_send = communication_dict['indices_to_send']            
-    indices_to_send_cp = communication_dict['indices_to_send_cp']  
     nodes_to_recv = communication_dict['nodes_to_recv']           
-    
 
-    with torch.no_grad():
+    num_nodes_to_recv = len(remote_indices_torch)
 
-        # --> Send/Receive embeddings
-        num_nodes_to_recv = len(remote_indices)
-
-        if num_nodes_to_recv:
-
-            # Prepare buffers for sends and recvs
-            cupy_buffer_dtype = dtype_converter(embedding.dtype, input_library='torch', output_library='cupy')
-            recv_bufs = cp.empty(
-                num_nodes_to_recv * num_coefficients * num_channels,
-                dtype=cupy_buffer_dtype
-            )
-
-            sendbufs = {}
-            for target_rank, nodes in nodes_to_send.items():
-                if nodes:
-                    sendbufs[target_rank] = flatten_embedding(embedding[indices_to_send[target_rank]])
-
-            cp.cuda.runtime.deviceSynchronize()
-            nccl.groupStart()
-
-            # Sends
-            for target_rank, nodes in nodes_to_send.items():
-                if nodes:
-                    comm.send(sendbufs[target_rank], target_rank, stream=stream)
-
-            # Recvs
-            recv_pointer = 0
-            for i, (source_rank, nodes) in enumerate(nodes_to_recv.items()):
-                if nodes:
-                    start_idx = recv_pointer
-                    end_idx = start_idx + len(nodes) * num_coefficients * num_channels
-                    comm.recv(recv_bufs[start_idx:end_idx], source_rank, stream=stream)
-                    recv_pointer = end_idx
-
-            nccl.groupEnd()
-            cp.cuda.runtime.deviceSynchronize()
-            # NOTE: This is a blocking operation
-
-
-        # --> Slot in the local embeddings 
-        edge_embeddings = torch.empty((num_edges, embedding.shape[1], embedding.shape[2]), device=embedding.device, dtype=embedding.dtype)
-
+    # 2. Slot in the local embeddings immediately
+    edge_embeddings = torch.empty(
+        (num_edges, num_coefficients, num_channels), 
+        device=device, dtype=dtype
+    )
     edge_embeddings[is_local] = embedding[local_indices_torch]
-    cp.cuda.runtime.deviceSynchronize()
 
-    # --> Slot in the remote embeddings 
-    if num_nodes_to_recv:
-        with torch.no_grad():
-            received_embeddings = from_dlpack(recv_bufs.toDlpack()).reshape(num_nodes_to_recv, num_coefficients, num_channels)
+    # 3. Communication Group
+    if num_nodes_to_recv > 0:
+        p2p_ops = []
+        recv_buffers = {}
+
+        # Prepare Receives (Mirrors recv_bufs allocation)
+        for source_rank, nodes in nodes_to_recv.items():
+            if nodes:
+                # Allocate rank-specific buffer
+                buf = torch.empty(
+                    (len(nodes), num_coefficients, num_channels), 
+                    device=device, dtype=dtype
+                )
+                recv_buffers[source_rank] = buf
+                # Equivalent to comm.recv within a group
+                p2p_ops.append(dist.P2POp(dist.irecv, buf, source_rank))
+
+        # Prepare Sends (Mirrors sendbufs creation)
+        for target_rank, nodes in nodes_to_send.items():
+            if nodes:
+                # NCCL requires contiguous memory for sends
+                send_tensor = embedding[indices_to_send[target_rank]].contiguous()
+                # Equivalent to comm.send within a group
+                p2p_ops.append(dist.P2POp(dist.isend, send_tensor, target_rank))
+
+        # 4. Execute Group Communication
+        # This is the direct torch equivalent of nccl.groupStart() -> nccl.groupEnd()
+        reqs = dist.batch_isend_irecv(p2p_ops)
         
-        edge_embeddings[is_remote] = received_embeddings[remote_indices_torch]    
-    
+        for req in reqs:
+            req.wait()
+
+        # 5. Slot in the remote embeddings
+        # We concatenate the buffers in the order defined by nodes_to_recv 
+        # to match the remote_indices_torch mapping.
+        all_received = torch.cat([recv_buffers[rank] for rank in nodes_to_recv.keys()], dim=0)
+        edge_embeddings[is_remote] = all_received[remote_indices_torch]
+
     return edge_embeddings
 
 def flatten_embedding(embedding):

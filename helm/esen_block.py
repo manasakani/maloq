@@ -170,9 +170,7 @@ class Edgewise(torch.nn.Module):
                                     x,
                                     local_num_edges,
                                     partition.expand_edge_1, # edge_index[1, :]
-                                    self.comm,
-                                    self.rank,
-                                    self.world_size,
+                                    self.comm
                                 )
         # print x_target sample from every rank:
         # dist.barrier()
@@ -290,9 +288,7 @@ class Edgewise(torch.nn.Module):
                                     x,
                                     local_num_edges,
                                     partition.expand_edge_1,
-                                    self.comm,
-                                    self.rank,
-                                    self.world_size,
+                                    self.comm
                                 )
         
         # expand_edge_0 is the communication dictionary for the source nodes
