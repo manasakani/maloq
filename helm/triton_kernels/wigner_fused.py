@@ -1,20 +1,22 @@
 """
 Fused Wigner D-matrix kernel supporting lmax up to 8.
 
-Block packing strategy (greedy bin-packing, pairs L values to fill 16):
-  lmax <= 3 : 1 group  [L=0..lmax]  (16x16)
-  lmax  = 4 : 2 groups [L=0,1,4] + [L=2,3]
-  lmax  = 5 : 3 groups [L=0,1,5] + [L=2,4] + [L=3]
-  lmax  = 6 : 4 groups [L=0,6] + [L=1,5] + [L=2,4] + [L=3]
+Block packing strategy:
+  lmax <= 3 : 1 group  [L=0,1,2,3]  (1+3+5+7=16, exactly full)
+  lmax  = 4 : 2 groups [L=0,1,2,3] + [L=4]
+  lmax  = 5 : 3 groups [L=0,1,2,3] + [L=4] + [L=5]
+  lmax  = 6 : 4 groups [L=0,1,2,3] + [L=4] + [L=5] + [L=6]
   lmax  = 7 : 4 groups [L=0,7] + [L=1,6] + [L=2,5] + [L=3,4]  (zero waste!)
   lmax  = 8 : 4 groups (same as lmax=7) + 1 separate 32x32 for L=8
 
-Key insight: 2*L_a+1 + 2*L_b+1 = 16 when L_a + L_b = 7.
+Key insight for lmax=7: 2*L_a+1 + 2*L_b+1 = 16 when L_a + L_b = 7.
+For lmax<=6: keep L=0-3 together (fill one 16x16), then L=4+ as singles.
 
 Single kernel launch computes Euler angles once, then processes
 all 16x16 groups sequentially. A second kernel handles L=8 if needed.
 """
 
+import random
 import torch
 import triton
 import triton.language as tl
@@ -25,42 +27,25 @@ _CACHE = {}
 
 def _compute_groups(lmax):
     """
-    Greedy bin-packing of L values into 16x16 and 32x32 blocks.
+    Fixed packing of L values into 16x16 and 32x32 blocks.
 
-    Strategy: L values with 2L+1 > 16 (L >= 8) get individual 32x32 blocks.
-    Remaining L values are paired largest-first with smallest to fill 16x16.
+    lmax <= 3 : [0,1,2,3] subset as one group (exactly 16 for lmax=3)
+    lmax  4-6 : [0,1,2,3] + individual [4], [5], [6] as needed
+    lmax  = 7 : optimal pairs [0,7],[1,6],[2,5],[3,4] (zero waste)
+    lmax  = 8 : same 4 pairs as lmax=7 + [8] in 32x32
     """
-    groups_16 = []  # list of sorted L-value lists
-    groups_32 = []  # list of sorted L-value lists
-
-    small_ls = []
-    for l in range(lmax + 1):
-        if 2 * l + 1 > 16:
-            groups_32.append([l])
-        else:
-            small_ls.append(l)
-
-    # Greedy: iterate from largest, pair with smallest that fits
-    small_ls.sort(key=lambda l: 2 * l + 1, reverse=True)
-    used = set()
-    for l_big in small_ls:
-        if l_big in used:
-            continue
-        used.add(l_big)
-        group = [l_big]
-        cap = 16 - (2 * l_big + 1)
-        for l_small in reversed(small_ls):
-            if l_small in used:
-                continue
-            sz = 2 * l_small + 1
-            if sz <= cap:
-                group.append(l_small)
-                used.add(l_small)
-                cap -= sz
-                if cap == 0:
-                    break
-        group.sort()
-        groups_16.append(group)
+    if lmax <= 3:
+        groups_16 = [list(range(lmax + 1))]
+        groups_32 = []
+    elif lmax <= 6:
+        groups_16 = [[0, 1, 2, 3]] + [[l] for l in range(4, lmax + 1)]
+        groups_32 = []
+    elif lmax == 7:
+        groups_16 = [[0, 7], [1, 6], [2, 5], [3, 4]]
+        groups_32 = []
+    else:  # lmax == 8
+        groups_16 = [[0, 7], [1, 6], [2, 5], [3, 4]]
+        groups_32 = [[8]]
 
     return groups_16, groups_32
 
@@ -117,6 +102,7 @@ def _build_group_meta(lmax, device):
         'jd_stack': jd_stack,
         'struct_stack': struct_stack,
         'group_sizes': group_sizes,
+        'jd_ready': False,
     }
 
     if groups_32:
@@ -140,7 +126,9 @@ def _build_group_meta(lmax, device):
 
 
 def _fill_jd(meta, jd_list, lmax):
-    """Fill J matrix data into pre-allocated buffers from per-L Jd list."""
+    """Fill J matrix data into pre-allocated buffers. Skipped after first call."""
+    if meta['jd_ready']:
+        return
     for gi, l_list in enumerate(meta['groups_16']):
         pos = 0
         for l in l_list:
@@ -152,6 +140,7 @@ def _fill_jd(meta, jd_list, lmax):
         l = l_list[0]
         sz = 2 * l + 1
         meta['jd_32'][:sz, :sz] = jd_list[l].float()
+    meta['jd_ready'] = True
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +390,7 @@ def edge_vec_to_wigner_fused(
     Jd: list,
     lmax: int = 4,
     seed: int = None,
+    out: torch.Tensor = None,
 ) -> torch.Tensor:
     """
     Compute block-diagonal Wigner D-matrix using fused Triton kernels.
@@ -413,6 +403,11 @@ def edge_vec_to_wigner_fused(
         Jd: List of per-L J matrices (from Jd.pt), length >= lmax+1
         lmax: Maximum angular momentum (0-8)
         seed: Random seed for gamma angle
+        out: Optional pre-allocated output tensor [num_edges, out_dim, out_dim].
+             Must be float32 and contiguous (stride must be row-major). If provided,
+             the kernel writes only block-diagonal positions in-place; off-diagonal
+             entries are never touched and must already be zero. If None, a new
+             zeroed tensor is allocated.
 
     Returns:
         Block-diagonal Wigner D-matrix [num_edges, out_dim, out_dim]
@@ -430,11 +425,18 @@ def edge_vec_to_wigner_fused(
     n16 = meta['n16']
 
     if seed is None:
-        seed = torch.randint(0, 2**31, (1,), device=device).item()
+        seed = random.randint(0, 2**31 - 1)
 
-    wigner = torch.zeros(num_edges, out_dim, out_dim, device=device, dtype=dtype)
-    if num_edges == 0:
-        return wigner
+    if out is not None:
+        assert out.shape == (num_edges, out_dim, out_dim), (
+            f"out shape {out.shape} != expected ({num_edges}, {out_dim}, {out_dim})"
+        )
+        assert out.is_contiguous(), "out must be contiguous (row-major stride)"
+        wigner = out
+        # Kernel writes only block-diagonal positions; off-diagonal entries are
+        # never touched. Caller is responsible for ensuring they are zero.
+    else:
+        wigner = torch.zeros(num_edges, out_dim, out_dim, device=device, dtype=dtype)
 
     edge_distance_vec = edge_distance_vec.contiguous()
     grid = (num_edges,)
