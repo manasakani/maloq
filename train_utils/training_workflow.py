@@ -39,7 +39,7 @@ class TrainingWorkflow:
                 os.makedirs(self.config['output_folder'])
         dist.barrier()
 
-    def _handle_scale_shift(self, database):
+    def _handle_scale_shift(self, database=None):
         """Manages the computation or loading of scale/shift factors."""
         if not self.config.get('scale_and_shift'):
             return None
@@ -60,6 +60,9 @@ class TrainingWorkflow:
         # Recompute scale/shift factors for this dataset
         else:
             print(f"[Computing scale/shift factors for {dataset_name}]")
+            if database is None:
+                print("Error: Database object is required to compute scale/shift factors but is None.")
+                exit()
             data = get_scale_shift.get_scale_shift(
                 database, dataset_name, self.config['rcut_orbitals'], 
                 dtype=self.config['dtype'], reduce_edge=self.config['reduce_edge'], 
@@ -91,53 +94,69 @@ class TrainingWorkflow:
 
         db_source = database_input if database_input is not None else c['dbpath']
         is_folder = isinstance(db_source, str) and os.path.isdir(db_source)
-        
+
         if is_folder:
-            print(f"Rank {self.rank}: Loading data from folder {db_source}")
 
-            # --- FOLDER MODE ---
-            # --- 1. Distribute Data across ranks ---
-            train_data_dict, val_data_dict = distribute_data(
-                base_folder=db_source,
-                world_size=self.world_size,
-                rank=self.rank,
-                N_global_train=c['num_train'],
-                N_global_val=c['num_val']
-            )
+            # Custom cp2k datasets - each subfolder contains a structure, hamiltonian, and overlap matrix
+            if self.config['dataset_name'] == 'cp2k_material':
+                data_folders = [os.path.join(db_source, f) for f in os.listdir(db_source) if os.path.isdir(os.path.join(db_source, f))]
+                total_needed = c['num_train'] + c['num_val']
+                print(f"Found {len(data_folders)} data folders in {db_source}", flush=True)
 
-            # --- 2. Load Training Segments ---
-            train_datasets = []
-            for entry in train_data_dict:
-                ds = ASEDataset(
-                    db_path=entry['db_file'],
-                    dtype=c['dtype'],
-                    open_shell=c['open_shell'],
-                    start_idx=entry['start_idx'], 
-                    end_idx=entry['end_idx']     
-                )
-                train_datasets.append(ds)
-            train_database = ConcatDataset(train_datasets)
+                scale_shift_data = self._handle_scale_shift()
+                train_database = data_folders[:c['num_train']]
+                val_database = data_folders[c['num_train']:total_needed] if c['num_val'] > 0 else None
 
-            # --- 3. Load Validation Segments ---
-            val_datasets = []
-            for entry in val_data_dict:
-                ds = ASEDataset(
-                    db_path=entry['db_file'],
-                    dtype=c['dtype'],
-                    open_shell=c['open_shell'],
-                    start_idx=entry['start_idx'],
-                    end_idx=entry['end_idx']
-                )
-                val_datasets.append(ds)
-            val_database = ConcatDataset(val_datasets) if val_datasets else None
-
-            # When using ConcatDataset, the database is already sliced for the rank.
-            # We process the entire local concat object.
-            tr_start, tr_end = 0, len(train_database)
-            val_start, val_end = 0, len(val_database) if val_database else 0
+                tr_start, tr_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_train'], c['distribute_graphs'])
+                val_start, val_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_val'], c['distribute_graphs'])
+                test_start, test_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_test'], c['distribute_graphs'])
             
-            # Determine Scale/Shift using the local training shard
-            scale_shift_data = self._handle_scale_shift(train_database)
+            # (Omol) folders of db files
+            else:
+                print(f"Rank {self.rank}: Loading data from folder {db_source}")
+
+                # --- 1. Distribute Data across ranks ---
+                train_data_dict, val_data_dict = distribute_data(
+                    base_folder=db_source,
+                    world_size=self.world_size,
+                    rank=self.rank,
+                    N_global_train=c['num_train'],
+                    N_global_val=c['num_val']
+                )
+
+                # --- 2. Load Training Segments ---
+                train_datasets = []
+                for entry in train_data_dict:
+                    ds = ASEDataset(
+                        db_path=entry['db_file'],
+                        dtype=c['dtype'],
+                        open_shell=c['open_shell'],
+                        start_idx=entry['start_idx'], 
+                        end_idx=entry['end_idx']     
+                    )
+                    train_datasets.append(ds)
+                train_database = ConcatDataset(train_datasets)
+
+                # --- 3. Load Validation Segments ---
+                val_datasets = []
+                for entry in val_data_dict:
+                    ds = ASEDataset(
+                        db_path=entry['db_file'],
+                        dtype=c['dtype'],
+                        open_shell=c['open_shell'],
+                        start_idx=entry['start_idx'],
+                        end_idx=entry['end_idx']
+                    )
+                    val_datasets.append(ds)
+                val_database = ConcatDataset(val_datasets) if val_datasets else None
+
+                # When using ConcatDataset, the database is already sliced for the rank.
+                # We process the entire local concat object.
+                tr_start, tr_end = 0, len(train_database)
+                val_start, val_end = 0, len(val_database) if val_database else 0
+                
+                # Determine Scale/Shift using the local training shard
+                scale_shift_data = self._handle_scale_shift(train_database)
             
         else:
             print(f"Rank {self.rank}: Loading data from single file {db_source}")
@@ -191,8 +210,13 @@ class TrainingWorkflow:
             for i in range(self.world_size):
                 if self.rank == i:
                     for batch in train_loader:
-                        num_atoms = batch['node_y_alpha'].shape[1] if c['open_shell'] else batch['node_y'].shape[1]
-                        num_edges = batch['y_alpha'].shape[1] if c['open_shell'] else batch['y'].shape[1]
+                        if not c['open_shell']:
+                            num_atoms = batch['node_y'].shape[1] if c['distribute_graphs'] else batch['node_y'].shape[0]
+                            num_edges = batch['y'].shape[1] if c['distribute_graphs'] else batch['y'].shape[0]
+                        else:
+                            num_atoms = batch['node_y_alpha'].shape[1] if c['distribute_graphs'] else batch['node_y_alpha'].shape[0]
+                            num_edges = batch['y_alpha'].shape[1] if c['distribute_graphs'] else batch['y_alpha'].shape[0]
+                        
                         print(f"Rank {self.rank}: Train batch - Num atoms: {num_atoms}, Num edges: {num_edges}", flush=True)
                 dist.barrier()
             
@@ -329,6 +353,8 @@ class TrainingWorkflow:
         elif self.config['dataset_name'] == 'nablaDFT':
             database = HamiltonianDatabase(self.config['dbpath'])
         elif self.config['dataset_name'] == 'omol':
+            database = None
+        elif self.config['dataset_name'] == 'cp2k_material':
             database = None
         else:
             raise ValueError(f"Unknown dataset name: {self.config['dataset_name']}")

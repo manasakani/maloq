@@ -82,9 +82,9 @@ class SplitTrainer():
             rank = dist.get_rank()
             world_size = dist.get_world_size()
             if train_backbone:
-                self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, find_unused_parameters=False, gradient_as_bucket_view=True)
+                self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, gradient_as_bucket_view=True)
             if train_head:
-                self.head = nn.parallel.DistributedDataParallel(self.head, device_ids=[0], output_device=0, find_unused_parameters=False, gradient_as_bucket_view=True)
+                self.head = nn.parallel.DistributedDataParallel(self.head, device_ids=[0], output_device=0, gradient_as_bucket_view=True)
         else:
             rank = 0
 

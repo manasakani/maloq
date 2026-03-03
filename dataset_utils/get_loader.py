@@ -1,10 +1,14 @@
 import torch
 import numpy as np
+import os
 
 from fock_utils import utils_orca_out, fock_targets_batched, matrix2labels_kernels, basis_sets
 from dataset_utils.ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
 from ase import Atoms
 from ase.neighborlist import NeighborList
+from ase.io import read
+from scipy.sparse import coo_matrix, diags
+import matplotlib.pyplot as plt
 
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
@@ -18,6 +22,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     num_molecules_to_process = end_idx - start_idx
+    dist.barrier()
 
     if dataset_name == "QM7":
 
@@ -88,8 +93,50 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         hamiltonians = [database[i][loss_target_string] for i in range(start_idx, end_idx)]
         overlaps = [0 for i in range(start_idx, end_idx)] # dummy overlaps for now!!!
 
+    # 'database' is a folder in this case
+    elif dataset_name == "cp2k_material":
+        orbital_basis = basis_sets.orbital_basis_def2_svp_cp2k
+        orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.orbital_basis_def2_svp_cp2k[element] for element in basis_sets.orbital_basis_def2_svp_cp2k.keys()}
+        orbital_basis = {int(k): v for k, v in orbital_basis.items()}
+
+        hamiltonians = []
+        overlaps = []
+        positions = []
+        atomic_numbers = []
+        energy = []
+        forces = []
+        charges = [0 for i in range(start_idx, end_idx)]
+        spins = [1 for i in range(start_idx, end_idx)]
+
+        for data_folder in database[start_idx : end_idx]:
+
+            xyz_file = [f for f in os.listdir(data_folder) if f.endswith('.xyz')][0]
+            print(f"Loading data from {data_folder}/{xyz_file}", flush=True)
+
+            # read the xyz file to get atomic numbers and positions
+            structure = load_periodic_cp2k_structure(os.path.join(data_folder, xyz_file))
+            print(f"Structure has {len(structure)} atoms and cell dimensions {structure.get_cell()} with PBC {structure.get_pbc()}", flush=True)
+            
+            atomic_numbers.append(structure.get_atomic_numbers())
+            positions.append(structure.get_positions())
+            energy.append(0) # there is no energy readout for now
+            forces.append(0) 
+
+            # find the Hamiltonian file of type *..-KS_Spin_1-1_0.csr:
+            hamiltonian_file = [f for f in os.listdir(data_folder) if '-KS_SPIN_1-1_0' in f][0]
+            hamiltonian = read_cp2k_bincsr(os.path.join(data_folder, hamiltonian_file))
+            hamiltonians.append(hamiltonian)
+            print(f"Hamiltonian loaded with shape {hamiltonian.shape} and {hamiltonian.nnz} non-zero elements", flush=True)
+
+            # overlap_file = [f for f in os.listdir(data_folder) if '-S_SPIN_1-1_0' in f][0]
+            # overlap = read_cp2k_bincsr(os.path.join(data_folder, overlap_file))
+            overlaps.append(0) # dummy overlaps for now!!!
+
     else:
         raise ValueError("Unknown database!")
+
+    print(f"Rank {rank}: Loaded data for {num_molecules_to_process} molecules.", flush=True)
+    dist.barrier()
 
     # Set up the Graph targets
     if make_fock_targets:
@@ -263,6 +310,78 @@ def get_datalist(dataset, start_idx, end_idx, dataset_name, rcut, element_refere
         datalist.append(data)
 
     return datalist
+
+def read_cp2k_bincsr(file_name):
+    file_size = os.path.getsize(file_name)
+    record_size = 24  # 4(pad)+4(x)+4(y)+8(data)+4(pad) = 24 bytes per element
+    nnzel = file_size // record_size
+    
+    if not (nnzel * record_size == file_size):
+        raise ValueError("The matrix has a wrong size.")
+
+    # Define a structured dtype to read the whole file at once
+    # 'i4' is 4-byte int, 'f8' is 8-byte float. '<' is little-endian.
+    dt = np.dtype([
+        ('pad1', '<i4'), 
+        ('x', '<u4'), 
+        ('y', '<u4'), 
+        ('data', '<f8'), 
+        ('pad2', '<i4')
+    ])
+
+    # Read everything in ONE shot
+    raw_data = np.fromfile(file_name, dtype=dt)
+    
+    x_indices = raw_data['x']
+    y_indices = raw_data['y']
+    data = raw_data['data']
+
+    # Construct sparse matrix (rest of your logic remains the same)
+    matsize = (int(np.max(x_indices)), int(np.max(y_indices)))
+    H = coo_matrix((data, (x_indices-1, y_indices-1)), shape=matsize)
+    H = H.tocsr()
+
+    D = diags(H.diagonal(), offsets=0, shape=H.shape, format='csr')
+    H_full = H + H.T - D
+
+    return H_full
+
+def load_periodic_cp2k_structure(file_path):
+    """
+    Reads an XYZ file and manually extracts cell dimensions from the 
+    second line (comment line) if they are not automatically parsed.
+    """
+    print(f"Loading structure from {file_path}...", flush=True)
+
+    # atoms = read(file_path, format='xyz') # somehow this hangs when distributed
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+            
+        # Line 0: Number of atoms
+        num_atoms = int(lines[0].strip())
+            
+        # Lines 2 to 2+num_atoms: Atomic data
+        symbols = []
+        positions = []
+        for i in range(2, 2 + num_atoms):
+            parts = lines[i].split()
+            symbols.append(parts[0])
+            positions.append([float(x) for x in parts[1:4]])
+            
+        # Create ASE object 
+        atoms = Atoms(symbols=symbols, positions=positions)
+
+        # Line 1: Comment/Cell line
+        header_parts = lines[1].split()
+        if header_parts[0].lower() == 'cell':
+            # Extract the 3 dimensions: [X Y Z]
+            cell_dims = [float(x) for x in header_parts[1:4]]
+            atoms.set_cell(cell_dims)
+            atoms.set_pbc([True, True, True])
+        else:
+            print("Warning: 'Cell' keyword not found in header line.")
+    
+    return atoms
 
 # --------------------------------------------
 # Loading balancing batches 

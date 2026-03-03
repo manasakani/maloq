@@ -6,6 +6,7 @@ import time
 from ase.neighborlist import NeighborList
 import random
 import cupy as cp
+import scipy.sparse as sp
 import pickle, os
 from ase import Atoms
 from torch.utils.dlpack import from_dlpack
@@ -169,7 +170,7 @@ class Fock_Targets:
             mol_edge_dist = torch.zeros((len(indices0), 4), dtype=self.dtype)
             if self.distribute_graphs:
                 mol_edge_dist[:, 1:4] = torch.from_numpy(atoms.get_distances(indices0, indices1, vector=True))    # Vector components
-                print("Computed edge distances with swapped indices for distributed graph!")
+                print("Computed edge distances with swapped indices for distributed graph!", flush=True)
             else:
                 mol_edge_dist[:, 1:4] = torch.from_numpy(atoms.get_distances(indices1, indices0, vector=True))    # Vector components
             mol_edge_dist[:, 0] = torch.linalg.norm(mol_edge_dist[:, 1:4], dim=-1, keepdim=False)             # Scalar distances
@@ -317,6 +318,10 @@ class Fock_Targets:
         for i, fock_matrix in enumerate(fock_matrices):
 
             open_shell = fock_matrix.ndim == 3
+
+            # Handle sparse fock
+            if sp.issparse(fock_matrix):
+                fock_matrix = fock_matrix.toarray()
 
             # Move fock matrix to device
             if not isinstance(fock_matrix, torch.Tensor):
@@ -492,7 +497,7 @@ class Fock_Targets:
                             edges_to_recv[rank_idx].append((edge_idx, pos_idx))
                             break
 
-            print(f"Rank {self.rank} needs to recv edges: ", dict(edges_to_recv), flush=True)
+            # print(f"Rank {self.rank} needs to recv edges: ", dict(edges_to_recv), flush=True)
 
             # 2. Map where we need to send our current edges to
             edges_to_send = defaultdict(list)
@@ -509,7 +514,7 @@ class Fock_Targets:
                         edges_to_send[rank_idx].append(edge_idx)
                         break
 
-            print(f"Rank {self.rank} needs to send edges: ", dict(edges_to_send), flush=True)
+            # print(f"Rank {self.rank} needs to send edges: ", dict(edges_to_send), flush=True)
 
             # ------------- Perform Communication --------------
 
@@ -928,7 +933,7 @@ class Domain_Decomp():
             if self.rank == i:
                 print("________________________________________________________")
                 print(f"Rank {self.rank} has {self.end_node - self.start_node} nodes and {self.end_edge - self.start_edge} edges:")
-                print(f"Rank {self.rank} has nodes from {self.start_node} to {self.end_node}: {self.local_node_index}")
+                # print(f"Rank {self.rank} has nodes from {self.start_node} to {self.end_node}: {self.local_node_index}")
                 print(f"Rank {self.rank} has edges from {self.start_edge} to {self.end_edge}: {self.local_edge_index}")
                 print(f"Rank {self.rank} expand edge 0 (dst node) nodes_to_send: ", self.expand_edge_0['nodes_to_send'])
                 print(f"Rank {self.rank} expand edge 0 (dst node) nodes_to_recv: ", self.expand_edge_0['nodes_to_recv'])

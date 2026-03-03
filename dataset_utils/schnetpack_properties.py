@@ -1,8 +1,6 @@
 """
+This is directly taken from schenetpack, to avoid installing the whole package. Link to source: []
 Keys to access structure properties.
-
-Note: Had to be moved out of Structure class for TorchScript compatibility
-
 """
 
 from typing import Final
