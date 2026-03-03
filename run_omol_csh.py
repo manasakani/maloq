@@ -10,7 +10,7 @@ from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 config = {
     # Dataset Paths & Naming
     "dataset_name": 'omol',
-    "dbpath": "./omol_elytes_unsolvated_raw/",
+    "dbpath": "/capstor/scratch/cscs/mkanisel/helm/omol_elytes_unsolvated_raw/",
     "output_folder": 'outputs_omol_elytes',
     "run_name": 'omol',
     "open_shell": False,
