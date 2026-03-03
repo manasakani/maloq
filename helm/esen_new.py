@@ -77,9 +77,15 @@ class eSEN_Backbone(nn.Module):
         act_type: str = "gate",
         mlp_type: str = "spectral",
         gaussian_width = 1.0,
-        include_edges=True
+        include_edges=True,
+        wigner_backend: str = "torch",
     ):
         super().__init__()
+
+        assert wigner_backend in ("torch", "triton"), \
+            f"wigner_backend must be 'torch' or 'triton', got '{wigner_backend}'"
+        self.wigner_backend = wigner_backend
+        self._wigner_buf = None  # upper-bound pre-allocated, grown only when num_edges exceeds capacity
 
         if not include_edges:
             print("Note: Initializing eSEN backbone without edge_embeddings!")
@@ -228,13 +234,28 @@ class eSEN_Backbone(nn.Module):
             for l in range(self.lmax + 1)
         ]
 
-        euler_angles = init_edge_rot_euler_angles(edge_distance_vecs)
-        wigner = eulers_to_wigner(
-            euler_angles,
-            0,
-            self.lmax,
-            Jd_buffers,
-        )
+        if self.wigner_backend == "triton":
+            from .triton_kernels import edge_vec_to_wigner_fused
+            num_edges = edge_distance_vecs.shape[0]
+            out_dim = (self.lmax + 1) ** 2
+            if self._wigner_buf is None or num_edges > self._wigner_buf.shape[0]:
+                self._wigner_buf = torch.zeros(
+                    num_edges, out_dim, out_dim,
+                    device=edge_distance_vecs.device,
+                    dtype=torch.float32,
+                )
+            wigner = edge_vec_to_wigner_fused(
+                edge_distance_vecs, Jd_buffers, lmax=self.lmax,
+                out=self._wigner_buf[:num_edges],
+            )
+        else:
+            euler_angles = init_edge_rot_euler_angles(edge_distance_vecs)
+            wigner = eulers_to_wigner(
+                euler_angles,
+                0,
+                self.lmax,
+                Jd_buffers,
+            )
         wigner_inv = torch.transpose(wigner, 1, 2).contiguous()
 
         return wigner, wigner_inv
@@ -351,6 +372,7 @@ class eSEN_Backbone(nn.Module):
                 wigner_inv,
                 node_or_edge='edge'
             )
+
 
         ###############################################################
         # Update spherical node embeddings
