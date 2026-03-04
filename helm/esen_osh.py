@@ -84,7 +84,7 @@ class eSEN_Backbone(nn.Module):
         gaussian_width = 1.0,
         include_edges=True,
         open_shell=False,
-        wigner_backend: str = "torch",
+        wigner_backend: str = "triton",
         distributed_graph_training=False
     ):
         super().__init__()
