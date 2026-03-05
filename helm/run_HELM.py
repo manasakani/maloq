@@ -1,4 +1,4 @@
-# Helper functions to run the HELM model
+# Helper functions to run the HELM model - NEEDS TO BE REFACTORED!!
 import torch
 import numpy as np
 from torch_geometric.data import Data as gnnData

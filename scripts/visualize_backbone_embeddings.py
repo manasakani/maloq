@@ -1149,10 +1149,8 @@ def main(output_folder=None, max_molecules=10, start_molecule=0, lmax=4):
     print("  - clustering_node_embeddings.png")
 
 if __name__ == "__main__":
+    
     # Configuration - modify these values directly
-    # output_folder = 'outputs_omol_58k_energyfinetuned_E128/embeddings'  # Change this to your output folder
-    # output_folder = 'nablaDFT_final_energy_evals/outputs_nablaDFT_focktrained_energyfinetuned_tiny/embeddings_train2k'  # Change this to your output folder
-
     output_folder = 'outputs_omol_58k_E128/embeddings'  # Change this to your output folder
 
     max_molecules = 249  # Number of molecules to load
