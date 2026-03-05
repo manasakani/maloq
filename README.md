@@ -21,10 +21,10 @@ This repository is the official implementation for our upcoming submission to **
 The model is pre-configured to work with three Hamiltonian matrix datasets. Ensure you download the datasets and update the `dbpath` in the respective config files.
 
 | Dataset | Type | Download Link | Config File | Description |
-| :--- | :--- | :--- | :--- |
+| :--- | :--- | :--- | :--- | :--- |
 | **MD17/QM7** | Small Molecules | [Website](https://quantum-machine.org/datasets/) | `run_QM7.py` | Water and other small molecules. |
-| **nablaDFT** | DFT Benchmarks | [GitHub / nablaDFT](https://github.com/AIRI-Institute/nablaDFT) | `run_nablaDFT.py` | Druglike molecules with 30-50 atoms each, containing a few heavy atoms |
-| **Omol_CSH_58k** | Large Scale | [To do] | `run_omol_csh.py` | 58k samples focused on large molecules (10-150 atoms) and complex orbital systems. |
+| **nablaDFT** | DFT Benchmarks | [GitHub](https://github.com/AIRI-Institute/nablaDFT) | `run_nablaDFT.py` | Druglike molecules (30-50 atoms) with heavy atoms. |
+| **Omol_CSH_58k** | Large Scale | [Link To-Do]() | `run_omol_csh.py` | 58k samples of large molecules (10-150 atoms). |
 
 ---
 
