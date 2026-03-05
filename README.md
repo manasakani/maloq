@@ -39,3 +39,10 @@ cd maloq
 pip install -r requirements.txt
 
 python run_QM7.py or python run_nablaDFT.py or python run_omol_csh.py
+
+## 👥 Contributors
+
+* **ICLR2026 (HELM)** – Manasa Kaniselvan and Daniel Levine
+* **SC26 (MALOQ)** – Manasa Kaniselvan, Denghui Lu, Alexander Maeder, Alexandros Nikolaos Ziogas
+
+---
