@@ -40,9 +40,40 @@ pip install -r requirements.txt
 
 python run_QM7.py or python run_nablaDFT.py or python run_omol_csh.py
 
+---
+
 ## 👥 Contributors
 
 * **ICLR2026 (HELM)** – Manasa Kaniselvan and Daniel Levine
 * **SC26 (MALOQ)** – Manasa Kaniselvan, Denghui Lu, Alexander Maeder, Alexandros Nikolaos Ziogas
 
 ---
+
+## 📜 Citation
+
+If you use **MALOQ** in your research or find the framework helpful, please cite the following papers:
+
+### Data processing acceleration and distribution (MALOQ)
+```bibtex
+@misc{maloq,
+  title  = {MALOQ: Massively Accelerated Learning of Operators for Quantum-transport},
+  author = {TBD},
+  year   = {2026},
+  note   = {TBD},
+  doi    = {X},
+  url    = {X}
+}
+```
+
+### Initial implementation for electronic structure learning (HELM)
+```bibtex
+@misc{helm,
+  title     = {Learning from the electronic structure of molecules across the periodic table},
+  author    = {Kaniselvan, Manasa and Miller, Benjamin Kurt and Gao, Meng and Nam, Juno and Levine, Daniel S.},
+  publisher = {arXiv},
+  year      = {2025},
+  doi       = {10.48550/ARXIV.2510.00224},
+  url       = {[https://arxiv.org/abs/2510.00224](https://arxiv.org/abs/2510.00224)},
+  primaryClass = {physics.chem-ph}
+}
+```
