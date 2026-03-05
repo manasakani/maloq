@@ -13,18 +13,18 @@
 ## 📌 About
 **MALOQ** is a scalable, equivariant Graph Neural Network (GNN) framework designed for the rapid prediction of Hamiltonian matrices and quantum operators. By leveraging $SO(2)$-equivariant kernels, symmetry reductions, and efficient data processing pipelines, MALOQ learns structure-property mappings to complex orbital interactions across diverse chemical spaces.
 
-This repository is the official implementation for our paper at **ICLR 2026** and upcoming submission to **SC26**
+This repository is the official implementation for our upcoming submission to **SC26**
 
 ---
 
 ## 📊 Supported Datasets
-The model is pre-configured to work with three major Hamitlonian matrix datasets. Ensure you download the datasets and update the `dbpath` in the respective config files.
+The model is pre-configured to work with three Hamiltonian matrix datasets. Ensure you download the datasets and update the `dbpath` in the respective config files.
 
-| Dataset | Type | Config Script | Description |
+| Dataset | Type | Download Link | Config File | Description |
 | :--- | :--- | :--- | :--- |
-| **QM7** | Small Molecules | `run_QM7.py` | Water and other small molecules. |
-| **nablaDFT** | DFT Benchmarks | `run_nablaDFT.py` | Druglike molecules with 30-50 atoms each, containing a few heavy atoms |
-| **Omol_CSH_58k** | Large Scale | `run_omol_csh.py` | 58k samples focused on large molecules (10-150 atoms) and complex orbital systems. |
+| **MD17/QM7** | Small Molecules | [Website](https://quantum-machine.org/datasets/) | `run_QM7.py` | Water and other small molecules. |
+| **nablaDFT** | DFT Benchmarks | [GitHub / nablaDFT](https://github.com/AIRI-Institute/nablaDFT) | `run_nablaDFT.py` | Druglike molecules with 30-50 atoms each, containing a few heavy atoms |
+| **Omol_CSH_58k** | Large Scale | [To do] | `run_omol_csh.py` | 58k samples focused on large molecules (10-150 atoms) and complex orbital systems. |
 
 ---
 
@@ -33,7 +33,9 @@ The model is pre-configured to work with three major Hamitlonian matrix datasets
 Clone the repository and install the required dependencies (see requirements.txt).
 
 git clone [https://github.com/your-username/maloq.git](https://github.com/your-username/maloq.git)
+
 cd maloq
+
 pip install -r requirements.txt
 
 python run_QM7.py or python run_nablaDFT.py or python run_omol_csh.py
