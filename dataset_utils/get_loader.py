@@ -27,6 +27,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     if dataset_name == "QM7":
 
         orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
+        periodic_dataset = False
 
         # Extract all the data on every rank (avoids strange indexing errors for the QM7 databases)
         all_counts = [None] * world_size
@@ -57,6 +58,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
 
     elif dataset_name == "nablaDFT":
         orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
+        periodic_dataset = False
         
         atomic_numbers = []
         positions = []
@@ -82,7 +84,8 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         orbital_basis = basis_sets.def2_tzvpd
         orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
         orbital_basis = {int(k): v for k, v in orbital_basis.items()}
-        
+        periodic_dataset = False
+
         positions = [database[i]['pos'] for i in range(start_idx, end_idx)]
         atomic_numbers = [database[i]['atomic_numbers'] for i in range(start_idx, end_idx)]
         energy = [database[i]['energies'] for i in range(start_idx, end_idx)]
@@ -98,6 +101,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         orbital_basis = basis_sets.orbital_basis_def2_svp_cp2k
         orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.orbital_basis_def2_svp_cp2k[element] for element in basis_sets.orbital_basis_def2_svp_cp2k.keys()}
         orbital_basis = {int(k): v for k, v in orbital_basis.items()}
+        periodic_dataset = True
 
         hamiltonians = []
         overlaps = []
@@ -105,6 +109,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         atomic_numbers = []
         energy = []
         forces = []
+        periodic_boxes = []
         charges = [0 for i in range(start_idx, end_idx)]
         spins = [1 for i in range(start_idx, end_idx)]
 
@@ -121,6 +126,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             positions.append(structure.get_positions())
             energy.append(0) # there is no energy readout for now
             forces.append(0) 
+            periodic_boxes.append(structure.get_cell())
 
             # find the Hamiltonian file of type *..-KS_Spin_1-1_0.csr:
             hamiltonian_file = [f for f in os.listdir(data_folder) if '-KS_SPIN_1-1_0' in f][0]
@@ -145,6 +151,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
                                                             dtype=dtype, 
                                                             dataset_name=dataset_name,
                                                             scale_shift_data=scale_shift_data,
+                                                            periodic_boxes=periodic_boxes if periodic_dataset else None,
                                                             distribute_graphs=distribute_graphs)
 
     datalist = []

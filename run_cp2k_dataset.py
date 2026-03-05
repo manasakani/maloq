@@ -30,7 +30,7 @@ config = {
     "reduce_node_intra": True,       # Enforce 0 odd degrees for intra-orbital
     
     # Training Hyperparameters
-    "num_epochs": 1000,
+    "num_epochs": 20000,
     "dtype": torch.float32,          # 32 here for cupy kernel
     "lr_init": 1e-4,
     "optimizer_type": "adam",        # standard Adam
@@ -57,11 +57,11 @@ config = {
     "compute_total_energy": False,
 
     # Model Architecture
-    "l_embedding_dim": 32,
-    "num_distance_basis": 32,
-    "num_mp_layers": 2,
-    "rcut_orbitals": 4.0,
-    "rcut_gaussian": 12.0,           # 2 * rcut_orbitals
+    "l_embedding_dim": 128,
+    "num_distance_basis": 128,
+    "num_mp_layers": 3,
+    "rcut_orbitals": 4.5,
+    "rcut_gaussian": 10.0,           # 2 * rcut_orbitals
     "gaussian_width": 1.0,
     "include_edges": True,           # Based on fock_matrix target
     "head_type": 'gated',

@@ -25,6 +25,7 @@ class Fock_Targets:
 
     def __init__(self, atomic_numbers, atomic_positions, cutoff, orbital_basis,
                 fock_matrices=None,
+                periodic_boxes=None,
                 dataset_name='temp',
                 dtype=torch.float32,
                 compute_fock_eigenvalues=False,
@@ -63,7 +64,7 @@ class Fock_Targets:
         self.edge_dist_list = []
         self.orbitals_per_atom_list = []
         self.block_starts_list = []
-        self.make_atomic_graphs(atomic_numbers, atomic_positions, cutoff)
+        self.make_atomic_graphs(atomic_numbers, atomic_positions, cutoff, periodic_boxes)
 
         # Create a merged distributed graph
         if self.distribute_graphs:
@@ -140,19 +141,23 @@ class Fock_Targets:
             self.make_targets(fock_matrices)
 
 
-    def make_atomic_graphs(self, atomic_numbers, atomic_positions, cutoff):
+    def make_atomic_graphs(self, atomic_numbers, atomic_positions, cutoff, periodic_boxes):
 
         # The outer most index is the molecule index
         num_molecules = len(atomic_numbers)
 
         # --> Atoms and connectivity list:
-        for numbers, positions in zip(atomic_numbers, atomic_positions):
+        for i, (numbers, positions) in enumerate(zip(atomic_numbers, atomic_positions)):
 
             # Atoms for every molecule
             atoms = Atoms(symbols=numbers, positions=positions)
             num_atoms = len(numbers)
             self.atomic_numbers_list.append(atoms.get_atomic_numbers())
             self.atomic_positions_list.append(atoms.get_positions())
+
+            if periodic_boxes is not None:
+                atoms.set_cell(periodic_boxes[i])
+                atoms.set_pbc([True, True, True])
 
             # Neighbor lists for every molecule
             neighbours = NeighborList(np.ones(num_atoms)*cutoff, skin=0, self_interaction=False, bothways=True)
