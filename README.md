@@ -28,20 +28,6 @@ The model is pre-configured to work with three Hamiltonian matrix datasets. Ensu
 
 ---
 
-## Getting Started
-
-Clone the repository and install the required dependencies (see requirements.txt).
-
-git clone [https://github.com/your-username/maloq.git](https://github.com/your-username/maloq.git)
-
-cd maloq
-
-pip install -r requirements.txt
-
-python run_QM7.py or python run_nablaDFT.py or python run_omol_csh.py
-
----
-
 ## 👥 Contributors
 
 * **ICLR2026 (HELM)** – Manasa Kaniselvan and Daniel Levine
