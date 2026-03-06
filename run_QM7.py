@@ -19,21 +19,21 @@ config = {
     "train_head": True,              # Set to False to freeze the head
     
     # Data Splitting
-    "num_train": 2,
-    "num_val": 2,
+    "num_train": 500,
+    "num_val": 500,
     "num_test": 2,
-    "batch_size": 10,          # 1 for eval, 10 for train (set to 1 for water script)
-    "distribute_graphs": True,       # Distribute graphs and perform communication in the forward pass (ongoing implementation, not finished)
+    "batch_size": 5,          # 1 for eval, 10 for train (set to 1 for water script)
+    "distribute_graphs": False,       # Distribute graphs and perform communication in the forward pass (ongoing implementation, not finished)
     
     # Symmetry Reductions
     "reduce_edge": False,
-    "reduce_node": True,
-    "reduce_node_intra": True,
+    "reduce_node": False,
+    "reduce_node_intra": False,
     
     # Training Hyperparameters
-    "num_epochs": 5,
-    "dtype": torch.float32, # torch.float64!
-    "lr_init": 1e-5,
+    "num_epochs": 500,
+    "dtype": torch.float64,
+    "lr_init": 1e-4,
     "optimizer_type": "adamw",
     "weight_decay": 1e-4,
     "scheduler_type": 'plateau', # 'plateau' or 'cosine'
