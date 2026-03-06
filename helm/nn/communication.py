@@ -25,7 +25,7 @@ comm_nccl = _global_nccl_comm()
 #     Exchange node embeddings between different processes using NCCL backend, according to communication_dict.
 #     """
 
-#     dist.barrier()
+#     # dist.barrier()
 #     comm = comm_nccl.comm
 #     stream = comm_nccl.stream
 
@@ -111,6 +111,8 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm=None):
     dtype = embedding.dtype
     num_coefficients = embedding.shape[1]
     num_channels = embedding.shape[2]
+
+    # print(f"Rank {dist.get_rank()} - Active backend: {torch.distributed.get_backend()}", flush=True)
     
     is_local = communication_dict['is_local']
     is_remote = communication_dict['is_remote']
@@ -122,12 +124,16 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm=None):
 
     num_nodes_to_recv = len(remote_indices_torch)
 
-    # 2. Slot in the local embeddings immediately
+    # dist.barrier()
+
     edge_embeddings = torch.empty(
         (num_edges, num_coefficients, num_channels), 
         device=device, dtype=dtype
     )
-    edge_embeddings[is_local] = embedding[local_indices_torch]
+
+    # if there are no remote nodes to receive, we can skip the communication step and directly slot in the local embeddings
+    if num_nodes_to_recv == 0:
+        edge_embeddings[is_local] = embedding[local_indices_torch]
 
     # 3. Communication Group
     if num_nodes_to_recv > 0:
@@ -157,6 +163,9 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm=None):
         # 4. Execute Group Communication
         # This is the direct torch equivalent of nccl.groupStart() -> nccl.groupEnd()
         reqs = dist.batch_isend_irecv(p2p_ops)
+
+        # Slot in the local embeddings while communication (overlap)
+        edge_embeddings[is_local] = embedding[local_indices_torch]
         
         for req in reqs:
             req.wait()

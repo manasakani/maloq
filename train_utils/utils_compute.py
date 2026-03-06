@@ -18,6 +18,17 @@ def setup_env(rank, world_size):
 
     return device
 
+def print_cuda_env():
+    if dist.is_initialized():
+        rank = dist.get_rank()
+    else:
+        rank = "N/A (Not Initialized)"
+
+    cuda_devices = os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')
+    current_device = torch.cuda.current_device() if torch.cuda.is_available() else "No GPU"
+
+    print(f"[Rank {rank}] CUDA_VISIBLE_DEVICES: {cuda_devices} | Local Device Index: {current_device}")
+
 def split_indices(rank, world_size, total_num_idx, distribute_graphs):
     """
     Split data indices
