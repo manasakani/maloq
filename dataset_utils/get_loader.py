@@ -33,9 +33,10 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         all_counts = [None] * world_size
         dist.all_gather_object(all_counts, num_molecules_to_process)
         total_num_molecules = sum(all_counts)
+        device = torch.device('cuda:'+ str(torch.cuda.current_device()))
 
         # get rank 0's start idx and end idx on all ranks:
-        global_start_idx = torch.tensor(start_idx) if rank == 0 else torch.tensor(0)
+        global_start_idx = torch.tensor(start_idx).to(device) if rank == 0 else torch.tensor(0).to(device)
         dist.broadcast(global_start_idx, src=0)
         global_start_idx = global_start_idx.item()
         global_end_idx = global_start_idx + total_num_molecules
