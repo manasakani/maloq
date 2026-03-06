@@ -305,20 +305,20 @@ class Fock_Targets:
             orbital_template_tmp = []
             for o in self.orbital_template:
                 inner_size = 5 * len(o)
-                tmp = cp.zeros((inner_size,), dtype=cp.int32)
+                tmp = np.zeros((inner_size,), dtype=cp.int32)
                 for j, (row_slice, col_slice, output_slice) in enumerate(o):
                     tmp[j * 5 + 0] = row_slice.start
                     tmp[j * 5 + 1] = row_slice.stop
                     tmp[j * 5 + 2] = col_slice.start
                     tmp[j * 5 + 3] = col_slice.stop
                     tmp[j * 5 + 4] = output_slice.start
+                tmp = cp.array(tmp, dtype=cp.int32)
                 orbital_template_tmp.append(tmp)
                 orbital_template_ptrs.append(matrix2labels_kernels.get_ptr(tmp))
 
             orbital_template_ptrs = cp.array(orbital_template_ptrs, dtype=cp.uintp)
             cp.cuda.Stream.null.synchronize()
 
-            cupy_dtype = self.torch_dtype_to_cupy_dtype(self.dtype)
 
         for i, fock_matrix in enumerate(fock_matrices):
 
@@ -369,6 +369,7 @@ class Fock_Targets:
                                                                     )
                 # call cupy kernel
                 else: 
+                    cupy_dtype = self.torch_dtype_to_cupy_dtype(self.dtype)
                     matrix = cp.array(fock_matrix[spin], dtype=cupy_dtype) if open_shell else cp.array(fock_matrix, dtype=cupy_dtype)
                     labels = cp.zeros((num_edges + num_atoms, self.target_len), dtype=cupy_dtype)
                     matrix2labels_kernels.cupy_single_matrix2label(
