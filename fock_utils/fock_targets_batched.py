@@ -478,8 +478,11 @@ class Fock_Targets:
                     # cupy -> torch
                     all_labels = [from_dlpack(label.toDlpack()) for label in all_labels]
 
-                # Basis transformation:
-                all_labels = [self.basis_transformation.get_net_out(label) for label in all_labels]
+
+                offsets = [0] + list(np.cumsum([len(self.neighbour_list_list[i][0]) + len(self.atomic_numbers_list[i]) for i in range(len(self.neighbour_list_list))]))
+                all_labels_ = torch.cat(all_labels, dim=0)
+                all_labels = self.basis_transformation.get_net_out(all_labels_)
+                all_labels = [all_labels[offsets[i]:offsets[i+1]] for i in range(len(offsets)-1)]
 
                 for i, (node_labels, edge_labels, labels) in enumerate(zip(all_node_labels, all_edge_labels, all_labels)):
 
