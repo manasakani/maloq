@@ -1,8 +1,6 @@
 import torch
 import os
 from train_utils import loss, training_workflow
-from fock_utils import basis_sets
-from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
 # ---------------------------------------------------------
 # OMol Dataset Configuration - closed shell version
@@ -21,11 +19,11 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    "num_train": 32, #28900,
-    "num_val": 32,
+    "num_train": 12, #28900,
+    "num_val": 12,
     "num_test": 1,
-    "batch_size": 1,                 # 1 for eval, usually 10 for train
-    "distribute_graphs": True,       # Distribute graphs and perform communication in the forward pass (ongoing)
+    "batch_size": 12,                 # 1 for eval, usually 10 for train
+    "distribute_graphs": False,       # Distribute graphs and perform communication in the forward pass (ongoing)
 
     # Symmetry Reductions 
     "reduce_edge": False,            # Unused!
@@ -33,7 +31,7 @@ config = {
     "reduce_node_intra": False,       # Enforce 0 odd degrees for intra-orbital
     
     # Training Hyperparameters
-    "num_epochs": 100,
+    "num_epochs": 200,
     "dtype": torch.float32,          # nablaDFT often uses float64 - 32 here for cupy kernel
     "lr_init": 1e-3,
     "optimizer_type": "adam",        # standard Adam
@@ -57,6 +55,7 @@ config = {
     "scale_and_shift": True,         # Scale & shift the node labels
 
     # Model Architecture
+    "wigner_backend": "triton",  # "triton" for fused Triton kernel (requires GPU + triton)
     "l_embedding_dim": 128,
     "num_distance_basis": 128,
     "num_mp_layers": 3,

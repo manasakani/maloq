@@ -1,5 +1,4 @@
 import torch
-# import os
 from train_utils import loss, training_workflow
 
 # ---------------------------------------------------------
@@ -22,8 +21,8 @@ config = {
     "num_train": 5, #12081,
     "num_val": 2, #64,
     "num_test": 0,
-    "batch_size": 1,                 # 1 for eval, usually 10 for train
-    "distribute_graphs": False,       # Distribute graphs and perform communication in the forward pass (ongoing)
+    "batch_size": 10,                 # 1 for eval, usually 10 for train
+    "distribute_graphs": True,       # Distribute graphs and perform communication in the forward pass (ongoing)
     
     # Symmetry Reductions 
     "reduce_edge": False,            # Unused!
@@ -46,7 +45,7 @@ config = {
     "loss_target": 'fock_matrix',
     "train_loss_fxn": loss.rmse_mse_padded_loss,
     "test_loss_fxn": loss.l1_unpadded_loss,
-    "save_frequency": 5,
+    "save_frequency": 10,
     "restart_backbone": True,       # Restart options
     "restart_head": True,
     "restart_optimizer": False,      
@@ -58,6 +57,7 @@ config = {
     "compute_total_energy": False,
 
     # Model Architecture
+    "wigner_backend": "torch",  # "triton" for fused Triton kernel (requires GPU + triton)
     "l_embedding_dim": 128,
     "num_distance_basis": 128,
     "num_mp_layers": 3,
