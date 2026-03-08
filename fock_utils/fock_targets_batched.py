@@ -68,7 +68,7 @@ class Fock_Targets:
 
         # Create a merged distributed graph
         if self.distribute_graphs:
-            self.make_distributed_atomic_graph(atomic_numbers, atomic_positions, cutoff)
+            self.make_distributed_atomic_graph(atomic_numbers, atomic_positions, cutoff, periodic_boxes)
 
         # --> Analyze structure of orbital interactions
         if orbital_template is None or out_js_list is None or req_output_irreps is None or ls_list is None:
@@ -189,7 +189,7 @@ class Fock_Targets:
             self.orbitals_per_atom_list.append(orbitals_per_atom)
             self.block_starts_list.append(block_starts)
 
-    def make_distributed_atomic_graph(self, atomic_numbers, atomic_positions, cutoff):
+    def make_distributed_atomic_graph(self, atomic_numbers, atomic_positions, cutoff, periodic_boxes):
         """
         1. Process local molecules.
         2. Synchronize all molecules across all ranks.
@@ -198,9 +198,13 @@ class Fock_Targets:
         """
         # --- 1: Local Pre-processing ---
         local_mol_data = []
-        for numbers, positions in zip(atomic_numbers, atomic_positions):
+        for i, (numbers, positions) in enumerate(zip(atomic_numbers, atomic_positions)):
             atoms = Atoms(symbols=numbers, positions=positions)
             num_atoms = len(numbers)
+
+            if periodic_boxes is not None:
+                atoms.set_cell(periodic_boxes[i])
+                atoms.set_pbc([True, True, True])
             
             # Get neighbor list for this single molecule
             nl = NeighborList(np.ones(num_atoms)*cutoff, skin=0, self_interaction=False, bothways=True)
@@ -288,7 +292,7 @@ class Fock_Targets:
         """
 
         method = 'cupy_kernel' # 'numpy_kernel' or 'cupy_kernel' 
-        single_matrix = False  # whether to process one matrix at a time (if false, all at once) 
+        single_matrix = True  # whether to process one matrix at a time (if false, all at once) 
         spin_strings = ['_alpha', '_beta']
 
         # each target should fit in a NxN matrix (to be flattened)
@@ -318,6 +322,7 @@ class Fock_Targets:
                 orbital_template_tmp.append(tmp)
                 orbital_template_ptrs.append(matrix2labels_kernels.get_ptr(tmp))
 
+            # template: for interation Z1-Z2, [row slice, col slice] of matrix goes to [output slice] of label
             orbital_template_ptrs = cp.array(orbital_template_ptrs, dtype=cp.uintp)
             cp.cuda.Stream.null.synchronize()
 
@@ -396,13 +401,13 @@ class Fock_Targets:
                     # ----------------------------------------------
 
                     # scale and shift the node labels (l=0 irreps) in the targets
-                    print("max and min before scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
                     if self.scale_shift_data is not None:
+                        print("max and min before scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
                         if open_shell:
                             node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], mol_atomic_numbers, spin_string=spin_strings[spin])
                         else:
                             node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], mol_atomic_numbers)
-                    print("max and min after scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
+                    print("node label magnitude range: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
 
                 # No distribution, store directly
                 if not self.distribute_graphs:
@@ -412,6 +417,7 @@ class Fock_Targets:
                     node_labels_list.append(node_labels)
                     edge_labels_list.append(edge_labels)
             
+        # process all incoming fock matrices at once
         else:
 
             open_shell = fock_matrices[0].ndim == 3
@@ -495,13 +501,13 @@ class Fock_Targets:
                     # ----------------------------------------------
 
                     # scale and shift the node labels (l=0 irreps) in the targets
-                    print("max and min before scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
                     if self.scale_shift_data is not None:
+                        print("max and min before scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
                         if open_shell:
                             node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], mol_atomic_numbers, spin_string=spin_strings[spin])
                         else:
                             node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], mol_atomic_numbers)
-                    print("max and min after scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
+                    print("node label magnitude range: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
 
 
             # No distribution, store directly
@@ -911,7 +917,7 @@ class MergedStructure:
     def __init__(self, z, edges):
         self.atomic_numbers = z
         self.edge_matrix = edges
-        self.counts = None # Domain_Decomp will calculate uniform split if None
+        self.counts = None # Domain_Decomp will calculate split
 
         print("Created MergedStructure with ", len(z), " atoms and edge list ", edges)
 
@@ -948,7 +954,7 @@ class Domain_Decomp():
         self.edge_split_type = "incoming"
         self.use_nccl = use_nccl
 
-        # --> Split edges between ranks (naive split)
+        # --> Split edges between ranks (naive split) - do not use
         if self.edge_split_type == "uniform":
 
             total_num_edges = structure.edge_matrix.shape[1]
@@ -965,7 +971,6 @@ class Domain_Decomp():
             self.end_edge = end_edge
 
         # --> Split edges between ranks (split based on nodes, each rank gets all edges of its nodes, no communication needed for aggregation)
-
         elif self.edge_split_type == "incoming":   
 
             # start edge is the first edge of the first node in the local node list
@@ -1000,10 +1005,6 @@ class Domain_Decomp():
         # self.global_edge_index = torch.tensor(global_edge_index, device=self.device)
         self.global_atomic_numbers = torch.tensor(structure.atomic_numbers, device=self.device)
 
-        # created and assigned during data creation:
-        # self.global_edge_distance_vec = None
-        # self.local_edge_idx = None
-
         # _________________________________________________________________________________________
         # initialize communication patterns for message passing
 
@@ -1026,7 +1027,7 @@ class Domain_Decomp():
         self.expand_edge_1['use_nccl'] = self.use_nccl
 
         # aggregation
-        self.reduce_edge = self.init_comm_pattern_reduce(self.local_edge_index[0, :])
+        self.reduce_edge = self.init_comm_pattern_reduce(self.local_edge_index[1, :])
 
         # --> Shuffle gpus for topology-optimized partition assignment
         # rank_topology_assignment = redistribute_partitions(self)
@@ -1040,7 +1041,7 @@ class Domain_Decomp():
             if self.rank == i:
                 print("________________________________________________________")
                 print(f"Rank {self.rank} has {self.end_node - self.start_node} nodes and {self.end_edge - self.start_edge} edges:")
-                # print(f"Rank {self.rank} has nodes from {self.start_node} to {self.end_node}: {self.local_node_index}")
+                print(f"Rank {self.rank} has nodes from {self.start_node} to {self.end_node}: {self.local_node_index}")
                 print(f"Rank {self.rank} has edges from {self.start_edge} to {self.end_edge}: {self.local_edge_index}")
                 print(f"Rank {self.rank} expand edge 0 (dst node) nodes_to_send: ", self.expand_edge_0['nodes_to_send'])
                 print(f"Rank {self.rank} expand edge 0 (dst node) nodes_to_recv: ", self.expand_edge_0['nodes_to_recv'])
@@ -1090,7 +1091,6 @@ class Domain_Decomp():
             displacements = [0] + [sum(counts[:i]) for i in range(1, self.size)]
 
             total_length_edge_idx = sum(counts)        
-            # all_edge_idx = torch.zeros(total_length_edge_idx, dtype=torch.int64)
             all_edge_idx = np.empty(total_length_edge_idx, dtype=edge_index.dtype)
             self.comm.Allgatherv(edge_index, (all_edge_idx, counts, displacements, MPI.INT))
 
@@ -1119,12 +1119,7 @@ class Domain_Decomp():
                         idx = torch.where(local_node_nums == node)[0]
                         indices[j] = idx
                     indices_to_send[target_rank] = indices.to(self.device)
-
-            # self.comm.Barrier()
-            # print("rank ", self.rank, " Nodes to send (during message creation): ", nodes_to_send)
-            # print("rank ", self.rank, " Nodes to recv (during message creation): ", nodes_to_recv)
-            # print("rank ", self.rank, " Indices to send (during message creation): ", indices_to_send)
-            # self.comm.Barrier()
+                    
 
             edge_index = torch.tensor(edge_index, dtype=torch.long, device=self.device)
 
@@ -1161,7 +1156,7 @@ class Domain_Decomp():
             expand_edge_dict['displacements'] = displacements
             expand_edge_dict['global_edge_idx'] = all_edge_idx
 
-            # Convert PyTorch tensor directly to CuPy array to use when indexing flattened embeddings in SO3.py
+            # Convert PyTorch tensor directly to CuPy array to use when indexing flattened embeddings
             indices_to_send_cp = {
                 target_rank: cp.asarray(nodes.to(self.device))  
                 for target_rank, nodes in indices_to_send.items()
@@ -1176,11 +1171,7 @@ class Domain_Decomp():
 
         return expand_edge_dict
 
-
     def init_comm_pattern_reduce(self, edge_index):
-
-        # --> NEED TO DEBUG
-
 
         rank = dist.get_rank()
         size = dist.get_world_size()
@@ -1196,7 +1187,6 @@ class Domain_Decomp():
         # start and end nodes on every rank:
         start_nodes = self.comm.allgather(self.start_node)
         end_nodes = self.comm.allgather(self.end_node)
-        print("Total number of nodes: ", total_num_nodes, "rank: ", rank, "start nodes: ", start_nodes, " end nodes: ", end_nodes)
 
         # allgather the edge_indices on each rank to make a global_edge_index and counts and displacements:
         length_local_edge_idx = len(edge_index)
@@ -1236,16 +1226,9 @@ class Domain_Decomp():
                         messages_to_recv[j].append(i-d)
                         break
 
-        # the messages are the indices of the local embeddings on the source rank
-        # self.comm.Barrier()
-        # print(f"Rank {rank}: messages_to_send (during message aggregation) = {messages_to_send}")
-        # print(f"Rank {rank}: messages_to_recv (during message aggregation) = {messages_to_recv}")
-        # self.comm.Barrier()
-
         for dest_rank, embedding_idxs in messages_to_send.items():
             if embedding_idxs:
                 messages_to_send[dest_rank] = torch.tensor(embedding_idxs, dtype=torch.int64, device=self.device)
-
 
         edge_index = torch.tensor(edge_index, dtype=torch.long, device=self.device)
         local_node_nums = torch.tensor(local_node_nums, dtype=torch.long, device=self.device)
