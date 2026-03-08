@@ -39,12 +39,6 @@ class SplitTrainer():
         # config: any dictionary, add the training parameters
         config = {}
 
-        # wandb.init(config=config,
-        #            id=run_id,
-        #            name=run_name,
-        #            project='fockmatrices',
-        #            entity='manasakani')
-
     # -- Train model --
     def train(self,
             num_epochs,
@@ -129,10 +123,10 @@ class SplitTrainer():
                 torch.cuda.synchronize()
                 backbone_start = time.perf_counter()
                 backbone_out = self.backbone(batch)
-                backbone_end = time.perf_counter()
                 torch.cuda.synchronize()
+                backbone_end = time.perf_counter()
 
-                if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
+                if loss_target_string in ['fock_matrix', 'density_matrix']:
                     node_output, edge_output = self.head(backbone_out, batch)
                     head_end = time.perf_counter()
 
@@ -150,9 +144,11 @@ class SplitTrainer():
                                                                             loss_fxn, self.head_irreps,
                                                                             basis_transform, compute_uncoupled_loss
                                                                         )
+                    loss_end = time.perf_counter()
+
                     train_loss_node += loss_node.item()
                     train_loss_edge += loss_edge.item()
-                    loss_end = time.perf_counter()
+                    
                     if rank == 0:
                         print(f"--> Rank {rank} batch {batch_idx} loss: ", loss.item(), flush=True)
                         current_mem = torch.cuda.memory_allocated() / (1024 * 1024)
@@ -184,12 +180,13 @@ class SplitTrainer():
                 forward_end = time.perf_counter()
 
                 # -- Backwards --
-                torch.cuda.synchronize()
                 backward_start = time.perf_counter()
                 loss.backward()
                 optimizer.step()
-                backward_end = time.perf_counter()
                 torch.cuda.synchronize()
+                backward_end = time.perf_counter()
+
+                print(f"Rank {rank} batch {batch_idx} time: {backward_end - backbone_start:.4f}s", flush=True)
 
                 # -- Scheduler --
                 if not step_every_epoch:
@@ -226,6 +223,9 @@ class SplitTrainer():
                 else:
                     print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]}", flush=True)
 
+            epoch_end = time.perf_counter()
+            if rank == 0:
+                print("Time per epoch: ", epoch_end - epoch_start)
             dist.barrier()
 
             # Validation step
@@ -330,20 +330,6 @@ class SplitTrainer():
                 current_lr = optimizer.param_groups[0]['lr']
                 if rank == 0:
                     print("Current learning rate: ", current_lr)
-
-            epoch_end = time.perf_counter()
-            if rank == 0:
-                print("Time per epoch: ", epoch_end - epoch_start)
-
-            # log to wandb:
-            # if (epoch + 1) % self.save_frequency == 0:
-            # update_dict = {"node_loss": float(track_loss_node[-1]),
-            #             "node_val_loss": float(track_loss_node_val[-1]),
-            #             "learning_rate": float(current_lr)}
-            # if loss_target_string == 'fock_matrix':
-            #     update_dict.update({"edge_loss": float(track_loss_edge[-1]),
-            #                         "edge_val_loss": float(track_loss_edge_val[-1])})
-            # wandb.log(update_dict)
 
             # save state
             if rank == 0:
