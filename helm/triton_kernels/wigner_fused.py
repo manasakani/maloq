@@ -235,9 +235,15 @@ def wigner_fused_kernel_16(
     y = tl.minimum(tl.maximum(edge_y / norm, -1.0), 1.0)
     z = tl.minimum(tl.maximum(edge_z / norm, -1.0), 1.0)
 
-    alpha = -libdevice.atan2(x, z)
-    beta = -libdevice.acos(y)
-    gamma = -tl.rand(seed, pid) * 6.283185307179586
+    # Compute physical angles (matching torch backend)
+    physical_alpha = libdevice.atan2(x, z)
+    physical_beta = libdevice.acos(y)
+    physical_gamma = tl.rand(seed, pid) * 6.283185307179586
+        
+    # Swap and negate to match torch convention: (-gamma, -beta, -alpha)
+    alpha = -physical_gamma
+    beta = -physical_beta
+    gamma = -physical_alpha
 
     # Process each 16x16 group sequentially
     # struct_stride = 48 (l_map:16 + local_start:16 + out_offset:16)
@@ -357,9 +363,17 @@ def _extract_eulers_kernel(
     x = tl.minimum(tl.maximum(edge_x / norm, -1.0), 1.0)
     y = tl.minimum(tl.maximum(edge_y / norm, -1.0), 1.0)
     z = tl.minimum(tl.maximum(edge_z / norm, -1.0), 1.0)
-    alpha = -libdevice.atan2(x, z)
-    beta = -libdevice.acos(y)
-    gamma = -tl.rand(seed, pid) * 6.283185307179586
+    
+    # Compute physical angles (matching torch backend)
+    physical_alpha = libdevice.atan2(x, z)
+    physical_beta = libdevice.acos(y)
+    physical_gamma = tl.rand(seed, pid) * 6.283185307179586
+        
+    # Swap and negate to match torch convention: (-gamma, -beta, -alpha)
+    alpha = -physical_gamma
+    beta = -physical_beta
+    gamma = -physical_alpha
+    
     tl.store(euler_ptr + pid * 3 + 0, alpha)
     tl.store(euler_ptr + pid * 3 + 1, beta)
     tl.store(euler_ptr + pid * 3 + 2, gamma)
