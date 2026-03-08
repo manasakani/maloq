@@ -8,7 +8,7 @@ config = {
     # Dataset Paths & Naming
     "dataset_name": 'nablaDFT',
     "dbpath": "/capstor/store/cscs/pasc/c33/manasa/nablaDFT_datasets/train_2k.db",
-    "output_folder": 'outputs_nablaDFT',
+    "output_folder": 'outputs_nablaDFT_dist',
     "run_name": 'nabla_2k',
     "open_shell": False,
     
@@ -18,11 +18,11 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    "num_train": 5, #12081,
-    "num_val": 2, #64,
+    "num_train": 1, #12081,
+    "num_val": 1, #64,
     "num_test": 0,
-    "batch_size": 10,                 # 1 for eval, usually 10 for train
-    "distribute_graphs": True,       # Distribute graphs and perform communication in the forward pass (ongoing)
+    "batch_size": 50,                 # 1 for eval, usually 10 for train
+    "distribute_graphs": False,       # Distribute graphs and perform communication in the forward pass (ongoing)
     
     # Symmetry Reductions 
     "reduce_edge": False,            # Unused!
@@ -30,7 +30,7 @@ config = {
     "reduce_node_intra": True,       # Enforce 0 odd degrees for intra-orbital
     
     # Training Hyperparameters
-    "num_epochs": 1000,
+    "num_epochs": 500,
     "dtype": torch.float32,          # nablaDFT often uses float64 - 32 here for cupy kernel
     "lr_init": 1e-4,
     "optimizer_type": "adam",        # standard Adam

@@ -1,8 +1,6 @@
 import torch
 import os
 from train_utils import loss, training_workflow
-from fock_utils import basis_sets
-from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
 # ---------------------------------------------------------
 # OMol Dataset Configuration - open shell version
@@ -56,6 +54,7 @@ config = {
     "scale_and_shift": True,         # Scale & shift the node labels
 
     # Model Architecture
+    "wigner_backend": "torch",  # "triton" for fused Triton kernel (requires GPU + triton)
     "l_embedding_dim": 128,
     "num_distance_basis": 128,
     "num_mp_layers": 3,
