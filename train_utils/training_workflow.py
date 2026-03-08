@@ -3,6 +3,7 @@ import time
 import random
 import numpy as np
 import torch
+import json
 from e3nn.o3 import Irreps
 from torch.utils.data import ConcatDataset
 import torch.distributed as dist
@@ -38,6 +39,31 @@ class TrainingWorkflow:
             if not os.path.exists(self.config['output_folder']):
                 os.makedirs(self.config['output_folder'])
         dist.barrier()
+
+    def check_input_config(self):
+        """Validates the configuration for incompatible settings, and writes config to output folder."""
+
+        # wigner_backend exists and is equal to triton
+        # if self.config['wigner_backend'] == 'triton':
+        if self.config.get('wigner_backend', 'torch') == 'triton':
+            if self.device.type != 'cuda':
+                raise ValueError("Triton Wigner backend requires a CUDA-capable GPU.")
+            if self.config['dtype'] == torch.float64:
+                raise ValueError("Triton Wigner backend does not support float64 dtype.")
+
+        # Write config settings to the output file:
+        print(f"Rank {self.rank}: Configuration settings:")
+        if self.rank == 0:
+            config_path = os.path.join(self.config['output_folder'], f"config_{self.config['run_name']}.json")
+            serializable_config = {
+                k: (v.__name__ if hasattr(v, '__name__') else str(v)) 
+                for k, v in self.config.items()
+            }
+            with open(config_path, 'w') as f:
+                json.dump(serializable_config, f, indent=4)
+
+            print(f"Config dumped to {config_path}")
+
 
     def _handle_scale_shift(self, database=None):
         """Manages the computation or loading of scale/shift factors."""
@@ -113,7 +139,7 @@ class TrainingWorkflow:
             
             # (Omol) folders of db files
             else:
-                print(f"Rank {self.rank}: Loading data from folder {db_source}")
+                print(f"Rank {self.rank}: Loading data from folder {db_source}", flush=True)
 
                 # --- 1. Distribute Data across ranks ---
                 train_data_dict, val_data_dict = distribute_data(
@@ -266,7 +292,7 @@ class TrainingWorkflow:
         backbone = eSEN_Backbone(
             required_irreps, sphere_channels=c['l_embedding_dim'],
             hidden_channels=c['l_embedding_dim'], lmax=required_irreps.lmax,
-            mmax=required_irreps.lmax, use_pbc=False, cutoff=c['rcut_gaussian'],
+            mmax=required_irreps.lmax, cutoff=c['rcut_gaussian'],
             edge_channels=c['l_embedding_dim'], num_layers=c['num_mp_layers'],
             act_type='gate', mlp_type='spectral', 
             num_distance_basis=c['num_distance_basis'],
@@ -360,6 +386,9 @@ class TrainingWorkflow:
             database = None
         else:
             raise ValueError(f"Unknown dataset name: {self.config['dataset_name']}")
+        
+        # check_input_config will raise errors if there are incompatible settings
+        self.check_input_config()
 
         """Main execution loop."""
         loader, val_loader, irreps, basis_trans, orb_basis, ls_list = self.prepare_loaders(database)

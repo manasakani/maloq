@@ -66,8 +66,6 @@ class eSEN_Backbone(nn.Module):
         mmax: int = 2,
         grid_resolution: int | None = None,
         max_neighbors: int = 300,
-        use_pbc: bool = True,
-        use_pbc_single: bool = False,
         cutoff = 10.0,
         edge_channels: int = 128,
         distance_function: str = "gaussian",
@@ -329,7 +327,6 @@ class eSEN_Backbone(nn.Module):
 
 
         # --> Rotation test:
-        # rotated_edges_to_z_axis = torch.bmm(edge_rot_mat, graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
         # rotated_edges_to_z_axis = torch.bmm(wigner[:, 1:4, 1:4], graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
         # print("Rotated edges to z-axis: ", rotated_edges_to_z_axis) # only middle components should be nonzero (equal to distance)
 
