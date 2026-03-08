@@ -116,10 +116,8 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
 
         for data_folder in database[start_idx : end_idx]:
 
+            # parse xyx file
             xyz_file = [f for f in os.listdir(data_folder) if f.endswith('.xyz')][0]
-            print(f"Loading data from {data_folder}/{xyz_file}", flush=True)
-
-            # read the xyz file to get atomic numbers and positions
             structure = load_periodic_cp2k_structure(os.path.join(data_folder, xyz_file))
             print(f"Structure has {len(structure)} atoms and cell dimensions {structure.get_cell()} with PBC {structure.get_pbc()}", flush=True)
             
@@ -130,13 +128,14 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             periodic_boxes.append(structure.get_cell())
 
             # find the Hamiltonian file of type *..-KS_Spin_1-1_0.csr:
-            hamiltonian_file = [f for f in os.listdir(data_folder) if '-KS_SPIN_1-1_0' in f][0]
-            hamiltonian = read_cp2k_bincsr(os.path.join(data_folder, hamiltonian_file))
+            hamiltonian_file = [f for f in os.listdir(data_folder) if '-KS_SPIN_1-1_0' in f or 'H.csr' in f][0]
+            print(f"Loading Hamiltonian from {hamiltonian_file}...", flush=True)
+            hamiltonian = read_cp2k_matrix(os.path.join(data_folder, hamiltonian_file))
             hamiltonians.append(hamiltonian)
             print(f"Hamiltonian loaded with shape {hamiltonian.shape} and {hamiltonian.nnz} non-zero elements", flush=True)
 
             # overlap_file = [f for f in os.listdir(data_folder) if '-S_SPIN_1-1_0' in f][0]
-            # overlap = read_cp2k_bincsr(os.path.join(data_folder, overlap_file))
+            # overlap = read_cp2k_matrix(os.path.join(data_folder, overlap_file))
             overlaps.append(0) # dummy overlaps for now!!!
 
     else:
@@ -319,36 +318,52 @@ def get_datalist(dataset, start_idx, end_idx, dataset_name, rcut, element_refere
 
     return datalist
 
-def read_cp2k_bincsr(file_name):
-    file_size = os.path.getsize(file_name)
-    record_size = 24  # 4(pad)+4(x)+4(y)+8(data)+4(pad) = 24 bytes per element
-    nnzel = file_size // record_size
+def read_cp2k_matrix(file_name):
+    # Detect format by "peeking" at the first 4 bytes
+    with open(file_name, 'rb') as f:
+        first_bytes = f.read(4)
     
-    if not (nnzel * record_size == file_size):
-        raise ValueError("The matrix has a wrong size.")
+    # Binary Fortran files usually start with a record length (int32)
+    # 0x18 (24 bytes) is the standard record size for the binary CSR format
+    is_binary = (first_bytes == b'\x18\x00\x00\x00')
 
-    # Define a structured dtype to read the whole file at once
-    # 'i4' is 4-byte int, 'f8' is 8-byte float. '<' is little-endian.
-    dt = np.dtype([
-        ('pad1', '<i4'), 
-        ('x', '<u4'), 
-        ('y', '<u4'), 
-        ('data', '<f8'), 
-        ('pad2', '<i4')
-    ])
+    if is_binary:
+        print(f"Detected Binary Format: {file_name}")
+        file_size = os.path.getsize(file_name)
+        record_size = 24
+        nnzel = file_size // record_size
+        
+        if not (nnzel * record_size == file_size):
+            raise ValueError("Binary file size is not a multiple of 24 bytes.")
 
-    # Read everything in ONE shot
-    raw_data = np.fromfile(file_name, dtype=dt)
-    
-    x_indices = raw_data['x']
-    y_indices = raw_data['y']
-    data = raw_data['data']
+        dt = np.dtype([
+            ('pad1', '<i4'), ('x', '<u4'), ('y', '<u4'), 
+            ('data', '<f8'), ('pad2', '<i4')
+        ])
+        raw_data = np.fromfile(file_name, dtype=dt)
+        x_indices = raw_data['x']
+        y_indices = raw_data['y']
+        data = raw_data['data']
+        
+    else:
+        print(f"Detected ASCII Format: {file_name}")
+        # read 3 columns: Row, Col, Value
+        raw_data = np.loadtxt(file_name)
+        x_indices = raw_data[:, 0].astype(np.uint32)
+        y_indices = raw_data[:, 1].astype(np.uint32)
+        data = raw_data[:, 2]
 
-    # Construct sparse matrix (rest of your logic remains the same)
-    matsize = (int(np.max(x_indices)), int(np.max(y_indices)))
+    # Construct Sparse Matrix (Unified Logic)
+    # Determine shape (handling 1-based indexing from CP2K)
+    max_row = int(np.max(x_indices))
+    max_col = int(np.max(y_indices))
+    matsize = (max(max_row, max_col), max(max_row, max_col))
+
+    # Create COO and convert to CSR
     H = coo_matrix((data, (x_indices-1, y_indices-1)), shape=matsize)
     H = H.tocsr()
 
+    # Enforce Symmetry (H_full = H + H.T - diag(H))
     D = diags(H.diagonal(), offsets=0, shape=H.shape, format='csr')
     H_full = H + H.T - D
 
@@ -381,7 +396,7 @@ def load_periodic_cp2k_structure(file_path):
 
         # Line 1: Comment/Cell line
         header_parts = lines[1].split()
-        if header_parts[0].lower() == 'cell':
+        if header_parts[0].lower() == 'cell' or header_parts[0].lower() == 'cell:':
             # Extract the 3 dimensions: [X Y Z]
             cell_dims = [float(x) for x in header_parts[1:4]]
             atoms.set_cell(cell_dims)
