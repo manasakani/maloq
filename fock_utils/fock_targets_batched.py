@@ -1027,7 +1027,7 @@ class Domain_Decomp():
         self.expand_edge_1['use_nccl'] = self.use_nccl
 
         # aggregation
-        self.reduce_edge = self.init_comm_pattern_reduce(self.local_edge_index[1, :])
+        self.reduce_edge = self.init_comm_pattern_reduce(self.local_edge_index[0, :])
 
         # --> Shuffle gpus for topology-optimized partition assignment
         # rank_topology_assignment = redistribute_partitions(self)
