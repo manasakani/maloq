@@ -1039,14 +1039,15 @@ class Domain_Decomp():
         self.comm.Barrier()
         for i in range(self.size):
             if self.rank == i:
-                print("________________________________________________________")
-                print(f"Rank {self.rank} has {self.end_node - self.start_node} nodes and {self.end_edge - self.start_edge} edges:")
-                print(f"Rank {self.rank} has nodes from {self.start_node} to {self.end_node}: {self.local_node_index}")
-                print(f"Rank {self.rank} has edges from {self.start_edge} to {self.end_edge}: {self.local_edge_index}")
-                print(f"Rank {self.rank} expand edge 0 (dst node) nodes_to_send: ", self.expand_edge_0['nodes_to_send'])
-                print(f"Rank {self.rank} expand edge 0 (dst node) nodes_to_recv: ", self.expand_edge_0['nodes_to_recv'])
-                print(f"Rank {self.rank} expand edge 1 (src node) nodes_to_send: ", self.expand_edge_1['nodes_to_send'])
-                print(f"Rank {self.rank} expand edge 1 (src node) nodes_to_recv: ", self.expand_edge_1['nodes_to_recv'])
+                lines = [
+                    "________________________________________________________",
+                    f"Rank {self.rank} has {self.end_node - self.start_node} nodes and {self.end_edge - self.start_edge} edges:",
+                    f"Rank {self.rank} has nodes from {self.start_node} to {self.end_node}: {self.local_node_index}",
+                    f"Rank {self.rank} has edges from {self.start_edge} to {self.end_edge}: {self.local_edge_index}",
+                    f"Rank {self.rank} expand edge 0 (dst) nodes_to_send: {self.expand_edge_0['nodes_to_send']}",
+                    f"Rank {self.rank} expand edge 1 (src) nodes_to_send: {self.expand_edge_1['nodes_to_send']}"
+                ]
+                print("\n".join(lines), flush=True)
             self.comm.Barrier()
 
 
