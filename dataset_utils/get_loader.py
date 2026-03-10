@@ -130,7 +130,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
             # find the Hamiltonian file of type *..-KS_Spin_1-1_0.csr:
             hamiltonian_file = [f for f in os.listdir(data_folder) if '-KS_SPIN_1-1_0' in f or 'H.csr' in f][0]
             print(f"Loading Hamiltonian from {hamiltonian_file}...", flush=True)
-            hamiltonian = read_cp2k_matrix(os.path.join(data_folder, hamiltonian_file))
+            hamiltonian = read_cp2k_matrix(os.path.join(data_folder, hamiltonian_file), dtype=dtype)
             hamiltonians.append(hamiltonian)
             print(f"Hamiltonian loaded with shape {hamiltonian.shape} and {hamiltonian.nnz} non-zero elements", flush=True)
 
@@ -318,52 +318,77 @@ def get_datalist(dataset, start_idx, end_idx, dataset_name, rcut, element_refere
 
     return datalist
 
-def read_cp2k_matrix(file_name):
-    # Detect format by "peeking" at the first 4 bytes
-    with open(file_name, 'rb') as f:
-        first_bytes = f.read(4)
+def read_cp2k_matrix(file_name, dtype=torch.float32):
     
-    # Binary Fortran files usually start with a record length (int32)
-    # 0x18 (24 bytes) is the standard record size for the binary CSR format
-    is_binary = (first_bytes == b'\x18\x00\x00\x00')
-
-    if is_binary:
-        print(f"Detected Binary Format: {file_name}")
+    # Attempt Binary Reading first
+    try:
         file_size = os.path.getsize(file_name)
         record_size = 24
-        nnzel = file_size // record_size
         
-        if not (nnzel * record_size == file_size):
-            raise ValueError("Binary file size is not a multiple of 24 bytes.")
+        # Quick check: If it's binary CSR from CP2K, it MUST be a multiple of 24
+        if file_size % record_size != 0 or file_size == 0:
+            raise ValueError("Not a binary CSR file!")
 
+        # Define the Fortran unformatted record structure
+        # (4-byte pad, 4-byte int, 4-byte int, 8-byte float, 4-byte pad)
         dt = np.dtype([
             ('pad1', '<i4'), ('x', '<u4'), ('y', '<u4'), 
             ('data', '<f8'), ('pad2', '<i4')
         ])
+        
         raw_data = np.fromfile(file_name, dtype=dt)
+        # Fortran unformatted records for this structure must have pads = 16 bytes
+        # We check the first few records to ensure they look like CP2K binary
+        if len(raw_data) > 0:
+            if not np.all(raw_data['pad1'][:10] == 16) or not np.all(raw_data['pad2'][:10] == 16):
+                raise ValueError("Invalid binary markers: Likely an ASCII file.")
+            
+            # Additional safety: indices shouldn't be astronomically high (adjust if expecting billions of atoms...)
+            if np.any(raw_data['x'][:10] > 100_000_000):
+                raise ValueError("Indices too large: Likely garbage data from ASCII.")
+
+        print(f"Detected Binary Format: {file_name}")
+
         x_indices = raw_data['x']
         y_indices = raw_data['y']
         data = raw_data['data']
-        
-    else:
-        print(f"Detected ASCII Format: {file_name}")
-        # read 3 columns: Row, Col, Value
-        raw_data = np.loadtxt(file_name)
-        x_indices = raw_data[:, 0].astype(np.uint32)
-        y_indices = raw_data[:, 1].astype(np.uint32)
-        data = raw_data[:, 2]
 
-    # Construct Sparse Matrix (Unified Logic)
-    # Determine shape (handling 1-based indexing from CP2K)
-    max_row = int(np.max(x_indices))
-    max_col = int(np.max(y_indices))
-    matsize = (max(max_row, max_col), max(max_row, max_col))
+    except (ValueError, OSError, RuntimeError):
+        # Fallback to ASCII
+        print(f"Reading as ASCII Format: {file_name}")
+        try:
+            # read 3 columns: Row, Col, Value
+            raw_data = np.loadtxt(file_name)
+            x_indices = raw_data[:, 0].astype(np.uint32)
+            y_indices = raw_data[:, 1].astype(np.uint32)
+            data = raw_data[:, 2]
+
+        except Exception as e:
+            raise IOError(f"Could not read {file_name} as Binary or ASCII. Error: {e}")
+    
+    # convert to desired dtype
+    type_map = {
+        torch.float32: np.float32,
+        torch.float64: np.float64,
+        torch.float16: np.float16,
+        torch.int32: np.int32,
+        torch.int64: np.int64
+    }
+    # Fallback to float32 if type is not in map
+    np_dtype = type_map.get(dtype, np.float32)
+    data = data.astype(np_dtype)
+
+    # --- Construct Sparse Matrix (Unified Logic) ---
+    # Handle 1-based indexing from CP2K
+    max_idx = int(max(np.max(x_indices), np.max(y_indices)))
+    matsize = (max_idx, max_idx)
 
     # Create COO and convert to CSR
-    H = coo_matrix((data, (x_indices-1, y_indices-1)), shape=matsize)
+    H = coo_matrix((data, (x_indices - 1, y_indices - 1)), shape=matsize)
     H = H.tocsr()
 
     # Enforce Symmetry (H_full = H + H.T - diag(H))
+    # This is necessary because CP2K often only prints the upper triangle
     D = diags(H.diagonal(), offsets=0, shape=H.shape, format='csr')
     H_full = H + H.T - D
 
