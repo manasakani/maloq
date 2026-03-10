@@ -18,6 +18,7 @@ from .nn.radial import PolynomialEnvelope
 from .nn.so2_layers import SO2_Convolution
 from .nn.so3_layers import SO3_Linear
 from .nn.communication import exchange_nodes
+from .nn.communication import ExchangeNodes
 from torch.utils.checkpoint import checkpoint
 
 import torch.distributed as dist
@@ -165,22 +166,45 @@ class Edgewise(torch.nn.Module):
 
         local_num_edges = edge_index.shape[1]
 
+        # DEBUG backward
+        # x.requires_grad_(True) 
+        # x.retain_grad()
+        # DEBUG backward
+
         # Communicate the edge embeddings between partitions
-        x_target = exchange_nodes(
-                                    x,
-                                    local_num_edges,
-                                    partition.expand_edge_1, # edge_index[1, :]
-                                    self.comm
-                                )
-        # print x_target sample from every rank:
-        # dist.barrier()
-        # print(f"Rank {dist.get_rank()}: x_target shape: {x_target.shape}", flush=True)
-        # print(f"Rank {dist.get_rank()}: new x_target sample: {x_target[:, 0, :10]}", flush=True)
-        # # print(f"Rank {dist.get_rank()}: x_target sample: {x_target[:, 0:5, :10]}", flush=True)
-        # dist.barrier()
+        # x_target = exchange_nodes(
+        #                             x,
+        #                             local_num_edges,
+        #                             partition.expand_edge_1, # edge_index[1, :]
+        #                             self.comm
+        #                         )
+        x_target = ExchangeNodes.apply(
+                                        x, 
+                                        local_num_edges, 
+                                        partition.expand_edge_1
+                                      )
         
+        # DEBUG BACKWARD
+        # dist.barrier()
+        # loss = x_target.sum()
+        # loss.backward()
+
+        # # every time a node was used in an edge, its gradient should increment by 1.
+        # # So x.grad[i] should exactly equal the number of edges node 'i' appeared in as a target (incoming edges).
+        # print(f"Rank {dist.get_rank()} node 0 grad: {x.grad[0,0,0]}")
+        # dist.barrier()
+        # exit()
+        # DEBUG BACKWARD
+
         local_indices_torch = partition.expand_edge_0['local_indices_torch']
         x_source = x[local_indices_torch]
+
+        # print x_target sample from every rank:
+        # dist.barrier()
+        # print(f"Rank {dist.get_rank()}: x_source sample: {x_target[:, 0, :10]}", flush=True)
+        # print(f"Rank {dist.get_rank()}: x_target sample: {x_target[:, 0, :10]}", flush=True)
+        # print(f"Rank {dist.get_rank()}: x_edge sample: {x_edge[:, :10]}", flush=True)
+        # dist.barrier()
 
         # Create messages 
         x_message = torch.cat((x_source, x_target), dim=2) 
@@ -191,7 +215,6 @@ class Edgewise(torch.nn.Module):
         # SO2 convolutions + Gating
         x_message = torch.einsum("nac,ba->nbc", x_message, self.mappingReduced.to_m)   # l-major -> m-major
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)                     # SO2 Convolution #1 (embedding dim 2E -> H)
-        
         x_message = self.act(x_0_gating, x_message)                                    # Gate activation
         x_message = self.so2_conv_2(x_message, x_edge)                                 # SO2 Convolution #2 (embedding dim H -> E)
         x_message = torch.einsum("nac,ab->nbc", x_message, self.mappingReduced.to_m)   # m-major -> l-major
@@ -209,16 +232,14 @@ class Edgewise(torch.nn.Module):
         # aggregate messages
         is_local = partition.reduce_edge['is_local']
         local_indices = partition.reduce_edge['local_indices']
-        new_embedding.index_add_(0, local_indices, x_message[is_local])
+        new_embedding.index_add_(0, local_indices, x_message)
 
+        # print x_target sample from every rank:
         # dist.barrier()
-        # print(f"Rank {dist.get_rank()}: is_local reduce: {is_local}, local_indices reduce: {local_indices}", flush=True)
+        # print("local_indices:", local_indices, " is_local:", is_local)
+        # print(f"Rank {dist.get_rank()}: new_embedding sample: {new_embedding[:, 0, :10]}", flush=True)
         # dist.barrier()
-
-        # # print x_target sample from every rank:
-        # dist.barrier()
-        # print(f"Rank {dist.get_rank()}: new embedding sample: {new_embedding[:, 0, :10]}", flush=True)
-        # dist.barrier()
+        # exit()
 
         return new_embedding
 
@@ -235,6 +256,12 @@ class Edgewise(torch.nn.Module):
         x_source = x[edge_index[0]]
         x_target = x[edge_index[1]]
 
+        # print x_target sample from every rank:
+        # dist.barrier()
+        # print(f"Rank {dist.get_rank()}: x_source sample: {x_target[:, 0, :10]}", flush=True)
+        # print(f"Rank {dist.get_rank()}: x_target sample: {x_target[:, 0, :10]}", flush=True)
+        # dist.barrier()
+
         # Create messages 
         x_message = torch.cat((x_source, x_target), dim=2) 
 
@@ -244,10 +271,8 @@ class Edgewise(torch.nn.Module):
         # SO2 convolutions + Gating
         x_message = torch.einsum("nac,ba->nbc", x_message, self.mappingReduced.to_m)   # l-major -> m-major
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)                     # SO2 Convolution #1 (embedding dim 2E -> H)
-        # x_message, x_0_gating = checkpoint(self.so2_conv_1, x_message, x_edge)       # SO2 Convolution #1 (embedding dim 2E -> H)
         x_message = self.act(x_0_gating, x_message)                                    # Gate activation
         x_message = self.so2_conv_2(x_message, x_edge)                                 # SO2 Convolution #2 (embedding dim H -> E)
-        # x_message = checkpoint(self.so2_conv_2, x_message, x_edge)
         x_message = torch.einsum("nac,ab->nbc", x_message, self.mappingReduced.to_m)   # m-major -> l-major
 
         # Rotate back the irreps
@@ -262,9 +287,12 @@ class Edgewise(torch.nn.Module):
 
         # aggregate messages
         new_embedding.index_add_(0, edge_index[1], x_message)       
+
         # dist.barrier()
-        # print(f"Rank {dist.get_rank()}: new embedding sample: {new_embedding[:, 0, :10]}", flush=True)
+        # # print("edge_index[1]:", edge_index[1])
+        # print(f"Rank {dist.get_rank()}: new_embedding sample: {new_embedding[:, 0, :10]}", flush=True)
         # dist.barrier()
+        # # exit()
 
         return new_embedding
 
@@ -284,12 +312,17 @@ class Edgewise(torch.nn.Module):
 
         local_num_edges = edge_index.shape[1]
         
-        x_target = exchange_nodes(
-                                    x,
-                                    local_num_edges,
-                                    partition.expand_edge_1,
-                                    self.comm
-                                )
+        # x_target = exchange_nodes(
+        #                             x,
+        #                             local_num_edges,
+        #                             partition.expand_edge_1,
+        #                             self.comm
+        #                         )
+        x_target = ExchangeNodes.apply(
+                                            x, 
+                                            local_num_edges, 
+                                            partition.expand_edge_1
+                                        )
         
         # expand_edge_0 is the communication dictionary for the source nodes
         # due to how the edges were split (all nodes own incoming edges), there is no communication needed for the source nodes, 
