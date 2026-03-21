@@ -1034,7 +1034,7 @@ def sparse_matrix_to_adjlist(adj_matrix):
 
 
 def partition_metis(
-    levels,
+    num_partitions,
     adj_matrix,
 ):
     """Partitions the domain using the METIS library.
@@ -1052,11 +1052,10 @@ def partition_metis(
         Best partition based on the METIS library
     """
 
-    size = 2**levels
     G = sparse_matrix_to_adjlist(adj_matrix)
-    (_, parts) = pymetis.part_graph(size, adjacency=G)
+    (_, parts) = pymetis.part_graph(num_partitions, adjacency=G)
     parts = np.array(parts)
-    partition = [np.argwhere(parts == i).flatten() for i in range(size)]
+    partition = [np.argwhere(parts == i).flatten() for i in range(num_partitions)]
     return partition
 
 
@@ -1308,7 +1307,7 @@ def parition_wrapper(
             atom_indices,
         )
     elif method == "metis":
-        partition = partition_metis(levels, adj_matrix)
+        partition = partition_metis(levels, adj_matrix) # levels = num_partitions here
 
     else:
         raise ValueError(f"Method {method} not supported")
