@@ -1,14 +1,18 @@
-import numpy as np
-import torch
-from . import utils_tensor_decomp, matrix2labels_kernels
 import torch
 import time
-from ase.neighborlist import NeighborList
 import random
+import pickle, os
+
+import numpy as np
 import cupy as cp
 import scipy.sparse as sp
-import pickle, os
+from scipy.sparse import coo_matrix
+
 from ase import Atoms
+from ase.neighborlist import NeighborList
+
+from . import utils_tensor_decomp, matrix2labels_kernels, reorder
+
 from torch.utils.dlpack import from_dlpack
 import torch.distributed as dist
 from mpi4py import MPI
@@ -58,6 +62,7 @@ class Fock_Targets:
         self.dtype = dtype
 
         # Create structures and neighbor lists (outer index is the molecule index) - follows the fock matrices owned by each rank
+        num_structures = len(atomic_numbers)
         self.atomic_numbers_list = []
         self.atomic_positions_list = []
         self.neighbour_list_list = []
@@ -133,12 +138,34 @@ class Fock_Targets:
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         self.scale_shift_data = scale_shift_data
 
-        # If the fock targets should be computed on-the-fly rather than loaded from the db:
-        self.target_len = None
-
         # Decompose the Fock matrix into orbital blocks and insert them into the targets
+        self.target_len = None
         if fock_matrices is not None:
             self.make_targets(fock_matrices)
+
+        # Whether to redistribute the partitioned data based on the domain decomposition of the merged graph (only relevant if distribute_graphs is True)
+        self.redistribute_partition_data = True
+        partition_type = "metis"
+        if self.distribute_graphs and self.redistribute_partition_data:
+
+            # determine the new partioning based on the reorder type (eg "metis" or "random")
+            periodicity = False if periodic_boxes is None else True # single-structure periodicity only
+
+            # check that if periodicity is true, there is only one structure (ie we are not trying to apply periodic partitioning across multiple 
+            # different structures, which would be more complex and is not currently implemented)
+            if periodicity and num_structures > 1:
+                raise ValueError("Periodic partitioning only implemented for single structure for now!")
+
+            # atom_reorded map returns a permutation for the nodes in the global graph (eg, [3 5 0 1 2 4]), 
+            # atoms_per_partition returns how many belong to each partition (eg, [2, 2, 2] for 3 partitions with 6 total nodes)
+            atom_reorder_map, atoms_per_partition = self.get_partition_map(cutoff, partition_type=partition_type, periodicity=periodicity)
+
+            print(f"Atom reorder map: {atom_reorder_map}")
+            print(f"Atoms per partition: {atoms_per_partition}")
+
+            # redistribute the data based on the new partitioning (this will involve communication across ranks to send the relevant node/edge l
+            # abels to the ranks that now own those nodes/edges after repartitioning)
+            self.redistribute_graph(atom_reorder_map, atoms_per_partition)
 
 
     def make_atomic_graphs(self, atomic_numbers, atomic_positions, cutoff, periodic_boxes):
@@ -786,6 +813,51 @@ class Fock_Targets:
             # print(f"Rank {self.rank} self.neighbour_list_list after allgather: ", self.neighbour_list_list, flush=True)
             # print(f"Rank {self.rank} self.edge_dist_list after allgather: ", self.edge_dist_list, flush=True)
             self.comm.Barrier()
+    
+    def get_partition_map(self, cutoff, partition_type='linear', periodicity=False):
+        """
+        Returns a mapping from global node indices to partition IDs based on the specified partitioning strategy.
+        Partition type: 
+        'linear' (default) - simple contiguous blocks of nodes
+        'metis' - use METIS graph partitioning
+        'random' - assign nodes randomly to partitions
+        """
+
+        levels = self.world_size if partition_type in ['metis', 'random', 'linear'] else int(np.log2(self.world_size))
+        atomic_positions = self.atomic_positions_list
+        edges = self.merged_atomic_graph.edge_matrix
+
+        n_nodes = np.max(edges) + 1
+        n_edges = len(edges[0,:])
+        data = np.ones(n_edges)
+        rows = np.array(edges[0,:])
+        cols = np.array(edges[1,:])
+        adj_matrix = coo_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes)).tocsr()
+        
+        if periodicity:
+            lx = np.max(atomic_positions[:,0]) - np.min(atomic_positions[:,0])
+            ly = np.max(atomic_positions[:,1]) - np.min(atomic_positions[:,1]) 
+            lz = np.max(atomic_positions[:,2]) - np.min(atomic_positions[:,2]) 
+            cell_size = np.array([lx, ly, lz])
+        else:
+            cell_size = None
+
+        order = reorder.parition_wrapper(levels, atomic_positions, cell_size,
+                adj_matrix, cutoff, partition_type, 'num_neighbors')
+
+        atom_reorder_map = np.concatenate([o.reshape(-1) for o in order], axis=-1)
+        atoms_per_partition = np.array([len(o) for o in order])
+
+        return atom_reorder_map, atoms_per_partition
+
+    def self.redistribute_graph(self, partition_map):
+        """
+        Redistributes the graph according to the provided partition map. This involves:
+        1. Determining which nodes and edges belong to which partitions based on the partition map.
+        2. Communicating the necessary node and edge data to the appropriate ranks so that each rank 
+           ends up with the nodes and edges corresponding to its assigned partition.
+        """
+        raise NotImplementedError("Graph redistribution not implemented yet!")  
 
 
     def torch_dtype_to_cupy_dtype(self, torch_dtype):
