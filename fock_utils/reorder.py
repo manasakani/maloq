@@ -469,7 +469,7 @@ def partition_approx_neighbors(
     )
 
 
-def partition_old_neighbors(
+def partition_low_nn(
     levels,
     atom_positions,
     atom_degrees,
@@ -512,10 +512,11 @@ def partition_old_neighbors(
 
     # wrap around position for size
     temp_atom_pos = atom_positions.copy()
-    for p in temp_atom_pos:
-        for i in range(3):
-            if p[i] < origin[i]:
-                p[i] += cell_size[i]
+    if cell_size is not None:
+        for p in temp_atom_pos:
+            for i in range(3):
+                if p[i] < origin[i]:
+                    p[i] += cell_size[i]
 
     # --> Get the size of the subdomain
     lx = np.max(temp_atom_pos[atom_indices][:, 0]) - np.min(temp_atom_pos[atom_indices][:, 0])
@@ -545,7 +546,7 @@ def partition_old_neighbors(
         cuts_now = cuts.copy()
         cuts_now[dim_to_cut] += 1
 
-        partition_old_neighbors(
+        partition_low_nn(
             levels,
             atom_positions,
             atom_degrees,
@@ -595,7 +596,7 @@ def partition_old_neighbors(
         origin_right = origin.copy()
         origin_right[dim_to_cut] = cut_position
 
-        partition_old_neighbors(
+        partition_low_nn(
             levels - 1,
             atom_positions,
             atom_degrees,
@@ -606,7 +607,7 @@ def partition_old_neighbors(
             atom_indices=left_indices,
             origin=origin_left,
         )
-        partition_old_neighbors(
+        partition_low_nn(
             levels - 1,
             atom_positions,
             atom_degrees,
@@ -1058,6 +1059,44 @@ def partition_metis(
     partition = [np.argwhere(parts == i).flatten() for i in range(num_partitions)]
     return partition
 
+def partition_worstcase(num_partitions, adj_matrix):
+    """
+    Partitions the graph to maximize edge cuts using a greedy approach.
+    Each node is assigned to the partition that currently contains the 
+    fewest of its neighbors.
+    """
+    n_nodes = adj_matrix.shape[0]
+    # Initialize all nodes to an "unassigned" state (-1)
+    parts = np.full(n_nodes, -1, dtype=int)
+    
+    # Track current size of each partition to keep them balanced
+    partition_sizes = np.zeros(num_partitions, dtype=int)
+    max_size = int(np.ceil(n_nodes / num_partitions))
+
+    # Convert to CSR for fast row access (neighbor lookup)
+    adj_csr = adj_matrix.tocsr()
+
+    for i in range(n_nodes):
+        neighbors = adj_csr.getrow(i).indices
+        neighbor_parts = parts[neighbors]
+        
+        # Count how many neighbors are in each partition
+        # We want to pick the partition with the LOWEST count
+        edge_counts = np.zeros(num_partitions)
+        for p_id in range(num_partitions):
+            # Penalize partitions that are already full to keep it balanced
+            if partition_sizes[p_id] >= max_size:
+                edge_counts[p_id] = np.inf
+            else:
+                edge_counts[p_id] = np.sum(neighbor_parts == p_id)
+        
+        # Assign to the rank with the fewest neighbors
+        best_part = np.argmin(edge_counts)
+        parts[i] = best_part
+        partition_sizes[best_part] += 1
+
+    partition = [np.argwhere(parts == i).flatten() for i in range(num_partitions)]
+    return partition
 
 def one_dim_cut(
     levels,
@@ -1192,7 +1231,7 @@ def parition_wrapper(
         Partitioning method to use.
         Either 'local_optimal', 'bruteforce',
             'surface_volume', 'approx_neighbors',
-            'old_neighbors', 'metis',
+            'partition_low_nn', 'metis',
             or 'longest_dim'.
     
     criterion : str
@@ -1207,7 +1246,7 @@ def parition_wrapper(
 
     Methods
     -------
-    'old_neighbors': copy of previous custom which was on the _nccl branch, divides based on approximate neighbors in each dimention (2*rcut/width)
+    'partition_low_nn': divides based on approximate neighbors in each dimention (2*rcut/width)
     'surface_volume': minimizes comm volume recursively. approximates it through the surface volume of the local cuboid.
                     surfaces results in rcut*surfaceDim, edges result in parts of parts of the cylinder with rcut radius
                     corners result in parts of the spheres with rcut radius
@@ -1283,9 +1322,9 @@ def parition_wrapper(
             is_periodic,
             atom_indices,
         )
-    elif method == "old_neighbors":
+    elif method == "low_nn":
         partition = []
-        partition_old_neighbors(
+        partition_low_nn(
             levels,
             atom_positions,
             atom_degrees,
@@ -1308,6 +1347,9 @@ def parition_wrapper(
         )
     elif method == "metis":
         partition = partition_metis(levels, adj_matrix) # levels = num_partitions here
+
+    elif method == "worstcase":
+        partition = partition_worstcase(levels, adj_matrix)
 
     else:
         raise ValueError(f"Method {method} not supported")
