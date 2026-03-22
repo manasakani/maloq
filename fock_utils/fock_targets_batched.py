@@ -7,9 +7,11 @@ import numpy as np
 import cupy as cp
 import scipy.sparse as sp
 from scipy.sparse import coo_matrix
+import matplotlib.pyplot as plt
 
 from ase import Atoms
 from ase.neighborlist import NeighborList
+from ase.io import write
 
 from . import utils_tensor_decomp, matrix2labels_kernels, reorder
 
@@ -145,7 +147,7 @@ class Fock_Targets:
 
         # Whether to redistribute the partitioned data based on the domain decomposition of the merged graph (only relevant if distribute_graphs is True)
         self.redistribute_partition_data = True
-        partition_type = "metis"
+        partition_type = "low_nn"
         if self.distribute_graphs and self.redistribute_partition_data:
 
             # determine the new partioning based on the reorder type (eg "metis" or "random")
@@ -159,9 +161,6 @@ class Fock_Targets:
             # atom_reorded map returns a permutation for the nodes in the global graph (eg, [3 5 0 1 2 4]), 
             # atoms_per_partition returns how many belong to each partition (eg, [2, 2, 2] for 3 partitions with 6 total nodes)
             atom_reorder_map, atoms_per_partition = self.get_partition_map(cutoff, partition_type=partition_type, periodicity=periodicity)
-
-            print(f"Atom reorder map: {atom_reorder_map}")
-            print(f"Atoms per partition: {atoms_per_partition}")
 
             # redistribute the data based on the new partitioning (this will involve communication across ranks to send the relevant node/edge l
             # abels to the ranks that now own those nodes/edges after repartitioning)
@@ -299,7 +298,7 @@ class Fock_Targets:
 
         # --- 4: Domain Decomposition ---
         dist.barrier()
-        self.merged_atomic_graph = MergedStructure(global_structure_z, global_structure_edges)
+        self.merged_atomic_graph = MergedStructure(global_structure_z, global_structure_pos, global_structure_edges)
         self.domain = Domain_Decomp(self.merged_atomic_graph, device=self.device)
         self.domain.print_info()
         dist.barrier()
@@ -823,8 +822,8 @@ class Fock_Targets:
         'random' - assign nodes randomly to partitions
         """
 
-        levels = self.world_size if partition_type in ['metis', 'random', 'linear'] else int(np.log2(self.world_size))
-        atomic_positions = self.atomic_positions_list
+        levels = self.world_size if partition_type in ['metis', 'random', 'linear', 'worstcase'] else int(np.log2(self.world_size))
+        atomic_positions = self.merged_atomic_graph.atomic_positions
         edges = self.merged_atomic_graph.edge_matrix
 
         n_nodes = np.max(edges) + 1
@@ -848,9 +847,31 @@ class Fock_Targets:
         atom_reorder_map = np.concatenate([o.reshape(-1) for o in order], axis=-1)
         atoms_per_partition = np.array([len(o) for o in order])
 
+        ### PLOTTING THE STRUCTURE
+        print("Writing atomic structure partition image...")
+        parts_per_rank = [count for count in atoms_per_partition]
+        cmap = plt.cm.rainbow(np.linspace(0, 1, len(parts_per_rank)))
+        cmap = [(color[0], color[1], color[2], 0.5) for color in cmap]
+        points = np.arange(0, len(parts_per_rank))
+        np.random.shuffle(points)
+        discrete_colormap = [cmap[int(point)] for point in points]
+        color_parts = []
+        for i, p in enumerate(parts_per_rank):
+            tmp = np.ones((p, 4))
+            tmp[:,:] *= discrete_colormap[i]    
+            color_parts.extend(tmp)
+        
+        reordered_numbers = self.merged_atomic_graph.atomic_numbers[atom_reorder_map]
+        reordered_positions = self.merged_atomic_graph.atomic_positions[atom_reorder_map]
+        rotated_structure = Atoms(symbols=reordered_numbers, positions=reordered_positions)
+
+        rotated_structure.rotate(5, 'x', center='COM')
+        rotated_structure.rotate(20, 'y', center='COM')
+        write('atomic_structure_' + partition_type + '_size={}.png'.format(self.world_size), rotated_structure, show_unit_cell=2, colors=color_parts)
+
         return atom_reorder_map, atoms_per_partition
 
-    def self.redistribute_graph(self, partition_map):
+    def redistribute_graph(self, partition_map):
         """
         Redistributes the graph according to the provided partition map. This involves:
         1. Determining which nodes and edges belong to which partitions based on the partition map.
@@ -986,8 +1007,9 @@ class Fock_Targets:
         return self
 
 class MergedStructure:
-    def __init__(self, z, edges):
+    def __init__(self, z, pos, edges):
         self.atomic_numbers = z
+        self.atomic_positions = pos
         self.edge_matrix = edges
         self.counts = None # Domain_Decomp will calculate split
 
