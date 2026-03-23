@@ -147,7 +147,7 @@ class Fock_Targets:
             self.make_targets(fock_matrices)
 
         # Whether to redistribute the partitioned data based on the domain decomposition of the merged graph (only relevant if distribute_graphs is True)
-        self.redistribute_partition_data = True
+        self.redistribute_partition_data = False
         partition_type = "metis"
         if self.distribute_graphs and self.redistribute_partition_data:
 
@@ -306,7 +306,7 @@ class Fock_Targets:
         dist.barrier()
 
         # Store global molecule ID of every atom this rank owns
-        self.atom_mol_id = global_mol_ids[self.domain.local_node_index]        
+        self.atom_mol_id = global_mol_ids[self.domain.local_node_indices]        
 
         if self.rank == 0:
             print(f"Global graph created with {len(global_structure_z)} nodes and {global_structure_edges.shape[1]} edges.")
@@ -564,8 +564,6 @@ class Fock_Targets:
             # self.comm.Barrier()
             # print(f"Rank {self.rank} has local fock_ii indices: {local_fock_ii_idxes}", flush=True)
             # print(f"Rank {self.rank} has local fock_ij indices: {local_fock_ij_idxes}", flush=True)
-            # print(f"rank {self.rank} needs fock_ii indices: ", range(self.domain.start_node, self.domain.end_node), flush=True)
-            # print(f"rank {self.rank} needs fock_ij indices: ", range(self.domain.start_edge, self.domain.end_edge), flush=True)
             # self.comm.Barrier()
 
             # flatten node labels list to remove the molecule dimension:    
@@ -573,9 +571,6 @@ class Fock_Targets:
             if len(node_labels_list) > 0:
                 node_labels_list = torch.cat(node_labels_list, dim=1).squeeze(0) 
                 edge_labels_list = torch.cat(edge_labels_list, dim=1).squeeze(0)
-
-                # print(f"Rank {self.rank} initial node_labels_list: ", node_labels_list[:, :5], flush=True)
-                # print(f"Rank {self.rank} initial edge_labels_list: ", edge_labels_list[:, :5], flush=True)
 
             # ------------ Figure out the node re-distribution --------------
 
@@ -585,7 +580,7 @@ class Fock_Targets:
             local_start = self.global_fock_ii_start_offsets[self.rank]
             local_end = self.global_fock_ii_end_offsets[self.rank]
 
-            for pos_idx, node_idx in enumerate(range(self.domain.start_node, self.domain.end_node)):
+            for pos_idx, node_idx in enumerate(self.domain.local_node_indices):
                 # This rank already owns the fock matrix that contains this node
                 if local_start <= node_idx < local_end:
                     local_idx = node_idx - local_start
@@ -607,9 +602,7 @@ class Fock_Targets:
                     if rank_idx == self.rank:
                         continue
 
-                    rank_start = self.domain.displacements[rank_idx]
-                    rank_end = rank_start + self.domain.counts[rank_idx]
-                    if rank_start <= node_idx < rank_end:
+                    if node_idx in self.domain.all_local_node_indices[rank_idx]: 
                         nodes_to_send[rank_idx].append(node_idx)
                         break
                             
@@ -626,7 +619,8 @@ class Fock_Targets:
             edge_local_end = self.global_fock_ij_end_offsets[self.rank]
 
             # 1. Map where we get our required edges from
-            for pos_idx, edge_idx in enumerate(range(self.domain.start_edge, self.domain.end_edge)):
+            # for pos_idx, edge_idx in enumerate(range(self.domain.start_edge, self.domain.end_edge)):
+            for pos_idx, edge_idx in enumerate(self.domain.local_edge_indices):
                 if edge_local_start <= edge_idx < edge_local_end:
                     # We already own this edge
                     local_idx = edge_idx - edge_local_start
@@ -647,11 +641,8 @@ class Fock_Targets:
                     if rank_idx == self.rank:
                         continue
                     
-                    # Boundary in the domain decomposition (what the other rank needs)
-                    r_edge_start = self.domain.edge_displacements[rank_idx]
-                    r_edge_end = r_edge_start + self.domain.edge_counts[rank_idx]
-
-                    if r_edge_start <= edge_idx < r_edge_end:
+                    # what the other rank needs
+                    if edge_idx in self.domain.all_local_edge_indices[rank_idx]:
                         edges_to_send[rank_idx].append(edge_idx)
                         break
 
@@ -757,9 +748,9 @@ class Fock_Targets:
                                         self.edge_labels_list[~self.domain.is_truly_local_edge, :]], dim=0)
             self.edge_labels_list = src_fock_edges
 
-            # src_edge_nodes = np.concatenate([self.local_edge_index[0, :][is_local], self.local_edge_index[0, :][~is_local]])
-            # dst_edge_nodes = np.concatenate([self.local_edge_index[1, :][is_local], self.local_edge_index[1, :][~is_local]])
-            # self.local_edge_index = np.stack([src_edge_nodes, dst_edge_nodes], axis=0)
+            # src_edge_nodes = np.concatenate([self.local_edges[0, :][is_local], self.local_edges[0, :][~is_local]])
+            # dst_edge_nodes = np.concatenate([self.local_edges[1, :][is_local], self.local_edges[1, :][~is_local]])
+            # self.local_edges = np.stack([src_edge_nodes, dst_edge_nodes], axis=0)
             # self.truly_local_num_edges = np.sum(is_local)
 
             # Add the molecule index back in, but we pretend this is just one big molecule (so only molecule #0 exists)
@@ -779,9 +770,6 @@ class Fock_Targets:
             all_atomic_positions = comm.allgather(self.atomic_positions_list)
             all_edge_dists = comm.allgather(self.edge_dist_list)
 
-            self.local_node_indices = self.domain.local_node_index
-            local_edge_range = range(self.domain.start_edge, self.domain.end_edge)
-
             # print(f"Rank {self.rank} all_atomic_numbers: ", all_atomic_numbers, flush=True)
             # print(f"Rank {self.rank} all_atomic_positions: ", all_atomic_positions, flush=True)
             # print(f"Rank {self.rank} all_edge_dists: ", all_edge_dists, flush=True)
@@ -798,10 +786,10 @@ class Fock_Targets:
             # print(f"Rank {self.rank} global_dist: ", global_dist, flush=True)
             # dist.barrier()
 
-            self.atomic_numbers_list = global_atomic_numbers[self.local_node_indices]
-            self.atomic_positions_list = global_pos[self.local_node_indices]
-            self.neighbour_list_list = self.domain.local_edge_index
-            self.edge_dist_list = global_dist[local_edge_range, :]
+            self.atomic_numbers_list = global_atomic_numbers[self.domain.local_node_indices]
+            self.atomic_positions_list = global_pos[self.domain.local_node_indices]
+            self.neighbour_list_list = self.domain.local_edges
+            self.edge_dist_list = global_dist[self.domain.local_edge_indices, :]
 
             # Perform Truly Local reorder on edge dists:
             edge_dists = torch.cat([self.edge_dist_list[self.domain.is_truly_local_edge, :],
@@ -873,33 +861,22 @@ class Fock_Targets:
 
         return reordered_partitions, atom_reorder_perm, atoms_per_partition
 
-    def redistribute_graph(self, reordered_partitions, atom_reorder_perm, atoms_per_partition):
-        """
-        Redistributes the graph according to the provided partition map. This involves:
-        1. Determining which nodes and edges belong to which partitions based on the partition map.
-        2. Communicating the necessary node and edge data to the appropriate ranks so that each rank 
-           ends up with the nodes and edges corresponding to its assigned partition.
-        """
+    # def redistribute_graph(self, reordered_partitions, atom_reorder_perm, atoms_per_partition):
+    #     comm = self.domain.comm
+    #     global_edges = self.merged_atomic_graph.edge_matrix
 
-        # these atoms are owned by this rank according to the partition map
-        original_own_partition_atoms = range(self.domain.start_node, self.domain.end_node)
-        reordered_own_partition_atoms = reordered_partitions[self.rank]
+    #     original_own_partition_atoms = range(self.domain.start_node, self.domain.end_node)
+    #     reordered_own_partition_atoms = reordered_partitions[self.rank]
+    #     original_is_own_partition_edge = np.isin(global_edges[0,:], original_own_partition_atoms)
+    #     reordered_is_own_partition_edge = np.isin(global_edges[0,:], reordered_own_partition_atoms)
 
-        # get the incoming edges for these atoms from the global edge list
-        global_edges = self.merged_atomic_graph.edge_matrix
-        original_is_own_partition_edge = np.isin(global_edges[0,:], original_own_partition_atoms)
-        reodered_is_own_partition_edge = np.isin(global_edges[0,:], reordered_own_partition_atoms)
-
-        dist.barrier()
-        for i in range(self.world_size):
-            if i == self.rank:
-                print(f"Rank {self.rank} owns {original_own_partition_atoms} atoms and {original_is_own_partition_edge} edges before re-ordered partitioning.", flush=True)
-                print(f"Rank {self.rank} owns {reordered_own_partition_atoms} atoms and {reodered_is_own_partition_edge} edges after re-ordered partitioning.", flush=True)
-            dist.barrier()
-
-        raise NotImplementedError("Graph redistribution not implemented yet!")  
+    #     dist.barrier()
+    #     for i in range(self.world_size):
+    #         if i == self.rank:
+    #             print(f"Rank {self.rank} owns {original_own_partition_atoms} atoms and {original_is_own_partition_edge} edges before re-ordered partitioning.", flush=True)
+    #             print(f"Rank {self.rank} owns {reordered_own_partition_atoms} atoms and {reordered_is_own_partition_edge} edges after re-ordered partitioning.", flush=True)
+    #         dist.barrier()
         
-
 
     def torch_dtype_to_cupy_dtype(self, torch_dtype):
         if torch_dtype == torch.float32:
