@@ -6,7 +6,6 @@ import pickle, os
 import numpy as np
 import cupy as cp
 import scipy.sparse as sp
-from scipy.sparse import coo_matrix
 import matplotlib.pyplot as plt
 
 from ase import Atoms
@@ -33,6 +32,7 @@ class Fock_Targets:
     def __init__(self, atomic_numbers, atomic_positions, cutoff, orbital_basis,
                 fock_matrices=None,
                 periodic_boxes=None,
+                partition_type="metis",
                 dataset_name='temp',
                 dtype=torch.float32,
                 compute_fock_eigenvalues=False,
@@ -60,12 +60,13 @@ class Fock_Targets:
 
         # Graph-wise distribution of the underlying data 
         self.distribute_graphs = distribute_graphs
+        self.partition_type = partition_type
 
         self.orbital_basis = orbital_basis
         self.dtype = dtype
 
         # Create structures and neighbor lists (outer index is the molecule index) - follows the fock matrices owned by each rank
-        num_structures = len(atomic_numbers)
+        self.num_structures = len(atomic_numbers)
         self.atomic_numbers_list = []
         self.atomic_positions_list = []
         self.neighbour_list_list = []
@@ -145,28 +146,6 @@ class Fock_Targets:
         self.target_len = None
         if fock_matrices is not None:
             self.make_targets(fock_matrices)
-
-        # Whether to redistribute the partitioned data based on the domain decomposition of the merged graph (only relevant if distribute_graphs is True)
-        self.redistribute_partition_data = False
-        partition_type = "metis"
-        if self.distribute_graphs and self.redistribute_partition_data:
-
-            periodicity = False if periodic_boxes is None else True # single-structure periodicity only
-
-            # check that if periodicity is true, there is only one structure (ie we are not trying to apply periodic partitioning across multiple 
-            # different structures, which would be more complex and is not currently implemented)
-            if periodicity and num_structures > 1:
-                raise ValueError("Periodic partitioning only implemented for single structure for now!")
-
-            # determine the new partioning based on the partition_type (eg "metis" or "random")
-            # reordered_partitions returns the set of new partitions  (eg, [[3 5 0], [1 2 4]] for two partitions with 3 nodes each), 
-            # atom_reorder_perm returns a permutation for the nodes in the global graph (eg, [3 5 0 1 2 4]), 
-            # atoms_per_partition returns how many belong to each partition (eg, [2, 2, 2] for 3 partitions with 6 total nodes)
-            reordered_partitions, atom_reorder_perm, atoms_per_partition = self.get_partition_map(cutoff, partition_type=partition_type, periodicity=periodicity)
-
-            # redistribute the data based on the new partitioning (this will involve communication across ranks to send the relevant node/edge l
-            # abels to the ranks that now own those nodes/edges after repartitioning)
-            self.redistribute_graph(reordered_partitions, atom_reorder_perm, atoms_per_partition)
 
 
     def make_atomic_graphs(self, atomic_numbers, atomic_positions, cutoff, periodic_boxes):
@@ -298,10 +277,15 @@ class Fock_Targets:
         global_structure_edges = np.hstack(global_edges)
         global_mol_ids = np.concatenate(all_mol_ids)
 
+        # Determine periodicity
+        periodicity = False if periodic_boxes is None else True # single-structure periodicity only
+        if periodicity and self.num_structures > 1:
+            raise ValueError("Periodic partitioning only implemented for single structure for now!")
+
         # --- 4: Domain Decomposition ---
         dist.barrier()
-        self.merged_atomic_graph = MergedStructure(global_structure_z, global_structure_pos, global_structure_edges)
-        self.domain = Domain_Decomp(self.merged_atomic_graph, device=self.device)
+        self.merged_atomic_graph = MergedStructure(global_structure_z, global_structure_pos, global_structure_edges, cutoff, periodicity)
+        self.domain = Domain_Decomp(self.merged_atomic_graph, device=self.device, partition_type=self.partition_type)
         self.domain.print_info()
         dist.barrier()
 
@@ -802,81 +786,7 @@ class Fock_Targets:
             # print(f"Rank {self.rank} self.neighbour_list_list after allgather: ", self.neighbour_list_list, flush=True)
             # print(f"Rank {self.rank} self.edge_dist_list after allgather: ", self.edge_dist_list, flush=True)
             self.comm.Barrier()
-    
-    def get_partition_map(self, cutoff, partition_type='linear', periodicity=False):
-        """
-        Returns a mapping from global node indices to partition IDs based on the specified partitioning strategy.
-        Partition type: 
-        'linear' (default) - simple contiguous blocks of nodes
-        'metis' - use METIS graph partitioning
-        'random' - assign nodes randomly to partitions
-        """
 
-        levels = self.world_size if partition_type in ['metis', 'random', 'linear', 'worstcase'] else int(np.log2(self.world_size))
-        atomic_positions = self.merged_atomic_graph.atomic_positions
-        edges = self.merged_atomic_graph.edge_matrix
-
-        n_nodes = np.max(edges) + 1
-        n_edges = len(edges[0,:])
-        data = np.ones(n_edges)
-        rows = np.array(edges[0,:])
-        cols = np.array(edges[1,:])
-        adj_matrix = coo_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes)).tocsr()
-        
-        if periodicity:
-            lx = np.max(atomic_positions[:,0]) - np.min(atomic_positions[:,0])
-            ly = np.max(atomic_positions[:,1]) - np.min(atomic_positions[:,1]) 
-            lz = np.max(atomic_positions[:,2]) - np.min(atomic_positions[:,2]) 
-            cell_size = np.array([lx, ly, lz])
-        else:
-            cell_size = None
-
-        reordered_partitions = reorder.parition_wrapper(levels, atomic_positions, cell_size,
-                            adj_matrix, cutoff, partition_type, 'num_neighbors')
-
-        atom_reorder_perm = np.concatenate([o.reshape(-1) for o in reordered_partitions], axis=-1)
-        atoms_per_partition = np.array([len(o) for o in reordered_partitions])
-
-        ### PLOTTING THE STRUCTURE
-        print("Writing atomic structure partition image...")
-        parts_per_rank = [count for count in atoms_per_partition]
-        cmap = plt.cm.rainbow(np.linspace(0, 1, len(parts_per_rank)))
-        cmap = [(color[0], color[1], color[2], 0.5) for color in cmap]
-        points = np.arange(0, len(parts_per_rank))
-        np.random.shuffle(points)
-        discrete_colormap = [cmap[int(point)] for point in points]
-        color_parts = []
-        for i, p in enumerate(parts_per_rank):
-            tmp = np.ones((p, 4))
-            tmp[:,:] *= discrete_colormap[i]    
-            color_parts.extend(tmp)
-        
-        reordered_numbers = self.merged_atomic_graph.atomic_numbers[atom_reorder_perm]
-        reordered_positions = self.merged_atomic_graph.atomic_positions[atom_reorder_perm]
-        rotated_structure = Atoms(symbols=reordered_numbers, positions=reordered_positions)
-
-        rotated_structure.rotate(5, 'x', center='COM')
-        rotated_structure.rotate(20, 'y', center='COM')
-        write('atomic_structure_' + partition_type + '_size={}.png'.format(self.world_size), rotated_structure, show_unit_cell=2, colors=color_parts)
-
-        return reordered_partitions, atom_reorder_perm, atoms_per_partition
-
-    # def redistribute_graph(self, reordered_partitions, atom_reorder_perm, atoms_per_partition):
-    #     comm = self.domain.comm
-    #     global_edges = self.merged_atomic_graph.edge_matrix
-
-    #     original_own_partition_atoms = range(self.domain.start_node, self.domain.end_node)
-    #     reordered_own_partition_atoms = reordered_partitions[self.rank]
-    #     original_is_own_partition_edge = np.isin(global_edges[0,:], original_own_partition_atoms)
-    #     reordered_is_own_partition_edge = np.isin(global_edges[0,:], reordered_own_partition_atoms)
-
-    #     dist.barrier()
-    #     for i in range(self.world_size):
-    #         if i == self.rank:
-    #             print(f"Rank {self.rank} owns {original_own_partition_atoms} atoms and {original_is_own_partition_edge} edges before re-ordered partitioning.", flush=True)
-    #             print(f"Rank {self.rank} owns {reordered_own_partition_atoms} atoms and {reordered_is_own_partition_edge} edges after re-ordered partitioning.", flush=True)
-    #         dist.barrier()
-        
 
     def torch_dtype_to_cupy_dtype(self, torch_dtype):
         if torch_dtype == torch.float32:

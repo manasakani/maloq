@@ -1,16 +1,20 @@
 import torch
 import numpy as np
 import cupy as cp
+
+from scipy.sparse import coo_matrix
+
 import torch.distributed as dist
 from mpi4py import MPI
+from fock_utils import reorder
 
 class MergedStructure:
-    def __init__(self, z, pos, edges):
+    def __init__(self, z, pos, edges, cutoff, periodicity):
         self.atomic_numbers = z
         self.atomic_positions = pos
         self.edge_matrix = edges
-        # self.counts = None # Domain_Decomp will calculate split
-
+        self.cutoff = cutoff
+        self.periodicity = periodicity
         print("Created MergedStructure with ", len(z), " atoms and edge list ", edges)
 
 class Domain_Decomp():
@@ -79,8 +83,11 @@ class Domain_Decomp():
     def partition_graph_nodes(self, structure, partition_type):
         """Partition the graph and return the local node indices for this rank."""
 
-        # --> Split nodes between ranks
+        if self.rank == 0:
+            print(f"Rank {self.rank} partitioning graph with method {partition_type}...", flush=True)
+
         if partition_type == 'linear':
+            # This is the 'no complex partioning' baseline
             total_num_nodes = len(structure.atomic_numbers) 
             local_num_nodes = total_num_nodes // self.size
             counts = np.array([local_num_nodes] * self.size, dtype=np.int32)
@@ -98,10 +105,90 @@ class Domain_Decomp():
             local_node_indices = np.arange(start_node, end_node) # indices of the local nodes in the global list
         
         else:
-            raise ValueError("Graph node partition type not recognized!")
+            # call one of the partitioning functions
+            levels = self.size if partition_type in ['metis', 'random', 'worstcase'] else int(np.log2(self.size))
+            atomic_positions = structure.atomic_positions
+            edges = structure.edge_matrix
+            cutoff = structure.cutoff
+            periodicity = structure.periodicity
+
+            n_nodes = np.max(edges) + 1
+            n_edges = len(edges[0,:])
+            data = np.ones(n_edges)
+            rows = np.array(edges[0,:])
+            cols = np.array(edges[1,:])
+            adj_matrix = coo_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes)).tocsr()
+            
+            if periodicity:
+                lx = np.max(atomic_positions[:,0]) - np.min(atomic_positions[:,0])
+                ly = np.max(atomic_positions[:,1]) - np.min(atomic_positions[:,1]) 
+                lz = np.max(atomic_positions[:,2]) - np.min(atomic_positions[:,2]) 
+                cell_size = np.array([lx, ly, lz])
+            else:
+                cell_size = None
+
+            print(f"Rank {self.rank} calling partition wrapper with levels={levels}, cutoff={cutoff}, partition_type={partition_type}...", flush=True)
+            # reordered_partitions returns the set of new partitions  (eg, [[3 5 0], [1 2 4]] for two partitions with 3 nodes each),
+            reordered_partitions = reorder.parition_wrapper(    
+                                                                levels, 
+                                                                atomic_positions, 
+                                                                cell_size,
+                                                                adj_matrix, 
+                                                                cutoff, 
+                                                                partition_type, 
+                                                                'num_neighbors'
+                                                            )
+            atoms_per_partition = np.array([len(o) for o in reordered_partitions])
+            local_node_indices = reordered_partitions[self.rank]
+
+            # plot the structure with different colors for each partition
+            atom_reorder_perm = np.concatenate([o.reshape(-1) for o in reordered_partitions], axis=-1)
+            self._plot_structure_partitions(structure, reordered_partitions, atom_reorder_perm, partition_type)
+
+            if self.rank == 0:
+                print(f"Partitioning complete, image written. Atoms per partition: {atoms_per_partition}", flush=True)
         
+        dist.barrier()
+        print(f"Rank {self.rank} local node indices: {local_node_indices}", flush=True)
+        dist.barrier()
+            
         return local_node_indices
 
+    def _plot_structure_partitions(self, structure, reordered_partitions, atom_reorder_perm, partition_type):
+        """Helper to visualize the result of the domain decomposition."""
+        from ase import Atoms
+        from ase.io import write
+        import matplotlib.pyplot as plt
+
+        print(f"Writing atomic structure partition image for {partition_type}...")
+        
+        atoms_per_partition = [len(p) for p in reordered_partitions]
+        
+        # Create a colormap
+        cmap = plt.cm.rainbow(np.linspace(0, 1, len(atoms_per_partition)))
+        # Shuffle colors so neighboring ranks aren't always similar colors
+        points = np.arange(len(atoms_per_partition))
+        np.random.shuffle(points)
+        
+        color_parts = []
+        for i, count in enumerate(atoms_per_partition):
+            # Select color based on shuffled index
+            color = list(cmap[points[i]])
+            color[3] = 0.5  # Set alpha to 0.5
+            tmp = np.tile(color, (count, 1))
+            color_parts.extend(tmp)
+        
+        # Create ASE Atoms object for the whole reordered structure
+        reordered_numbers = structure.atomic_numbers[atom_reorder_perm]
+        reordered_positions = structure.atomic_positions[atom_reorder_perm]
+        viz_structure = Atoms(symbols=reordered_numbers, positions=reordered_positions)
+
+        # Apply rotations for better 3D perspective
+        viz_structure.rotate(5, 'x', center='COM')
+        viz_structure.rotate(20, 'y', center='COM')
+        
+        filename = f'atomic_structure_{partition_type}_size={self.size}.png'
+        write(filename, viz_structure, show_unit_cell=2, colors=color_parts)
 
     def init_comm_pattern_expand(self, dst0_or_src1):
 
