@@ -14,7 +14,20 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset
 import torch.distributed as dist
 
-def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dtype=torch.float32, half_edges=True, make_fock_targets=True, scale_shift_data=None, is_open_shell=False, loss_target_string='fock_matrix', distribute_graphs=False):
+def get_loader(database, 
+                start_idx, 
+                end_idx, 
+                dataset_name, 
+                rcut, 
+                batch_size, 
+                dtype=torch.float32,
+                half_edges=True, 
+                make_fock_targets=True, 
+                scale_shift_data=None, 
+                is_open_shell=False, 
+                loss_target_string='fock_matrix', 
+                distribute_graphs=False,
+                partition_type='linear'):
     """
     Make dataloader with the given indices of the mocules in the input database
     Currently set up for three datasets: QM7, nablaDFT, omol. Need to modify for others.
@@ -148,6 +161,7 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
     if make_fock_targets:
         
         graph_targets = fock_targets_batched.Fock_Targets(atomic_numbers, positions, rcut, orbital_basis, hamiltonians, 
+                                                            partition_type=partition_type,
                                                             dtype=dtype, 
                                                             dataset_name=dataset_name,
                                                             scale_shift_data=scale_shift_data,
@@ -162,12 +176,13 @@ def get_loader(database, start_idx, end_idx, dataset_name, rcut, batch_size, dty
         comm = graph_targets.comm
         atom_mol_id = graph_targets.atom_mol_id
 
-        all_atomic_numbers_list = comm.allgather(graph_targets.atomic_numbers_list)
+        # all_atomic_numbers_list = comm.allgather(graph_targets.atomic_numbers_list)
         all_energies_list = comm.allgather(energy)
         all_charges_list = comm.allgather(charges)
         all_spins_list = comm.allgather(spins)
 
-        global_atomic_numbers = np.array([item for sublist in all_atomic_numbers_list for item in sublist])
+        # global_atomic_numbers = np.array([item for sublist in all_atomic_numbers_list for item in sublist])
+        global_atomic_numbers = graph_targets.atomic_numbers_list
         global_energy = np.array([item for sublist in all_energies_list for item in sublist])
         global_charges = np.array([item for sublist in all_charges_list for item in sublist])
         global_spins = np.array([item for sublist in all_spins_list for item in sublist])

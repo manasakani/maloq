@@ -27,7 +27,7 @@ class Domain_Decomp():
         self.global_edge_index = structure.edge_matrix
 
         # Partition nodes
-        self.local_node_indices = self.partition_graph_nodes(structure, partition_type) 
+        self.local_node_indices, self.atom_reorder_perm = self.partition_graph_nodes(structure, partition_type) 
         self.all_local_node_indices = self.comm.allgather(self.local_node_indices)              # outer list is per rank
         self.local_num_nodes = len(self.local_node_indices)
         # note: local_nodes would be the same as local_node_indices since the nodes are defined by their index in the global node list
@@ -44,13 +44,12 @@ class Domain_Decomp():
         # initialize communication patterns for message passing
 
         # reorder the edge list so that the local edges are at the start of the list:
-        # local_node_nums = np.arange(self.start_node, self.end_node)
-        is_local = np.isin(self.local_edges[1, :], self.local_node_indices)
-        src_edge_nodes = np.concatenate([self.local_edges[0, :][is_local], self.local_edges[0, :][~is_local]])
-        dst_edge_nodes = np.concatenate([self.local_edges[1, :][is_local], self.local_edges[1, :][~is_local]])
-        self.local_edges = np.stack([src_edge_nodes, dst_edge_nodes], axis=0)
-        self.truly_local_num_edges = np.sum(is_local)
-        self.is_truly_local_edge = is_local # store to perform this reorder on the fock edges later
+        # is_local = np.isin(self.local_edges[1, :], self.local_node_indices)
+        # src_edge_nodes = np.concatenate([self.local_edges[0, :][is_local], self.local_edges[0, :][~is_local]])
+        # dst_edge_nodes = np.concatenate([self.local_edges[1, :][is_local], self.local_edges[1, :][~is_local]])
+        # self.local_edges = np.stack([src_edge_nodes, dst_edge_nodes], axis=0)
+        # self.truly_local_num_edges = np.sum(is_local)
+        # self.is_truly_local_edge = is_local # store to perform this reorder on the fock edges later
 
         # message creation
         self.expand_edge_0 = self.init_comm_pattern_expand(0)     # dst node   
@@ -103,6 +102,15 @@ class Domain_Decomp():
             end_node = displacements[self.rank] + counts[self.rank]
             local_num_nodes = counts[self.rank]
             local_node_indices = np.arange(start_node, end_node) # indices of the local nodes in the global list
+            atom_reorder_perm = np.arange(len(structure.atomic_numbers)) # no reordering of the atoms for the linear partitioning
+
+            reordered_partitions = []
+            for i in range(self.size):
+                part_start = displacements[i]
+                part_end = displacements[i] + counts[i]
+                reordered_partitions.append(np.arange(part_start, part_end))
+
+            self._plot_structure_partitions(structure, reordered_partitions, atom_reorder_perm, partition_type)
         
         else:
             # call one of the partitioning functions
@@ -127,7 +135,7 @@ class Domain_Decomp():
             else:
                 cell_size = None
 
-            print(f"Rank {self.rank} calling partition wrapper with levels={levels}, cutoff={cutoff}, partition_type={partition_type}...", flush=True)
+            # print(f"Rank {self.rank} calling partition wrapper with levels={levels}, cutoff={cutoff}, partition_type={partition_type}...", flush=True)
             # reordered_partitions returns the set of new partitions  (eg, [[3 5 0], [1 2 4]] for two partitions with 3 nodes each),
             reordered_partitions = reorder.parition_wrapper(    
                                                                 levels, 
@@ -152,7 +160,7 @@ class Domain_Decomp():
         print(f"Rank {self.rank} local node indices: {local_node_indices}", flush=True)
         dist.barrier()
             
-        return local_node_indices
+        return local_node_indices, atom_reorder_perm
 
     def _plot_structure_partitions(self, structure, reordered_partitions, atom_reorder_perm, partition_type):
         """Helper to visualize the result of the domain decomposition."""

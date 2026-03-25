@@ -64,6 +64,25 @@ class TrainingWorkflow:
 
             print(f"Config dumped to {config_path}")
 
+        # if using restart, check that the checkpoint files exist and are not corrupted
+        if self.config['restart_backbone']:
+            backbone_path = os.path.join(self.config['output_folder'], self.config['backbone_checkpoint'])
+            if not os.path.exists(backbone_path):
+                raise FileNotFoundError(f"Backbone checkpoint not found at {backbone_path}")
+            try:
+                torch.load(backbone_path, map_location=self.device)
+            except Exception as e:
+                raise ValueError(f"Error loading backbone checkpoint from {backbone_path}: {e}")
+                
+        if self.config['restart_head']:
+            head_path = os.path.join(self.config['output_folder'], self.config['head_checkpoint'])
+            if not os.path.exists(head_path):
+                raise FileNotFoundError(f"Head checkpoint not found at {head_path}")
+            try:
+                torch.load(head_path, map_location=self.device)
+            except Exception as e:
+                raise ValueError(f"Error loading head checkpoint from {head_path}: {e}")
+
 
     def _handle_scale_shift(self, database=None):
         """Manages the computation or loading of scale/shift factors."""
@@ -229,7 +248,8 @@ class TrainingWorkflow:
                 loss_target_string=c['loss_target'],
                 is_open_shell=c['open_shell'],
                 scale_shift_data=scale_shift_data,
-                distribute_graphs=c['distribute_graphs']
+                distribute_graphs=c['distribute_graphs'],
+                partition_type=c['partition_type']
             )
 
             dist.barrier()

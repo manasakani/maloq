@@ -32,7 +32,7 @@ class Fock_Targets:
     def __init__(self, atomic_numbers, atomic_positions, cutoff, orbital_basis,
                 fock_matrices=None,
                 periodic_boxes=None,
-                partition_type="metis",
+                partition_type="linear", # 'metis', 'random', 'worstcase', 'low_nn'
                 dataset_name='temp',
                 dtype=torch.float32,
                 compute_fock_eigenvalues=False,
@@ -728,9 +728,9 @@ class Fock_Targets:
             # self.comm.Barrier()
 
             # --- 'Truly Local' edge reorder the fock edge and edge dist info to [truly local (rank owns src and dst), and the rest] ---
-            src_fock_edges = torch.cat([self.edge_labels_list[self.domain.is_truly_local_edge, :], 
-                                        self.edge_labels_list[~self.domain.is_truly_local_edge, :]], dim=0)
-            self.edge_labels_list = src_fock_edges
+            # src_fock_edges = torch.cat([self.edge_labels_list[self.domain.is_truly_local_edge, :], 
+            #                             self.edge_labels_list[~self.domain.is_truly_local_edge, :]], dim=0)
+            # self.edge_labels_list = src_fock_edges
 
             # src_edge_nodes = np.concatenate([self.local_edges[0, :][is_local], self.local_edges[0, :][~is_local]])
             # dst_edge_nodes = np.concatenate([self.local_edges[1, :][is_local], self.local_edges[1, :][~is_local]])
@@ -745,42 +745,32 @@ class Fock_Targets:
             # ------ Flatten all the structure data into one molecule ------
 
             if len(self.atomic_numbers_list) > 0:
-                self.atomic_positions_list = np.vstack(self.atomic_positions_list)
                 self.edge_dist_list = torch.vstack(self.edge_dist_list)
-                self.atomic_numbers_list = np.hstack(self.atomic_numbers_list)
 
             # allgather the data and then index only the current rank's portion
-            all_atomic_numbers = comm.allgather(self.atomic_numbers_list)
-            all_atomic_positions = comm.allgather(self.atomic_positions_list)
             all_edge_dists = comm.allgather(self.edge_dist_list)
 
-            # print(f"Rank {self.rank} all_atomic_numbers: ", all_atomic_numbers, flush=True)
-            # print(f"Rank {self.rank} all_atomic_positions: ", all_atomic_positions, flush=True)
-            # print(f"Rank {self.rank} all_edge_dists: ", all_edge_dists, flush=True)
-            # dist.barrier()
-            
             # filtering out any empty lists (in case some ranks had no data)
-            global_atomic_numbers = np.concatenate([x for x in all_atomic_numbers if len(x) > 0])
-            global_pos   = np.concatenate([x for x in all_atomic_positions if len(x) > 0], axis=0)
             global_dist  = torch.cat([x for x in all_edge_dists if len(x) > 0], dim=0)
 
             # dist.barrier()
-            # print(f"Rank {self.rank} global_atomic_numbers: ", global_atomic_numbers, flush=True)
-            # print(f"Rank {self.rank} global_pos: ", global_pos, flush=True)
             # print(f"Rank {self.rank} global_dist: ", global_dist, flush=True)
             # dist.barrier()
 
-            self.atomic_numbers_list = global_atomic_numbers[self.domain.local_node_indices]
-            self.atomic_positions_list = global_pos[self.domain.local_node_indices]
+            # Global
+            self.atomic_numbers_list = self.merged_atomic_graph.atomic_numbers
+
+            # Local
+            self.atomic_positions_list = self.merged_atomic_graph.atomic_positions[self.domain.local_node_indices]
             self.neighbour_list_list = self.domain.local_edges
             self.edge_dist_list = global_dist[self.domain.local_edge_indices, :]
 
             # Perform Truly Local reorder on edge dists:
-            edge_dists = torch.cat([self.edge_dist_list[self.domain.is_truly_local_edge, :],
-                                    self.edge_dist_list[~self.domain.is_truly_local_edge, :]], dim=0)
-            self.edge_dist_list = edge_dists
+            # edge_dists = torch.cat([self.edge_dist_list[self.domain.is_truly_local_edge, :],
+            #                         self.edge_dist_list[~self.domain.is_truly_local_edge, :]], dim=0)
+            # self.edge_dist_list = edge_dists
 
-            print("Final distributed atomic graph has ", len(self.atomic_numbers_list), " atoms and ", self.neighbour_list_list.shape[1], " edges on Rank ", self.rank, flush=True)
+            # print("Final distributed atomic graph has ", len(self.atomic_numbers_list), " atoms and ", self.neighbour_list_list.shape[1], " edges on Rank ", self.rank, flush=True)
             # print(f"Rank {self.rank} self.atomic_numbers_list after allgather: ", self.atomic_numbers_list, flush=True)
             # print(f"Rank {self.rank} self.atomic_positions_list after allgather: ", self.atomic_positions_list, flush=True)
             # print(f"Rank {self.rank} self.neighbour_list_list after allgather: ", self.neighbour_list_list, flush=True)
