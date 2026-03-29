@@ -15,8 +15,22 @@ from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 from helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head
 
 class TrainingWorkflow:
+
+    DEFAULTS = {
+        "run_name": "run",
+        "output_folder": "outputs",
+        "open_shell": False,
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "wigner_backend": "torch",
+        "distribute_graphs": False,
+        "partition_type": None,
+        "lr_init": 1e-4,
+        "optimizer_type": "adam",
+        "compute_total_energy": False,
+    }
+
     def __init__(self, config):
-        self.config = config
+        self.config = self.DEFAULTS | config
         self.setup_environment()
         
     def setup_environment(self):
@@ -266,20 +280,24 @@ class TrainingWorkflow:
                         print(f"Rank {self.rank}: Train batch - Num atoms: {num_atoms}, Num edges: {num_edges}", flush=True)
                 dist.barrier()
             
-            val_loader, *_ = get_loader.get_loader(
-                database=val_database,
-                start_idx=val_start,
-                end_idx=val_end,
-                dataset_name=c['dataset_name'],
-                rcut=c['rcut_orbitals'],
-                batch_size=c['batch_size'],
-                dtype=c['dtype'],
-                half_edges=c['reduce_edge'],
-                loss_target_string=c['loss_target'],
-                is_open_shell=c['open_shell'],
-                scale_shift_data=scale_shift_data,
-                distribute_graphs=c['distribute_graphs']
-            )
+            if val_database is None or len(val_database) == 0:
+                val_loader = None
+            else:
+                val_loader, *_ = get_loader.get_loader(
+                    database=val_database,
+                    start_idx=val_start,
+                    end_idx=val_end,
+                    dataset_name=c['dataset_name'],
+                    rcut=c['rcut_orbitals'],
+                    batch_size=c['batch_size'],
+                    dtype=c['dtype'],
+                    half_edges=c['reduce_edge'],
+                    loss_target_string=c['loss_target'],
+                    is_open_shell=c['open_shell'],
+                    scale_shift_data=scale_shift_data,
+                    distribute_graphs=c['distribute_graphs'],
+                    partition_type=c['partition_type']
+                )
             return train_loader, val_loader, required_irreps, basis_trans, orb_basis, ls_list
             
         else:
@@ -299,7 +317,9 @@ class TrainingWorkflow:
                 half_edges=c['reduce_edge'],
                 loss_target_string=c['loss_target'],
                 is_open_shell=c['open_shell'],
-                scale_shift_data=scale_shift_data
+                scale_shift_data=scale_shift_data,
+                distribute_graphs=c['distribute_graphs'],
+                partition_type=c['partition_type']
             )
         
         return test_loader, None, required_irreps, basis_trans, orb_basis, ls_list

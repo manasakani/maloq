@@ -117,17 +117,16 @@ class SplitTrainer():
                 optimizer.zero_grad()
 
                 # -- Forward --
-                forward_start = time.perf_counter()
                 batch = batch.to(device)
 
                 torch.cuda.synchronize()
                 backbone_start = time.perf_counter()
                 backbone_out = self.backbone(batch)
-                torch.cuda.synchronize()
                 backbone_end = time.perf_counter()
 
                 if loss_target_string in ['fock_matrix', 'density_matrix']:
                     node_output, edge_output = self.head(backbone_out, batch)
+                    torch.cuda.synchronize()
                     head_end = time.perf_counter()
 
                     if self.open_shell:
@@ -177,14 +176,13 @@ class SplitTrainer():
                 else:
                     raise ValueError(f"Unknown loss target string: {loss_target_string}")
 
-                forward_end = time.perf_counter()
-
                 # -- Backwards --
+                torch.cuda.synchronize()
                 backward_start = time.perf_counter()
                 loss.backward()
-                optimizer.step()
                 torch.cuda.synchronize()
                 backward_end = time.perf_counter()
+                optimizer.step()
 
                 print(f"Rank {rank} batch {batch_idx} time: {backward_end - backbone_start:.4f}s", flush=True)
 
@@ -206,9 +204,9 @@ class SplitTrainer():
                     del node_output, loss
                 del batch, backbone_out
 
-                if rank == 0:
-                    print("Time per forward pass: ", forward_end - forward_start, flush=True)
-                    print("Time for backward pass: ", backward_end - backward_start, flush=True)
+                dist.barrier()
+                print(f"Rank {rank}: Time per forward pass: ", head_end - backbone_start, flush=True)
+                print(f"Rank {rank}: Time for backward pass: ", backward_end - backward_start, flush=True)
 
             # -- Output dump --
             if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
@@ -398,30 +396,27 @@ class SplitTrainer():
 
         # Transform orbital template into cupy version:
         if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
-            print("Creating orbital template pointers")
+            print("Creating orbital template pointers for matrix->label kernel... ")
             first_batch = next(iter(eval_loader))
             orbital_template = first_batch.fock_target_object[0].orbital_template
-
             orbital_template_ptrs = []
             orbital_template_tmp = []
             for o in orbital_template:
                 inner_size = 5 * len(o)
-                tmp = cp.zeros((inner_size,), dtype=cp.int32)
-                try:
-                    for j, (row_slice, col_slice, output_slice) in enumerate(o):
-                        tmp[j * 5 + 0] = row_slice.start
-                        tmp[j * 5 + 1] = row_slice.stop
-                        tmp[j * 5 + 2] = col_slice.start
-                        tmp[j * 5 + 3] = col_slice.stop
-                        tmp[j * 5 + 4] = output_slice.start
-                    orbital_template_tmp.append(tmp)
-                except Exception:
-                    print(o[j],j, flush=True)
+                tmp = np.zeros((inner_size,), dtype=cp.int32)
+                for j, (row_slice, col_slice, output_slice) in enumerate(o):
+                    tmp[j * 5 + 0] = row_slice.start
+                    tmp[j * 5 + 1] = row_slice.stop
+                    tmp[j * 5 + 2] = col_slice.start
+                    tmp[j * 5 + 3] = col_slice.stop
+                    tmp[j * 5 + 4] = output_slice.start
+                tmp = cp.array(tmp, dtype=cp.int32)
+                orbital_template_tmp.append(tmp)
                 orbital_template_ptrs.append(matrix2labels_kernels.get_ptr(tmp))
 
-            orbital_template_ptrs = cp.array(
-                orbital_template_ptrs, dtype=cp.uintp
-            )
+            # template: for interation Z1-Z2, [row slice, col slice] of matrix goes to [output slice] of label
+            orbital_template_ptrs = cp.array(orbital_template_ptrs, dtype=cp.uintp)
+            cp.cuda.Stream.null.synchronize()
 
         # dictionaries to store the orbital blocks, they get rewritten by each batch
         eigenvalue_maes = []
@@ -496,80 +491,173 @@ class SplitTrainer():
                     print(f"Basis transform time: {end_basis - start_basis:.4f}s", flush=True)
 
                 ## LABEL -> MATRIX START ##
-                start_conversion = time.perf_counter()
+                method = 'cupy_kernel' # 'numpy_kernel' or 'cupy_kernel' or 'torch_kernel'
+                torch.cuda.synchronize()
+                # start_conversion = time.perf_counter()
                 matrix_size = batch.fock_target_object[0].block_starts_list[index][-1]
 
-                # Augment neighbor list with node self-neighbors, because we will stack the nodes together with the edges
-                src_idx, target_idx = neighbour_list[0], neighbour_list[1]
-                num_atoms = len(atomic_numbers)
-                src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
-                target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
-                fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(orbitals_per_atom)])
+                if method == 'cupy_kernel':
 
-                # output_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
-                # edge_output_cupy = cp.from_dlpack(uncoupled_edge_outputs)
-                # node_output_cupy = cp.from_dlpack(uncoupled_node_outputs)
-                # output_targets = cp.concatenate([edge_output_cupy, node_output_cupy])
+                    # Augment neighbor list with node self-neighbors, because we will stack the nodes together with the edges
+                    src_idx, target_idx = neighbour_list[0], neighbour_list[1]
+                    num_atoms = len(atomic_numbers)
+                    src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
+                    target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
+                    fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(orbitals_per_atom)])
 
-                # label_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
-                # edge_label_cupy = cp.from_dlpack(uncoupled_edge_labels)
-                # node_label_cupy = cp.from_dlpack(uncoupled_node_labels)
-                # label_targets = cp.concatenate([edge_label_cupy, node_label_cupy])
+                    output_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
+                    edge_output_cupy = cp.from_dlpack(uncoupled_edge_outputs)
+                    node_output_cupy = cp.from_dlpack(uncoupled_node_outputs)
+                    output_targets = cp.concatenate([edge_output_cupy, node_output_cupy])
 
-                output_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
-                output_targets = np.concatenate([uncoupled_edge_outputs.detach().cpu().numpy(), uncoupled_node_outputs.detach().cpu().numpy()])
-                matrix2labels_kernels.numpy_single_matrix2label(
-                    orbital_template,
-                    fock_block_offsets,
-                    atomic_numbers,
-                    src_idxes,
-                    target_idxes,
-                    output_fock_matrix,
-                    output_targets,
-                    forward=False
-                )
+                    label_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
+                    edge_label_cupy = cp.from_dlpack(uncoupled_edge_labels)
+                    node_label_cupy = cp.from_dlpack(uncoupled_node_labels)
+                    label_targets = cp.concatenate([edge_label_cupy, node_label_cupy])
 
-                # matrix2labels_kernels.cupy_single_matrix2label(
-                #     orbital_template,
-                #     fock_block_offsets,
-                #     batch.fock_target_object[0].atomic_numbers,
-                #     src_idxes,
-                #     target_idxes,
-                #     output_fock_matrix,
-                #     output_targets,
-                #     orbital_template_ptrs,
-                #     forward=False
-                # )
+                    torch.cuda.synchronize()
+                    start_conversion = time.perf_counter()
 
-                label_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
-                label_targets = np.concatenate([uncoupled_edge_labels.detach().cpu().numpy(), uncoupled_node_labels.detach().cpu().numpy()])
-                matrix2labels_kernels.numpy_single_matrix2label(
-                    orbital_template,
-                    fock_block_offsets,
-                    atomic_numbers,
-                    src_idxes,
-                    target_idxes,
-                    label_fock_matrix,
-                    label_targets,
-                    forward=False
-                )
+                    matrix2labels_kernels.cupy_single_matrix2label(
+                        orbital_template,
+                        fock_block_offsets,
+                        atomic_numbers,
+                        src_idxes,
+                        target_idxes,
+                        output_fock_matrix,
+                        output_targets,
+                        orbital_template_ptrs,
+                        forward=False
+                    )
 
-                # matrix2labels_kernels.cupy_single_matrix2label(
-                #     orbital_template,
-                #     fock_block_offsets,
-                #     batch.fock_target_object[0].atomic_numbers,
-                #     src_idxes,
-                #     target_idxes,
-                #     label_fock_matrix,
-                #     label_targets,
-                #     orbital_template_ptrs,
-                #     forward=False
-                # )
-                end_conversion = time.perf_counter()
-                output_fock_matrix = (output_fock_matrix + output_fock_matrix.T) / 2
-                label_fock_matrix = (label_fock_matrix + label_fock_matrix.T) / 2
-                if rank == 0:
-                    print(f"Label -> Matrix time [NEW]: {end_conversion - start_conversion:.4f}s", flush=True)
+                    matrix2labels_kernels.cupy_single_matrix2label(
+                        orbital_template,
+                        fock_block_offsets,
+                        atomic_numbers,
+                        src_idxes,
+                        target_idxes,
+                        label_fock_matrix,
+                        label_targets,
+                        orbital_template_ptrs,
+                        forward=False
+                    )
+                    torch.cuda.synchronize()
+                    end_conversion = time.perf_counter()
+
+                    # cupy -> numpy (cpu)
+                    output_fock_matrix = output_fock_matrix.get()
+                    label_fock_matrix = label_fock_matrix.get()
+
+                    output_fock_matrix = (output_fock_matrix + output_fock_matrix.T) / 2
+                    label_fock_matrix = (label_fock_matrix + label_fock_matrix.T) / 2
+                    if rank == 0:
+                        print(f"Label -> Matrix time [cupy]: {end_conversion - start_conversion:.4f}s", flush=True)
+
+                elif method == 'torch_kernel':
+
+                    # 1. Setup indices (keep as numpy for a moment, then cast to torch)
+                    src_idx, target_idx = neighbour_list[0], neighbour_list[1]
+                    num_atoms = len(atomic_numbers)
+                    src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
+                    target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
+                    fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(orbitals_per_atom)])
+
+                    # 2. Prepare GPU Tensors
+                    # We cast indices to torch.long on cuda
+                    src_idxes_gpu = torch.from_numpy(src_idxes).to('cuda', dtype=torch.long)
+                    target_idxes_gpu = torch.from_numpy(target_idxes).to('cuda', dtype=torch.long)
+                    offsets_gpu = torch.from_numpy(fock_block_offsets).to('cuda', dtype=torch.long)
+                    atomic_numbers_gpu = torch.from_numpy(atomic_numbers).to('cuda', dtype=torch.long)
+
+                    # 3. Handle Outputs (Forward = False, filling the matrix)
+                    output_fock_matrix_gpu = torch.zeros((matrix_size, matrix_size), device='cuda', dtype=torch.float32)
+                    output_targets_gpu = torch.cat([uncoupled_edge_outputs, uncoupled_node_outputs]).to('cuda')
+                    label_fock_matrix_gpu = torch.zeros((matrix_size, matrix_size), device='cuda', dtype=torch.float32)
+                    label_targets_gpu = torch.cat([uncoupled_edge_labels, uncoupled_node_labels]).to('cuda')
+
+                    torch.cuda.synchronize()
+                    start_conversion = time.perf_counter()
+
+                    matrix2labels_kernels.torch_single_matrix2label(
+                        orbital_template,
+                        offsets_gpu,
+                        atomic_numbers_gpu,
+                        src_idxes_gpu,
+                        target_idxes_gpu,
+                        output_fock_matrix_gpu,
+                        output_targets_gpu,
+                        forward=False
+                    )
+
+                    matrix2labels_kernels.torch_single_matrix2label(
+                        orbital_template,
+                        offsets_gpu,
+                        atomic_numbers_gpu,
+                        src_idxes_gpu,
+                        target_idxes_gpu,
+                        label_fock_matrix_gpu,
+                        label_targets_gpu,
+                        forward=False
+                    )
+
+                    torch.cuda.synchronize()
+                    end_conversion = time.perf_counter()
+
+                    # 5. Bring back to CPU/Numpy for the rest of your pipeline
+                    output_fock_matrix = output_fock_matrix_gpu.detach().cpu().numpy()
+                    label_fock_matrix = label_fock_matrix_gpu.detach().cpu().numpy()
+
+                    output_fock_matrix = (output_fock_matrix + output_fock_matrix.T) / 2
+                    label_fock_matrix = (label_fock_matrix + label_fock_matrix.T) / 2
+                    
+                    if rank == 0:
+                        print(f"Label -> Matrix time [torch]: {end_conversion - start_conversion:.4f}s", flush=True)
+
+                else:
+
+                    # Augment neighbor list with node self-neighbors, because we will stack the nodes together with the edges
+                    src_idx, target_idx = neighbour_list[0], neighbour_list[1]
+                    num_atoms = len(atomic_numbers)
+                    src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
+                    target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
+                    fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(orbitals_per_atom)])
+
+                    output_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
+                    output_targets = np.concatenate([uncoupled_edge_outputs.detach().cpu().numpy(), uncoupled_node_outputs.detach().cpu().numpy()])
+                    label_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
+                    label_targets = np.concatenate([uncoupled_edge_labels.detach().cpu().numpy(), uncoupled_node_labels.detach().cpu().numpy()])
+
+                    torch.cuda.synchronize()
+                    start_conversion = time.perf_counter()
+
+                    matrix2labels_kernels.numpy_single_matrix2label(
+                        orbital_template,
+                        fock_block_offsets,
+                        atomic_numbers,
+                        src_idxes,
+                        target_idxes,
+                        output_fock_matrix,
+                        output_targets,
+                        forward=False
+                    )
+
+                    matrix2labels_kernels.numpy_single_matrix2label(
+                        orbital_template,
+                        fock_block_offsets,
+                        atomic_numbers,
+                        src_idxes,
+                        target_idxes,
+                        label_fock_matrix,
+                        label_targets,
+                        forward=False
+                    )
+
+                    end_conversion = time.perf_counter()
+                    output_fock_matrix = (output_fock_matrix + output_fock_matrix.T) / 2
+                    label_fock_matrix = (label_fock_matrix + label_fock_matrix.T) / 2
+                    if rank == 0:
+                        print(f"Label -> Matrix time [numpy]: {end_conversion - start_conversion:.4f}s", flush=True)
+
                 ## DEBUG NEW LABEL -> MATRIX END ##
 
                 if dump_plots:

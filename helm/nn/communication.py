@@ -125,10 +125,6 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm=None):
 
     num_nodes_to_recv = len(remote_indices_torch)
 
-    torch.cuda.synchronize(device)
-    dist.barrier()
-    comm_start_time = time.time()
-
     edge_embeddings = torch.empty(
         (num_edges, num_coefficients, num_channels), 
         device=device, dtype=dtype
@@ -137,6 +133,10 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm=None):
     # if there are no remote nodes to receive, we can skip the communication step and directly slot in the local embeddings
     if num_nodes_to_recv == 0:
         edge_embeddings[is_local] = embedding[local_indices_torch]
+
+    # torch.cuda.synchronize(device)
+    # dist.barrier()
+    # comm_start_time = time.time()
 
     # 3. Communication Group
     if num_nodes_to_recv > 0:
@@ -179,9 +179,9 @@ def exchange_nodes(embedding, num_edges, communication_dict, comm=None):
         all_received = torch.cat([recv_buffers[rank] for rank in nodes_to_recv.keys()], dim=0)
         edge_embeddings[is_remote] = all_received[remote_indices_torch]
     
-    torch.cuda.synchronize(device)
-    comm_end_time = time.time()
-    print(f"Rank {dist.get_rank()} - Message exchange completed in {comm_end_time - comm_start_time:.4f} seconds", flush=True)
+    # torch.cuda.synchronize(device)
+    # comm_end_time = time.time()
+    # print(f"Rank {dist.get_rank()} - Message exchange completed in {comm_end_time - comm_start_time:.4f} seconds", flush=True)
 
     return edge_embeddings
 
@@ -212,9 +212,6 @@ class ExchangeNodes(torch.autograd.Function):
 
         num_nodes_to_recv = len(remote_indices_torch)
 
-        # torch.cuda.synchronize(device)
-        # dist.barrier()
-        # comm_start_time = time.time()
 
         edge_embeddings = torch.empty(
             (num_edges, num_coefficients, num_channels), 
@@ -224,6 +221,10 @@ class ExchangeNodes(torch.autograd.Function):
         # if there are no remote nodes to receive, we can skip the communication step and directly slot in the local embeddings
         if num_nodes_to_recv == 0:
             edge_embeddings[is_local] = embedding[local_indices_torch]
+
+        # torch.cuda.synchronize(device)
+        # dist.barrier()
+        # comm_start_time = time.time()
 
         # 3. Communication Group
         if num_nodes_to_recv > 0:

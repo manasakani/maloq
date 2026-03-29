@@ -85,7 +85,7 @@ class Domain_Decomp():
         if self.rank == 0:
             print(f"Rank {self.rank} partitioning graph with method {partition_type}...", flush=True)
 
-        if partition_type == 'linear':
+        if partition_type == 'linear-atomwise':
             # This is the 'no complex partioning' baseline
             total_num_nodes = len(structure.atomic_numbers) 
             local_num_nodes = total_num_nodes // self.size
@@ -112,6 +112,53 @@ class Domain_Decomp():
 
             self._plot_structure_partitions(structure, reordered_partitions, atom_reorder_perm, partition_type)
         
+        elif partition_type == 'linear-edgewise':
+            total_num_nodes = len(structure.atomic_numbers)
+            edges = structure.edge_matrix
+            
+            # 1. Calculate the degree of every atom (how many edges each atom 'owns')
+            # Since you own an edge if dst is in your list, we count occurrences in row 0
+            node_indices, degree_counts = np.unique(edges[0], return_counts=True)
+            
+            # Map back to full node list (some nodes might have 0 edges)
+            full_degrees = np.zeros(total_num_nodes, dtype=np.int32)
+            full_degrees[node_indices] = degree_counts
+            
+            # 2. Compute cumulative edges across the atom list
+            cumulative_edges = np.cumsum(full_degrees)
+            total_edges = cumulative_edges[-1]
+            edges_per_rank = total_edges // self.size
+            
+            # 3. Find the split indices in the atom list that balance the edge counts
+            # We want to find atom indices where cumulative_edges crosses multiples of edges_per_rank
+            split_indices = [0]
+            for i in range(1, self.size):
+                target = i * edges_per_rank
+                # Find the first atom index where the cumulative edges >= our target
+                idx = np.searchsorted(cumulative_edges, target)
+                split_indices.append(idx + 1)
+            split_indices.append(total_num_nodes)
+            
+            # 4. Extract local indices for this specific rank
+            start_node = split_indices[self.rank]
+            end_node = split_indices[self.rank + 1]
+            local_node_indices = np.arange(start_node, end_node)
+            
+            # 5. Prepare the reordered_partitions list for plotting/info
+            atom_reorder_perm = np.arange(total_num_nodes)
+            reordered_partitions = []
+            for i in range(self.size):
+                reordered_partitions.append(np.arange(split_indices[i], split_indices[i+1]))
+            
+            # Print balance info for rank 0 to verify
+            if self.rank == 0:
+                actual_edges = [np.sum(full_degrees[p]) for p in reordered_partitions]
+                print(f"Edge-balanced Linear Partitioning:")
+                print(f"Edges per rank: {actual_edges}")
+                print(f"Atoms per rank: {[len(p) for p in reordered_partitions]}")
+
+            self._plot_structure_partitions(structure, reordered_partitions, atom_reorder_perm, partition_type)
+
         else:
             # call one of the partitioning functions
             levels = self.size if partition_type in ['metis', 'random', 'worstcase'] else int(np.log2(self.size))
