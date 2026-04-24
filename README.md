@@ -25,7 +25,7 @@ The model is pre-configured to work with three Hamiltonian matrix datasets. Ensu
 | **MD17/QM7** | Small Molecules | [Website](https://quantum-machine.org/datasets/) | `run_QM7.py` | Water and other small molecules. |
 | **nablaDFT** | DFT Benchmarks | [GitHub](https://github.com/AIRI-Institute/nablaDFT) | `run_nablaDFT.py` | Druglike molecules (30-50 atoms) with heavy atoms. |
 | **OMol electronic structures** | Large Molecules | [Link](https://www.materialsdatafacility.org/spotlight/omol25#access-data) | `run_omol_csh.py` | Large molecules (10-150 atoms). |
-| **Amorphous materials** | Material | [Link] https://huggingface.co/datasets/chexia8/Amorphous-Hamiltonians | `run_cp2k_dataset.py. | Amorphous materials |
+| **Amorphous materials** | Material | [Link](https://huggingface.co/datasets/chexia8/Amorphous-Hamiltonians) | `run_cp2k_dataset.py. | Amorphous materials |
 
 ---
 
