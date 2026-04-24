@@ -13,7 +13,7 @@
 ## 📌 About
 **MALOQ** is a scalable, equivariant Graph Neural Network (GNN) framework designed for the rapid prediction of Hamiltonian matrices and quantum operators. By leveraging $SO(2)$-equivariant kernels, symmetry reductions, and efficient data processing pipelines, MALOQ learns structure-property mappings to complex orbital interactions across diverse chemical spaces.
 
-This repository is the official implementation for our upcoming submission to **SC26**
+This repository is the official implementation for our submission to **SC26**
 
 ---
 
@@ -24,14 +24,15 @@ The model is pre-configured to work with three Hamiltonian matrix datasets. Ensu
 | :--- | :--- | :--- | :--- | :--- |
 | **MD17/QM7** | Small Molecules | [Website](https://quantum-machine.org/datasets/) | `run_QM7.py` | Water and other small molecules. |
 | **nablaDFT** | DFT Benchmarks | [GitHub](https://github.com/AIRI-Institute/nablaDFT) | `run_nablaDFT.py` | Druglike molecules (30-50 atoms) with heavy atoms. |
-| **Omol_CSH_58k** | Large Scale | [Link To-Do]() | `run_omol_csh.py` | 58k samples of large molecules (10-150 atoms). |
+| **OMol electronic structures** | Large Molecules | [Link](https://www.materialsdatafacility.org/spotlight/omol25#access-data) | `run_omol_csh.py` | Large molecules (10-150 atoms). |
+| **Amorphous materials** | Material | [Link] https://huggingface.co/datasets/chexia8/Amorphous-Hamiltonians | `run_cp2k_dataset.py. | Amorphous materials |
 
 ---
 
 ## 👥 Contributors
 
 * **ICLR2026 (HELM)** – Manasa Kaniselvan and Daniel Levine
-* **SC26 (MALOQ)** – Manasa Kaniselvan, Denghui Lu, Alexander Maeder, Alexandros Nikolaos Ziogas
+* **SC26 submission (MALOQ)** – Manasa Kaniselvan, Denghui Lu, Alexander Maeder, Alexandros Nikolaos Ziogas
 
 ---
 
