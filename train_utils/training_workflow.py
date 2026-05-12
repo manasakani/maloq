@@ -24,9 +24,11 @@ class TrainingWorkflow:
         "wigner_backend": "torch",
         "distribute_graphs": False,
         "partition_type": None,
+        "tiling_dims": None,
         "lr_init": 1e-4,
         "optimizer_type": "adam",
         "compute_total_energy": False,
+        "dist_backend": "nccl" if torch.cuda.is_available() else "gloo",
     }
 
     def __init__(self, config):
@@ -45,7 +47,7 @@ class TrainingWorkflow:
         self.world_size = int(os.environ.get('SLURM_NTASKS', 1))
         
         compute_start = time.perf_counter()
-        self.device = utils_compute.setup_env(self.rank, self.world_size)
+        self.device = utils_compute.setup_env(self.rank, self.world_size, backend=self.config['dist_backend'])
         compute_end = time.perf_counter()
         
         if self.rank == 0:
@@ -66,7 +68,6 @@ class TrainingWorkflow:
                 raise ValueError("Triton Wigner backend does not support float64 dtype.")
 
         # Write config settings to the output file:
-        print(f"Rank {self.rank}: Configuration settings:")
         if self.rank == 0:
             config_path = os.path.join(self.config['output_folder'], f"config_{self.config['run_name']}.json")
             serializable_config = {
@@ -186,6 +187,7 @@ class TrainingWorkflow:
                 # --- 2. Load Training Segments ---
                 train_datasets = []
                 for entry in train_data_dict:
+                    print(f"Rank {self.rank}: Starting iteration {i} for {entry['db_file']}", flush=True)
                     ds = ASEDataset(
                         db_path=entry['db_file'],
                         dtype=c['dtype'],
@@ -193,8 +195,9 @@ class TrainingWorkflow:
                         start_idx=entry['start_idx'], 
                         end_idx=entry['end_idx']     
                     )
+                    print(f"Rank {self.rank}: Finished iteration {i}", flush=True)
                     train_datasets.append(ds)
-                train_database = ConcatDataset(train_datasets)
+                train_database = ConcatDataset(train_datasets) if train_datasets else None
 
                 # --- 3. Load Validation Segments ---
                 val_datasets = []
@@ -263,6 +266,7 @@ class TrainingWorkflow:
                 is_open_shell=c['open_shell'],
                 scale_shift_data=scale_shift_data,
                 distribute_graphs=c['distribute_graphs'],
+                tiling_dims=c['tiling_dims'],
                 partition_type=c['partition_type']
             )
 
@@ -296,6 +300,7 @@ class TrainingWorkflow:
                     is_open_shell=c['open_shell'],
                     scale_shift_data=scale_shift_data,
                     distribute_graphs=c['distribute_graphs'],
+                    tiling_dims=c['tiling_dims'],
                     partition_type=c['partition_type']
                 )
             return train_loader, val_loader, required_irreps, basis_trans, orb_basis, ls_list
@@ -319,6 +324,7 @@ class TrainingWorkflow:
                 is_open_shell=c['open_shell'],
                 scale_shift_data=scale_shift_data,
                 distribute_graphs=c['distribute_graphs'],
+                tiling_dims=c['tiling_dims'],
                 partition_type=c['partition_type']
             )
         

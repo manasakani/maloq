@@ -4,15 +4,16 @@ import torch.distributed as dist
 import numpy as np
 from torch.distributed.launcher.api import LaunchConfig, elastic_launch
 
-def setup_env(rank, world_size):
+def setup_env(rank, world_size, backend='nccl'):
 
     # !! make sure visibility is restricted to "gpu 0" in .sh file !!
     gpu_id = 0
     torch.cuda.set_device(gpu_id)
     device = torch.device('cuda:'+ str(gpu_id))
 
-    dist.init_process_group(backend='nccl', rank=rank, world_size=world_size, device_id=device) #'gloo'
+    dist.init_process_group(backend=backend, rank=rank, world_size=world_size, device_id=device) #'gloo'
     print("Initialized distributed process group", flush=True)
+    os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "1"
 
     dist.barrier()
 
