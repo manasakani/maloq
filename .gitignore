@@ -1,5 +1,6 @@
 *.db
 *.txt
+!requirements.txt
 *.png
 *.out
 *.pkl
