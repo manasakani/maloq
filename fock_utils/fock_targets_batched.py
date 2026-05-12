@@ -38,6 +38,7 @@ class Fock_Targets:
                 compute_fock_eigenvalues=False,
                 scale_shift_data=None,
                 distribute_graphs=False,
+                tiling_dims=None,
                 orbital_starts=None,
                 orbital_template=None,
                 req_output_irreps=None,
@@ -58,9 +59,17 @@ class Fock_Targets:
         self.world_size = dist.get_world_size()
         self.comm = MPI.COMM_WORLD
 
+        # Option to tile the structure, used for weak scaling
+        if tiling_dims is not None and periodic_boxes is not None:
+            if self.rank == 0:
+                print(f"Tiling the structure with tiling dimensions: {tiling_dims}, periodic boxes: {periodic_boxes}", flush=True)
+                atomic_numbers, atomic_positions, periodic_boxes = self.tile_structure(
+                    atomic_numbers, atomic_positions, periodic_boxes, tiling_dims
+                )
+
         # Graph-wise distribution of the underlying data 
         self.distribute_graphs = distribute_graphs
-        self.partition_type = partition_type
+        self.partition_type = partition_type if distribute_graphs else "linear"
 
         self.orbital_basis = orbital_basis
         self.dtype = dtype
@@ -146,7 +155,9 @@ class Fock_Targets:
         self.target_len = None
         if fock_matrices is not None:
             self.make_targets(fock_matrices)
-
+        else:
+            self.make_no_targets()
+            
 
     def make_atomic_graphs(self, atomic_numbers, atomic_positions, cutoff, periodic_boxes):
 
@@ -182,7 +193,7 @@ class Fock_Targets:
             mol_edge_dist = torch.zeros((len(indices0), 4), dtype=self.dtype)
             if self.distribute_graphs:
                 mol_edge_dist[:, 1:4] = torch.from_numpy(atoms.get_distances(indices0, indices1, vector=True))    # Vector components
-                print("Computed edge distances with swapped indices for distributed graph!", flush=True)
+                # print("Computed edge distances with swapped indices for distributed graph!", flush=True)
             else:
                 mol_edge_dist[:, 1:4] = torch.from_numpy(atoms.get_distances(indices1, indices0, vector=True))    # Vector components
             mol_edge_dist[:, 0] = torch.linalg.norm(mol_edge_dist[:, 1:4], dim=-1, keepdim=False)             # Scalar distances
@@ -308,7 +319,7 @@ class Fock_Targets:
         spin_strings = ['_alpha', '_beta']
 
         # each target should fit in a NxN matrix (to be flattened)
-        self.target_len = self.get_target_len()
+        self.target_len = self.basis_transformation.required_irreps_out.dim
 
         if self.distribute_graphs:
             node_labels_list = []
@@ -318,7 +329,6 @@ class Fock_Targets:
         self.edge_labels_list = []
 
         if method == 'cupy_kernel':
-            print("Creating orbital template pointers for matrix->label kernel... ")
             orbital_template_ptrs = []
             orbital_template_tmp = []
             for o in self.orbital_template:
@@ -414,13 +424,11 @@ class Fock_Targets:
 
                     # scale and shift the node labels (l=0 irreps) in the targets
                     if self.scale_shift_data is not None:
-                        print("max and min before scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
                         if open_shell:
                             node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], mol_atomic_numbers, spin_string=spin_strings[spin])
                         else:
                             node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], mol_atomic_numbers)
-                    print("node label magnitude range: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
-
+                        
                 # No distribution, store directly
                 if not self.distribute_graphs:
                     self.node_labels_list.append(node_labels)
@@ -429,8 +437,12 @@ class Fock_Targets:
                     node_labels_list.append(node_labels)
                     edge_labels_list.append(edge_labels)
             
+            if len(fock_matrices) > 0:
+                print("Rank ", self.rank, ": Node label magnitude range: ", torch.max(node_labels).item(), torch.min(node_labels).item(), flush=True)
+            
         # process all incoming fock matrices at once
         else:
+            print("Processing all fock matrices at once with cupy kernel... ")
 
             open_shell = fock_matrices[0].ndim == 3
             num_spins = 2 if open_shell else 1
@@ -514,13 +526,14 @@ class Fock_Targets:
 
                     # scale and shift the node labels (l=0 irreps) in the targets
                     if self.scale_shift_data is not None:
-                        print("max and min before scaling: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
                         if open_shell:
                             node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], mol_atomic_numbers, spin_string=spin_strings[spin])
                         else:
                             node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], mol_atomic_numbers)
-                    print("node label magnitude range: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
+                        print("node label magnitude range: ", torch.max(node_labels[spin]).item(), torch.min(node_labels[spin]).item(), flush=True)
 
+            if len(fock_matrices) > 0:
+                print("Rank ", self.rank, ": Node label magnitude range: ", torch.max(all_node_labels).item(), torch.min(all_node_labels).item(), flush=True)
 
             # No distribution, store directly
             if not self.distribute_graphs:
@@ -529,7 +542,7 @@ class Fock_Targets:
             else:
                 node_labels_list = all_node_labels
                 edge_labels_list = all_edge_labels
-
+ 
         # --------------------------- Redistribute targets based on domain decomposition ---------------------------
 
         if self.distribute_graphs:
@@ -776,6 +789,25 @@ class Fock_Targets:
             # print(f"Rank {self.rank} self.neighbour_list_list after allgather: ", self.neighbour_list_list, flush=True)
             # print(f"Rank {self.rank} self.edge_dist_list after allgather: ", self.edge_dist_list, flush=True)
             self.comm.Barrier()
+    
+    def make_no_targets(self):
+
+        if len(self.atomic_numbers_list) > 0:
+            self.edge_dist_list = torch.vstack(self.edge_dist_list)
+
+        # allgather the data and then index only the current rank's portion
+        all_edge_dists = self.comm.allgather(self.edge_dist_list)
+
+        # filtering out any empty lists (in case some ranks had no data)
+        global_dist  = torch.cat([x for x in all_edge_dists if len(x) > 0], dim=0)
+
+        # Global
+        self.atomic_numbers_list = self.merged_atomic_graph.atomic_numbers
+
+        # Local
+        self.atomic_positions_list = self.merged_atomic_graph.atomic_positions[self.domain.local_node_indices]
+        self.neighbour_list_list = self.domain.local_edges
+        self.edge_dist_list = global_dist[self.domain.local_edge_indices, :]
 
 
     def torch_dtype_to_cupy_dtype(self, torch_dtype):
@@ -849,20 +881,6 @@ class Fock_Targets:
         return new_node_blocks
 
 
-    def get_target_len(self):
-        """
-        Returns the expected size of the targets which contain the maximum orbital interactions.
-        This corresponds to max(Ns)x1 + max(Np)x3 + max(Nd)x5 + max(Nf)x7 + max(Ng)x9
-        Searches for up to h-orbitals
-        """
-
-        N = 0
-        for l in range(6):
-            max_l_multiplicity = np.max([self.orbital_basis[el].count(l) for el in self.orbital_basis])
-            N += (2*l + 1) * max_l_multiplicity
-
-        return N**2
-
     def undo_scale_shift(self, node_blocks, atomic_numbers):
 
         # Unscale and shift the node blocks!
@@ -872,7 +890,36 @@ class Fock_Targets:
         else:
             print("Unscaling node blocks with scale/shift data")
             return self.unscale_shift_node_blocks(node_blocks, atomic_numbers)
-            
+    
+    def tile_structure(self, atomic_numbers, atomic_positions, periodic_boxes, tiling_dims):
+        """
+        Tiles the first structure in the input list.
+        tiling_dims: list or tuple of 3 integers, e.g., [2, 2, 2]
+        """
+        # 1. Create the ASE Atoms object for the first structure
+        # periodic_boxes[0] should be a 3x3 matrix or [a, b, c, alpha, beta, gamma]
+        unit_cell = periodic_boxes[0]
+        
+        mol = Atoms(
+            numbers=atomic_numbers[0],
+            positions=atomic_positions[0],
+            cell=unit_cell,
+            pbc=True # Tiling usually implies periodic boundary conditions
+        )
+
+        # 2. Tile the structure
+        # If tiling_dims is [2, 2, 2], this creates an 8x larger supercell
+        tiled_mol = mol * tiling_dims 
+
+        # 3. Extract the new data
+        new_atomic_numbers = [tiled_mol.get_atomic_numbers()]
+        new_atomic_positions = [tiled_mol.get_positions()]
+        
+        # The new box is the original box scaled by the tiling dimensions
+        # ASE updates the cell automatically during the multiplication
+        new_periodic_boxes = [tiled_mol.get_cell().array]
+
+        return new_atomic_numbers, new_atomic_positions, new_periodic_boxes
     
     def to(self, device):
         """
