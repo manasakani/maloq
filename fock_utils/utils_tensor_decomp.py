@@ -151,7 +151,41 @@ class e3TensorDecomp:
         if self.sort is not None:
             out = self.sort(out)
         return out
+
+    # def get_net_out(self, H):
+    #     r'''get net output from openmx type H'''
+    #     out = []
+    #     batch_size = H.shape[0] 
         
+    #     for i in range(len(self.out_js_list)):
+    #         H_slice = slice(self.H_slices[i], self.H_slices[i + 1])
+    #         l1, l2 = self.out_js_list[i]
+
+    #         # Determine expected output dimension from Wigner multiplier
+    #         # this matches the number of m-components in the irrep decomposition
+    #         target_dim = self.wms_H[i].shape[0] 
+            
+    #         H_block_raw = H[:, H_slice]
+            
+    #         # CHECK FOR EMPTY BLOCKS (Crucial for Batch Size 1)
+    #         if H_block_raw.shape[1] == 0:
+    #             # Return zeros so the concatenated tensor maintains the 
+    #             # Global Basis shape expected by the rest of the network
+    #             net_out_block = torch.zeros((batch_size, target_dim), 
+    #                                         dtype=self.dtype, 
+    #                                         device=self.device)
+    #         else:
+    #             l1_m, l2_m = l1 % 10, l2 % 10
+    #             H_block = H_block_raw.reshape(-1, 2 * l1_m + 1, 2 * l2_m + 1)
+    #             net_out_block = torch.sum(self.wms_H[i][None, :, :, :] * H_block[:, None, :, :], dim=(-1, -2))
+            
+    #         out.append(net_out_block)
+
+    #     out = torch.cat(out, dim=-1)
+        
+    #     if self.sort is not None:
+    #         out = self.sort(out)
+    #     return out
 
 def make_output_irreps(orbital_basis):
     '''
