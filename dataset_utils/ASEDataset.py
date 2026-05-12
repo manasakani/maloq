@@ -1,52 +1,64 @@
-import ase.db
-from torch_geometric.data import Data, Dataset
-import torch
-import numpy as np
+import os
+import time
 import math
-import torch.distributed as dist
-
+import random
+import numpy as np
 from typing import Optional, List, Dict, Any, Iterable, Union, Tuple
 from abc import ABC, abstractmethod
+
+import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch_geometric.data import Data, Dataset
+
+import ase.db
 from ase import Atoms
-import os
 from ase.db import connect
+from ase.io import read
 from . import schnetpack_properties as structure
 
 class ASEDataset(Dataset):
     def __init__(self, db_path, dtype=torch.float32, open_shell=False, start_idx=0, end_idx=None):
 
         self.db_path = db_path
-        self.db = ase.db.connect(db_path)
+        # self.db = ase.db.connect(db_path)
         self.open_shell = open_shell
-        self.start_offset = start_idx
-        self.end_offset = end_idx if end_idx is not None else len(self.db)
         self.dtype = dtype
+        rank = dist.get_rank() if dist.is_initialized() else 0
 
-        # READ ALL DATA ON EVERY RANK - to avoid strange sharding issues in distributed env with ASE DBs
-        print(f"Rank {dist.get_rank()} loading ALL molecules from {os.path.basename(db_path)}...")
+        # total_count = self.db.count()
+        # if end_idx is None:
+        #     end_idx = total_count
         
-        all_molecules = []
+        # Add jitter for file access:
+        time.sleep(random.uniform(0, 0.5)) 
+
+        # get all the molecules from the DB... 
         with ase.db.connect(self.db_path) as db:
-            for row in db.select():
-                all_molecules.append(row)
 
-        # shard the list with regular python
-        if end_idx is None:
-            end_idx = len(all_molecules)
-            
-        self.my_molecules = all_molecules[start_idx:end_idx]
+            total_count = db.count()
+            if end_idx is None:
+                end_idx = total_count
 
-        # print(f"Rank {dist.get_rank()} shard complete: {len(self.my_molecules)} molecules assigned. "
-        #       f"First ID in shard: {self.my_molecules[0].id if self.my_molecules else 'N/A'}")
+            print(f"Rank {rank} reading database...", flush=True)
+            all_rows = list(db.select()) 
 
+        # ... and shard the data afterwards - this prevents a really strange error in distributed file access in ASE DBs.
+        self.my_molecules = all_rows[start_idx:end_idx]
 
+        print("Rank {} successfully loaded {} molecules.".format(rank, len(self.my_molecules)), flush=True)
+
+        # if self.my_molecules:
+        #     atom0 = self.my_molecules[0].toatoms()
+        #     print(f"Rank {rank}: first molecule has {atom0}", flush=True)
+        
     def _get_ids(self):
         """
         Not used, just required to have this function
         """
         ids = []
-        for row in self.db.select():
+        db = ase.db.connect(self.db_path)
+        for row in db.select():
             print("Getting row..", flush=True)
             ids.append(row.id)
             
@@ -71,7 +83,6 @@ class ASEDataset(Dataset):
 
         # Targets
         fock_matrix = torch.tensor(structure.data['fock_matrix'], dtype=self.dtype)
-        density_matrix = torch.tensor(structure.data['density_matrix'], dtype=self.dtype)
         energies = structure.data['total_energy [Eh]']
 
         is_open_shell = structure.data['is_open_shell']
@@ -96,12 +107,11 @@ class ASEDataset(Dataset):
         if self.open_shell and not is_open_shell:
             print("Adding second spin dimension to closed shell molecule for open shell training")
             fock_matrix = fock_matrix.repeat(2, 1, 1)
-            density_matrix = density_matrix.repeat(2, 1, 1)
+
         # Handle individual open-shell molecules in closed-shell training by taking only alpha:
         elif not self.open_shell and is_open_shell:
             print("Taking only alpha spin dimension from open shell molecule for closed shell training")
             fock_matrix = fock_matrix[0, :, :]
-            density_matrix = density_matrix[0, :, :]
 
         # metadata:
         folder_name = structure.data['folder_name']
@@ -112,7 +122,6 @@ class ASEDataset(Dataset):
             pos=positions,
             atomic_numbers=atomic_numbers,
             fock_matrix=fock_matrix,
-            density_matrix=density_matrix,
             energies=energies,
             num_atoms_in_molecule=len(atomic_numbers),
             charge=charge,
@@ -191,7 +200,7 @@ def distribute_data(base_folder, world_size, rank, N_global_train, N_global_val)
             db = ase.db.connect(db_file)
             count = db.count()
             if rank == 0:
-                print("Found ", count, " molecules in ", db_file)
+                print("Found ", count, " molecules in ", db_file, flush=True)
         except Exception as e:
             print(f"Warning: Could not open {db_file}. Skipping. Error: {e}")
             count = 0
@@ -291,7 +300,7 @@ def distribute_data(base_folder, world_size, rank, N_global_train, N_global_val)
                 'end_idx': local_end_idx
             })
     
-    print(f"Rank {rank}: Assigned {len(train_entries)} training segments and {len(val_entries)} validation segments.")
+    print(f"Rank {rank}: Assigned {len(train_entries)} training segments and {len(val_entries)} validation segments.", flush=True)
 
     return train_entries, val_entries
 

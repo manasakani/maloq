@@ -1,18 +1,21 @@
 import torch
 import numpy as np
 import os
-
-from fock_utils import utils_orca_out, fock_targets_batched, matrix2labels_kernels, basis_sets
-from dataset_utils.ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
-from ase import Atoms
-from ase.neighborlist import NeighborList
-from ase.io import read
 from scipy.sparse import coo_matrix, diags
 import matplotlib.pyplot as plt
 
+from fock_utils import utils_orca_out, fock_targets_batched, matrix2labels_kernels, basis_sets
+from dataset_utils.ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
+
+from ase import Atoms
+from ase.neighborlist import NeighborList
+from ase.io import read
+
 from torch_geometric.loader import DataLoader
-from torch_geometric.data import Data as gnnData, Dataset
+from torch_geometric.data import Data as gnnData
 import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
+from mpi4py import MPI
 
 def get_loader(database, 
                 start_idx, 
@@ -27,6 +30,7 @@ def get_loader(database,
                 is_open_shell=False, 
                 loss_target_string='fock_matrix', 
                 distribute_graphs=False,
+                tiling_dims=None,
                 partition_type='linear'):
     """
     Make dataloader with the given indices of the mocules in the input database
@@ -157,55 +161,191 @@ def get_loader(database,
     print(f"Rank {rank}: Loaded data for {num_molecules_to_process} molecules.", flush=True)
     dist.barrier()
 
-    # Set up the Graph targets
-    if make_fock_targets:
+    # # Set up the Graph targets
+    # if make_fock_targets:
         
-        graph_targets = fock_targets_batched.Fock_Targets(atomic_numbers, positions, rcut, orbital_basis, hamiltonians, 
-                                                            partition_type=partition_type,
-                                                            dtype=dtype, 
-                                                            dataset_name=dataset_name,
-                                                            scale_shift_data=scale_shift_data,
-                                                            periodic_boxes=periodic_boxes if periodic_dataset else None,
-                                                            distribute_graphs=distribute_graphs)
+    #     graph_targets = fock_targets_batched.Fock_Targets(atomic_numbers, positions, rcut, orbital_basis, hamiltonians, 
+    #                                                         partition_type=partition_type,
+    #                                                         dtype=dtype, 
+    #                                                         dataset_name=dataset_name,
+    #                                                         scale_shift_data=scale_shift_data,
+    #                                                         periodic_boxes=periodic_boxes if periodic_dataset else None,
+    #                                                         tiling_dims=tiling_dims,
+    #                                                         distribute_graphs=distribute_graphs)
 
     datalist = []
 
     # If we are distributing, we collapse all loaded data into 1 single Graph object
     if distribute_graphs:
 
-        comm = graph_targets.comm
-        atom_mol_id = graph_targets.atom_mol_id
+        dist_type = 'one_rank_contributes' # all_ranks_contribute or one_rank_contributes
 
-        # all_atomic_numbers_list = comm.allgather(graph_targets.atomic_numbers_list)
-        all_energies_list = comm.allgather(energy)
-        all_charges_list = comm.allgather(charges)
-        all_spins_list = comm.allgather(spins)
+        # Molecular dataset
+        if dist_type == 'all_ranks_contribute':
+            comm = MPI.COMM_WORLD
 
-        # global_atomic_numbers = np.array([item for sublist in all_atomic_numbers_list for item in sublist])
-        global_atomic_numbers = graph_targets.atomic_numbers_list
-        global_energy = np.array([item for sublist in all_energies_list for item in sublist])
-        global_charges = np.array([item for sublist in all_charges_list for item in sublist])
-        global_spins = np.array([item for sublist in all_spins_list for item in sublist])
+            print(f"Rank {rank}: Distributing graphs with batch size {batch_size}. Total molecules: {num_molecules_to_process}. Number of batches: {(num_molecules_to_process + batch_size - 1) // batch_size}", flush=True)
+
+            local_count = len(energy)
+            max_molecules_across_ranks = torch.tensor(local_count).cuda()
+            dist.all_reduce(max_molecules_across_ranks, op=dist.ReduceOp.MAX)
+
+            #  The 'batch_size' set determines the maximum number of local molecules that each rank 
+            #  contributes to a single 'supergraph', which is then partitioned & distributed across the ranks.
+            for i in range(0, max_molecules_across_ranks.item(), batch_size):
+
+                # Each rank prepares a batch of its local molecules (up to 'batch_size'), 
+                # and contributes empty data if it has fewer than 'batch_size' molecules left.
+                if i < local_count:
+                    stop_idx = min(i + batch_size, local_count)
+                    batch_idxs = slice(i, stop_idx)
+                    b_energy = energy[batch_idxs]
+                    b_forces = forces[batch_idxs]
+                    b_charges = charges[batch_idxs]
+                    b_spins = spins[batch_idxs]
+                else:
+                    batch_idxs = slice(0, 0)
+                    b_energy, b_forces, b_charges, b_spins = [], [], [], []
+                
+                all_energies_list = comm.allgather(b_energy)
+                all_forces_list = comm.allgather(b_forces)
+                all_charges_list = comm.allgather(b_charges)
+                all_spins_list = comm.allgather(b_spins)
+
+                global_energy = np.array([item for sublist in all_energies_list for item in sublist])
+                global_forces = np.array([item for sublist in all_forces_list for item in sublist])
+                global_charges = np.array([item for sublist in all_charges_list for item in sublist])
+                global_spins = np.array([item for sublist in all_spins_list for item in sublist])
+
+                # Set up the Graph targets for this batch           
+                graph_targets = fock_targets_batched.Fock_Targets(atomic_numbers[batch_idxs], positions[batch_idxs], rcut, orbital_basis, hamiltonians[batch_idxs], 
+                                                                    partition_type=partition_type,
+                                                                    dtype=dtype, 
+                                                                    dataset_name=dataset_name,
+                                                                    scale_shift_data=scale_shift_data,
+                                                                    periodic_boxes=periodic_boxes[batch_idxs] if periodic_dataset else None,
+                                                                    tiling_dims=tiling_dims,
+                                                                    distribute_graphs=distribute_graphs)
+
+                atom_mol_id = graph_targets.atom_mol_id
+                batch_atomic_numbers = graph_targets.atomic_numbers_list
+                
+                data = gnnData(
+                    pos=torch.tensor(graph_targets.atomic_positions_list, dtype=dtype),
+                    edge_index=torch.tensor(graph_targets.neighbour_list_list),
+                    edge_attr=graph_targets.edge_dist_list,
+                    y=graph_targets.edge_labels_list, 
+                    node_y=graph_targets.node_labels_list,
+                    atomic_numbers=torch.tensor(batch_atomic_numbers, dtype=torch.long).cpu(),
+                    energies=torch.tensor(global_energy[atom_mol_id], dtype=dtype), 
+                    forces=torch.tensor(global_forces[atom_mol_id], dtype=dtype),                                     
+                    atom_mol_id=atom_mol_id,
+                    fock_target_object=graph_targets,
+                    overlap_matrix=None,
+                    charge=torch.tensor(global_charges[atom_mol_id], dtype=torch.long),
+                    spin_multiplicity=torch.tensor(global_spins[atom_mol_id], dtype=torch.long), 
+                    distributed_graph_training=distribute_graphs,
+                )
+                datalist.append(data)
         
-        data = gnnData(
-            pos=torch.tensor(graph_targets.atomic_positions_list, dtype=dtype),
-            edge_index=torch.tensor(graph_targets.neighbour_list_list),
-            edge_attr=graph_targets.edge_dist_list,
-            y=graph_targets.edge_labels_list, 
-            node_y=graph_targets.node_labels_list,
-            atomic_numbers=torch.tensor(global_atomic_numbers, dtype=torch.long).cpu(),
-            energies=torch.tensor(global_energy[atom_mol_id], dtype=dtype), 
-            forces=torch.tensor(0.0, dtype=dtype), # Dummy forces for now
-            atom_mol_id=atom_mol_id,
-            fock_target_object=graph_targets,
-            overlap_matrix=None, 
-            charge=torch.tensor(global_charges[atom_mol_id], dtype=torch.long),
-            spin_multiplicity=torch.tensor(global_spins[atom_mol_id], dtype=torch.long), 
-            distributed_graph_training=distribute_graphs,
-        )
-        datalist.append(data)
+        # Round-robin rank contribution to batch
+        else:
+
+            world_size = dist.get_world_size()
+            my_rank = dist.get_rank()
+
+            # 1. Share how many molecules EVERY rank has so we can loop safely
+            local_count = len(energy)
+            all_counts = [None] * world_size
+            dist.all_gather_object(all_counts, local_count)
+
+            print(f"Rank {my_rank}: Starting sequential distribution. Counts per rank: {all_counts}", flush=True)
+
+            # 2. Loop through each rank, letting them be the "Source" one by one
+            for source_rank in range(world_size):
+                source_total_mols = all_counts[source_rank]
+
+                # 3. Loop through the Source Rank's data in chunks of 'batch_size'
+                for i in range(0, source_total_mols, batch_size):
+                    
+                    # If I am the source, I pack my real data
+                    if my_rank == source_rank:
+                        stop_idx = min(i + batch_size, source_total_mols)
+                        batch_idxs = slice(i, stop_idx)
+                        
+                        b_energy = energy[batch_idxs]
+                        b_forces = forces[batch_idxs]
+                        b_charges = charges[batch_idxs]
+                        b_spins = spins[batch_idxs]
+                        b_atomic_numbers = atomic_numbers[batch_idxs]
+                        b_positions = positions[batch_idxs]
+                        b_hamiltonians = hamiltonians[batch_idxs]
+                        b_periodic_boxes = periodic_boxes[batch_idxs] if periodic_dataset else None
+                    
+                    # If I am a receiver, I prepare empty variables
+                    else:
+                        b_energy, b_forces, b_charges, b_spins = None, None, None, None
+                        b_atomic_numbers, b_positions, b_hamiltonians, b_periodic_boxes = [], [], [], []
+
+                    # 4. Pack everything into a single list for easy broadcasting
+                    data_pack = [[
+                        b_energy, b_forces, b_charges, b_spins
+                    ]] if my_rank == source_rank else [None]
+
+                    # 5. The Source Rank broadcasts the pack to everyone else
+                    dist.broadcast_object_list(data_pack, src=source_rank)
+
+                    # 6. Unpack the data. Now EVERY rank has the exact same batch of molecules
+                    (b_energy, b_forces, b_charges, b_spins) = data_pack[0]
+
+                    global_energy = np.array(b_energy)
+                    global_forces = np.array(b_forces)
+                    global_charges = np.array(b_charges)
+                    global_spins = np.array(b_spins)
+
+                    # 7. Set up the Graph targets for this batch 
+                    # (Fock_Targets will now partition this specific batch across all ranks)
+                    graph_targets = fock_targets_batched.Fock_Targets(
+                        b_atomic_numbers, b_positions, rcut, orbital_basis, b_hamiltonians, 
+                        partition_type=partition_type,
+                        dtype=dtype, 
+                        dataset_name=dataset_name,
+                        scale_shift_data=scale_shift_data,
+                        periodic_boxes=b_periodic_boxes,
+                        tiling_dims=tiling_dims,
+                        distribute_graphs=distribute_graphs
+                    )
+
+                    atom_mol_id = graph_targets.atom_mol_id
+                    batch_atomic_numbers = graph_targets.atomic_numbers_list
+                    
+                    data = gnnData(
+                        pos=torch.tensor(graph_targets.atomic_positions_list, dtype=dtype),
+                        edge_index=torch.tensor(graph_targets.neighbour_list_list),
+                        edge_attr=graph_targets.edge_dist_list,
+                        y=graph_targets.edge_labels_list, 
+                        node_y=graph_targets.node_labels_list,
+                        atomic_numbers=torch.tensor(batch_atomic_numbers, dtype=torch.long).cpu(),
+                        energies=torch.tensor(global_energy[atom_mol_id], dtype=dtype), 
+                        forces=torch.tensor(global_forces[atom_mol_id], dtype=dtype),                                     
+                        atom_mol_id=atom_mol_id,
+                        fock_target_object=graph_targets,
+                        overlap_matrix=None,
+                        charge=torch.tensor(global_charges[atom_mol_id], dtype=torch.long),
+                        spin_multiplicity=torch.tensor(global_spins[atom_mol_id], dtype=torch.long), 
+                        distributed_graph_training=distribute_graphs,
+                    )
+                    datalist.append(data)
     
     else:
+
+        # Set up the Graph targets            
+        graph_targets = fock_targets_batched.Fock_Targets(atomic_numbers, positions, rcut, orbital_basis, hamiltonians, 
+                                                            dtype=dtype, 
+                                                            dataset_name=dataset_name,
+                                                            scale_shift_data=scale_shift_data,
+                                                            periodic_boxes=periodic_boxes if periodic_dataset else None,
+                                                            tiling_dims=tiling_dims)
 
         # Add the molecules into the dataloader
         for i in range(num_molecules_to_process):
@@ -226,7 +366,7 @@ def get_loader(database,
                             forces=torch.tensor(forces[i], dtype=dtype),                                      # Hartree/Angstrom
                             num_atoms_in_molecule=len(graph_targets.atomic_numbers_list[i]),
                             fock_target_object=graph_targets,
-                            overlap_matrix=torch.tensor(overlaps[i], dtype=dtype) if make_fock_targets else None,
+                            overlap_matrix=overlaps[i] if make_fock_targets else None,
                             charge=charges[i],
                             spin_multiplicity=spins[i],
                         )
@@ -244,25 +384,27 @@ def get_loader(database,
                             forces=torch.tensor(forces[i], dtype=dtype),                                      # Hartree/Angstrom
                             num_atoms_in_molecule=len(graph_targets.atomic_numbers_list[i]),
                             fock_target_object=graph_targets,
-                            overlap_matrix=torch.tensor(overlaps[i], dtype=dtype) if make_fock_targets else None,
+                            overlap_matrix=overlaps[i] if make_fock_targets else None,
                             charge=charges[i],
                             spin_multiplicity=spins[i],
                         )
             datalist.append(data)
 
     orbital_basis = {k: torch.tensor(v) for k, v in graph_targets.orbital_basis.items()}
-
     ls_list = graph_targets.ls_list
     required_irreps = graph_targets.req_output_irreps
     basis_transform = graph_targets.basis_transformation
     orbital_starts = graph_targets.orbital_starts
 
-    # when distributing graphs, we want to have one batch with all the graphs on each rank
+    # when distributing graphs, the batch size is 1 since each graph is a 'supergraph' with multiple molecules. 
     if distribute_graphs:
-        batch_size = len(datalist)
+        batch_size = 1
 
     dataset = sampleDataset(datalist)
     data_loader = DataLoader(dataset, batch_size=batch_size)
+    
+    # print number of batches owned by each rank:
+    print(f"Rank {rank}: Number of batches = {len(data_loader)} with batch size {batch_size}", flush=True)
 
     if rank == 0:
         print("Required irreps to cover all orbital interactions: ", required_irreps)

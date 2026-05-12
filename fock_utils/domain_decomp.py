@@ -83,7 +83,7 @@ class Domain_Decomp():
         """Partition the graph and return the local node indices for this rank."""
 
         if self.rank == 0:
-            print(f"Rank {self.rank} partitioning graph with method {partition_type}...", flush=True)
+            print(f"Partitioning graph with method {partition_type}...", flush=True)
 
         if partition_type == 'linear-atomwise':
             # This is the 'no complex partioning' baseline
@@ -203,9 +203,9 @@ class Domain_Decomp():
             if self.rank == 0:
                 print(f"Partitioning complete, image written. Atoms per partition: {atoms_per_partition}", flush=True)
         
-        dist.barrier()
-        print(f"Rank {self.rank} local node indices: {local_node_indices}", flush=True)
-        dist.barrier()
+        # dist.barrier()
+        # print(f"Rank {self.rank} local node indices: {local_node_indices}", flush=True)
+        # dist.barrier()
             
         return local_node_indices, atom_reorder_perm
 
