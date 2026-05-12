@@ -8,7 +8,7 @@ config = {
     # Dataset Paths & Naming
     "dataset_name": 'cp2k_material',
     "dbpath": "/capstor/store/cscs/pasc/c33/manasa/2D_oxide_datasets/",
-    "output_folder": 'outputs_cp2k_material',
+    "output_folder": 'outputs_cp2k',
     "run_name": 'cp2k_material',
     "open_shell": False,
     
@@ -18,21 +18,22 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    "num_train": 1, 
+    "num_train": 2, 
     "num_val": 1, 
     "num_test": 0,
-    "batch_size": 10,                 # 1 for eval, usually 10 for train
+    "batch_size": 1,                 # 1 for eval, usually 10 for train
     "distribute_graphs": True,       # Distribute graphs and perform communication in the forward pass (ongoing)
+    "partition_type": 'linear-edgewise',       # 'linear-atomwise', 'low_nn', 'metis', 'worstcase'
     
     # Symmetry Reductions 
     "reduce_edge": False,            # Unused!
-    "reduce_node": True,             # Enforce inter-orbital interactions equal
-    "reduce_node_intra": True,       # Enforce 0 odd degrees for intra-orbital
+    "reduce_node": False,             # Enforce inter-orbital interactions equal
+    "reduce_node_intra": False,       # Enforce 0 odd degrees for intra-orbital
     
     # Training Hyperparameters
     "num_epochs": 20000,
     "dtype": torch.float32,          # 32 here for cupy kernel
-    "lr_init": 1e-4,
+    "lr_init": 5e-4,
     "optimizer_type": "adam",        # standard Adam
     "weight_decay": 0.0,
     "scheduler_type": 'cosine',      # 'plateau' or 'cosine'
@@ -45,9 +46,9 @@ config = {
     "loss_target": 'fock_matrix',
     "train_loss_fxn": loss.rmse_mse_padded_loss,
     "test_loss_fxn": loss.l1_unpadded_loss,
-    "save_frequency": 10,
-    "restart_backbone": False,       # Restart options
-    "restart_head": False,
+    "save_frequency": 50,
+    "restart_backbone": True,       # Restart options
+    "restart_head": True,
     "restart_optimizer": False,      
     "backbone_checkpoint": 'backbone.pt',
     "head_checkpoint": 'head.pt',
@@ -57,11 +58,12 @@ config = {
     "compute_total_energy": False,
 
     # Model Architecture
+    "wigner_backend": "triton",  # "triton" for fused Triton kernel (requires GPU + triton)
     "l_embedding_dim": 128,
     "num_distance_basis": 128,
-    "num_mp_layers": 3,
-    "rcut_orbitals": 4.5,
-    "rcut_gaussian": 10.0,           # 2 * rcut_orbitals
+    "num_mp_layers": 2,
+    "rcut_orbitals": 7.0,
+    "rcut_gaussian": 16.0,           # 2 * rcut_orbitals
     "gaussian_width": 1.0,
     "include_edges": True,           # Based on fock_matrix target
     "head_type": 'gated',

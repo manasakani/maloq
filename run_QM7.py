@@ -19,9 +19,9 @@ config = {
     "train_head": True,              # Set to False to freeze the head
     
     # Data Splitting
-    "num_train": 500,
-    "num_val": 500,
-    "num_test": 2,
+    "num_train": 5,
+    "num_val": 5,
+    "num_test": 1,
     "batch_size": 5,          # 1 for eval, 10 for train (set to 1 for water script)
     "distribute_graphs": False,       # Distribute graphs and perform communication in the forward pass (ongoing implementation, not finished)
     
@@ -31,8 +31,8 @@ config = {
     "reduce_node_intra": False,
     
     # Training Hyperparameters
-    "num_epochs": 500,
-    "dtype": torch.float64,
+    "num_epochs": 20,
+    "dtype": torch.float32,
     "lr_init": 1e-4,
     "optimizer_type": "adamw",
     "weight_decay": 1e-4,
