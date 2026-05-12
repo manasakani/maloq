@@ -188,20 +188,22 @@ class eSEN_Backbone(nn.Module):
         ]
 
         # TEMPORARY: edge degree embedding is currently not compatible with distributed graph training, skipping it for now!
-        # if not distributed_graph_training:
-        #     self.edge_degree_embedding = EdgeDegreeEmbedding(
-        #             sphere_channels=self.sphere_channels,
-        #             lmax=self.lmax,
-        #             mmax=self.mmax,
-        #             max_num_elements=self.max_num_elements,
-        #             edge_channels_list=self.edge_channels_list,
-        #             rescale_factor=5.0,
-        #             cutoff=self.cutoff,
-        #             mappingReduced=self.mappingReduced,
-        #             out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
-        #                 self.lmax, self.mmax
-        #             )
-        #         )
+        if not distributed_graph_training:
+            self.edge_degree_embedding = EdgeDegreeEmbedding(
+                    sphere_channels=self.sphere_channels,
+                    lmax=self.lmax,
+                    mmax=self.mmax,
+                    max_num_elements=self.max_num_elements,
+                    edge_channels_list=self.edge_channels_list,
+                    rescale_factor=5.0,
+                    cutoff=self.cutoff,
+                    mappingReduced=self.mappingReduced,
+                    out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
+                        self.lmax, self.mmax
+                    )
+                )
+        else:
+            print("Warning: edge degree embedding is currently not compatible with distributed graph training, skipping it for now!", flush=True)
 
         self.num_layers = num_layers
         self.hidden_channels = hidden_channels
@@ -349,6 +351,7 @@ class eSEN_Backbone(nn.Module):
 
             local_node_indices = graph_dict['partition'].local_node_indices
 
+            # Double check these for distributed case!!!
             atom_charges = data_dict["charges"] + self.abs_max_charge
             element_emb = self.sphere_embedding(data_dict["atomic_numbers"][local_node_indices])
             charge_emb = self.charge_embedding(atom_charges)
@@ -408,27 +411,27 @@ class eSEN_Backbone(nn.Module):
 
         # do edge degree embeddings for both nodes and edges:
         # need to redo src/target nn mapping in the distributed graph before using this!!
-        # if graph_dict["partition"] is None:
-        #     x_message_node = self.edge_degree_embedding( 
-        #         x_message_node,
-        #         x_edge,
-        #         graph_dict["edge_distance"],
-        #         graph_dict["edge_index"],
-        #         wigner_inv,
-        #         node_or_edge='node',
-        #         partition=graph_dict["partition"]
-        #     )
+        if graph_dict["partition"] is None:
+            x_message_node = self.edge_degree_embedding( 
+                x_message_node,
+                x_edge,
+                graph_dict["edge_distance"],
+                graph_dict["edge_index"],
+                wigner_inv,
+                node_or_edge='node',
+                partition=graph_dict["partition"]
+            )
 
-        #     if self.include_edges:
-        #         x_message_edge = self.edge_degree_embedding(
-        #             x_message_node,
-        #             x_edge,
-        #             graph_dict["edge_distance"],
-        #             graph_dict["edge_index"],
-        #             wigner_inv,
-        #             node_or_edge='edge',
-        #             partition=None
-        #         )
+            if self.include_edges:
+                x_message_edge = self.edge_degree_embedding(
+                    x_message_node,
+                    x_edge,
+                    graph_dict["edge_distance"],
+                    graph_dict["edge_index"],
+                    wigner_inv,
+                    node_or_edge='edge',
+                    partition=None
+                )
         # else:
         #     print("Warning: edge degree embedding is currently not compatible with distributed graph training, skipping it for now!", flush=True)
 
