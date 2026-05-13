@@ -161,26 +161,19 @@ def get_loader(database,
     print(f"Rank {rank}: Loaded data for {num_molecules_to_process} molecules.", flush=True)
     dist.barrier()
 
-    # # Set up the Graph targets
-    # if make_fock_targets:
-        
-    #     graph_targets = fock_targets_batched.Fock_Targets(atomic_numbers, positions, rcut, orbital_basis, hamiltonians, 
-    #                                                         partition_type=partition_type,
-    #                                                         dtype=dtype, 
-    #                                                         dataset_name=dataset_name,
-    #                                                         scale_shift_data=scale_shift_data,
-    #                                                         periodic_boxes=periodic_boxes if periodic_dataset else None,
-    #                                                         tiling_dims=tiling_dims,
-    #                                                         distribute_graphs=distribute_graphs)
-
     datalist = []
 
     # If we are distributing, we collapse all loaded data into 1 single Graph object
     if distribute_graphs:
 
-        dist_type = 'one_rank_contributes' # all_ranks_contribute or one_rank_contributes
+        # Use 'one_rank_contributes' if the structures are periodic:
+        if periodic_dataset:
+            dist_type = 'one_rank_contributes'
+            assert batch_size == 1, "When using 'one_rank_contributes' distribution, the batch size must be 1 since only one rank contributes to each graph!"
+        else:
+            dist_type = 'all_ranks_contribute'
 
-        # Molecular dataset
+        # No periodicity - Molecular dataset
         if dist_type == 'all_ranks_contribute':
             comm = MPI.COMM_WORLD
 
@@ -248,7 +241,7 @@ def get_loader(database,
                 )
                 datalist.append(data)
         
-        # Round-robin rank contribution to batch
+        # Periodicity - Round-robin rank contribution, where each rank takes turn being the "Source" of the full graph data
         else:
 
             world_size = dist.get_world_size()
@@ -396,7 +389,7 @@ def get_loader(database,
     basis_transform = graph_targets.basis_transformation
     orbital_starts = graph_targets.orbital_starts
 
-    # when distributing graphs, the batch size is 1 since each graph is a 'supergraph' with multiple molecules. 
+    # when distributing graphs, the batch size seen by the dataloader needs to be 1 since each graph is a 'supergraph' with multiple molecules. 
     if distribute_graphs:
         batch_size = 1
 

@@ -1,24 +1,25 @@
+import os
+import json
+import re
+import time
+
 import torch
 import torch.nn as nn
 import torch.distributed as dist
-from torch.cuda.amp import autocast, GradScaler
-import time
+
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
+import cupy as cp
+
 from e3nn.o3 import Irreps
-# import wandb
-import matplotlib.pyplot as plt
-import os
+from pyscf import gto, scf
+
 from dataset_utils import get_scale_shift
 from fock_utils.get_energy_from_fock import build_density, get_integrals, get_permute_phase, permute_mat
 from fock_utils.utils_orca_out import periodic_table_number, sort_by_m, read_orca_out, periodic_table
 from fock_utils.utils_orca_out import extract_charge_and_spin_from_path
 from fock_utils import basis_sets, matrix2labels_kernels
-import json
-from pyscf import gto, scf
-import re
-import cupy as cp
 
 def get_timestamp_uid() -> str:
     return datetime.datetime.now().strftime("%Y%m-%d%H-%M%S-") + str(uuid4())[:4]
@@ -35,9 +36,6 @@ class SplitTrainer():
 
         if not run_id:
             run_id = str(get_timestamp_uid)
-
-        # config: any dictionary, add the training parameters
-        config = {}
 
     # -- Train model --
     def train(self,
@@ -62,6 +60,7 @@ class SplitTrainer():
             min_lr=1e-10):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}", flush=True)
+        dist.barrier()
 
         # Torch compile:
         # self.backbone = torch.compile(self.backbone, fullgraph=True)
@@ -71,7 +70,6 @@ class SplitTrainer():
             print("Note: using training dataset for scheduler updates")
             val_loader = train_loader
 
-        dist.barrier()
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank()
             world_size = dist.get_world_size()
@@ -101,6 +99,7 @@ class SplitTrainer():
             track_loss_edge_val = []
 
         for epoch in range(num_epochs):
+
             epoch_start = time.perf_counter()
 
             if train_backbone:
@@ -114,19 +113,18 @@ class SplitTrainer():
             torch.cuda.reset_peak_memory_stats()
             for batch_idx, batch in enumerate(train_loader):
 
-                optimizer.zero_grad()
 
                 # -- Forward --
                 batch = batch.to(device)
 
-                torch.cuda.synchronize()
+                # torch.cuda.synchronize()
                 backbone_start = time.perf_counter()
                 backbone_out = self.backbone(batch)
                 backbone_end = time.perf_counter()
 
                 if loss_target_string in ['fock_matrix', 'density_matrix']:
                     node_output, edge_output = self.head(backbone_out, batch)
-                    torch.cuda.synchronize()
+                    # torch.cuda.synchronize()
                     head_end = time.perf_counter()
 
                     if self.open_shell:
@@ -153,7 +151,7 @@ class SplitTrainer():
                         current_mem = torch.cuda.memory_allocated() / (1024 * 1024)
                         peak_mem = torch.cuda.max_memory_allocated() / (1024 * 1024)
                         print(f"Current: {current_mem:.2f} MB, Peak: {peak_mem:.2f} MB")
-                    print(f"Rank {rank} Backbone time: {backbone_end - backbone_start:.4f}s, Head time: {head_end - backbone_end:.4f}s, Loss time: {loss_end - loss_start:.4f}s", flush=True)
+                        print(f"Rank {rank} Backbone time: {backbone_end - backbone_start:.4f}s, Head time: {head_end - backbone_end:.4f}s, Loss time: {loss_end - loss_start:.4f}s", flush=True)
 
                 elif loss_target_string == 'forces':
                     node_output = self.head(backbone_out, batch)
@@ -177,14 +175,14 @@ class SplitTrainer():
                     raise ValueError(f"Unknown loss target string: {loss_target_string}")
 
                 # -- Backwards --
-                torch.cuda.synchronize()
+                # torch.cuda.synchronize()
                 backward_start = time.perf_counter()
                 loss.backward()
-                torch.cuda.synchronize()
+                # torch.cuda.synchronize()
                 backward_end = time.perf_counter()
                 optimizer.step()
+                optimizer.zero_grad()
 
-                print(f"Rank {rank} batch {batch_idx} time: {backward_end - backbone_start:.4f}s", flush=True)
 
                 # -- Scheduler --
                 if not step_every_epoch:
@@ -204,9 +202,8 @@ class SplitTrainer():
                     del node_output, loss
                 del batch, backbone_out
 
-                dist.barrier()
-                print(f"Rank {rank}: Time per forward pass: ", head_end - backbone_start, flush=True)
-                print(f"Rank {rank}: Time for backward pass: ", backward_end - backward_start, flush=True)
+                # print(f"Rank {rank}: Time per forward pass: ", head_end - backbone_start, flush=True)
+                # print(f"Rank {rank}: Time for backward pass: ", backward_end - backward_start, flush=True)
 
             # -- Output dump --
             if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
@@ -224,7 +221,6 @@ class SplitTrainer():
             epoch_end = time.perf_counter()
             if rank == 0:
                 print("Time per epoch: ", epoch_end - epoch_start)
-            dist.barrier()
 
             # Validation step
             self.backbone.eval()
@@ -298,13 +294,7 @@ class SplitTrainer():
             else:
                 track_loss_node_val.append(val_loss_node/num_val_batches)
 
-            if rank == 0:
-                if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
-                    print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)
-                else:
-                    print(f"Epoch {epoch+1}, Val Loss: [node] {track_loss_node_val[-1]}", flush=True)
-                # print(torch.cuda.memory.memory_summary(), flush=True)
-
+            # Average validation loss across ranks:
             if dist.is_initialized():
                 val_loss_tensor = torch.tensor(val_loss, device=device)
                 val_loss_node_tensor = torch.tensor(val_loss_node, device=device)
@@ -318,6 +308,12 @@ class SplitTrainer():
                 val_loss = val_loss_tensor.item() / world_size
                 val_loss_node = val_loss_node_tensor.item() / world_size
                 val_loss_edge = val_loss_edge_tensor.item() / world_size
+
+            if rank == 0:   
+                if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
+                    print(f"Epoch {epoch+1}, Averaged Val Loss across ranks [node] {val_loss_node} [edge] {val_loss_edge}", flush=True)
+                else:
+                    print(f"Epoch {epoch+1}, Averaged Val Loss across ranks [node] {val_loss_node}", flush=True)
 
             # -- Scheduler --
             if step_every_epoch:
@@ -339,7 +335,7 @@ class SplitTrainer():
                         self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder)
                         self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder)
 
-            # End condition is based on the learning rate:
+            # End condition for Plateau scheduler is based on the learning rate:
             min_lr_reached = torch.tensor(float(current_lr == min_lr), device='cuda')
             if min_lr_reached:
                 print("Reached minimum learning rate, finished training.")
@@ -431,8 +427,10 @@ class SplitTrainer():
                 print(f"Processing molecule {index}...", flush=True)
                 print(f"Number of atoms in molecule {index}: {batch.num_nodes}", flush=True)
 
+            batch = batch.to(device)
+
             with torch.no_grad():
-                batch = batch.to(device)
+                torch.cuda.synchronize()
                 start_backbone = time.perf_counter()
                 backbone_out = self.backbone(batch)
                 end_backbone = time.perf_counter()
@@ -493,7 +491,6 @@ class SplitTrainer():
                 ## LABEL -> MATRIX START ##
                 method = 'cupy_kernel' # 'numpy_kernel' or 'cupy_kernel' or 'torch_kernel'
                 torch.cuda.synchronize()
-                # start_conversion = time.perf_counter()
                 matrix_size = batch.fock_target_object[0].block_starts_list[index][-1]
 
                 if method == 'cupy_kernel':
@@ -819,6 +816,166 @@ class SplitTrainer():
                 f.write(f"Energy_Error (Eh)\tNum_Atoms\n")
                 for node, num_atoms in zip(track_loss, num_atoms_in_molecule_list):
                     f.write(f"{node:.10f}\t{num_atoms}\n")
+
+    # -- Inference mode --
+    def infer(self,
+                loss_fxn,
+                device,
+                eval_loader,
+                loss_target_string,
+                node_target_name,
+                edge_target_name=None,
+                basis_transform=None,
+                element_references=None,
+                output_folder='outputs',
+                dataset_name='omol',
+                orbital_basis=None,
+                compute_total_energy=True):
+
+        print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
+
+        self.backbone.eval()
+        self.head.eval()
+
+        if dist.is_available() and dist.is_initialized():
+            rank = dist.get_rank()
+            world_size = dist.get_world_size()
+        else:
+            rank = 0
+            world_size = 1
+
+        num_eval_batches = len(eval_loader)
+        print(f"Running {num_eval_batches} batches through inference.")
+
+        include_edges = False
+        if edge_target_name:
+            include_edges = True
+
+        track_loss = []
+
+        # -- Evaluate everything in the train_loader --
+
+        # Transform orbital template into cupy version:
+        # if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
+        #     print("Creating orbital template pointers for matrix->label kernel... ")
+        #     first_batch = next(iter(eval_loader))
+        #     orbital_template = first_batch.fock_target_object[0].orbital_template
+        #     orbital_template_ptrs = []
+        #     orbital_template_tmp = []
+        #     for o in orbital_template:
+        #         inner_size = 5 * len(o)
+        #         tmp = np.zeros((inner_size,), dtype=cp.int32)
+        #         for j, (row_slice, col_slice, output_slice) in enumerate(o):
+        #             tmp[j * 5 + 0] = row_slice.start
+        #             tmp[j * 5 + 1] = row_slice.stop
+        #             tmp[j * 5 + 2] = col_slice.start
+        #             tmp[j * 5 + 3] = col_slice.stop
+        #             tmp[j * 5 + 4] = output_slice.start
+        #         tmp = cp.array(tmp, dtype=cp.int32)
+        #         orbital_template_tmp.append(tmp)
+        #         orbital_template_ptrs.append(matrix2labels_kernels.get_ptr(tmp))
+
+        #     # template: for interation Z1-Z2, [row slice, col slice] of matrix goes to [output slice] of label
+        #     orbital_template_ptrs = cp.array(orbital_template_ptrs, dtype=cp.uintp)
+        #     cp.cuda.Stream.null.synchronize()
+
+        # dictionaries to store the orbital blocks, they get rewritten by each batch
+        eigenvalue_maes = []
+        total_energy_errors = []
+        num_atoms_in_molecule_list = []
+        if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
+            edge_outputs = {}
+
+        for index, batch in enumerate(eval_loader):
+            if rank == 0:
+                print(f"Processing molecule {index}...", flush=True)
+                print(f"Number of atoms in molecule {index}: {batch.num_nodes}", flush=True)
+
+            batch = batch.to(device)
+            
+            num_timing_measurements = 100
+            with torch.no_grad():
+
+                for measurement_num in range(num_timing_measurements):
+                    torch.cuda.synchronize()
+
+                    print(f"Rank {rank} - Starting measurement {measurement_num} for batch {index}...", flush=True)
+                    start_backbone = time.perf_counter()
+                    backbone_out = self.backbone(batch)
+                    end_backbone = time.perf_counter()
+
+                    if rank == 0:
+                        print(f"Backbone time: {end_backbone - start_backbone:.4f}s", flush=True)
+
+                    start_head = time.perf_counter()
+                    node_output, edge_output = self.head(backbone_out, batch)
+                    end_head = time.perf_counter()
+                    
+                    if rank == 0:
+                        print(f"Fock head time: {end_head - start_head:.4f}s", flush=True)
+
+                    torch.cuda.synchronize()
+                    end_time = time.perf_counter()
+                    dist.barrier()
+                    print(f"Rank {rank} - Total time for batch {index}, measurement {measurement_num}: {end_time - start_backbone:.4f}s", flush=True)
+                    
+                    # remove from gpu memory:
+                    del backbone_out, node_output, edge_output
+
+                    # if not self.open_shell and node_output.ndim == 3:
+                    #     node_output = node_output[0]
+                    #     edge_output = edge_output[0]
+                    
+                    # # Transform back to uncoupled basis:
+                    # print("Transforming to uncoupled basis...", flush=True)
+                    # start_basis = time.perf_counter()
+                    # uncoupled_node_outputs = basis_transform.get_H(node_output)
+                    # uncoupled_edge_outputs = basis_transform.get_H(edge_output)
+                    # end_basis = time.perf_counter()
+                    # if rank == 0:
+                    #     print(f"Basis transform time: {end_basis - start_basis:.4f}s", flush=True)
+
+                    # ## LABEL -> MATRIX START ##
+                    # method = 'cupy_kernel' # 'numpy_kernel' or 'cupy_kernel' or 'torch_kernel'
+
+                    # if method == 'cupy_kernel':
+
+                    #     # Augment neighbor list with node self-neighbors, because we will stack the nodes together with the edges
+                    #     src_idx, target_idx = neighbour_list[0], neighbour_list[1]
+                    #     num_atoms = len(atomic_numbers)
+                    #     src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
+                    #     target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
+                    #     fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(orbitals_per_atom)])
+
+                    #     output_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
+                    #     edge_output_cupy = cp.from_dlpack(uncoupled_edge_outputs)
+                    #     node_output_cupy = cp.from_dlpack(uncoupled_node_outputs)
+                    #     output_targets = cp.concatenate([edge_output_cupy, node_output_cupy])
+
+                    #     start_conversion = time.perf_counter()
+                    #     matrix2labels_kernels.cupy_single_matrix2label(
+                    #         orbital_template,
+                    #         fock_block_offsets,
+                    #         atomic_numbers,
+                    #         src_idxes,
+                    #         target_idxes,
+                    #         output_fock_matrix,
+                    #         output_targets,
+                    #         orbital_template_ptrs,
+                    #         forward=False
+                    #     )
+                    #     end_conversion = time.perf_counter()
+
+                    #     if rank == 0:
+                    #         print(f"Label -> Matrix time [cupy]: {end_conversion - start_conversion:.4f}s", flush=True)
+
+                    #     # cupy -> numpy (cpu)
+                    #     # output_fock_matrix = output_fock_matrix.get()
+                    #     # output_fock_matrix = (output_fock_matrix + output_fock_matrix.T) / 2
+    
+                    # torch.cuda.synchronize()
+                    # end_time = time.perf_counter()
+                    # print(f"Total time for batch {index}, measurement {measurement_num}: {end_time - start_backbone:.4f}s", flush=True)
 
     # -- Helper functions for training and evaluation --
     def check_batch_consistency(self, num_train_batches, num_val_batches, device):

@@ -8,7 +8,7 @@ from train_utils import loss, training_workflow
 config = {
     # Dataset Paths & Naming
     "dataset_name": 'omol',
-    "dbpath": "/capstor/scratch/cscs/mkanisel/helm/omol_elytes_unsolvated_raw/",
+    "dbpath": "/capstor/store/cscs/pasc/c33/manasa/omol_raw_datasets/omol_elytes_unsolvated_raw/",
     "output_folder": 'outputs_omol_elytes',
     "run_name": 'omol',
     "open_shell": False,
@@ -19,20 +19,22 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    "num_train": 12, #28900,
-    "num_val": 12,
+    "num_train": 15000, #28900,
+    "num_val": 32,
     "num_test": 1,
-    "batch_size": 12,                 # 1 for eval, usually 10 for train
-    "distribute_graphs": False,       # Distribute graphs and perform communication in the forward pass (ongoing)
+    "batch_size": 10,                 # 1 for eval, usually 10 for train
+    "distribute_graphs": True,       # Distribute graphs and perform communication in the forward pass (ongoing)
+    "partition_type": 'linear-edgewise',       # 'linear', 'low_nn', 'metis', 'worstcase'
+    "dist_backend": 'nccl',              # 'gloo' for CPU, 'nccl' for GPU (if distributed training is implemented)
 
     # Symmetry Reductions 
     "reduce_edge": False,            # Unused!
-    "reduce_node": False,             # Enforce inter-orbital interactions equal
-    "reduce_node_intra": False,       # Enforce 0 odd degrees for intra-orbital
+    "reduce_node": True,            # Enforce inter-orbital interactions equal
+    "reduce_node_intra": True,      # Enforce 0 odd degrees for intra-orbital
     
     # Training Hyperparameters
     "num_epochs": 200,
-    "dtype": torch.float32,          # nablaDFT often uses float64 - 32 here for cupy kernel
+    "dtype": torch.float32,          # 32 here for cupy kernel
     "lr_init": 1e-3,
     "optimizer_type": "adam",        # standard Adam
     "weight_decay": 0.0,
