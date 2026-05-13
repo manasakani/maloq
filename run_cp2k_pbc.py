@@ -49,7 +49,7 @@ config = {
     "save_frequency": 50,
     "restart_backbone": True,       # Restart options
     "restart_head": True,
-    "restart_optimizer": False,      
+    "restart_optimizer": True,      
     "backbone_checkpoint": 'backbone.pt',
     "head_checkpoint": 'head.pt',
     "scale_and_shift": False,         # Scale & shift the node labels
@@ -65,8 +65,6 @@ config = {
     "rcut_orbitals": 7.0,
     "rcut_gaussian": 16.0,           # 2 * rcut_orbitals
     "gaussian_width": 1.0,
-    "include_edges": True,           # Based on fock_matrix target
-    "head_type": 'gated',
 }
 
 if __name__ == "__main__":

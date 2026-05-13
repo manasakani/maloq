@@ -65,8 +65,6 @@ config = {
     "rcut_orbitals": 8.0,
     "rcut_gaussian": 16.0,    # rcut_orbitals * 2
     "gaussian_width": 1.0,
-    "include_edges": True,
-    "head_type": 'gated',     # 'linear' or 'gated'
 }
 
 if __name__ == "__main__":

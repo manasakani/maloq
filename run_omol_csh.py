@@ -64,8 +64,6 @@ config = {
     "rcut_orbitals": 6.0,
     "rcut_gaussian": 12.0,           # 2 * rcut_orbitals
     "gaussian_width": 1.0,
-    "include_edges": True,           # Based on fock_matrix target
-    "head_type": 'gated',
 
     # Evals
     "compute_total_energy": False,    # Whether to compute total energy from fock matrix

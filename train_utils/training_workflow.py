@@ -34,6 +34,9 @@ class TrainingWorkflow:
     def __init__(self, config):
         self.config = self.DEFAULTS | config
         self.setup_environment()
+
+        # check_input_config will raise errors if there are incompatible settings
+        self.check_input_config()
         
     def setup_environment(self):
         """Initializes seeds, dtypes, and distributed compute environment."""
@@ -59,8 +62,11 @@ class TrainingWorkflow:
     def check_input_config(self):
         """Validates the configuration for incompatible settings, and writes config to output folder."""
 
+        if 'matrix' in self.config['loss_target']:
+            self.config['include_edges'] = True
+            print("Automatically setting include_edges to True since loss target involves a matrix.")
+
         # wigner_backend exists and is equal to triton
-        # if self.config['wigner_backend'] == 'triton':
         if self.config.get('wigner_backend', 'torch') == 'triton':
             if self.device.type != 'cuda':
                 raise ValueError("Triton Wigner backend requires a CUDA-capable GPU.")
@@ -355,7 +361,7 @@ class TrainingWorkflow:
             head = Fock_Irreps_Head(
                 irreps_in=irreps_in, irreps_out=required_irreps,
                 lmax=required_irreps.lmax, sphere_channels=c['l_embedding_dim'],
-                half_edges=c['reduce_edge'], head_type=c['head_type'], open_shell=c['open_shell'],
+                half_edges=c['reduce_edge'], open_shell=c['open_shell'],
                 ls_list=ls_list, reduce_node=c['reduce_node'],
                 reduce_node_intra=c['reduce_node_intra'], orbital_basis=orb_basis
             )
@@ -432,9 +438,6 @@ class TrainingWorkflow:
             database = None
         else:
             raise ValueError(f"Unknown dataset name: {self.config['dataset_name']}")
-        
-        # check_input_config will raise errors if there are incompatible settings
-        self.check_input_config()
 
         """Main execution loop."""
         loader, val_loader, irreps, basis_trans, orb_basis, ls_list = self.prepare_loaders(database)

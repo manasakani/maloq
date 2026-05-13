@@ -533,7 +533,6 @@ class Fock_Irreps_Head(nn.Module):
                 irreps_out,
                 lmax,
                 sphere_channels,
-                head_type='gated',
                 half_edges=False,
                 ls_list=None,
                 open_shell=False,
@@ -543,7 +542,6 @@ class Fock_Irreps_Head(nn.Module):
 
         super().__init__()
 
-        self.head_type = head_type
         self.sphere_channels = sphere_channels
         self.lmax = lmax
         self.reduce_node = reduce_node                      # take advantage of 'inter'-orbital interaction symmetry within node blocks

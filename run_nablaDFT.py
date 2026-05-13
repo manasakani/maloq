@@ -66,8 +66,6 @@ config = {
     "rcut_orbitals": 10.0,
     "rcut_gaussian": 20.0,           # 2 * rcut_orbitals
     "gaussian_width": 1.0,
-    "include_edges": True,           # Based on fock_matrix target
-    "head_type": 'gated',
 }
 
 if __name__ == "__main__":
