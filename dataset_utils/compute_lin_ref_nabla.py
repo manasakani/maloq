@@ -17,13 +17,11 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
+from nablaDFT_dataset_utils import HamiltonianDatabase
 from ase import Atoms
 
 
 def extract_data(idx):
-
-    print(f"Extracting data for index {idx}")
     
     # Extract data from nablaDFT dataset
     atomic_numbers, positions, energy, forces, hamiltonian, overlap, coeff_matrix, moses_id, conformation_id = dataset[idx]

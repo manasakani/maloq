@@ -154,10 +154,36 @@ class TrainingWorkflow:
                     "element_scalar_stds": data["element_scalar_stds"],
                     "scalar_irrep_indices": data["scalar_irrep_indices"]
                 }
-        elif self.config['loss_target'] in ['forces', 'energies']:
-            print("Scale/shift is currently only implemented for matrix targets. Ignoring scale_and_shift setting.")
-            return None
-            
+
+        elif self.config['loss_target'] in ['energies']:
+
+            filename = 'stats_nablaDFT/lin_ref_coeffs_nablaDFT.npz'
+            energy_ref_file = os.path.join("./dataset_utils/", filename)
+
+            if os.path.exists(energy_ref_file):
+                print(f"Loading energy reference coefficients from {energy_ref_file}")
+                lin_ref_data = np.load(energy_ref_file)
+                element_references_np = lin_ref_data['coeff']  # Shape: (max_atomic_number,)
+                
+                # Convert to torch tensor and move to device
+                element_references = torch.tensor(element_references_np, dtype=self.config['dtype'], device=self.device)
+                print(f"Loaded energy references for {len(element_references)} elements")
+                
+                # Print non-zero references for verification
+                nonzero_mask = torch.abs(element_references) > 1e-10
+                nonzero_elements = torch.where(nonzero_mask)[0]
+                print("Non-zero energy references:")
+                for z in nonzero_elements:
+                    print(f"  Element Z={z.item()}: {element_references[z].item():.6f} Hartree")
+                
+                self.config['element_references'] = element_references
+                
+            else:
+                raise FileNotFoundError(f"Energy reference file {energy_ref_file} not found!")
+
+        else:
+            raise ValueError(f"Unknown loss target for scale/shift handling: {self.config['loss_target']}")
+                        
 
     def prepare_loaders(self, database_input=None):
         """
@@ -472,7 +498,8 @@ class TrainingWorkflow:
                 output_folder=self.config['output_folder'],
                 train_backbone=self.config['train_backbone'],
                 train_head=self.config['train_head'],
-                basis_transform=basis_trans, step_every_epoch=self.config.get('step_every_epoch', True)
+                basis_transform=basis_trans, step_every_epoch=self.config.get('step_every_epoch', True),
+                element_references=self.config.get('element_references', None),
             )
         else:
             trainer.evaluate(
@@ -480,5 +507,6 @@ class TrainingWorkflow:
                 loss_target_string=self.config['loss_target'],
                 node_target_name=node_target, edge_target_name=edge_target, compute_total_energy=self.config['compute_total_energy'],
                 basis_transform=basis_trans, output_folder=self.config['output_folder'],
-                dataset_name=self.config['dataset_name'], orbital_basis=orb_basis
+                dataset_name=self.config['dataset_name'], orbital_basis=orb_basis,
+                element_references=self.config.get('element_references', None)
             )

@@ -260,9 +260,9 @@ class SplitTrainer():
                         node_output = self.head(backbone_out, batch)
                         this_node_target = getattr(batch, node_target_name)
 
-                        if self.head_irreps == '1x1e':             # permute force vectors to match edge permutations
-                            this_node_target = this_node_target[:, [1, 2, 0]]
-                            loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps)
+                        this_node_target = this_node_target[:, [1, 2, 0]]
+                        loss = loss_fxn(node_output['forces'], this_node_target, self.head_irreps)
+
                         val_loss_node += loss.item()
                     elif loss_target_string == 'energies':
                         node_output = self.head(backbone_out, batch)
@@ -311,9 +311,9 @@ class SplitTrainer():
 
             if rank == 0:   
                 if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
-                    print(f"Epoch {epoch+1}, Averaged Val Loss across ranks [node] {val_loss_node} [edge] {val_loss_edge}", flush=True)
+                    print(f"Epoch {epoch+1}, Averaged Val Loss across ranks [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)
                 else:
-                    print(f"Epoch {epoch+1}, Averaged Val Loss across ranks [node] {val_loss_node}", flush=True)
+                    print(f"Epoch {epoch+1}, Averaged Val Loss across ranks [node] {track_loss_node_val[-1]}", flush=True)
 
             # -- Scheduler --
             if step_every_epoch:
