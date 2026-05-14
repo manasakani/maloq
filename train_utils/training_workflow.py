@@ -374,8 +374,6 @@ class TrainingWorkflow:
                 reduce_node_intra=c['reduce_node_intra'], orbital_basis=orb_basis
             )
         elif c['loss_target'] == "forces":
-            print("Integrate other head models into the refactored version!")
-            exit()
             head = HELM_Force_Head(backbone)
             
         elif c['loss_target'] == "energies":

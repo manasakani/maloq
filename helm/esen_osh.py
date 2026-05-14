@@ -985,9 +985,12 @@ class HELM_Energy_Head(nn.Module):
         self.edge_channels_list = backbone.edge_channels_list
         extra_m0_output_channels = self.lmax * self.hidden_channels
 
-        # Convolution method:
-        self.act = GateActivation(
-                lmax=self.lmax, mmax=self.mmax, num_channels=self.hidden_channels
+        l_to_m_permute = self.mappingReduced.l_harmonic[
+                torch.argmax(self.mappingReduced.to_m, dim=1)
+            ]
+
+        self.act = GateActivation( # in m-major
+                lmax=self.lmax, mmax=self.mmax, num_channels=self.hidden_channels, outer_dim='m', l_to_m_permute=l_to_m_permute
             )
 
         multiplier = 2 
@@ -1054,9 +1057,11 @@ class HELM_Energy_Head(nn.Module):
         x_message = torch.bmm(wigner, x_message)
 
         # Apply the SO2 convolution to the messages
+        x_message = torch.einsum("nac,ba->nbc", x_message, self.mappingReduced.to_m)   # l-major -> m-major
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
         x_message = self.act(x_0_gating, x_message)
         x_message = self.so2_conv_2(x_message, x_edge)
+        x_message = torch.einsum("nac,ab->nbc", x_message, self.mappingReduced.to_m)   # m-major -> l-major
 
         # Rotate back the irreps
         x_message = torch.bmm(wigner_inv, x_message)
@@ -1092,6 +1097,95 @@ class HELM_Energy_Head(nn.Module):
 class HELM_Force_Head(nn.Module):
     def __init__(self, backbone):
         super().__init__()
+        
+        self.sphere_channels = backbone.sphere_channels
+        self.hidden_channels = backbone.hidden_channels
+        self.lmax = backbone.lmax
+        self.mmax = backbone.mmax
+        self.mappingReduced = CoefficientMapping(self.lmax, self.mmax)  # need to re-create mapping reduced to avoid inplace modification error!
+        self.edge_channels_list = backbone.edge_channels_list
+        extra_m0_output_channels = self.lmax * self.hidden_channels
+
+        l_to_m_permute = self.mappingReduced.l_harmonic[
+                torch.argmax(self.mappingReduced.to_m, dim=1)
+            ]
+
+        self.act = GateActivation( # in m-major
+                lmax=self.lmax, mmax=self.mmax, num_channels=self.hidden_channels, outer_dim='m', l_to_m_permute=l_to_m_permute
+            )
+
+        multiplier = 2 
+        self.so2_conv_1 = SO2_Convolution(
+            multiplier*self.sphere_channels,
+            self.hidden_channels,
+            self.lmax,
+            self.mmax,
+            self.mappingReduced,
+            internal_weights=False,
+            edge_channels_list=self.edge_channels_list,
+            extra_m0_output_channels=extra_m0_output_channels,
+        )
+
+        self.so2_conv_2 = SO2_Convolution(
+            self.hidden_channels,
+            1,
+            self.lmax,
+            self.mmax,
+            self.mappingReduced,
+            internal_weights=True,
+            edge_channels_list=None,
+            extra_m0_output_channels=None,
+        )
+
+
+    def forward(self, emb: dict[str, torch.Tensor], batch):
+
+        edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
+
+        nodes = emb["node_embeddings"]
+        x_edge = emb["x_edge"]
+        wigner = emb["wigner"]
+        wigner_inv = emb["wigner_inv"]
+
+        # Create the messages for the last convolution:
+        x_source = nodes[edge_index[0]]
+        x_target = nodes[edge_index[1]]
+        x_message = torch.cat((x_source, x_target), dim=2)
+
+        # -----------------
+        # Rotate the irreps
+        x_message = torch.bmm(wigner, x_message)
+
+        # Apply the SO2 convolution to the messages
+        x_message = torch.einsum("nac,ba->nbc", x_message, self.mappingReduced.to_m)   # l-major -> m-major
+        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
+        x_message = self.act(x_0_gating, x_message)
+        x_message = self.so2_conv_2(x_message, x_edge)
+        x_message = torch.einsum("nac,ab->nbc", x_message, self.mappingReduced.to_m)   # m-major -> l-major
+
+        # Rotate back the irreps
+        x_message = torch.bmm(wigner_inv, x_message)
+
+        # Compute the sum of the incoming neighboring messages for each target node
+        new_embedding = torch.zeros(
+            (nodes.shape[0],) + x_message.shape[1:],
+            dtype=x_message.dtype,
+            device=x_message.device,
+        )
+
+        # aggregate messages
+        new_embedding.index_add_(0, edge_index[1], x_message) 
+        forces = new_embedding.narrow(1, 1, 3)
+        forces = forces.squeeze(-1)
+
+        return {"forces": forces}
+
+
+@registry.register_model("esen_linear_force_head")
+class HELM_Simple_Force_Head(nn.Module):
+    def __init__(self, backbone):
+        super().__init__()
+
         self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
 
     def forward(self, emb: dict[str, torch.Tensor], batch):
