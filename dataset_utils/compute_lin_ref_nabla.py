@@ -4,7 +4,7 @@ from __future__ import annotations
 Compute linear reference coefficients for nablaDFT dataset.
 
 Example usage:
-python compute_lin_ref.py --dataset_path ./fock_datasets/nabla2_DFT/train_10k.db --num-workers 4 --stats-dir stats_nablaDFT
+python compute_lin_ref_nabla.py --dataset_path /capstor/store/cscs/pasc/c33/manasa/nablaDFT_datasets/train_10k.db --num-workers 4 --stats-dir stats_nablaDFT
 """
 
 import argparse
