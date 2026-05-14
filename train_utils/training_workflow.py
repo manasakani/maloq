@@ -12,7 +12,7 @@ from train_utils import loss, utils_compute, splittrainer
 from dataset_utils import get_loader, get_scale_shift
 from dataset_utils.ASEDataset import distribute_data, ASEDataset, ASEAtomsData
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
-from helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, Linear_Force_Head
+from helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, HELM_Force_Head, HELM_Energy_Head
 
 class TrainingWorkflow:
 
@@ -64,7 +64,10 @@ class TrainingWorkflow:
 
         if 'matrix' in self.config['loss_target']:
             self.config['include_edges'] = True
-            print("Automatically setting include_edges to True since loss target involves a matrix.")
+            print("Initializing model with edge embeddings, since loss target involves a matrix.")
+        else:
+            print("Initializing model without edge embeddings, since loss target does not involve a matrix.")
+            self.config['include_edges'] = False
 
         # wigner_backend exists and is equal to triton
         if self.config.get('wigner_backend', 'torch') == 'triton':
@@ -112,43 +115,48 @@ class TrainingWorkflow:
 
         dataset_name = self.config['dataset_name']
 
-        if self.config['open_shell']:
-            filename = f"element_scale_shifts_osh_{dataset_name}.pt"
-        else:
-            filename = f"element_scale_shifts_{dataset_name}.pt"
+        if self.config['loss_target'] in ['fock_matrix', 'density_matrix']:
 
-        target_path = os.path.join("./fock_utils/", filename)
-        file_exists = os.path.exists(target_path)
+            if self.config['open_shell']:
+                filename = f"element_scale_shifts_osh_{dataset_name}.pt"
+            else:
+                filename = f"element_scale_shifts_{dataset_name}.pt"
 
-        if file_exists:
-            data = torch.load(target_path)
+            target_path = os.path.join("./fock_utils/", filename)
+            file_exists = os.path.exists(target_path)
+
+            if file_exists:
+                data = torch.load(target_path)
+                
+            # Recompute scale/shift factors for this dataset
+            else:
+                print(f"[Computing scale/shift factors for {dataset_name}]")
+                if database is None:
+                    print("Error: Database object is required to compute scale/shift factors but is None.")
+                    exit()
+                data = get_scale_shift.get_scale_shift(
+                    database, dataset_name, self.config['rcut_orbitals'], 
+                    dtype=self.config['dtype'], reduce_edge=self.config['reduce_edge'], 
+                    filename=filename
+                )
             
-        # Recompute scale/shift factors for this dataset
-        else:
-            print(f"[Computing scale/shift factors for {dataset_name}]")
-            if database is None:
-                print("Error: Database object is required to compute scale/shift factors but is None.")
-                exit()
-            data = get_scale_shift.get_scale_shift(
-                database, dataset_name, self.config['rcut_orbitals'], 
-                dtype=self.config['dtype'], reduce_edge=self.config['reduce_edge'], 
-                filename=filename
-            )
-        
-        if self.config['open_shell']:
-            return {
-                "element_scalar_means_alpha": data["element_scalar_means_alpha"],  
-                "element_scalar_means_beta": data["element_scalar_means_beta"],   
-                "element_scalar_stds_alpha": data["element_scalar_stds_alpha"],   
-                "element_scalar_stds_beta": data["element_scalar_stds_beta"],    
-                "scalar_irrep_indices": data["scalar_irrep_indices"]  
-            }
-        else:
-            return {
-                "element_scalar_means": data["element_scalar_means"],
-                "element_scalar_stds": data["element_scalar_stds"],
-                "scalar_irrep_indices": data["scalar_irrep_indices"]
-            }
+            if self.config['open_shell']:
+                return {
+                    "element_scalar_means_alpha": data["element_scalar_means_alpha"],  
+                    "element_scalar_means_beta": data["element_scalar_means_beta"],   
+                    "element_scalar_stds_alpha": data["element_scalar_stds_alpha"],   
+                    "element_scalar_stds_beta": data["element_scalar_stds_beta"],    
+                    "scalar_irrep_indices": data["scalar_irrep_indices"]  
+                }
+            else:
+                return {
+                    "element_scalar_means": data["element_scalar_means"],
+                    "element_scalar_stds": data["element_scalar_stds"],
+                    "scalar_irrep_indices": data["scalar_irrep_indices"]
+                }
+        elif self.config['loss_target'] in ['forces', 'energies']:
+            print("Scale/shift is currently only implemented for matrix targets. Ignoring scale_and_shift setting.")
+            return None
             
 
     def prepare_loaders(self, database_input=None):
@@ -368,11 +376,10 @@ class TrainingWorkflow:
         elif c['loss_target'] == "forces":
             print("Integrate other head models into the refactored version!")
             exit()
-            head = Linear_Force_Head(backbone)
+            head = HELM_Force_Head(backbone)
             
-        elif c['loss_target'] == "energy":
-            print("Energy head not implemented in refactored version yet!")
-            exit()
+        elif c['loss_target'] == "energies":
+            head = HELM_Energy_Head(backbone)
         
         head = head.to(self.device)
 
@@ -454,7 +461,7 @@ class TrainingWorkflow:
             'fock_matrix': ('node_y', 'y'),
             'density_matrix': ('node_y', 'y'),
             'forces': ('forces', None),
-            'energy': ('energy', None)
+            'energies': ('energies', None)
         }
         node_target, edge_target = target_map[self.config['loss_target']]
 

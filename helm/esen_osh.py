@@ -478,11 +478,8 @@ class eSEN_Backbone(nn.Module):
                     "edge_embeddings": x_message_edge,
                 }
         else:
-            print("Error: figure out how to handle the spin dimension in the energy head before using this!")
-            exit()
             out = {
-                    "node_embeddings": x_message_node,
-                    "edge_embeddings": x_message_edge,
+                    "node_embeddings": x_message_node, 
                     "x_edge": x_edge,
                     "wigner": wigner,
                     "wigner_inv": wigner_inv
@@ -976,11 +973,10 @@ class Fock_Irreps_Head(nn.Module):
 
 
 @registry.register_model("esen_linear_energy_head")
-class Linear_Energy_Head(nn.Module):
-    def __init__(self, backbone, include_edges=True):
+class HELM_Energy_Head(nn.Module):
+    def __init__(self, backbone):
         super().__init__()
 
-        self.include_edges = include_edges
         self.sphere_channels = backbone.sphere_channels
         self.hidden_channels = backbone.hidden_channels
         self.lmax = backbone.lmax
@@ -994,8 +990,7 @@ class Linear_Energy_Head(nn.Module):
                 lmax=self.lmax, mmax=self.mmax, num_channels=self.hidden_channels
             )
 
-        multiplier = 2 #3 if self.include_edges else 2
-
+        multiplier = 2 
         self.so2_conv_1 = SO2_Convolution(
             multiplier*self.sphere_channels,
             self.hidden_channels,
@@ -1044,7 +1039,7 @@ class Linear_Energy_Head(nn.Module):
 
         # Trim the embeddings to the chosen lmax (not used)
         nodes = emb["node_embeddings"]#[:, :(self.lmax+1)**2, :]
-        edges = emb["edge_embeddings"]#[:, :(self.lmax+1)**2, :]
+        # edges = emb["edge_embeddings"]#[:, :(self.lmax+1)**2, :]
         x_edge = emb["x_edge"]
         wigner = emb["wigner"]#[:, :(self.lmax+1)**2, :(self.lmax+1)**2]
         wigner_inv = emb["wigner_inv"]#[:, :(self.lmax+1)**2, :(self.lmax+1)**2]
@@ -1094,7 +1089,7 @@ class Linear_Energy_Head(nn.Module):
 
 
 @registry.register_model("esen_linear_force_head")
-class Linear_Force_Head(nn.Module):
+class HELM_Force_Head(nn.Module):
     def __init__(self, backbone):
         super().__init__()
         self.linear = SO3_Linear(backbone.sphere_channels, 1, lmax=1)
