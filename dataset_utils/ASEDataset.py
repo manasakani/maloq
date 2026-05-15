@@ -21,7 +21,6 @@ class ASEDataset(Dataset):
     def __init__(self, db_path, dtype=torch.float32, open_shell=False, start_idx=0, end_idx=None):
 
         self.db_path = db_path
-        # self.db = ase.db.connect(db_path)
         self.open_shell = open_shell
         self.dtype = dtype
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -44,6 +43,7 @@ class ASEDataset(Dataset):
             all_rows = list(db.select()) 
 
         # ... and shard the data afterwards - this prevents a really strange error in distributed file access in ASE DBs.
+        # I still have to figure out why that happened (previously got around this by having each rank read a different db file)
         self.my_molecules = all_rows[start_idx:end_idx]
 
         print("Rank {} successfully loaded {} molecules.".format(rank, len(self.my_molecules)), flush=True)
@@ -93,16 +93,6 @@ class ASEDataset(Dataset):
             charge = 0
             spin_multiplicity = 1
 
-        # Legacy closed-shell databases (does not contain spin dimension, so we add it):
-        # if node_labels.ndim == 2:
-        #     node_labels = node_labels.unsqueeze(0)
-        #     edge_labels = edge_labels.unsqueeze(0)
-        #     charge = 0
-        #     spin_multiplicity = 1
-        # else:
-        #     charge = structure.data['charge']
-        #     spin_multiplicity = structure.data['spin_multiplicity']
-
         # Handle individual closed-shell molecules in open-shell training by setting alphafock==betafock:
         if self.open_shell and not is_open_shell:
             print("Adding second spin dimension to closed shell molecule for open shell training")
@@ -116,8 +106,6 @@ class ASEDataset(Dataset):
         # metadata:
         folder_name = structure.data['folder_name']
 
-        # Create PyTorch Geometric Data object with alpha/beta targets if open shell
-        # NOTE: the alpha and beta targets are seperated to make collation easier (??)
         data = Data(
             pos=positions,
             atomic_numbers=atomic_numbers,
