@@ -55,9 +55,14 @@ class EdgeDegreeEmbedding(torch.nn.Module):
         self.mmax = mmax
         self.mappingReduced = mappingReduced
 
-        self.rank = dist.get_rank()
-        self.world_size = dist.get_world_size()
-        self.comm = MPI.COMM_WORLD
+        # if dist.is_initialized():
+        #     self.rank = dist.get_rank()
+        #     self.world_size = dist.get_world_size()
+        #     self.comm = MPI.COMM_WORLD
+        # else:
+        #     self.rank = 0
+        #     self.world_size = 1
+        #     self.comm = None
 
         self.m_0_num_coefficients: int = self.mappingReduced.m_size[0]
         self.m_all_num_coefficents: int = len(self.mappingReduced.l_harmonic)

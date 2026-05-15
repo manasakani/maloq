@@ -47,9 +47,9 @@ class Edgewise(torch.nn.Module):
     ):
         super().__init__()
 
-        self.rank = dist.get_rank()
-        self.world_size = dist.get_world_size()
-        self.comm = MPI.COMM_WORLD
+        # self.rank = dist.get_rank()
+        # self.world_size = dist.get_world_size()
+        # self.comm = MPI.COMM_WORLD
 
         self.sphere_channels = sphere_channels
         self.hidden_channels = hidden_channels

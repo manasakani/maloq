@@ -55,9 +55,14 @@ class Fock_Targets:
         else:
             self.device = torch.device('cpu')
         
-        self.rank = dist.get_rank()
-        self.world_size = dist.get_world_size()
-        self.comm = MPI.COMM_WORLD
+        if dist.is_initialized():
+            self.rank = dist.get_rank()
+            self.world_size = dist.get_world_size()
+            self.comm = MPI.COMM_WORLD
+        else:
+            self.rank = 0
+            self.world_size = 1
+            self.comm = None
 
         # Option to tile the structure, used for weak scaling
         if tiling_dims is not None and periodic_boxes is not None:
@@ -91,7 +96,7 @@ class Fock_Targets:
         # --> Analyze structure of orbital interactions
         if orbital_template is None or out_js_list is None or req_output_irreps is None or ls_list is None:
             cache_path = "orbital_cache_"+str(dataset_name)+".pkl"
-            if os.path.exists(cache_path):
+            if os.path.exists(cache_path) and dataset_name != 'test':  # dataset name is 'test' in test scripts
                 print("Reading orbital info from cache")
                 with open(cache_path, "rb") as f:
                     cache = pickle.load(f)
@@ -815,6 +820,8 @@ class Fock_Targets:
             return cp.float32
         elif torch_dtype == torch.float64:
             return cp.float64
+        elif torch_dtype == torch.float16:
+            return cp.float16
         else:
             raise ValueError(f"Unsupported torch dtype: {torch_dtype}, add to conversion")
 
