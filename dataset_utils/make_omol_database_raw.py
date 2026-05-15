@@ -9,7 +9,6 @@ import torch
 from pathlib import Path
 import math
 
-# Your existing imports
 from ase import Atoms
 from ase.db import connect
 from fock_utils import utils_orca_out, utils_tensor_decomp, fock_targets, basis_sets
@@ -20,6 +19,8 @@ def parse_args():
                        help='Directory containing structure folders')
     parser.add_argument('-o', '--output_db_name', type=str, required=True,
                        help='Output database name (without .db extension)')
+    parser.add_argument('--output_folder', type=str, default='new_database',
+                          help='Folder to save the output database files')
     parser.add_argument('--start_idx', type=int, required=True,
                        help='Start index for structure processing')
     parser.add_argument('--end_idx', type=int, required=True,
@@ -60,7 +61,11 @@ def main():
     structures_dir = args.structures_dir
     num_folders = args.end_idx - args.start_idx
 
-    # Ammonium dataset:
+    if not os.path.exists(args.output_folder):
+        os.makedirs(args.output_folder)
+        print(f"Created output folder: {args.output_folder}", flush=True)
+
+    # Ammonium-only dataset:
     # structure_folders = [
     #     os.path.join(os.path.join(structures_dir, top_d), sub_d)
     #     for top_d in os.listdir(structures_dir)
@@ -70,16 +75,16 @@ def main():
     # ]
     
     # Electrolytes unsolvated:
-    # structure_folders = [
-    #     os.path.join(os.path.join(structures_dir, top_d), sub_d)
-    #     for top_d in os.listdir(structures_dir)
-    #     if os.path.isdir(os.path.join(structures_dir, top_d))
-    #     for sub_d in os.listdir(os.path.join(structures_dir, top_d))
-    #     if os.path.isdir(os.path.join(os.path.join(structures_dir, top_d), sub_d))
-    # ]
+    structure_folders = [
+        os.path.join(os.path.join(structures_dir, top_d), sub_d)
+        for top_d in os.listdir(structures_dir)
+        if os.path.isdir(os.path.join(structures_dir, top_d))
+        for sub_d in os.listdir(os.path.join(structures_dir, top_d))
+        if os.path.isdir(os.path.join(os.path.join(structures_dir, top_d), sub_d))
+    ]
 
     # Electrolytes redox:
-    structure_folders = [d for d in os.listdir(structures_dir) if os.path.isdir(os.path.join(structures_dir, d))]
+    # structure_folders = [d for d in os.listdir(structures_dir) if os.path.isdir(os.path.join(structures_dir, d))]
 
     # orca file and density matrix files always have the same names
     orca_file = 'orca.out'
@@ -132,9 +137,6 @@ def main():
         print("Parsing ORCA output...")
         parsed_orca_output = utils_orca_out.manually_parse_output(Path(orca_output_filepath), source='manasakani')
         open_shell = parsed_orca_output["unrestricted"]
-
-        # spin_multiplicity = parsed_orca_output["spin_multiplicity"]
-        # charge = parsed_orca_output["total_charge"]
 
         # Get elements, coordinates, and matrices for this structure:
         print("Getting fock matrix...")
@@ -227,7 +229,7 @@ def main():
     print(f"Job {args.job_id}: Time to process {total_attempted} structures: {big_time_end - big_time_start}", flush=True)
 
     # Write to database
-    output_db_filename = f"created_omol_database/{args.output_db_name}_raw_job_{args.job_id}.db"
+    output_db_filename = f"{args.output_folder}/{args.output_db_name}_raw_job_{args.job_id}.db"
     print(f"Job {args.job_id}: Writing to {output_db_filename}", flush=True)
 
     try:

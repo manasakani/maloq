@@ -91,7 +91,7 @@ def extract_charge_and_spin_from_path(orca_output_path: Path) -> tuple[int | Non
     for _ in range(3):
         informative_folder_name = current_path.name
 
-        # FIXED PATTERN: Allows an optional minus sign (-) before the first group of digits.
+        # Allows an optional minus sign (-) before the first group of digits.
         # It still looks for the pattern anchored to the end of the folder name.
         match = re.search(r'_(-?\d+)_(\d+)$', informative_folder_name)
         
