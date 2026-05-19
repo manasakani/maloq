@@ -16,6 +16,7 @@ from torch_geometric.data import Data as gnnData
 import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
 from mpi4py import MPI
+import re
 
 def get_loader(database, 
                 start_idx, 
@@ -570,14 +571,43 @@ def load_periodic_cp2k_structure(file_path):
         atoms = Atoms(symbols=symbols, positions=positions)
 
         # Line 1: Comment/Cell line
-        header_parts = lines[1].split()
-        if header_parts[0].lower() == 'cell' or header_parts[0].lower() == 'cell:':
-            # Extract the 3 dimensions: [X Y Z]
-            cell_dims = [float(x) for x in header_parts[1:4]]
-            atoms.set_cell(cell_dims)
-            atoms.set_pbc([True, True, True])
+        header_line = lines[1].strip()
+
+        # --> Try parsing Extended XYZ Lattice format: Lattice="..."
+        lattice_match = re.search(r'Lattice="([^"]+)"', header_line)
+        
+        if lattice_match:
+            lattice_vals = [float(x) for x in lattice_match.group(1).split()]
+            if len(lattice_vals) == 9:
+                # Extract diagonal elements [X_x, Y_y, Z_z] from the 3x3 matrix
+                cell_dims = [lattice_vals[0], lattice_vals[4], lattice_vals[8]]
+            elif len(lattice_vals) == 3:
+                cell_dims = lattice_vals
+            else:
+                cell_dims = None
+                print("Warning: Unexpected number of values in Lattice string.")
+                
+            if cell_dims:
+                atoms.set_cell(cell_dims)
+                atoms.set_pbc([True, True, True])
+                
+        # --> Fallback to the original CP2K "Cell:" format
         else:
-            print("Warning: 'Cell' keyword not found in header line.")
+            header_parts = header_line.split()
+            if header_parts and (header_parts[0].lower() == 'cell' or header_parts[0].lower() == 'cell:'):
+                cell_dims = [float(x) for x in header_parts[1:4]]
+                atoms.set_cell(cell_dims)
+                atoms.set_pbc([True, True, True])
+            else:
+                print("Warning: Neither 'Lattice' nor 'Cell' keyword found in header line.")
+
+        # if header_parts[0].lower() == 'cell' or header_parts[0].lower() == 'cell:':
+        #     # Extract the 3 dimensions: [X Y Z]
+        #     cell_dims = [float(x) for x in header_parts[1:4]]
+        #     atoms.set_cell(cell_dims)
+        #     atoms.set_pbc([True, True, True])
+        # else:
+        #     print("Warning: 'Cell' keyword not found in header line.")
     
     return atoms
 
