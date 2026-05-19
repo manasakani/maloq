@@ -205,7 +205,14 @@ class TrainingWorkflow:
 
                 scale_shift_data = self._handle_scale_shift()
                 train_database = data_folders[:c['num_train']]
-                val_database = data_folders[c['num_train']:total_needed] if c['num_val'] > 0 else None
+
+                # if c['dbpath_val'] is provided, take validation folders from there instead of splitting from the training folders:
+                if c.get('dbpath_val') is not None:
+                    val_db_source = c['dbpath_val']
+                    val_data_folders = [os.path.join(val_db_source, f) for f in os.listdir(val_db_source) if os.path.isdir(os.path.join(val_db_source, f))]
+                    val_database = val_data_folders[:c['num_val']]
+                else:
+                    val_database = data_folders[c['num_train']:total_needed] if c['num_val'] > 0 else None
 
                 tr_start, tr_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_train'], c['distribute_graphs'])
                 val_start, val_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_val'], c['distribute_graphs'])
