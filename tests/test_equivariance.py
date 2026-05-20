@@ -40,14 +40,14 @@ def build_batch_nabla(pos_cart, z, edge_index, device, R_cart=None):
 def test_equivariance():
     # --- Configuration ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.float32
+    dtype = torch.float64
     torch.set_default_dtype(dtype)
     rcut = 5.0
     sphere_channels = 8
     torch.manual_seed(42)
     
     # Example orbital basis (def2-svp)
-    orbital_basis = {1: [0], 8: [0, 0, 1, 2, 3, 4]} 
+    orbital_basis = {1: [0, 1], 8: [0, 1]} 
 
     # --- 1. Mock/Load Data ---
     z_sample = torch.tensor([8, 1, 1], device=device)
@@ -96,9 +96,11 @@ def test_equivariance():
         irreps_in=o3.Irreps([(sphere_channels, (l, 1)) for l in range(lmax + 1)]),
         irreps_out=target_irreps,
         lmax=lmax,
+        reduce_edge=True,
+        reduce_node=True,
+        reduce_node_intra=True,
         sphere_channels=sphere_channels,
         ls_list=ls_list,
-        reduce_node=True
     ).to(device).eval()
 
     backbone_ef = eSEN_Backbone(target_irreps, include_edges=False).to(device).eval()

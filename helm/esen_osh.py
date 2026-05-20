@@ -53,7 +53,7 @@ from .nn.so2_layers import SO2_Convolution
 from .nn.so3_layers import SO3_Linear
 from .nn.activation import GateActivation
 
-from .common.irreps_utils import get_reduced_to_all_indices, get_parity_multiplier
+from .common.irreps_utils import get_reduced_to_all_indices, get_parity_multiplier, get_product_irreps
 
 @registry.register_model("esen_backbone")
 class eSEN_Backbone(nn.Module):
@@ -535,7 +535,7 @@ class Fock_Irreps_Head(nn.Module):
                 irreps_out,
                 lmax,
                 sphere_channels,
-                half_edges=False,
+                reduce_edge=False,
                 ls_list=None,
                 open_shell=False,
                 reduce_node=False,
@@ -548,101 +548,130 @@ class Fock_Irreps_Head(nn.Module):
         self.lmax = lmax
         self.reduce_node = reduce_node                      # take advantage of 'inter'-orbital interaction symmetry within node blocks
         self.reduce_node_intra = reduce_node_intra          # take advantage of 'intra'-orbital interaction symmetry within node blocks
+        self.reduce_edge = reduce_edge                      # take advantage of edge interaction symmetry (ei, ej) vs (ej, ei) 
         self.irreps_out = irreps_out
-        self.half_edges = half_edges                        # if only half of the edges were created in the database to compute the loss over
         self.ls_list = ls_list                              # Ex: [5s, 4p, 3d, 0f, 0g] - ls_list = [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2]
-        self.backward_irrep_track = {}                      # helper dict to keep track of where to find the forward onsite orbital edges when we expand them out later
-        print("ls_list for output head: ", self.ls_list)
-
+        
         if open_shell:                                      # output two sets of labels for alpha/beta fock
             self.num_spins = 2
         else:
             self.num_spins = 1
 
+        print("Ls_list for output head: ", self.ls_list)
+
+        # -------- Handle irrep reductions for output head --------
+
+        print("IRREP SYMMETRY REDUCTIONS: reduce_node = ", self.reduce_node, 
+                                        " reduce_node_intra = ", self.reduce_node_intra, 
+                                        " self.reduce_edge = ", self.reduce_edge, flush=True)
+
         # We make a new list of irreps (irreps_nodereduced) which contains only the unique irreps in the node blocks
         if self.reduce_node:
-
             self.reduced_to_all_indices = get_reduced_to_all_indices(self.ls_list, reduce_node_intra=self.reduce_node_intra)
             parity_multiplier = torch.asarray(get_parity_multiplier(self.ls_list, reduce_node_intra=self.reduce_node_intra), dtype=torch.float32)
+            self.register_buffer("parity_multiplier", parity_multiplier) # so it can be used in the forward pass and is on the correct device/dtype
 
-            # register buffer for parity multiplier so it can be used in the forward pass and is on the correct device/dtype
-            self.register_buffer("parity_multiplier", parity_multiplier)
+            self.make_irreps_nodereduced()   
+            print("Reduced set of node irreps: ", self.irreps_nodereduced, flush=True)
+        
+        # We seperate the edge irreps into the alpha and beta sets
+        if self.reduce_edge:
+            self.make_irreps_edgereduced()     
+            not_antisym = False  # reduce edges requires that operations preserve odd-ness, using this flag for biases
+            print("Reduced set of edge irreps for alpha (symmetric) space: ", self.irreps_edgereduced_alpha, flush=True)
+            print("Reduced set of edge irreps for beta (antisymmetric) space: ", self.irreps_edgereduced_beta, flush=True)
+        else:
+            not_antisym = True
+        
+        # store the output permutation which will be used  to permute the output irreps to match the order of the labels in the data
+        self.output_permutation = {} 
+        if reduce_node and reduce_edge:
+            self.node_lin_out_layers = nn.ModuleList()
+            self.edge_lin_out_layers = nn.ModuleDict({
+                'alpha': nn.ModuleList(),
+                'beta': nn.ModuleList()
+            })
+            self.output_permutation['node'] = self.get_output_permutation(self.irreps_nodereduced)
+            self.output_permutation['edge'] = self.get_output_permutation(self.irreps_edgereduced_alpha.sort()[0]+self.irreps_edgereduced_beta)
 
-            irreps_nodereduced = []
-            irrep_pointer = 0
-            for i, l1 in enumerate(self.ls_list):
-                for j, l2 in enumerate(self.ls_list):
+        elif reduce_node:
+            self.node_lin_out_layers = nn.ModuleList()
+            self.edge_lin_out_layers = nn.ModuleList()
+            self.output_permutation['node'] = self.get_output_permutation(self.irreps_nodereduced)
+            self.output_permutation['edge'] = self.get_output_permutation(irreps_out)
 
-                    # if this is an orbital self-interaction within the node block, we add the even irreps
-                    if i == j and l1 == l2:
-                        if self.reduce_node_intra:
-                            product_irreps = str(self.get_product_irreps(l1, l2, 'even'))
-                        else:
-                            product_irreps = str(self.get_product_irreps(l1, l2))
-
-                        irreps_nodereduced.append(product_irreps)
-                        irrep_pointer += sum([2*l + 1 for l in Irreps(product_irreps).ls])
-
-                    # this is an upper-triangle off-diag interaction within the node block, we add all the required irreps
-                    if i < j:
-                        product_irreps = str(self.get_product_irreps(l1, l2))
-                        irreps_nodereduced.append(product_irreps)
-                        irrep_len = sum([2*l + 1 for l in Irreps(product_irreps).ls])
-
-                        # track it for the backward edge in the expand section later:
-                        self.backward_irrep_track[(j, i)] = [irrep_pointer, irrep_pointer+irrep_len]
-                        irrep_pointer += irrep_len
-
-            # Now we can project to this reduced set of irreps, and expand it out later
-            self.irreps_nodereduced = Irreps('+'.join(irreps_nodereduced))
-
-        # This permutation list and reflection vector together define the relationship between the forward and backward edges
-        if self.half_edges:
-            assert self.ls_list is not None, "If you use half edges, you need to provide the ls_list!"
-            self.edge_m_reflection = None
-            self.edge_permutation = self.get_edge_permutation()
-
-        irreps_scalars, irreps_gated = self.split_irreps(irreps_in)
-        irreps_gates = Irreps(f"{irreps_gated.num_irreps}x0e")
+        elif reduce_edge and not reduce_node:
+            raise NotImplementedError("The case of not reducing node irreps but reducing edge irreps is currently not implemented")
+        
+        else:
+            self.lin_out_layers = nn.ModuleList()
+            self.output_permutation['common'] = self.get_output_permutation(irreps_out)
+        
+        # -------- Prepare gating layers --------
 
         # 1. Apply a linear layer to convert the number of input scalars to the number of required gating scalars
         # the number of input scalars is equal to sphere_channels
         # the output 'irreps_gates' are the gating scalars
 
+        irreps_scalars, irreps_gated = self.split_irreps(irreps_in)
+        irreps_gates = Irreps(f"{irreps_gated.num_irreps}x0e")
+
         # --> gate with learnable parameters by outputting more random scalars:
         input_scalars_irreps = Irreps(f"{self.sphere_channels}x0e")
         combined_output_scalars = Irreps(f"{irreps_scalars.num_irreps + irreps_gated.num_irreps}x0e")
         self.lin_scalars_learnable = nn.ModuleList()
-        self.act_input_scalars = nn.ModuleList()
         self.gate = nn.ModuleList()
-
-        if reduce_node:
-            self.node_lin_out_layers = nn.ModuleList()
-            self.edge_lin_out_layers = nn.ModuleList()
-            self.node_output_permutation = self.get_output_permutation(self.irreps_nodereduced)
-            self.edge_output_permutation = self.get_output_permutation(irreps_out)
-        else:
-            self.lin_out_layers = nn.ModuleList()
-            self.output_permutation = self.get_output_permutation(irreps_out)
 
         for spin in range(self.num_spins):
 
-            self.lin_scalars_learnable.append(e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars, biases=True))
-            self.act_input_scalars.append(torch.nn.SiLU())
+            # if using edge reduction, need to maintain antisymmetry of negative edges
+            self.lin_scalars_learnable.append(e3nn_Linear(irreps_in=input_scalars_irreps, irreps_out=combined_output_scalars, biases=not_antisym))
             # this returns the irreps_gates
 
             # 2. Apply the gating to the other ls (need to pass in a stack of [l=0, l~=0])
+            act_gates = [torch.sigmoid] * len(irreps_gates) if not_antisym else [torch.tanh] * len(irreps_gates)
             self.gate.append(Gate(irreps_scalars=Irreps(),
                                     act_scalars=[],
                                     irreps_gates=irreps_gates,
-                                    act_gates=[torch.sigmoid] * len(irreps_gates),
+                                    act_gates=act_gates,
                                     irreps_gated=irreps_gated
                                 ))
 
             # now we have the [l=0s, gated l>0s] in a stack, and we just need to map them to the output irrep order:
             irreps_in_simplified = (irreps_scalars + self.gate[spin].irreps_out).simplify()
             assert irreps_in_simplified == (irreps_scalars+self.gate[spin].irreps_out), "The irreps_in for the output linear layer should not change when simplified!"
-            if reduce_node:
+            
+            if reduce_node and reduce_edge:
+                node_lin_layers = nn.ModuleList()
+                edge_lin_layers_alpha = nn.ModuleList()
+                edge_lin_layers_beta = nn.ModuleList()
+
+                for l in range(0, self.lmax+1):
+                    mul_in = self.sphere_channels
+
+                    # for nodes:
+                    mul_out = self.irreps_nodereduced.count('{}e'.format(l))
+                    irreps_in_l = f"{mul_in}x{l}e"
+                    irreps_out_l = f"{mul_out}x{l}e"
+                    print("Creating node linear output map for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out = ", irreps_out_l, flush=True)
+                    node_lin_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
+
+                    # for edges:
+                    mul_out_alpha = self.irreps_edgereduced_alpha.count('{}e'.format(l))
+                    mul_out_beta = self.irreps_edgereduced_beta.count('{}e'.format(l))
+                    irreps_in_l = f"{mul_in}x{l}e"
+                    irreps_out_l_alpha = f"{mul_out_alpha}x{l}e"
+                    irreps_out_l_beta = f"{mul_out_beta}x{l}e"
+
+                    print("Creating edge linear output map for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out_alpha = ", irreps_out_l_alpha, " and irreps_out_beta = ", irreps_out_l_beta, flush=True)
+                    edge_lin_layers_alpha.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l_alpha, biases=not_antisym))
+                    edge_lin_layers_beta.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l_beta, biases=not_antisym)) 
+
+                self.node_lin_out_layers.append(node_lin_layers)
+                self.edge_lin_out_layers['alpha'].append(edge_lin_layers_alpha)
+                self.edge_lin_out_layers['beta'].append(edge_lin_layers_beta)
+            
+            elif reduce_node:
                 node_lin_layers = nn.ModuleList()
                 edge_lin_layers = nn.ModuleList()
                 for l in range(0, self.lmax+1):
@@ -675,14 +704,73 @@ class Fock_Irreps_Head(nn.Module):
                     irreps_out_l = f"{mul_out}x{l}e"
                     print("Creating linear output map for l = ", l, " with irreps_in = ", irreps_in_l, " and irreps_out = ", irreps_out_l, flush=True)
                     lin_layers.append(e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True))
-                    # layers = nn.Sequential( # more weights
-                    #     e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_in_l, biases=True),
-                    #     e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_in_l, biases=True),
-                    #     e3nn_Linear(irreps_in=irreps_in_l, irreps_out=irreps_out_l, biases=True)
-                    # )
-                    # lin_layers.append(layers)
 
                 self.lin_out_layers.append(lin_layers)
+    
+    def make_irreps_nodereduced(self):
+        """
+        Create the list of irreps for the node blocks after taking into account the reduction from only considering unique orbital interactions.
+        The lower triangle irreps are the same as the upper triangle, so we only need to keep one of them. 
+        For the diagonal blocks, we only keep the even irreps, since the odd irreps should be zero due to symmetry
+        """
+
+        irreps_nodereduced = []
+        for i, l1 in enumerate(self.ls_list):
+            for j, l2 in enumerate(self.ls_list):
+
+                # if this is an orbital self-interaction within the node block, we add the even irreps
+                if i == j and l1 == l2:
+                    if self.reduce_node_intra:
+                        product_irreps = str(get_product_irreps(l1, l2, 'even'))
+                    else:
+                        product_irreps = str(get_product_irreps(l1, l2))
+
+                    irreps_nodereduced.append(product_irreps)
+
+                # this is an upper-triangle off-diag interaction within the node block, we add all the required irreps
+                if i < j:
+                    product_irreps = str(get_product_irreps(l1, l2))
+                    irreps_nodereduced.append(product_irreps)
+                    irrep_len = sum([2*l + 1 for l in Irreps(product_irreps).ls])
+
+        # Now we can project to this reduced set of irreps, and expand it out later
+        self.irreps_nodereduced = Irreps('+'.join(irreps_nodereduced))
+    
+    def make_irreps_edgereduced(self):
+        """
+        Create the list of irreps for the edge blocks
+        """
+        
+        irreps_edgereduced_alpha = []
+        irreps_edgereduced_beta = []
+        for i, l1 in enumerate(self.ls_list):
+            for j, l2 in enumerate(self.ls_list):
+                product_irreps = str(get_product_irreps(l1, l2))
+
+                if i == j and l1 == l2:
+                    even_irreps = str(get_product_irreps(l1, l2, 'even'))
+                    odd_irreps = str(get_product_irreps(l1, l2, 'odd'))
+
+                    # if the even_irrep string is not empty:
+                    if even_irreps != '':
+                        irreps_edgereduced_alpha.append(even_irreps)
+                    if odd_irreps != '':
+                        irreps_edgereduced_beta.append(odd_irreps)
+
+                if i < j:
+                    if product_irreps != '':
+                        irreps_edgereduced_alpha.append(product_irreps)
+                
+                if j < i:
+                    if product_irreps != '':
+                        irreps_edgereduced_beta.append(product_irreps)
+
+
+        # targets for ei + ej:
+        self.irreps_edgereduced_alpha = Irreps('+'.join(irreps_edgereduced_alpha))
+
+        # targets for ei - ej:
+        self.irreps_edgereduced_beta = Irreps('+'.join(irreps_edgereduced_beta))
 
     def get_output_permutation(self, output_irreps):
         """
@@ -740,29 +828,6 @@ class Fock_Irreps_Head(nn.Module):
         return Irreps(scalars), Irreps(gated)
 
 
-    def get_product_irreps(self, l1, l2, even_or_odd=None):
-        """
-        Return the irreps required to represent l1 X l2 (X = tensor product)
-        """
-
-        m = 1   # multiplicity
-        p = 1   # even parity only (real-valued Fock matrix)
-        l3s = range(abs(l1 - l2), l1 + l2 + 1)
-
-        # return only the even/odd irreps:
-        if even_or_odd is not None:
-            if even_or_odd == 'even':
-                even_l3s = [l for l in l3s if l % 2 == 0]
-                required_irreps = Irreps([(m, (l, p)) for l in even_l3s])
-            else:
-                odd_l3s = [l for l in l3s if l % 2 != 0]
-                required_irreps = Irreps([(m, (l, p)) for l in odd_l3s])
-        else:
-            required_irreps = Irreps([(m, (l, p)) for l in l3s])
-
-        return required_irreps
-
-
     def forward(self, emb, batch):
 
         node_embeddings = emb["node_embeddings"]
@@ -771,18 +836,60 @@ class Fock_Irreps_Head(nn.Module):
 
         edge_mask = batch.edge_mask if "edge_mask" in batch else None
 
+        if self.reduce_edge:
+            edge_embeddings_alpha, edge_embeddings_beta = self.create_antisym_edge_pairs(
+                edge_embeddings, edge_index
+            )        
+
         node_outputs = []
         edge_outputs = []
         for spin in range(self.num_spins):
             node_embeddings_spin = self.stack_irreps(node_embeddings)
-            edge_embeddings_spin = self.stack_irreps(edge_embeddings)
-            node_output = self.process(node_embeddings_spin, edge_index, 'node', spin)
-            edge_output = self.process(edge_embeddings_spin, edge_index, 'edge', spin)
+            node_output = self.process(node_embeddings_spin, edge_index, 'node', spin)      # gating and linear layers to produce the output irreps in sorted order
+            
+            if self.reduce_node:
+                node_output = node_output[:, self.output_permutation['node']]                      # permute to the correct order of output irreps
+            else:
+                node_output = node_output[:, self.output_permutation['common']]                      
+
+            if self.reduce_edge:
+                edge_embeddings_spin_alpha = self.stack_irreps(edge_embeddings_alpha)
+                edge_embeddings_spin_beta = self.stack_irreps(edge_embeddings_beta)
+
+                edge_output_alpha = self.process(edge_embeddings_spin_alpha, edge_index, 'edge_alpha', spin)
+                edge_output_beta = self.process(edge_embeddings_spin_beta, edge_index, 'edge_beta', spin)
+
+                # print("edge_output_alpha: ", edge_output_alpha, flush=True)
+                # print("edge_output_beta: ", edge_output_beta, flush=True)
+
+                # stack along the feature dimension and permute (permutation is not done within process here):
+                # HARDCODED for Water toy basis
+                Vpa = edge_output_alpha[:, 2:5]
+                Vpb = edge_output_beta[:, 0:3]
+                edge_output = torch.cat((edge_output_alpha, edge_output_beta), dim=-1)
+
+                edge_output[:, 2:5] = Vpa + Vpb
+                edge_output[:, 10:13] = Vpa - Vpb
+
+                # perform permutation                
+                manual_permutation = [0, 2, 3, 4, 10, 11, 12, 1, 13, 14, 15, 5, 6, 7, 8, 9]
+                edge_output = edge_output[:, manual_permutation]
+
+            else:
+                edge_embeddings_spin = self.stack_irreps(edge_embeddings)
+                edge_output = self.process(edge_embeddings_spin, edge_index, 'edge', spin)  # gating and linear layers to produce the output irreps in sorted order
+                
+                # if we don't use reduce_node or reduce_edge, there is a single common output permutation
+                if self.reduce_node:
+                    edge_output = edge_output[:, self.output_permutation['edge']]                  # permute to the correct order of output irreps
+                else:
+                    edge_output = edge_output[:, self.output_permutation['common']]                  
+
 
             # augment the node irreps back to the full irrep list (containing the lower triangle of orbital interactions and odd self-interaction irreps)
             # using edge_output to infer the total size of the output embeddings
             if self.reduce_node:
-                node_output = self.expand_reduced_node(node_output, edge_output)
+                node_output = self.expand_reduced_node(node_output)
                         
             node_outputs.append(node_output)
             edge_outputs.append(edge_output)
@@ -791,82 +898,6 @@ class Fock_Irreps_Head(nn.Module):
         node_outputs = torch.stack(node_outputs, dim=0)  # [spin, num_nodes, ...]
         edge_outputs = torch.stack(edge_outputs, dim=0)  # [spin, num_edges, ...]
         return node_outputs, edge_outputs
-
-    def get_edge_permutation(self):
-        """
-        The forward and backward edges contain the same irreps, but they are permuted in the data list
-        due to the order of flattening the matrix blocks. Here we create the permutation of the irreps to match the reverse edge order.
-        We also handle the reflection rules of the orbital interactions, which are different for even and odd parity.
-        """
-
-        full_irrep_len = [sum([2*l + 1 for l in Irreps(str(self.get_product_irreps(l1, l2))).ls]) for l1 in self.ls_list for l2 in self.ls_list]
-        edge_permutation = [0] * sum(full_irrep_len)
-        self.edge_m_reflection = np.ones(sum(full_irrep_len), dtype=int)
-        forward_irrep_track = {}
-        pointer = 0
-
-        total_irreps = Irreps('')
-
-        for i, l1 in enumerate(self.ls_list):
-            for j, l2 in enumerate(self.ls_list):
-
-                # --> 1. Handle the permutation of the irreps:
-                product_irreps = str(self.get_product_irreps(l1, l2))
-                irrep_len = sum([2*l + 1 for l in Irreps(product_irreps).ls])
-
-                # add to total irreps
-                total_irreps += Irreps(product_irreps)
-
-                # if it's the same orbital interaction going backward and forward (eg, p1A-p1B vs. p1B-p1A), we keep the same irreps
-                if i == j:
-                    edge_permutation[pointer:pointer+irrep_len] = [pointer + i for i in range(irrep_len)]
-
-                # if its an interaction between different orbitals (eg, p1A-p2B vs. p2B-p1A), we append the index of the permutation
-                if i < j:
-                    # store this in the forward_irrep_track:
-                    forward_irrep_track[(j, i)] = [pointer, pointer + irrep_len]
-
-                if i > j:
-
-                    # Find where the p1A-p2B irreps are in the forward edge
-                    forward_irrep_start = forward_irrep_track[(i, j)][0]
-                    forward_irrep_end = forward_irrep_track[(i, j)][1]
-
-                    # Update both the forward and backward edge permutations
-                    edge_permutation[pointer:pointer+irrep_len] = list(range(forward_irrep_start, forward_irrep_end))
-                    edge_permutation[forward_irrep_start:forward_irrep_end] = list(range(pointer, pointer + irrep_len))
-
-                # --> 2. Handle the reflections
-                parity = ((-1) ** (l1+l2)).item()
-
-                # Even parity: odd output irreps are flipped
-                if parity == 1:
-                    start_l = 0
-                    for p in product_irreps.split('+'):
-                        l = Irreps(p).ls[0]
-                        if l % 2 != 0:
-                            l_orb_start = pointer + start_l
-                            l_orb_end = l_orb_start + (2*l + 1)
-                            self.edge_m_reflection[l_orb_start:l_orb_end] *= -1
-                        start_l += (2*l + 1)
-
-                # Odd parity: even output irreps are flipped
-                if parity == -1:
-                    start_l = 0
-                    for p in product_irreps.split('+'):
-                        l = Irreps(p).ls[0]
-                        if l % 2 == 0:
-                            l_orb_start = pointer + start_l
-                            l_orb_end = l_orb_start + (2*l + 1)
-                            self.edge_m_reflection[l_orb_start:l_orb_end] *= -1
-                        start_l += (2*l + 1)
-
-                pointer += irrep_len
-
-        # assert that total_irreps is the same as the output irreps
-        assert total_irreps == self.irreps_out, f"Error! Total irreps in the Hamiltonian output head {total_irreps} do not match the provided output irreps {self.irreps_out}!"
-
-        return edge_permutation
 
 
     def stack_irreps(self, x_message):
@@ -892,6 +923,9 @@ class Fock_Irreps_Head(nn.Module):
 
         # 2. Prepare some scalars for gating - gate with learnable scalars: the first 'sphere_channels' scalars are the l=0, and others are used for gating
         all_scalars = self.lin_scalars_learnable[spin](x_scalars)
+        if self.reduce_edge:
+            all_scalars = torch.abs(all_scalars)  # take abs to preserve antisymmetry for edge gating scalars
+
         transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
         gating_scalars = all_scalars[:, self.sphere_channels:]
 
@@ -901,7 +935,6 @@ class Fock_Irreps_Head(nn.Module):
 
         # 4. Apply linear map to output irreps
         if not self.reduce_node:
-            # lin_out_start_time = time.perf_counter()
 
             # pass each irrep of x_out through its own SO3_Linear layer, where x_out followed simplified irreps_in (self.sphere_channels*0e + sphere_channels*1e + sphere_channels*2e ...)
             x_out_list = []
@@ -915,26 +948,11 @@ class Fock_Irreps_Head(nn.Module):
                 irrep_end_track = end_idx
 
                 x_l = x_gated[:, start_idx:end_idx]  # extract the l-th irrep component
-
-                # x_l = x_l.reshape(batch_size, 2*l + 1, self.sphere_channels)  # this is for SO3_Linear..
-                # if node_or_edge == 'node':
-                #     x_l_out = self.node_lin_out_layers[l](x_l)  # apply the Linear layer for degree l
-                # if node_or_edge == 'edge':
-                #     x_l_out = self.edge_lin_out_layers[l](x_l)  # apply the Linear layer for degree l
                 x_l_out = self.lin_out_layers[spin][l](x_l)  # apply the Linear layer for degree l
-                # mul_out = self.irreps_out.count(f'{l}e')
-                # x_l_out = x_l_out.reshape(batch_size, mul_out*(2*l+1))  # [batch, (2*l+1)*mul_out]
-
                 x_out_list.append(x_l_out)
 
             # concatenate all the l outputs back together
             x_out = torch.cat(x_out_list, dim=1)
-
-            # permute to match the expected order of irreps in the output
-            x_out = x_out[:, self.output_permutation]
-
-            # lin_out_end_time = time.perf_counter()
-            # print(f"lin_out time: {lin_out_end_time - lin_out_start_time} seconds", flush=True)
 
         else:
             x_out_list = []
@@ -951,22 +969,20 @@ class Fock_Irreps_Head(nn.Module):
                 if node_or_edge == 'node':
                     x_l_out = self.node_lin_out_layers[spin][l](x_l)  # apply the Linear layer for degree l
                 if node_or_edge == 'edge':
-                    x_l_out = self.edge_lin_out_layers[spin][l](x_l)  # apply the Linear layer for degree l
+                    x_l_out = self.edge_lin_out_layers[spin][l](x_l) 
+                if node_or_edge == 'edge_alpha':
+                    x_l_out = self.edge_lin_out_layers['alpha'][spin][l](x_l)
+                if node_or_edge == 'edge_beta':
+                    x_l_out = self.edge_lin_out_layers['beta'][spin][l](x_l)
                 x_out_list.append(x_l_out)
 
-            # concatenate all the l outputs back together
+            # concatenate all the l outputs back together 
             x_out = torch.cat(x_out_list, dim=1)
-
-            # permute to match the expected order of irreps in the output
-            if node_or_edge == 'node':
-                x_out = x_out[:, self.node_output_permutation]
-            if node_or_edge == 'edge':
-                x_out = x_out[:, self.edge_output_permutation]
 
         return x_out
 
 
-    def expand_reduced_node(self, node_output, edge_output):
+    def expand_reduced_node(self, node_output):
         """
         Expand irreps_nodereduced to irreps_out, by adding the previously-removed irreps back in:
         1. The odd irreps for the orbital self-interactions
@@ -975,6 +991,29 @@ class Fock_Irreps_Head(nn.Module):
 
         expanded_node_output = node_output[:, self.reduced_to_all_indices] * self.parity_multiplier
         return expanded_node_output
+    
+    def create_antisym_edge_pairs(self, edge_embeddings, edge_index):
+        """
+        Create alpha and beta edge embeddings from the symmetric and antisymmetric pairs of original edge embeddings
+        """
+        # Get the sorting permutation that groups original edges sequentially: (i, j)
+        _, perm_orig = torch.sort(edge_index[0] * (edge_index.max() + 1) + edge_index[1])
+        
+        # Get the sorting permutation that groups flipped edges sequentially: (j, i)
+        _, perm_flip = torch.sort(edge_index[1] * (edge_index.max() + 1) + edge_index[0])
+        
+        # Map directly from original array index to the corresponding flipped array index
+        # We invert the original permutation array to discover the alignment mapping
+        inv_perm_orig = torch.argsort(perm_orig)
+        reverse_edge_indices = perm_flip[inv_perm_orig]
+
+        # Construct symmetric and antisymmetric spaces
+        backward_edge_embeddings = edge_embeddings[reverse_edge_indices]
+        
+        edge_embeddings_alpha = edge_embeddings + backward_edge_embeddings
+        edge_embeddings_beta = edge_embeddings - backward_edge_embeddings
+
+        return edge_embeddings_alpha, edge_embeddings_beta
 
 
 @registry.register_model("esen_linear_energy_head")

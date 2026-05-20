@@ -402,7 +402,7 @@ class TrainingWorkflow:
             head = Fock_Irreps_Head(
                 irreps_in=irreps_in, irreps_out=required_irreps,
                 lmax=required_irreps.lmax, sphere_channels=c['l_embedding_dim'],
-                half_edges=c['reduce_edge'], open_shell=c['open_shell'],
+                reduce_edge=c['reduce_edge'], open_shell=c['open_shell'],
                 ls_list=ls_list, reduce_node=c['reduce_node'],
                 reduce_node_intra=c['reduce_node_intra'], orbital_basis=orb_basis
             )

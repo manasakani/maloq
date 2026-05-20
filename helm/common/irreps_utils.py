@@ -4,6 +4,29 @@ import numpy as np
 # import e3nn
 from e3nn.o3 import Irreps
 
+# Note: merge the first two functions...
+
+def get_product_irreps(l1, l2, even_or_odd=None):
+    """
+    Return the irreps required to represent l1 X l2 (X = tensor product)
+    """
+
+    m = 1   # multiplicity
+    p = 1   # even parity only 
+    l3s = range(abs(l1 - l2), l1 + l2 + 1)
+
+    # return only the even/odd irreps:
+    if even_or_odd is not None:
+        if even_or_odd == 'even':
+            even_l3s = [l for l in l3s if l % 2 == 0]
+            required_irreps = Irreps([(m, (l, p)) for l in even_l3s])
+        else:
+            odd_l3s = [l for l in l3s if l % 2 != 0]
+            required_irreps = Irreps([(m, (l, p)) for l in odd_l3s])
+    else:
+        required_irreps = Irreps([(m, (l, p)) for l in l3s])
+
+    return required_irreps
 
 def get_product_ls(l1, l2, kind='all'):
     """
@@ -135,3 +158,81 @@ def get_all_len(ls_list):
 
 def get_reduced_len(ls_list, reduce_node_intra=False):
     return sum([2*l + 1 for l in get_reduced_ls(ls_list, reduce_node_intra=reduce_node_intra)])
+
+
+# this is here just for reference! Not used
+def get_edge_permutation(self):
+    """
+    The forward and backward edges contain the same irreps, but they are permuted in the data list
+    due to the order of flattening the matrix blocks. Here we create the permutation of the irreps to match the reverse edge order.
+    We also handle the reflection rules of the orbital interactions, which are different for even and odd parity.
+    """
+
+    full_irrep_len = [sum([2*l + 1 for l in Irreps(str(get_product_irreps(l1, l2))).ls]) for l1 in self.ls_list for l2 in self.ls_list]
+    edge_permutation = [0] * sum(full_irrep_len)
+    self.edge_m_reflection = np.ones(sum(full_irrep_len), dtype=int)
+    forward_irrep_track = {}
+    pointer = 0
+
+    total_irreps = Irreps('')
+
+    for i, l1 in enumerate(self.ls_list):
+        for j, l2 in enumerate(self.ls_list):
+
+            # --> 1. Handle the permutation of the irreps:
+            product_irreps = str(get_product_irreps(l1, l2))
+            irrep_len = sum([2*l + 1 for l in Irreps(product_irreps).ls])
+
+            # add to total irreps
+            total_irreps += Irreps(product_irreps)
+
+            # if it's the same orbital interaction going backward and forward (eg, p1A-p1B vs. p1B-p1A), we keep the same irreps
+            if i == j:
+                edge_permutation[pointer:pointer+irrep_len] = [pointer + i for i in range(irrep_len)]
+
+            # if its an interaction between different orbitals (eg, p1A-p2B vs. p2B-p1A), we append the index of the permutation
+            if i < j:
+                # store this in the forward_irrep_track:
+                forward_irrep_track[(j, i)] = [pointer, pointer + irrep_len]
+
+            if i > j:
+
+                # Find where the p1A-p2B irreps are in the forward edge
+                forward_irrep_start = forward_irrep_track[(i, j)][0]
+                forward_irrep_end = forward_irrep_track[(i, j)][1]
+
+                # Update both the forward and backward edge permutations
+                edge_permutation[pointer:pointer+irrep_len] = list(range(forward_irrep_start, forward_irrep_end))
+                edge_permutation[forward_irrep_start:forward_irrep_end] = list(range(pointer, pointer + irrep_len))
+
+            # --> 2. Handle the reflections
+            parity = ((-1) ** (l1+l2)).item()
+
+            # Even parity: odd output irreps are flipped
+            if parity == 1:
+                start_l = 0
+                for p in product_irreps.split('+'):
+                    l = Irreps(p).ls[0]
+                    if l % 2 != 0:
+                        l_orb_start = pointer + start_l
+                        l_orb_end = l_orb_start + (2*l + 1)
+                        self.edge_m_reflection[l_orb_start:l_orb_end] *= -1
+                    start_l += (2*l + 1)
+
+            # Odd parity: even output irreps are flipped
+            if parity == -1:
+                start_l = 0
+                for p in product_irreps.split('+'):
+                    l = Irreps(p).ls[0]
+                    if l % 2 == 0:
+                        l_orb_start = pointer + start_l
+                        l_orb_end = l_orb_start + (2*l + 1)
+                        self.edge_m_reflection[l_orb_start:l_orb_end] *= -1
+                    start_l += (2*l + 1)
+
+            pointer += irrep_len
+
+    # assert that total_irreps is the same as the output irreps
+    assert total_irreps == self.irreps_out, f"Error! Total irreps in the Hamiltonian output head {total_irreps} do not match the provided output irreps {self.irreps_out}!"
+
+    return edge_permutation
