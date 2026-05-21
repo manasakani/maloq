@@ -53,7 +53,7 @@ from .nn.so2_layers import SO2_Convolution
 from .nn.so3_layers import SO3_Linear
 from .nn.activation import GateActivation
 
-from .common.irreps_utils import get_reduced_to_all_indices, get_parity_multiplier, get_product_irreps
+from .common.irreps_utils import get_reduced_to_all_indices, get_parity_multiplier, get_product_irreps, get_subspace_remix_permutation
 
 @registry.register_model("esen_backbone")
 class eSEN_Backbone(nn.Module):
@@ -583,7 +583,7 @@ class Fock_Irreps_Head(nn.Module):
         else:
             not_antisym = True
         
-        # store the output permutation which will be used  to permute the output irreps to match the order of the labels in the data
+        # store the output permutation which will be used to permute the output irreps to match the order of the labels in the data
         self.output_permutation = {} 
         if reduce_node and reduce_edge:
             self.node_lin_out_layers = nn.ModuleList()
@@ -592,7 +592,9 @@ class Fock_Irreps_Head(nn.Module):
                 'beta': nn.ModuleList()
             })
             self.output_permutation['node'] = self.get_output_permutation(self.irreps_nodereduced)
-            self.output_permutation['edge'] = self.get_output_permutation(self.irreps_edgereduced_alpha.sort()[0]+self.irreps_edgereduced_beta)
+            self.output_permutation['edge_alpha'] = self.get_output_permutation(self.irreps_edgereduced_alpha)
+            self.output_permutation['edge_beta'] = self.get_output_permutation(self.irreps_edgereduced_beta)
+            self.output_permutation['remix_subspaces'] = get_subspace_remix_permutation(self.irreps_edgereduced_alpha, self.irreps_edgereduced_beta, self.ls_list)
 
         elif reduce_node:
             self.node_lin_out_layers = nn.ModuleList()
@@ -743,6 +745,43 @@ class Fock_Irreps_Head(nn.Module):
         
         irreps_edgereduced_alpha = []
         irreps_edgereduced_beta = []
+
+        off_diag_irrep_indices = {}
+
+        for i, l1 in enumerate(self.ls_list):
+            for j, l2 in enumerate(self.ls_list):
+                product_irreps = str(get_product_irreps(l1, l2))
+
+                # diagonal block - even irreps go to the alpha space, odd irreps go to the beta space
+                if i == j and l1 == l2:
+                    even_irreps = str(get_product_irreps(l1, l2, 'even'))
+                    odd_irreps = str(get_product_irreps(l1, l2, 'odd'))
+
+                    if even_irreps != '':
+                        irreps_edgereduced_alpha.append(even_irreps)
+                    if odd_irreps != '':
+                        irreps_edgereduced_beta.append(odd_irreps)
+
+                # upper triangle irreps go to the alpha space
+                if i < j:
+                    irreps_edgereduced_alpha.append(product_irreps)
+                
+                # lower triangle irreps go to the beta space
+                if j < i:
+                    irreps_edgereduced_beta.append(product_irreps)
+                
+        self.irreps_edgereduced_alpha = Irreps('+'.join(irreps_edgereduced_alpha))  # targets for alpha (includes ei + ej):
+        self.irreps_edgereduced_beta = Irreps('+'.join(irreps_edgereduced_beta))    # targets for beta (includes ei - ej):
+
+        # --- Second Pass: Create indices to pair up the alpha and beta spaces ---
+        off_diag_irrep_indices = {'alpha': [], 'beta': []}
+
+        alpha_blocks = {}
+        beta_blocks = {}
+
+        alpha_track = 0
+        beta_track = 0
+
         for i, l1 in enumerate(self.ls_list):
             for j, l2 in enumerate(self.ls_list):
                 product_irreps = str(get_product_irreps(l1, l2))
@@ -750,27 +789,39 @@ class Fock_Irreps_Head(nn.Module):
                 if i == j and l1 == l2:
                     even_irreps = str(get_product_irreps(l1, l2, 'even'))
                     odd_irreps = str(get_product_irreps(l1, l2, 'odd'))
-
-                    # if the even_irrep string is not empty:
+                    
                     if even_irreps != '':
-                        irreps_edgereduced_alpha.append(even_irreps)
+                        alpha_track += sum([2*l + 1 for l in Irreps(even_irreps).ls])
                     if odd_irreps != '':
-                        irreps_edgereduced_beta.append(odd_irreps)
+                        beta_track += sum([2*l + 1 for l in Irreps(odd_irreps).ls])
 
-                if i < j:
-                    if product_irreps != '':
-                        irreps_edgereduced_alpha.append(product_irreps)
+                if i < j and product_irreps != '':
+                    dim = sum([2*l + 1 for l in Irreps(product_irreps).ls])
+                    alpha_blocks[(i, j)] = np.arange(alpha_track, alpha_track + dim)
+                    alpha_track += dim
                 
-                if j < i:
-                    if product_irreps != '':
-                        irreps_edgereduced_beta.append(product_irreps)
+                if j < i and product_irreps != '':
+                    dim = sum([2*l + 1 for l in Irreps(product_irreps).ls])
+                    beta_blocks[(i, j)] = np.arange(beta_track, beta_track + dim)
+                    beta_track += dim
 
+        # --- Pair them up ---
+        for (i, j), indices in alpha_blocks.items():
+            off_diag_irrep_indices['alpha'].append(indices)
+            off_diag_irrep_indices['beta'].append(beta_blocks[(j, i)])
 
-        # targets for ei + ej:
-        self.irreps_edgereduced_alpha = Irreps('+'.join(irreps_edgereduced_alpha))
+        # check that the length of the sub-arrays in off_diag_irrep_indices['alpha'] are the same as the length of the sub arrays in off_diag_irrep_indices['beta']:
+        print("off_diag_irrep_indices['alpha']: ", off_diag_irrep_indices['alpha'], flush=True)
+        print("off_diag_irrep_indices['beta ']: ", off_diag_irrep_indices['beta'], flush=True)
+        for alpha_indices, beta_indices in zip(off_diag_irrep_indices['alpha'], off_diag_irrep_indices['beta']):
+            assert len(alpha_indices) == len(beta_indices), "The length of the alpha and beta irreps should be the same for each off-diagonal block, but got {} and {}! Something is wrong with the indexing in make_irreps_edgereduced()".format(len(alpha_indices), len(beta_indices))
 
-        # targets for ei - ej:
-        self.irreps_edgereduced_beta = Irreps('+'.join(irreps_edgereduced_beta))
+        # if they match irrep-for-irrep, then we combine them into a single list which will be used to index the alpha and beta edge output components 
+        # (eg, to extract Vsp and Vps, so that we can create Vsp+Vps and Vsp-Vps):
+        off_diag_irrep_indices['alpha'] = np.concatenate(off_diag_irrep_indices['alpha']) if len(off_diag_irrep_indices['alpha']) > 0 else np.array([], dtype=np.int64)
+        off_diag_irrep_indices['beta'] = np.concatenate(off_diag_irrep_indices['beta']) if len(off_diag_irrep_indices['beta']) > 0 else np.array([], dtype=np.int64)
+
+        self.off_diag_irrep_indices = off_diag_irrep_indices
 
     def get_output_permutation(self, output_irreps):
         """
@@ -834,13 +885,11 @@ class Fock_Irreps_Head(nn.Module):
         edge_embeddings = emb["edge_embeddings"]
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
 
-        edge_mask = batch.edge_mask if "edge_mask" in batch else None
-
         if self.reduce_edge:
             edge_embeddings_alpha, edge_embeddings_beta = self.create_antisym_edge_pairs(
                 edge_embeddings, edge_index
-            )        
-
+            )  
+            
         node_outputs = []
         edge_outputs = []
         for spin in range(self.num_spins):
@@ -859,21 +908,36 @@ class Fock_Irreps_Head(nn.Module):
                 edge_output_alpha = self.process(edge_embeddings_spin_alpha, edge_index, 'edge_alpha', spin)
                 edge_output_beta = self.process(edge_embeddings_spin_beta, edge_index, 'edge_beta', spin)
 
-                # print("edge_output_alpha: ", edge_output_alpha, flush=True)
-                # print("edge_output_beta: ", edge_output_beta, flush=True)
+                # recover the original order within the alpha and beta subspaces
+                edge_output_alpha = edge_output_alpha[:, self.output_permutation['edge_alpha']]
+                edge_output_beta = edge_output_beta[:, self.output_permutation['edge_beta']]
 
-                # stack along the feature dimension and permute (permutation is not done within process here):
-                # HARDCODED for Water toy basis
-                Vpa = edge_output_alpha[:, 2:5]
-                Vpb = edge_output_beta[:, 0:3]
-                edge_output = torch.cat((edge_output_alpha, edge_output_beta), dim=-1)
+                # print("self.output_permutation['edge_alpha']: ", self.output_permutation['edge_alpha'], flush=True)
+                # print("self.output_permutation['edge_beta']: ", self.output_permutation['edge_beta'], flush=True)
+                # assert torch.allclose(edge_output_alpha[0,:], edge_output_alpha[3,:], atol=1e-5), "The symmetric edge outputs should be the same!"
+                # assert torch.allclose(edge_output_alpha[1,:], edge_output_alpha[4,:], atol=1e-5), "The symmetric edge outputs should be the same!"
+                # assert torch.allclose(edge_output_alpha[2,:], edge_output_alpha[5,:], atol=1e-5), "The symmetric edge outputs should be the same!"
+                # assert torch.allclose(edge_output_beta[0,:], -1*edge_output_beta[3,:], atol=1e-5), "The antisymmetric edge outputs should be opposite!"
+                # assert torch.allclose(edge_output_beta[1,:], -1*edge_output_beta[4,:], atol=1e-5), "The antisymmetric edge outputs should be opposite!"
+                # assert torch.allclose(edge_output_beta[2,:], -1*edge_output_beta[5,:], atol=1e-5), "The antisymmetric edge outputs should be opposite!"
+                # print("Symmetry checks passed for reduced edge outputs!", flush=True)
 
-                edge_output[:, 2:5] = Vpa + Vpb
-                edge_output[:, 10:13] = Vpa - Vpb
+                # extract Vpa and Vpb from the edge outputs
+                Vpa = edge_output_alpha[:, self.off_diag_irrep_indices['alpha']].clone() # 1:4
+                Vpb = edge_output_beta[:, self.off_diag_irrep_indices['beta']].clone() # 0:3
 
-                # perform permutation                
-                manual_permutation = [0, 2, 3, 4, 10, 11, 12, 1, 13, 14, 15, 5, 6, 7, 8, 9]
-                edge_output = edge_output[:, manual_permutation]
+                edge_output_alpha[:, self.off_diag_irrep_indices['alpha']] = Vpa + Vpb  # build Vsp in place
+                edge_output_beta[:, self.off_diag_irrep_indices['beta']] = Vpa - Vpb    # build Vps in place
+                edge_output = torch.cat((edge_output_alpha, edge_output_beta), dim=-1)  
+
+                # assert that the size of the manual permutation is the same as the size of edge_output:
+                assert edge_output.shape[1] == len(self.output_permutation['remix_subspaces']), "The size of the output irreps after combining the alpha and beta subspaces should be the same as the size of the permutation that reorders them to match irreps_out, but got {} and {}! Something is wrong with the output permutation for the edge subspaces.".format(edge_output.shape[1], len(self.output_permutation['remix_subspaces']))
+                assert edge_output.shape[1] == max(self.output_permutation['remix_subspaces']) + 1, "The maximum element in the output permutation for the edge subspaces should be 1 less than the size of the output irreps after combining the alpha and beta subspaces, but got {} and {}! Something is wrong with the output permutation for the edge subspaces.".format(max(self.output_permutation['remix_subspaces']), edge_output.shape[1])
+
+                # at this point, the order is [irreps_alpha, irreps_beta]
+                # permute to the correct order of output irreps, now that we have combined the alpha and beta subspaces back together:
+                print("Output permutation for combined edge subspaces: ", self.output_permutation['remix_subspaces'], flush=True)
+                edge_output = edge_output[:, self.output_permutation['remix_subspaces']] 
 
             else:
                 edge_embeddings_spin = self.stack_irreps(edge_embeddings)
@@ -923,15 +987,28 @@ class Fock_Irreps_Head(nn.Module):
 
         # 2. Prepare some scalars for gating - gate with learnable scalars: the first 'sphere_channels' scalars are the l=0, and others are used for gating
         all_scalars = self.lin_scalars_learnable[spin](x_scalars)
-        if self.reduce_edge:
-            all_scalars = torch.abs(all_scalars)  # take abs to preserve antisymmetry for edge gating scalars
 
         transformed_l0_scalars = all_scalars[:, :self.sphere_channels]
         gating_scalars = all_scalars[:, self.sphere_channels:]
 
+        # take abs of the gating scalars to preserve antisymmetry, since they will multiply antisymmetric data ( need even*odd=odd )
+        if self.reduce_edge:
+            gating_scalars = torch.abs(gating_scalars)  
+
         # 3. Gate the l>0 irreps:
         x_gated = self.gate[spin](torch.cat([gating_scalars, x_nonscalars], dim=1))
         x_gated = torch.cat([transformed_l0_scalars, x_gated], dim=1)   # use the transformed scalars as the output
+
+        # check that x_gated[0] is the negative of x_gated[3]:
+        # if node_or_edge == 'edge_alpha' and self.reduce_edge:
+        #     assert torch.allclose(x_gated[0,:], x_gated[3,:], atol=1e-5), "The gated features for the first and third alpha edge should be equal in the case of edge reduction!"
+        #     assert torch.allclose(x_gated[1,:], x_gated[4,:], atol=1e-5), "The gated features for the first and third alpha edge should be equal in the case of edge reduction!"
+        #     print("PASSED ASSERTS")
+
+        # if node_or_edge == 'edge_beta' and self.reduce_edge:
+        #     assert torch.allclose(x_gated[0,:], -1*x_gated[3,:], atol=1e-5), "The gated features for the first and third beta edge should be opposite in the case of edge reduction!"
+        #     assert torch.allclose(x_gated[1,:], -1*x_gated[4,:], atol=1e-5), "The gated features for the first and third beta edge should be opposite in the case of edge reduction!"
+        #     print("PASSED ASSERTS")
 
         # 4. Apply linear map to output irreps
         if not self.reduce_node:
@@ -1081,8 +1158,6 @@ class HELM_Energy_Head(nn.Module):
     def forward(self, emb: dict[str, torch.Tensor], batch):
 
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
-        # edge_mask = batch.edge_mask
-        edge_mask = torch.ones(edge_index.shape[1], dtype=torch.bool, device=edge_index.device)
 
         # Trim the embeddings to the chosen lmax (not used)
         nodes = emb["node_embeddings"]#[:, :(self.lmax+1)**2, :]
@@ -1092,8 +1167,8 @@ class HELM_Energy_Head(nn.Module):
         wigner_inv = emb["wigner_inv"]#[:, :(self.lmax+1)**2, :(self.lmax+1)**2]
 
         # Create the messages for the last convolution:
-        x_source = nodes[edge_index[0][edge_mask]]
-        x_target = nodes[edge_index[1][edge_mask]]
+        x_source = nodes[edge_index[0]]
+        x_target = nodes[edge_index[1]]
         x_message = torch.cat((x_source, x_target), dim=2)
 
         # -----------------
@@ -1118,7 +1193,7 @@ class HELM_Energy_Head(nn.Module):
         )
 
         # aggregate messages
-        new_embedding.index_add_(0, edge_index[1][edge_mask], x_message) # only for the first row
+        new_embedding.index_add_(0, edge_index[1], x_message) # only for the first row
         energies = new_embedding.narrow(1, 0, 1)
         energies = self.linear(energies)
 

@@ -42,6 +42,65 @@ def get_product_ls(l1, l2, kind='all'):
     else:
         return list(l3s)
 
+def get_subspace_remix_permutation(in_alpha: str, in_beta: str, ls_list: list) -> list:
+    irreps_alpha = Irreps(in_alpha)
+    irreps_beta = Irreps(in_beta)
+    # irreps_out = Irreps(out)
+    
+    # Helper to map each irrep to its slice of indices, starting from an offset
+    def build_irrep_pool(irreps, start_idx=0):
+        pool = []
+        current_idx = start_idx
+        for mul, ir in irreps:
+            dim = ir.dim
+            channel_indices = list(range(current_idx, current_idx + dim))
+            pool.append((ir, channel_indices))
+            current_idx += dim
+        return pool
+
+    # Alpha starts at 0
+    pool_alpha = build_irrep_pool(irreps_alpha, start_idx=0)
+    # print("pool_alpha:", pool_alpha)
+    
+    # Beta starts at the total dimension of Alpha
+    pool_beta = build_irrep_pool(irreps_beta, start_idx=irreps_alpha.dim)
+    # print("pool_beta:", pool_beta)
+    
+    permutation = []
+    alpha_track = 0
+    beta_track = 0
+
+    # loop over the interactions in ls_list:
+    for i, l1 in enumerate(ls_list):
+        for j, l2 in enumerate(ls_list):
+            product_irreps = Irreps(str(get_product_irreps(l1, l2)))
+
+            # if this is a diagonal block, iterate over product_irreps, pull the even ones from alpha and the odd ones from beta
+            if i == j:
+                for mul, ir in product_irreps:
+                    if ir.l % 2 == 0:
+                        # even irrep: pull from alpha
+                        permutation.extend(pool_alpha[alpha_track][1])
+                        alpha_track += 1
+                    else:
+                        # odd irrep: pull from beta
+                        permutation.extend(pool_beta[beta_track][1])
+                        beta_track += 1
+            
+            # if i> j, get the irreps from alpha:
+            elif i < j:
+                for mul, ir in product_irreps:
+                    permutation.extend(pool_alpha[alpha_track][1])
+                    alpha_track += 1
+
+            # if i < j, get the irreps from beta:
+            else:
+                for mul, ir in product_irreps:
+                    permutation.extend(pool_beta[beta_track][1])
+                    beta_track += 1
+        
+    return permutation
+    
 
 def get_all_ls(ls_list):
     ls = []
