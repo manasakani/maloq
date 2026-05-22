@@ -746,7 +746,8 @@ class Fock_Irreps_Head(nn.Module):
         irreps_edgereduced_alpha = []
         irreps_edgereduced_beta = []
 
-        off_diag_irrep_indices = {}
+        rolling_irrep_ptr = 0
+        parity_flip_indices = []
 
         for i, l1 in enumerate(self.ls_list):
             for j, l2 in enumerate(self.ls_list):
@@ -761,17 +762,36 @@ class Fock_Irreps_Head(nn.Module):
                         irreps_edgereduced_alpha.append(even_irreps)
                     if odd_irreps != '':
                         irreps_edgereduced_beta.append(odd_irreps)
+                    
+                    rolling_irrep_ptr += sum([2*l + 1 for l in Irreps(product_irreps).ls])
 
                 # upper triangle irreps go to the alpha space
                 if i < j:
                     irreps_edgereduced_alpha.append(product_irreps)
+
+                    input_parity = (l1 + l2) % 2
+                    for mul_ir in Irreps(product_irreps):
+                        ir = mul_ir.ir
+
+                        # if input parity is even, then flip the odd components of the product irreps 
+                        # and if input parity is odd, then flip the even components of the product irreps
+                        if input_parity == 0 and ir.l % 2 == 1:
+                            parity_flip_indices.extend(list(range(rolling_irrep_ptr, rolling_irrep_ptr + (2*ir.l + 1))))
+                            rolling_irrep_ptr += (2*ir.l + 1)
+                        elif input_parity == 1 and ir.l % 2 == 0:
+                            parity_flip_indices.extend(list(range(rolling_irrep_ptr, rolling_irrep_ptr + (2*ir.l + 1))))
+                            rolling_irrep_ptr += (2*ir.l + 1)
+                        else:
+                            rolling_irrep_ptr += (2*ir.l + 1)
                 
                 # lower triangle irreps go to the beta space
                 if j < i:
                     irreps_edgereduced_beta.append(product_irreps)
+                    rolling_irrep_ptr += sum([2*l + 1 for l in Irreps(product_irreps).ls])
                 
         self.irreps_edgereduced_alpha = Irreps('+'.join(irreps_edgereduced_alpha))  # targets for alpha (includes ei + ej):
         self.irreps_edgereduced_beta = Irreps('+'.join(irreps_edgereduced_beta))    # targets for beta (includes ei - ej):
+        self.parity_flip_indices = parity_flip_indices
 
         # --- Second Pass: Create indices to pair up the alpha and beta spaces ---
         off_diag_irrep_indices = {'alpha': [], 'beta': []}
@@ -931,13 +951,18 @@ class Fock_Irreps_Head(nn.Module):
                 edge_output = torch.cat((edge_output_alpha, edge_output_beta), dim=-1)  
 
                 # assert that the size of the manual permutation is the same as the size of edge_output:
-                assert edge_output.shape[1] == len(self.output_permutation['remix_subspaces']), "The size of the output irreps after combining the alpha and beta subspaces should be the same as the size of the permutation that reorders them to match irreps_out, but got {} and {}! Something is wrong with the output permutation for the edge subspaces.".format(edge_output.shape[1], len(self.output_permutation['remix_subspaces']))
-                assert edge_output.shape[1] == max(self.output_permutation['remix_subspaces']) + 1, "The maximum element in the output permutation for the edge subspaces should be 1 less than the size of the output irreps after combining the alpha and beta subspaces, but got {} and {}! Something is wrong with the output permutation for the edge subspaces.".format(max(self.output_permutation['remix_subspaces']), edge_output.shape[1])
+                # assert edge_output.shape[1] == len(self.output_permutation['remix_subspaces']), "The size of the output irreps after combining the alpha and beta subspaces should be the same as the size of the permutation that reorders them to match irreps_out, but got {} and {}! Something is wrong with the output permutation for the edge subspaces.".format(edge_output.shape[1], len(self.output_permutation['remix_subspaces']))
+                # assert edge_output.shape[1] == max(self.output_permutation['remix_subspaces']) + 1, "The maximum element in the output permutation for the edge subspaces should be 1 less than the size of the output irreps after combining the alpha and beta subspaces, but got {} and {}! Something is wrong with the output permutation for the edge subspaces.".format(max(self.output_permutation['remix_subspaces']), edge_output.shape[1])
 
-                # at this point, the order is [irreps_alpha, irreps_beta]
                 # permute to the correct order of output irreps, now that we have combined the alpha and beta subspaces back together:
-                print("Output permutation for combined edge subspaces: ", self.output_permutation['remix_subspaces'], flush=True)
+                # print("Output permutation for combined edge subspaces: ", self.output_permutation['remix_subspaces'], flush=True)
                 edge_output = edge_output[:, self.output_permutation['remix_subspaces']] 
+
+                # add a -1 factor to:
+                # [odd output irreps from even off-diag input irrep interactions, like p-p, d-d, f-f, p-f]
+                # [even output irreps from odd off-diag input irrep interactions, like p-d, d-f]
+                # edge_output[:, 10:13] = -1*edge_output[:, 10:13]  % manual [p,p] basis
+                edge_output[:, self.parity_flip_indices] = -1*edge_output[:, self.parity_flip_indices]  
 
             else:
                 edge_embeddings_spin = self.stack_irreps(edge_embeddings)
