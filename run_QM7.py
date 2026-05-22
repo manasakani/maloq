@@ -10,7 +10,7 @@ config = {
     "dataset_name": 'QM7',
     "dbpath": '/capstor/store/cscs/userlab/lp16/gnn_datasets/datasets/schnorb_hamiltonian_water.db',
     "output_folder": 'outputs_QM7_water',
-    "run_name": 'water_final',
+    "run_name": 'water',
     "open_shell": False,
     
     # Execution Mode
@@ -19,19 +19,20 @@ config = {
     "train_head": True,              # Set to False to freeze the head
     
     # Data Splitting
-    "num_train": 5,
-    "num_val": 5,
-    "num_test": 1,
+    "num_train": 500,
+    "num_val": 500,
+    "num_test": 4500,
+    "shuffle": True,
     "batch_size": 5,          # 1 for eval, 10 for train (set to 1 for water script)
     "distribute_graphs": False,       # Distribute graphs and perform communication in the forward pass (ongoing implementation, not finished)
     
     # Symmetry Reductions
-    "reduce_edge": False,
-    "reduce_node": False,
-    "reduce_node_intra": False,
+    "reduce_edge": True,
+    "reduce_node": True,
+    "reduce_node_intra": True,
     
     # Training Hyperparameters
-    "num_epochs": 20,
+    "num_epochs": 200000,
     "dtype": torch.float32,
     "lr_init": 1e-4,
     "optimizer_type": "adamw",
@@ -62,8 +63,8 @@ config = {
     "l_embedding_dim": 128,
     "num_distance_basis": 128,
     "num_mp_layers": 3,
-    "rcut_orbitals": 8.0,
-    "rcut_gaussian": 16.0,    # rcut_orbitals * 2
+    "rcut_orbitals": 6.0,
+    "rcut_gaussian": 12.0,    # rcut_orbitals * 2
     "gaussian_width": 1.0,
 }
 

@@ -649,6 +649,7 @@ class Fock_Targets:
                         break
 
             # print(f"Rank {self.rank} needs to send edges: ", dict(edges_to_send), flush=True)
+            print(f"Rank {self.rank} will recv {sum(len(v) for v in nodes_to_recv.values())} nodes and {sum(len(v) for v in edges_to_recv.values())} edges. Will send {sum(len(v) for v in nodes_to_send.values())} nodes and {sum(len(v) for v in edges_to_send.values())} edges.", flush=True)
 
             # ------------- Perform Communication --------------
 

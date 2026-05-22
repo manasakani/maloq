@@ -563,7 +563,7 @@ class Fock_Irreps_Head(nn.Module):
 
         print("IRREP SYMMETRY REDUCTIONS: reduce_node = ", self.reduce_node, 
                                         " reduce_node_intra = ", self.reduce_node_intra, 
-                                        " self.reduce_edge = ", self.reduce_edge, flush=True)
+                                        " reduce_edge = ", self.reduce_edge, flush=True)
 
         # We make a new list of irreps (irreps_nodereduced) which contains only the unique irreps in the node blocks
         if self.reduce_node:

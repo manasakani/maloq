@@ -40,14 +40,14 @@ def build_batch_nabla(pos_cart, z, edge_index, device, R_cart=None):
 def test_equivariance():
     # --- Configuration ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.float64
+    dtype = torch.float32
     torch.set_default_dtype(dtype)
     rcut = 5.0
     sphere_channels = 8
     torch.manual_seed(42)
     
     # Example orbital basis (def2-svp)
-    orbital_basis = {1: [0, 1], 8: [0, 1]} 
+    orbital_basis = {1: [1, 1], 8: [1, 1]} 
 
     # --- 1. Mock/Load Data ---
     z_sample = torch.tensor([8, 1, 1], device=device)
@@ -134,7 +134,7 @@ def test_equivariance():
         pos_rot = pos_sample @ R_cart.T
         b_rot = build_batch_nabla(pos_rot, z_sample, edge_index, device)
         
-        with torch.set_grad_enabled(True):
+        with torch.set_grad_enabled(False):
             # Fock
             node_rot, _ = fock_head(backbone(b_rot), b_rot)
             # Energy/Force

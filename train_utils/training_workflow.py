@@ -107,6 +107,9 @@ class TrainingWorkflow:
             except Exception as e:
                 raise ValueError(f"Error loading head checkpoint from {head_path}: {e}")
 
+        if 'shuffle' not in self.config:
+            self.config['shuffle'] = False
+
 
     def _handle_scale_shift(self, database=None):
         """Manages the computation or loading of scale/shift factors."""
@@ -234,7 +237,6 @@ class TrainingWorkflow:
                 # --- 2. Load Training Segments ---
                 train_datasets = []
                 for entry in train_data_dict:
-                    print(f"Rank {self.rank}: Starting iteration {i} for {entry['db_file']}", flush=True)
                     ds = ASEDataset(
                         db_path=entry['db_file'],
                         dtype=c['dtype'],
@@ -242,7 +244,6 @@ class TrainingWorkflow:
                         start_idx=entry['start_idx'], 
                         end_idx=entry['end_idx']     
                     )
-                    print(f"Rank {self.rank}: Finished iteration {i}", flush=True)
                     train_datasets.append(ds)
                 train_database = ConcatDataset(train_datasets) if train_datasets else None
 
@@ -268,8 +269,8 @@ class TrainingWorkflow:
                 scale_shift_data = self._handle_scale_shift(train_database)
             
         else:
-            print(f"Rank {self.rank}: Loading data from single file {db_source}")
-            dist.barrier()
+            # print(f"Rank {self.rank}: Loading data from single file {db_source}")
+            # dist.barrier()
 
             # We must ensure we have a valid Dataset object here
             # Eg: omol single DB file
@@ -468,6 +469,12 @@ class TrainingWorkflow:
         # HELM's data and training pipeline currently supports these datasets:
         if self.config['dataset_name'] == 'QM7':
             database = ASEAtomsData(self.config['dbpath'])
+            if self.config['shuffle']:
+                print("Shuffling QM7 dataset for training...")
+                indices = list(range(len(database)))
+                random.shuffle(indices)
+                database = [database[i] for i in indices]
+
         elif self.config['dataset_name'] == 'nablaDFT':
             database = HamiltonianDatabase(self.config['dbpath'])
         elif self.config['dataset_name'] == 'omol':
