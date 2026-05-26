@@ -369,7 +369,7 @@ class SplitTrainer():
 
         dump_plots = False
         dump_embeddings = False
-        compute_eigenvalues = False
+        compute_eigenvalues = True
         save_density = False
 
         if dist.is_available() and dist.is_initialized():
@@ -545,6 +545,10 @@ class SplitTrainer():
                     output_fock_matrix = output_fock_matrix.get()
                     label_fock_matrix = label_fock_matrix.get()
 
+                    # if the output fock matrix is not symmetric, print a warning and say it will be symmetrized:
+                    if not np.allclose(output_fock_matrix, output_fock_matrix.T, atol=1e-4):
+                        print("NOTE: Output fock matrix is not symmetric. Symmetrizing it.", flush=True)
+
                     output_fock_matrix = (output_fock_matrix + output_fock_matrix.T) / 2
                     label_fock_matrix = (label_fock_matrix + label_fock_matrix.T) / 2
                     if rank == 0:
@@ -687,7 +691,7 @@ class SplitTrainer():
 
                     print("Solving generalized eigenvalue problem...", flush=True)
                     if hasattr(batch, 'overlap_matrix') and batch.overlap_matrix is not None:
-                        overlap_matrix = batch.overlap_matrix.detach().cpu().numpy()
+                        overlap_matrix = batch[0].overlap_matrix
                         label_eigenvalues = sp.linalg.eigvalsh(label_fock_matrix, overlap_matrix)
                         pred_eigenvalues = sp.linalg.eigvalsh(output_fock_matrix, overlap_matrix)
                     else:
