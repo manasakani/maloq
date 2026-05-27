@@ -196,11 +196,7 @@ class Fock_Targets:
             # NOTE: in the distribution, we have swapped the labels for src and dst across every edge, 
             # so we recover that by simply switching the order of indices when we compute the edge distances (so the vector points from src to dst in both cases)
             mol_edge_dist = torch.zeros((len(indices0), 4), dtype=self.dtype)
-            if self.distribute_graphs:
-                mol_edge_dist[:, 1:4] = torch.from_numpy(atoms.get_distances(indices0, indices1, vector=True))    # Vector components
-                # print("Computed edge distances with swapped indices for distributed graph!", flush=True)
-            else:
-                mol_edge_dist[:, 1:4] = torch.from_numpy(atoms.get_distances(indices1, indices0, vector=True))    # Vector components
+            mol_edge_dist[:, 1:4] = torch.from_numpy(atoms.get_distances(indices1, indices0, vector=True))    # Vector components
             mol_edge_dist[:, 0] = torch.linalg.norm(mol_edge_dist[:, 1:4], dim=-1, keepdim=False)             # Scalar distances
             self.edge_dist_list.append(mol_edge_dist)
 

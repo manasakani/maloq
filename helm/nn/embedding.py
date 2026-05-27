@@ -121,16 +121,10 @@ class EdgeDegreeEmbedding(torch.nn.Module):
             # Check if we need to communicate between partitions to collect embeddings for aggregation
             if partition:
 
-                reduce_edge_dict = partition.reduce_edge
-                is_local = reduce_edge_dict['is_local']
-                local_indices = reduce_edge_dict['local_indices']
-
+                is_local = partition.reduce_edge['is_local']
+                local_indices = partition.reduce_edge['local_indices']
                 x.index_add_(0, local_indices, x_edge_embedding[is_local]/self.rescale_factor)
-
-                # Need to switch src/dst edges for the distributed implementation!!! Above is equivalent to:
-                # x.index_add_(
-                #     0, edge_index[0], x_edge_embedding / self.rescale_factor
-                # )
+                # ^ The target nodes (eg, edge index of 1) are already local due to how the edges are distributed
 
             else:
                 x.index_add_(

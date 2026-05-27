@@ -192,23 +192,19 @@ class eSEN_Backbone(nn.Module):
             self.edge_channels,
         ]
 
-        # TEMPORARY: edge degree embedding is currently not compatible with distributed graph training, skipping it for now!
-        if not distributed_graph_training:
-            self.edge_degree_embedding = EdgeDegreeEmbedding(
-                    sphere_channels=self.sphere_channels,
-                    lmax=self.lmax,
-                    mmax=self.mmax,
-                    max_num_elements=self.max_num_elements,
-                    edge_channels_list=self.edge_channels_list,
-                    rescale_factor=5.0,
-                    cutoff=self.cutoff,
-                    mappingReduced=self.mappingReduced,
-                    out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
-                        self.lmax, self.mmax
-                    )
+        self.edge_degree_embedding = EdgeDegreeEmbedding(
+                sphere_channels=self.sphere_channels,
+                lmax=self.lmax,
+                mmax=self.mmax,
+                max_num_elements=self.max_num_elements,
+                edge_channels_list=self.edge_channels_list,
+                rescale_factor=5.0,
+                cutoff=self.cutoff,
+                mappingReduced=self.mappingReduced,
+                out_mask=self.SO3_grid["lmax_lmax"].mapping.coefficient_idx(
+                    self.lmax, self.mmax
                 )
-        else:
-            print("Warning: edge degree embedding is currently not compatible with distributed graph training, skipping it for now!", flush=True)
+            )
 
         self.num_layers = num_layers
         self.hidden_channels = hidden_channels
@@ -332,7 +328,6 @@ class eSEN_Backbone(nn.Module):
             graph_dict["edge_distance_vec"]
         )
 
-
         # --> Rotation test:
         # rotated_edges_to_z_axis = torch.bmm(wigner[:, 1:4, 1:4], graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
         # print("Rotated edges to z-axis: ", rotated_edges_to_z_axis) # only middle components should be nonzero (equal to distance)
@@ -413,32 +408,27 @@ class eSEN_Backbone(nn.Module):
 
         x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) 
 
-
         # do edge degree embeddings for both nodes and edges:
-        # need to redo src/target nn mapping in the distributed graph before using this!!
-        if graph_dict["partition"] is None:
-            x_message_node = self.edge_degree_embedding( 
+        x_message_node = self.edge_degree_embedding( 
+            x_message_node,
+            x_edge,
+            graph_dict["edge_distance"],
+            graph_dict["edge_index"],
+            wigner_inv,
+            node_or_edge='node',
+            partition=graph_dict["partition"]
+        )
+
+        if self.include_edges:
+            x_message_edge = self.edge_degree_embedding(
                 x_message_node,
                 x_edge,
                 graph_dict["edge_distance"],
                 graph_dict["edge_index"],
                 wigner_inv,
-                node_or_edge='node',
-                partition=graph_dict["partition"]
+                node_or_edge='edge',
+                partition=None
             )
-
-            if self.include_edges:
-                x_message_edge = self.edge_degree_embedding(
-                    x_message_node,
-                    x_edge,
-                    graph_dict["edge_distance"],
-                    graph_dict["edge_index"],
-                    wigner_inv,
-                    node_or_edge='edge',
-                    partition=None
-                )
-        # else:
-        #     print("Warning: edge degree embedding is currently not compatible with distributed graph training, skipping it for now!", flush=True)
 
         ###############################################################
         # Update spherical node embeddings
@@ -831,8 +821,8 @@ class Fock_Irreps_Head(nn.Module):
             off_diag_irrep_indices['beta'].append(beta_blocks[(j, i)])
 
         # check that the length of the sub-arrays in off_diag_irrep_indices['alpha'] are the same as the length of the sub arrays in off_diag_irrep_indices['beta']:
-        print("off_diag_irrep_indices['alpha']: ", off_diag_irrep_indices['alpha'], flush=True)
-        print("off_diag_irrep_indices['beta ']: ", off_diag_irrep_indices['beta'], flush=True)
+        # print("off_diag_irrep_indices['alpha']: ", off_diag_irrep_indices['alpha'], flush=True)
+        # print("off_diag_irrep_indices['beta ']: ", off_diag_irrep_indices['beta'], flush=True)
         for alpha_indices, beta_indices in zip(off_diag_irrep_indices['alpha'], off_diag_irrep_indices['beta']):
             assert len(alpha_indices) == len(beta_indices), "The length of the alpha and beta irreps should be the same for each off-diagonal block, but got {} and {}! Something is wrong with the indexing in make_irreps_edgereduced()".format(len(alpha_indices), len(beta_indices))
 

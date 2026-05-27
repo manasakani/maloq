@@ -110,6 +110,15 @@ class TrainingWorkflow:
         if 'shuffle' not in self.config:
             self.config['shuffle'] = False
 
+        # if partition_type is not specified, set it 'linear-edgewise' if distribute_graphs is True, else None:
+        if self.config['distribute_graphs'] and self.config['partition_type'] is None:
+            self.config['partition_type'] = 'linear-edgewise'
+            print("No partition type specified for distributed graph training; defaulting to 'linear-edgewise'.")   
+
+        # if both reduce_edge and distribute graphs are true, print that there is a known bug!:
+        if self.config['reduce_edge'] and self.config['distribute_graphs']:
+            raise ValueError("reduce_edge and distribute_graphs cannot both be True, as communication has not been implemented yet in the output head.")
+            
 
     def _handle_scale_shift(self, database=None):
         """Manages the computation or loading of scale/shift factors."""
@@ -354,9 +363,9 @@ class TrainingWorkflow:
             return train_loader, val_loader, required_irreps, basis_trans, orb_basis, ls_list
             
         else:
-            print("Using validation set for testing/evaluation.")
-            test_start = val_start 
-            test_end = val_end 
+            # print("Using validation set for testing/evaluation.")
+            # test_start = val_start 
+            # test_end = val_end 
 
             # Eval mode: force batch_size to 1
             test_loader, required_irreps, basis_trans, orb_basis, ls_list = get_loader.get_loader(

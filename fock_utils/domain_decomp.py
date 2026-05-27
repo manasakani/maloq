@@ -33,7 +33,7 @@ class Domain_Decomp():
         # note: local_nodes would be the same as local_node_indices since the nodes are defined by their index in the global node list
 
         # Partion edges (each rank gets all edges with dst node in its local node list, so no communication needed for aggregation)
-        is_own_edge = np.isin(structure.edge_matrix[0], self.local_node_indices)                # local edge mask in global edge list
+        is_own_edge = np.isin(structure.edge_matrix[1], self.local_node_indices)                # local edge mask in global edge list
         self.local_edge_indices = np.where(is_own_edge)[0]                                      # indices of the local edges in the global edge list
         self.all_local_edge_indices = self.comm.allgather(self.local_edge_indices)              # outer list is per rank
         
@@ -52,11 +52,11 @@ class Domain_Decomp():
         # self.is_truly_local_edge = is_local # store to perform this reorder on the fock edges later
 
         # message creation
-        self.expand_edge_0 = self.init_comm_pattern_expand(0)     # dst node   
-        self.expand_edge_1 = self.init_comm_pattern_expand(1)     # src node
+        self.expand_edge_0 = self.init_comm_pattern_expand(0)     # src node   
+        self.expand_edge_1 = self.init_comm_pattern_expand(1)     # dst node
 
         # aggregation
-        self.reduce_edge = self.init_comm_pattern_reduce(self.local_edges[0, :])
+        self.reduce_edge = self.init_comm_pattern_reduce(self.local_edges[1, :])
 
         # --> Shuffle gpus for topology-optimized partition assignment
         # rank_topology_assignment = redistribute_partitions(self)
@@ -73,8 +73,8 @@ class Domain_Decomp():
                     f"Rank {self.rank} has {len(self.local_node_indices)} nodes and {len(self.local_edges[0])} edges:",
                     f"Rank {self.rank} has nodes: {self.local_node_indices}",
                     f"Rank {self.rank} has edges: {self.local_edges}",
-                    f"Rank {self.rank} expand edge 0 (dst) nodes_to_send: {self.expand_edge_0['nodes_to_send']}",
-                    f"Rank {self.rank} expand edge 1 (src) nodes_to_send: {self.expand_edge_1['nodes_to_send']}"
+                    f"Rank {self.rank} expand edge 0 (src) nodes_to_send: {self.expand_edge_0['nodes_to_send']}",
+                    f"Rank {self.rank} expand edge 1 (dst) nodes_to_send: {self.expand_edge_1['nodes_to_send']}"
                 ]
                 print("\n".join(lines), flush=True)
             self.comm.Barrier()
@@ -245,11 +245,11 @@ class Domain_Decomp():
         filename = f'atomic_structure_{partition_type}_size={self.size}.png'
         write(filename, viz_structure, show_unit_cell=2, colors=color_parts)
 
-    def init_comm_pattern_expand(self, dst0_or_src1):
+    def init_comm_pattern_expand(self, src0_or_dst1):
 
         with torch.no_grad():
 
-            edge_index = self.local_edges[dst0_or_src1, :]
+            edge_index = self.local_edges[src0_or_dst1, :]
 
             if torch.is_tensor(edge_index):
                 edge_index_np = edge_index.detach().cpu().contiguous().numpy().astype(np.int32)
@@ -290,7 +290,7 @@ class Domain_Decomp():
             # print(f"Rank {self.rank} nodes to receive: {nodes_to_recv}", flush=True)
 
             # the nodes in the global edge list corresponding to the dst or src of the local edges
-            global_edge_nodes = self.global_edge_index[dst0_or_src1, :] 
+            global_edge_nodes = self.global_edge_index[src0_or_dst1, :] 
 
             # Nodes to send from this rank
             nodes_to_send = {}
