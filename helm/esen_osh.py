@@ -896,15 +896,15 @@ class Fock_Irreps_Head(nn.Module):
         edge_index = batch.edge_index.squeeze(0).reshape(2, -1)
 
         if self.reduce_edge:
-            edge_embeddings_alpha, edge_embeddings_beta = self.create_antisym_edge_pairs(
-                edge_embeddings, edge_index
-            )  
+            edge_embeddings_alpha, edge_embeddings_beta, half_mask, reverse_indices = self.create_half_antisym_edge_pairs(
+                    edge_embeddings, edge_index
+                )
             
         node_outputs = []
         edge_outputs = []
         for spin in range(self.num_spins):
             node_embeddings_spin = self.stack_irreps(node_embeddings)
-            node_output = self.process(node_embeddings_spin, edge_index, 'node', spin)      # gating and linear layers to produce the output irreps in sorted order
+            node_output = self.process(node_embeddings_spin, 'node', spin)      # gating and linear layers to produce the output irreps in sorted order
             
             if self.reduce_node:
                 node_output = node_output[:, self.output_permutation['node']]                      # permute to the correct order of output irreps
@@ -915,22 +915,15 @@ class Fock_Irreps_Head(nn.Module):
                 edge_embeddings_spin_alpha = self.stack_irreps(edge_embeddings_alpha)
                 edge_embeddings_spin_beta = self.stack_irreps(edge_embeddings_beta)
 
-                edge_output_alpha = self.process(edge_embeddings_spin_alpha, edge_index, 'edge_alpha', spin)
-                edge_output_beta = self.process(edge_embeddings_spin_beta, edge_index, 'edge_beta', spin)
+                edge_output_alpha = self.process(edge_embeddings_spin_alpha, 'edge_alpha', spin)
+                edge_output_beta = self.process(edge_embeddings_spin_beta, 'edge_beta', spin)
+
+                # We only computed half the edges for alpha, and beta, since the other half were simple + and - multiplications. Now we reconstruct all of the edges.
+                edge_output_alpha, edge_output_beta = self.half_edges_to_full(edge_index, reverse_indices, half_mask, edge_output_alpha, edge_output_beta)
 
                 # recover the original order within the alpha and beta subspaces
                 edge_output_alpha = edge_output_alpha[:, self.output_permutation['edge_alpha']]
                 edge_output_beta = edge_output_beta[:, self.output_permutation['edge_beta']]
-
-                # print("self.output_permutation['edge_alpha']: ", self.output_permutation['edge_alpha'], flush=True)
-                # print("self.output_permutation['edge_beta']: ", self.output_permutation['edge_beta'], flush=True)
-                # assert torch.allclose(edge_output_alpha[0,:], edge_output_alpha[3,:], atol=1e-5), "The symmetric edge outputs should be the same!"
-                # assert torch.allclose(edge_output_alpha[1,:], edge_output_alpha[4,:], atol=1e-5), "The symmetric edge outputs should be the same!"
-                # assert torch.allclose(edge_output_alpha[2,:], edge_output_alpha[5,:], atol=1e-5), "The symmetric edge outputs should be the same!"
-                # assert torch.allclose(edge_output_beta[0,:], -1*edge_output_beta[3,:], atol=1e-5), "The antisymmetric edge outputs should be opposite!"
-                # assert torch.allclose(edge_output_beta[1,:], -1*edge_output_beta[4,:], atol=1e-5), "The antisymmetric edge outputs should be opposite!"
-                # assert torch.allclose(edge_output_beta[2,:], -1*edge_output_beta[5,:], atol=1e-5), "The antisymmetric edge outputs should be opposite!"
-                # print("Symmetry checks passed for reduced edge outputs!", flush=True)
 
                 # extract Vpa and Vpb from the edge outputs
                 Vpa = edge_output_alpha[:, self.off_diag_irrep_indices['alpha']].clone() # 1:4
@@ -951,12 +944,11 @@ class Fock_Irreps_Head(nn.Module):
                 # add a -1 factor to:
                 # [odd output irreps from even off-diag input irrep interactions, like p-p, d-d, f-f, p-f]
                 # [even output irreps from odd off-diag input irrep interactions, like p-d, d-f]
-                # edge_output[:, 10:13] = -1*edge_output[:, 10:13]  % manual [p,p] basis
                 edge_output[:, self.parity_flip_indices] = -1*edge_output[:, self.parity_flip_indices]  
 
             else:
                 edge_embeddings_spin = self.stack_irreps(edge_embeddings)
-                edge_output = self.process(edge_embeddings_spin, edge_index, 'edge', spin)  # gating and linear layers to produce the output irreps in sorted order
+                edge_output = self.process(edge_embeddings_spin, 'edge', spin)  # gating and linear layers to produce the output irreps in sorted order
                 
                 # if we don't use reduce_node or reduce_edge, there is a single common output permutation
                 if self.reduce_node:
@@ -994,7 +986,7 @@ class Fock_Irreps_Head(nn.Module):
 
         return l_sorted_output
 
-    def process(self, x, edge_index, node_or_edge, spin):
+    def process(self, x, node_or_edge, spin):
 
         # 1. Extract the scalar components, which are the first # sphere_channels elements of this tensor
         x_scalars = x[:, :self.sphere_channels]
@@ -1013,17 +1005,6 @@ class Fock_Irreps_Head(nn.Module):
         # 3. Gate the l>0 irreps:
         x_gated = self.gate[spin](torch.cat([gating_scalars, x_nonscalars], dim=1))
         x_gated = torch.cat([transformed_l0_scalars, x_gated], dim=1)   # use the transformed scalars as the output
-
-        # check that x_gated[0] is the negative of x_gated[3]:
-        # if node_or_edge == 'edge_alpha' and self.reduce_edge:
-        #     assert torch.allclose(x_gated[0,:], x_gated[3,:], atol=1e-5), "The gated features for the first and third alpha edge should be equal in the case of edge reduction!"
-        #     assert torch.allclose(x_gated[1,:], x_gated[4,:], atol=1e-5), "The gated features for the first and third alpha edge should be equal in the case of edge reduction!"
-        #     print("PASSED ASSERTS")
-
-        # if node_or_edge == 'edge_beta' and self.reduce_edge:
-        #     assert torch.allclose(x_gated[0,:], -1*x_gated[3,:], atol=1e-5), "The gated features for the first and third beta edge should be opposite in the case of edge reduction!"
-        #     assert torch.allclose(x_gated[1,:], -1*x_gated[4,:], atol=1e-5), "The gated features for the first and third beta edge should be opposite in the case of edge reduction!"
-        #     print("PASSED ASSERTS")
 
         # 4. Apply linear map to output irreps
         if not self.reduce_node:
@@ -1106,6 +1087,56 @@ class Fock_Irreps_Head(nn.Module):
         edge_embeddings_beta = edge_embeddings - backward_edge_embeddings
 
         return edge_embeddings_alpha, edge_embeddings_beta
+
+
+    def create_half_antisym_edge_pairs(self, edge_embeddings, edge_index):
+        """
+        Creates alpha and beta embeddings ONLY for the canonical half of the edges.
+        """
+        # --- Your existing exact pairing logic ---
+        _, perm_orig = torch.sort(edge_index[0] * (edge_index.max() + 1) + edge_index[1])
+        _, perm_flip = torch.sort(edge_index[1] * (edge_index.max() + 1) + edge_index[0])
+        inv_perm_orig = torch.argsort(perm_orig)
+        reverse_edge_indices = perm_flip[inv_perm_orig]
+
+        # Create a boolean mask tracking the canonical half (where current idx < pair idx)
+        indices = torch.arange(edge_index.shape[1], device=edge_index.device)
+        half_mask = indices < reverse_edge_indices
+
+        # Slice out the half spaces
+        half_orig = edge_embeddings[half_mask]
+        half_flip = edge_embeddings[reverse_edge_indices[half_mask]]
+        
+        # Construct symmetric and antisymmetric spaces only for this half
+        edge_embeddings_alpha_half = half_orig + half_flip
+        edge_embeddings_beta_half = half_orig - half_flip
+
+        return edge_embeddings_alpha_half, edge_embeddings_beta_half, half_mask, reverse_edge_indices
+
+    def half_edges_to_full(self, edge_index, reverse_indices, half_mask, edge_output_alpha_half, edge_output_beta_half):
+        """
+        After processing only the half of the edges for alpha and beta (created by create_half_antisym_edge_pairs), 
+        we need to reconstruct the full edge output tensors by filling in the other half using the symmetry and antisymmetry properties.
+        """
+
+        E = edge_index.shape[1]
+
+        # Allocate full tensors matching the processed feature shapes
+        edge_output_alpha_full = torch.zeros((E,) + edge_output_alpha_half.shape[1:], dtype=edge_output_alpha_half.dtype, device=edge_output_alpha_half.device)
+        edge_output_beta_full = torch.zeros((E,) + edge_output_beta_half.shape[1:], dtype=edge_output_beta_half.dtype, device=edge_output_beta_half.device)
+
+        # Fetch the destination slots for the other directional half
+        flipped_indices = reverse_indices[half_mask]
+
+        # Populate alpha symmetrically: slots (i, j) and (j, i) get identical values
+        edge_output_alpha_full[half_mask] = edge_output_alpha_half
+        edge_output_alpha_full[flipped_indices] = edge_output_alpha_half
+
+        # Populate beta antisymmetrically: slot (j, i) gets the negated value of (i, j)
+        edge_output_beta_full[half_mask] = edge_output_beta_half
+        edge_output_beta_full[flipped_indices] = -edge_output_beta_half
+
+        return edge_output_alpha_full, edge_output_beta_full
 
 
 @registry.register_model("esen_linear_energy_head")
