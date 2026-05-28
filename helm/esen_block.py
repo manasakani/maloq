@@ -117,100 +117,26 @@ class Edgewise(torch.nn.Module):
         partition
     ):
         if node_or_edge == 'node':
-            if partition:
-                return self.forward_node_distributed(x,
-                                                    x_message_edge,
-                                                    x_edge,
-                                                    edge_index,
-                                                    wigner,
-                                                    wigner_inv,
-                                                    partition
-                                                    )
-            else:
-                return self.forward_node(x,
-                                        x_message_edge,
-                                        x_edge,
-                                        edge_index,
-                                        wigner,
-                                        wigner_inv
-                                        )
+            
+            return self.forward_node(x,
+                                    x_message_edge,
+                                    x_edge,
+                                    edge_index,
+                                    wigner,
+                                    wigner_inv,
+                                    partition
+                                    )
 
         if node_or_edge == 'edge':
-            if partition:
-                return self.forward_edge_distributed(x,
-                                        x_message_edge,
-                                        x_edge,
-                                        edge_index,
-                                        wigner,
-                                        wigner_inv,
-                                        partition
-                                        )
-            else:
-                return self.forward_edge(x,
-                                        x_message_edge,
-                                        x_edge,
-                                        edge_index,
-                                        wigner,
-                                        wigner_inv
-                                        )
-
-    def forward_node_distributed(
-        self,
-        x,
-        x_message_edge,
-        x_edge,
-        edge_index,
-        wigner,
-        wigner_inv,
-        partition
-    ):
-
-        local_num_edges = edge_index.shape[1]
-
-        # Communicate the edge embeddings between partitions
-        # x_source = exchange_nodes(
-        #                             x,
-        #                             local_num_edges,
-        #                             partition.expand_edge_0, 
-        #                         )
-        x_source = ExchangeNodes.apply(
-                                        x, 
-                                        local_num_edges, 
-                                        partition.expand_edge_0
-                                      )
-        
-        local_indices_torch = partition.expand_edge_1['local_indices_torch']
-        x_target = x[local_indices_torch]
-
-        # Create messages 
-        x_message = torch.cat((x_source, x_target), dim=2) 
-
-        # Rotate the irreps to align with the edge
-        x_message = torch.bmm(wigner, x_message)
-
-        # SO2 convolutions + Gating
-        x_message = torch.einsum("nac,ba->nbc", x_message, self.mappingReduced.to_m)   # l-major -> m-major
-        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)                     # SO2 Convolution #1 (embedding dim 2E -> H)
-        x_message = self.act(x_0_gating, x_message)                                    # Gate activation
-        x_message = self.so2_conv_2(x_message, x_edge)                                 # SO2 Convolution #2 (embedding dim H -> E)
-        x_message = torch.einsum("nac,ab->nbc", x_message, self.mappingReduced.to_m)   # m-major -> l-major
-
-        # Rotate back the irreps
-        x_message = torch.bmm(wigner_inv, x_message)
-
-        # Compute the sum of the incoming neighboring messages for each target node
-        new_embedding = torch.zeros(
-            (x.shape[0],) + x_message.shape[1:],
-            dtype=x_message.dtype,
-            device=x_message.device,
-        )
-
-        # aggregate messages
-        is_local = partition.reduce_edge['is_local']
-        local_indices = partition.reduce_edge['local_indices']
-        new_embedding.index_add_(0, local_indices, x_message)
-
-        return new_embedding
+            
+            return self.forward_edge(x,
+                                    x_message_edge,
+                                    x_edge,
+                                    edge_index,
+                                    wigner,
+                                    wigner_inv,
+                                    partition
+                                    )
 
     def forward_node(
         self,
@@ -219,11 +145,26 @@ class Edgewise(torch.nn.Module):
         x_edge,
         edge_index,
         wigner,
-        wigner_inv
+        wigner_inv,
+        partition
     ):
 
-        x_source = x[edge_index[0]]
-        x_target = x[edge_index[1]]
+        #  Communicate edge embeddings between partitions to assemble the messages
+        if partition:
+            local_num_edges = edge_index.shape[1]
+            x_source = ExchangeNodes.apply(
+                                            x, 
+                                            local_num_edges, 
+                                            partition.expand_edge_0
+                                        )
+
+            # Due to the `incoming edge` distribution, 'target' nodes are locally owned by this rank
+            local_indices_torch = partition.expand_edge_1['local_indices_torch']
+            x_target = x[local_indices_torch]
+
+        else:
+            x_source = x[edge_index[0]]
+            x_target = x[edge_index[1]]
 
         # Create messages 
         x_message = torch.cat((x_source, x_target), dim=2) 
@@ -249,12 +190,16 @@ class Edgewise(torch.nn.Module):
         )
 
         # aggregate messages
-        new_embedding.index_add_(0, edge_index[1], x_message)     
+        if partition:
+            is_local = partition.reduce_edge['is_local']
+            local_indices = partition.reduce_edge['local_indices']
+            new_embedding.index_add_(0, local_indices, x_message)
+        else:
+            new_embedding.index_add_(0, edge_index[1], x_message)     
 
         return new_embedding
-
-
-    def forward_edge_distributed(
+    
+    def forward_edge(
         self,
         x,
         x_message_edge,
@@ -264,27 +209,23 @@ class Edgewise(torch.nn.Module):
         wigner_inv,
         partition
     ):
-
-        torch.cuda.nvtx.range_push("Create messages") # <--- START
-
-        local_num_edges = edge_index.shape[1]
         
-        # x_source = exchange_nodes(
-        #                             x,
-        #                             local_num_edges,
-        #                             partition.expand_edge_0,
-        #                         )
-        x_source = ExchangeNodes.apply(
+        #  Communicate the edge embeddings between partitions to assemble the messages
+        if partition:
+            local_num_edges = edge_index.shape[1]
+            x_source = ExchangeNodes.apply(
                                             x, 
                                             local_num_edges, 
                                             partition.expand_edge_0
                                         )
-        
-        # expand_edge_1 is the communication dictionary for the target nodes
-        # due to how the edges were split (all nodes own incoming edges), there is no communication needed for the target nodes, 
-        # we can just index into x with the local indices
-        local_indices_torch = partition.expand_edge_1['local_indices_torch']
-        x_target = x[local_indices_torch]
+
+            # Due to the `incoming edge` distribution, 'target' nodes are locally owned by this rank
+            local_indices_torch = partition.expand_edge_1['local_indices_torch']
+            x_target = x[local_indices_torch]
+
+        else:
+            x_source = x[edge_index[0]]
+            x_target = x[edge_index[1]]
 
         # Create regular messages
         x_message = torch.cat((x_source, x_target), dim=2) 
@@ -301,65 +242,7 @@ class Edgewise(torch.nn.Module):
         x_message = torch.einsum("nac,ab->nbc", x_message, self.mappingReduced.to_m) # m-major -> l-major
 
         # Rotate back the irreps
-        torch.cuda.nvtx.range_push("Rotate back") # <--- START
         x_message = torch.bmm(wigner_inv, x_message)
-        torch.cuda.nvtx.range_pop() # <--- END
-
-        return x_message
-
-    
-    def forward_edge(
-        self,
-        x,
-        x_message_edge,
-        x_edge,
-        edge_index,
-        wigner,
-        wigner_inv
-    ):
-
-        torch.cuda.nvtx.range_push("Create messages") # <--- START
-        
-        x_source = x[edge_index[0]]
-        x_target = x[edge_index[1]]
-
-        # Create regular messages
-        x_message = torch.cat((x_source, x_target), dim=2) 
-
-        torch.cuda.nvtx.range_pop() # <--- END
-
-        # Rotate the irreps to align with the edge
-        torch.cuda.nvtx.range_push("Rotate") # <--- START
-        x_message = torch.bmm(wigner, x_message)
-        torch.cuda.nvtx.range_pop() # <--- END
-
-        torch.cuda.nvtx.range_push("l->m") # <--- START
-        x_message = torch.einsum("nac,ba->nbc", x_message, self.mappingReduced.to_m) # l-major -> m-major
-        torch.cuda.nvtx.range_pop() # <--- END
-
-        # SO2 convolution #1
-        torch.cuda.nvtx.range_push("So2 conv 1") # <--- START
-        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
-        torch.cuda.nvtx.range_pop() # <--- END
-                    
-        # Gate activation
-        torch.cuda.nvtx.range_push("Gate") # <--- START
-        x_message = self.act(x_0_gating, x_message)
-        torch.cuda.nvtx.range_pop() # <--- END
-
-        # SO2 convolution #2
-        torch.cuda.nvtx.range_push("So2 conv 2") # <--- START
-        x_message = self.so2_conv_2(x_message, x_edge)
-        torch.cuda.nvtx.range_pop() # <--- END
-
-        torch.cuda.nvtx.range_push("m->l") # <--- START
-        x_message = torch.einsum("nac,ab->nbc", x_message, self.mappingReduced.to_m) # m-major -> l-major
-        torch.cuda.nvtx.range_pop() # <--- END
-
-        # Rotate back the irreps
-        torch.cuda.nvtx.range_push("Rotate back") # <--- START
-        x_message = torch.bmm(wigner_inv, x_message)
-        torch.cuda.nvtx.range_pop() # <--- END
 
         return x_message
 

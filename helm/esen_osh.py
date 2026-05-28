@@ -926,19 +926,14 @@ class Fock_Irreps_Head(nn.Module):
                 edge_output_beta = edge_output_beta[:, self.output_permutation['edge_beta']]
 
                 # extract Vpa and Vpb from the edge outputs
-                Vpa = edge_output_alpha[:, self.off_diag_irrep_indices['alpha']].clone() # 1:4
-                Vpb = edge_output_beta[:, self.off_diag_irrep_indices['beta']].clone() # 0:3
+                Vpa = edge_output_alpha[:, self.off_diag_irrep_indices['alpha']].clone() 
+                Vpb = edge_output_beta[:, self.off_diag_irrep_indices['beta']].clone() 
 
                 edge_output_alpha[:, self.off_diag_irrep_indices['alpha']] = Vpa + Vpb  # build Vsp in place
                 edge_output_beta[:, self.off_diag_irrep_indices['beta']] = Vpa - Vpb    # build Vps in place
                 edge_output = torch.cat((edge_output_alpha, edge_output_beta), dim=-1)  
 
-                # assert that the size of the manual permutation is the same as the size of edge_output:
-                # assert edge_output.shape[1] == len(self.output_permutation['remix_subspaces']), "The size of the output irreps after combining the alpha and beta subspaces should be the same as the size of the permutation that reorders them to match irreps_out, but got {} and {}! Something is wrong with the output permutation for the edge subspaces.".format(edge_output.shape[1], len(self.output_permutation['remix_subspaces']))
-                # assert edge_output.shape[1] == max(self.output_permutation['remix_subspaces']) + 1, "The maximum element in the output permutation for the edge subspaces should be 1 less than the size of the output irreps after combining the alpha and beta subspaces, but got {} and {}! Something is wrong with the output permutation for the edge subspaces.".format(max(self.output_permutation['remix_subspaces']), edge_output.shape[1])
-
                 # permute to the correct order of output irreps, now that we have combined the alpha and beta subspaces back together:
-                # print("Output permutation for combined edge subspaces: ", self.output_permutation['remix_subspaces'], flush=True)
                 edge_output = edge_output[:, self.output_permutation['remix_subspaces']] 
 
                 # add a -1 factor to:
@@ -1093,7 +1088,6 @@ class Fock_Irreps_Head(nn.Module):
         """
         Creates alpha and beta embeddings ONLY for the canonical half of the edges.
         """
-        # --- Your existing exact pairing logic ---
         _, perm_orig = torch.sort(edge_index[0] * (edge_index.max() + 1) + edge_index[1])
         _, perm_flip = torch.sort(edge_index[1] * (edge_index.max() + 1) + edge_index[0])
         inv_perm_orig = torch.argsort(perm_orig)
