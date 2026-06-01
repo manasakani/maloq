@@ -118,7 +118,10 @@ class TrainingWorkflow:
         # if both reduce_edge and distribute graphs are true, print that there is a known bug!:
         if self.config['reduce_edge'] and self.config['distribute_graphs']:
             raise ValueError("reduce_edge and distribute_graphs cannot both be True, as communication has not been implemented yet in the output head.")
-            
+        
+        # distribute_graphs cannot be used with non-matrix valued learning targets:
+        if self.config['distribute_graphs'] and 'matrix' not in self.config['loss_target']:
+            raise ValueError("Distributed graph training is currently only implemented for matrix-valued learning targets (e.g. fock_matrix).")
 
     def _handle_scale_shift(self, database=None):
         """Manages the computation or loading of scale/shift factors."""
@@ -324,7 +327,8 @@ class TrainingWorkflow:
                 scale_shift_data=scale_shift_data,
                 distribute_graphs=c['distribute_graphs'],
                 tiling_dims=c['tiling_dims'],
-                partition_type=c['partition_type']
+                partition_type=c['partition_type'],
+                train_or_eval=c['train_or_eval']
             )
 
             dist.barrier()
@@ -358,7 +362,8 @@ class TrainingWorkflow:
                     scale_shift_data=scale_shift_data,
                     distribute_graphs=c['distribute_graphs'],
                     tiling_dims=c['tiling_dims'],
-                    partition_type=c['partition_type']
+                    partition_type=c['partition_type'],
+                    train_or_eval=c['train_or_eval']
                 )
             return train_loader, val_loader, required_irreps, basis_trans, orb_basis, ls_list
             
@@ -382,7 +387,8 @@ class TrainingWorkflow:
                 scale_shift_data=scale_shift_data,
                 distribute_graphs=c['distribute_graphs'],
                 tiling_dims=c['tiling_dims'],
-                partition_type=c['partition_type']
+                partition_type=c['partition_type'],
+                train_or_eval=c['train_or_eval']
             )
         
         return test_loader, None, required_irreps, basis_trans, orb_basis, ls_list
@@ -531,5 +537,6 @@ class TrainingWorkflow:
                 node_target_name=node_target, edge_target_name=edge_target, compute_total_energy=self.config['compute_total_energy'],
                 basis_transform=basis_trans, output_folder=self.config['output_folder'],
                 dataset_name=self.config['dataset_name'], orbital_basis=orb_basis,
-                element_references=self.config.get('element_references', None)
+                element_references=self.config.get('element_references', None),
+                distributed_graphs=self.config['distribute_graphs']
             )

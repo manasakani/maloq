@@ -357,6 +357,7 @@ class SplitTrainer():
                 edge_target_name=None,
                 basis_transform=None,
                 element_references=None,
+                distributed_graphs=False,
                 output_folder='outputs',
                 dataset_name='omol',
                 orbital_basis=None,
@@ -367,7 +368,7 @@ class SplitTrainer():
         self.backbone.eval()
         self.head.eval()
 
-        dump_plots = False
+        dump_plots = True
         dump_embeddings = False
         compute_eigenvalues = True
         save_density = False
@@ -465,10 +466,16 @@ class SplitTrainer():
                     node_output = node_output[0]
                     edge_output = edge_output[0]
                 
-                neighbour_list = batch.fock_target_object[0].neighbour_list_list[index]
-                atomic_numbers = batch.fock_target_object[0].atomic_numbers_list[index]
-                orbitals_per_atom = batch.fock_target_object[0].orbitals_per_atom_list[index]
-                
+                # When using the distributed solver, each batch has its own fock targets object (it's a supergraph)
+                if distributed_graphs:
+                    neighbour_list = batch.fock_target_object[0].neighbour_list_list
+                    atomic_numbers = batch.fock_target_object[0].atomic_numbers_list
+                    orbitals_per_atom = batch.fock_target_object[0].orbitals_per_atom_list
+                else:
+                    neighbour_list = batch.fock_target_object[0].neighbour_list_list[index]
+                    atomic_numbers = batch.fock_target_object[0].atomic_numbers_list[index]
+                    orbitals_per_atom = batch.fock_target_object[0].orbitals_per_atom_list[index]
+                    
                 # Undo scale/shift layers on output:
                 print("Undoing scale/shift...", flush=True)
                 node_output = batch.fock_target_object[0].undo_scale_shift(node_output, atomic_numbers)
@@ -489,27 +496,48 @@ class SplitTrainer():
                     print(f"Basis transform time: {end_basis - start_basis:.4f}s", flush=True)
 
                 ## LABEL -> MATRIX START ##
-                method = 'cupy_kernel' # 'numpy_kernel' or 'cupy_kernel' or 'torch_kernel'
+                method = 'cupy_kernel' # 'numpy_kernel' or 'cupy_kernel'
                 torch.cuda.synchronize()
-                matrix_size = batch.fock_target_object[0].block_starts_list[index][-1]
+
+                # ========================================
+                # Handle distributed graph data if needed
+                # ========================================
+                (
+                    final_edge_outputs,
+                    final_edge_labels,
+                    final_node_outputs,
+                    final_node_labels,
+                    src_idxes,
+                    target_idxes,
+                    fock_block_offsets,
+                    matrix_size,
+                    graph_source_rank
+                ) = self.prepare_global_graph_data(
+                    batch=batch,
+                    uncoupled_node_outputs=uncoupled_node_outputs,
+                    uncoupled_node_labels=uncoupled_node_labels,
+                    uncoupled_edge_outputs=uncoupled_edge_outputs,
+                    uncoupled_edge_labels=uncoupled_edge_labels,
+                    neighbour_list=neighbour_list,
+                    atomic_numbers=atomic_numbers,
+                    orbitals_per_atom=orbitals_per_atom,
+                    distributed_graphs=distributed_graphs,
+                    device=device,
+                    rank=rank,
+                    world_size=world_size
+                )
+    
 
                 if method == 'cupy_kernel':
 
-                    # Augment neighbor list with node self-neighbors, because we will stack the nodes together with the edges
-                    src_idx, target_idx = neighbour_list[0], neighbour_list[1]
-                    num_atoms = len(atomic_numbers)
-                    src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
-                    target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
-                    fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(orbitals_per_atom)])
-
                     output_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
-                    edge_output_cupy = cp.from_dlpack(uncoupled_edge_outputs)
-                    node_output_cupy = cp.from_dlpack(uncoupled_node_outputs)
+                    edge_output_cupy = cp.from_dlpack(final_edge_outputs)
+                    node_output_cupy = cp.from_dlpack(final_node_outputs)
                     output_targets = cp.concatenate([edge_output_cupy, node_output_cupy])
 
                     label_fock_matrix = cp.zeros((matrix_size, matrix_size), dtype=cp.float32)
-                    edge_label_cupy = cp.from_dlpack(uncoupled_edge_labels)
-                    node_label_cupy = cp.from_dlpack(uncoupled_node_labels)
+                    edge_label_cupy = cp.from_dlpack(final_edge_labels)
+                    node_label_cupy = cp.from_dlpack(final_node_labels)
                     label_targets = cp.concatenate([edge_label_cupy, node_label_cupy])
 
                     torch.cuda.synchronize()
@@ -545,83 +573,10 @@ class SplitTrainer():
                     output_fock_matrix = output_fock_matrix.get()
                     label_fock_matrix = label_fock_matrix.get()
 
-                    # if the output fock matrix is not symmetric, print a warning and say it will be symmetrized:
-                    if not np.allclose(output_fock_matrix, output_fock_matrix.T, atol=1e-4):
-                        print("NOTE: Output fock matrix is not symmetric. Symmetrizing it.", flush=True)
-
-                    output_fock_matrix = (output_fock_matrix + output_fock_matrix.T) / 2
-                    label_fock_matrix = (label_fock_matrix + label_fock_matrix.T) / 2
                     if rank == 0:
                         print(f"Label -> Matrix time [cupy]: {end_conversion - start_conversion:.4f}s", flush=True)
 
-                elif method == 'torch_kernel':
-
-                    # 1. Setup indices (keep as numpy for a moment, then cast to torch)
-                    src_idx, target_idx = neighbour_list[0], neighbour_list[1]
-                    num_atoms = len(atomic_numbers)
-                    src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
-                    target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
-                    fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(orbitals_per_atom)])
-
-                    # 2. Prepare GPU Tensors
-                    # We cast indices to torch.long on cuda
-                    src_idxes_gpu = torch.from_numpy(src_idxes).to('cuda', dtype=torch.long)
-                    target_idxes_gpu = torch.from_numpy(target_idxes).to('cuda', dtype=torch.long)
-                    offsets_gpu = torch.from_numpy(fock_block_offsets).to('cuda', dtype=torch.long)
-                    atomic_numbers_gpu = torch.from_numpy(atomic_numbers).to('cuda', dtype=torch.long)
-
-                    # 3. Handle Outputs (Forward = False, filling the matrix)
-                    output_fock_matrix_gpu = torch.zeros((matrix_size, matrix_size), device='cuda', dtype=torch.float32)
-                    output_targets_gpu = torch.cat([uncoupled_edge_outputs, uncoupled_node_outputs]).to('cuda')
-                    label_fock_matrix_gpu = torch.zeros((matrix_size, matrix_size), device='cuda', dtype=torch.float32)
-                    label_targets_gpu = torch.cat([uncoupled_edge_labels, uncoupled_node_labels]).to('cuda')
-
-                    torch.cuda.synchronize()
-                    start_conversion = time.perf_counter()
-
-                    matrix2labels_kernels.torch_single_matrix2label(
-                        orbital_template,
-                        offsets_gpu,
-                        atomic_numbers_gpu,
-                        src_idxes_gpu,
-                        target_idxes_gpu,
-                        output_fock_matrix_gpu,
-                        output_targets_gpu,
-                        forward=False
-                    )
-
-                    matrix2labels_kernels.torch_single_matrix2label(
-                        orbital_template,
-                        offsets_gpu,
-                        atomic_numbers_gpu,
-                        src_idxes_gpu,
-                        target_idxes_gpu,
-                        label_fock_matrix_gpu,
-                        label_targets_gpu,
-                        forward=False
-                    )
-
-                    torch.cuda.synchronize()
-                    end_conversion = time.perf_counter()
-
-                    # 5. Bring back to CPU/Numpy for the rest of your pipeline
-                    output_fock_matrix = output_fock_matrix_gpu.detach().cpu().numpy()
-                    label_fock_matrix = label_fock_matrix_gpu.detach().cpu().numpy()
-
-                    output_fock_matrix = (output_fock_matrix + output_fock_matrix.T) / 2
-                    label_fock_matrix = (label_fock_matrix + label_fock_matrix.T) / 2
-                    
-                    if rank == 0:
-                        print(f"Label -> Matrix time [torch]: {end_conversion - start_conversion:.4f}s", flush=True)
-
                 else:
-
-                    # Augment neighbor list with node self-neighbors, because we will stack the nodes together with the edges
-                    src_idx, target_idx = neighbour_list[0], neighbour_list[1]
-                    num_atoms = len(atomic_numbers)
-                    src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
-                    target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
-                    fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(orbitals_per_atom)])
 
                     output_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
                     output_targets = np.concatenate([uncoupled_edge_outputs.detach().cpu().numpy(), uncoupled_node_outputs.detach().cpu().numpy()])
@@ -654,51 +609,63 @@ class SplitTrainer():
                     )
 
                     end_conversion = time.perf_counter()
-                    output_fock_matrix = (output_fock_matrix + output_fock_matrix.T) / 2
-                    label_fock_matrix = (label_fock_matrix + label_fock_matrix.T) / 2
                     if rank == 0:
                         print(f"Label -> Matrix time [numpy]: {end_conversion - start_conversion:.4f}s", flush=True)
 
-                ## DEBUG NEW LABEL -> MATRIX END ##
+                ## LABEL -> MATRIX END ##
+
+                # Handle matrix symmetrization if needed
+                if not np.allclose(output_fock_matrix, output_fock_matrix.T, atol=1e-4):
+                    print("NOTE: Output fock matrix is not symmetric. Symmetrizing it.", flush=True)
+                    output_fock_matrix = (output_fock_matrix + output_fock_matrix.T) / 2
+                    label_fock_matrix = (label_fock_matrix + label_fock_matrix.T) / 2
 
                 if dump_plots:
                     matrix_out = output_fock_matrix.copy()
                     matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                    plt.imshow(matrix_out, vmin=-0.1, vmax=0.1, cmap='bwr')
+                    plt.imshow(matrix_out, vmin=-0.05, vmax=0.05, cmap='bwr')
                     plt.colorbar()
                     plt.savefig("predicted_fock.png", dpi=500, bbox_inches='tight')
                     plt.close()
 
                     matrix_out = label_fock_matrix.copy()
                     matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                    plt.imshow(matrix_out, vmin=-0.1, vmax=0.1, cmap='bwr')
+                    plt.imshow(matrix_out, vmin=-0.05, vmax=0.05, cmap='bwr')
                     plt.colorbar()
                     plt.savefig("label_fock.png", dpi=500, bbox_inches='tight')
                     plt.close()
 
                     diff_matrix_out = output_fock_matrix.copy() - label_fock_matrix.copy()
-                    plt.imshow(np.abs(diff_matrix_out), cmap='bone_r', vmin=0, vmax=0.1)
+                    plt.imshow(np.abs(diff_matrix_out), cmap='bone_r', vmin=0, vmax=0.05)
                     plt.colorbar()
                     plt.savefig("fock_diff.png", dpi=500, bbox_inches='tight')
                     plt.close()
 
+                    # write output and label matrices to file, will load them later:
+                    np.save(os.path.join(output_folder, f"output_fock_{index}.npy"), output_fock_matrix)
+                    np.save(os.path.join(output_folder, f"label_fock_{index}.npy"), label_fock_matrix)
+
                 # Compute the eigenvalues and eigenvalue error
                 if compute_eigenvalues:
-
-                    # cupy -> numpy (cpu)
-                    # output_fock_matrix = output_fock_matrix.get()
-                    # label_fock_matrix = label_fock_matrix.get()
 
                     print("Solving generalized eigenvalue problem...", flush=True)
                     if hasattr(batch, 'overlap_matrix') and batch.overlap_matrix is not None:
                         overlap_matrix = batch[0].overlap_matrix
+
+                        # Ensure the overlap matrix is a dense NumPy array (handle cp2k matrices which are scipy sparse)
+                        if hasattr(overlap_matrix, 'toarray'):
+                            overlap_matrix = overlap_matrix.toarray()
+                        elif hasattr(overlap_matrix, 'numpy'):
+                            overlap_matrix = overlap_matrix.cpu().numpy()
+
                         label_eigenvalues = sp.linalg.eigvalsh(label_fock_matrix, overlap_matrix)
                         pred_eigenvalues = sp.linalg.eigvalsh(output_fock_matrix, overlap_matrix)
                     else:
                         print("Building overlap matrix and computing eigenvalues...", flush=True)
+                        print("For now, setting overlap matrix to identity!", flush=True)
                         # label_eigenvalues, pred_eigenvalues, overlap_matrix = self.get_overlap_and_eigs(batch, output_fock_matrix, label_fock_matrix, orbital_basis, dataset_name)
                         overlap_matrix = None
-                        label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix) # temp for testing
+                        label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix) 
                         pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix)
 
                     # take the first half (occupied):
@@ -724,10 +691,10 @@ class SplitTrainer():
                 # Compute error in total energy from predicted and label Fock matrices:
                 if compute_total_energy:
 
-                    if not compute_eigenvalues:
-                        # cupy -> numpy (cpu)
-                        output_fock_matrix = output_fock_matrix.get()
-                        label_fock_matrix = label_fock_matrix.get()
+                    # if not compute_eigenvalues:
+                    #     # cupy -> numpy (cpu)
+                    #     output_fock_matrix = output_fock_matrix.get()
+                    #     label_fock_matrix = label_fock_matrix.get()
 
                     print("Computing total energy...", flush=True)
                     total_energy_label = self.get_total_energy(batch, label_fock_matrix, orbital_basis, dataset_name, overlap_matrix=overlap_matrix, save_density=save_density, key='output')
@@ -769,11 +736,6 @@ class SplitTrainer():
             if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
 
                 print("Tracking loss for batch ", index, flush=True)
-                total_node_element_loss = 0
-                total_edge_element_loss = 0
-                num_node_block_elements = 0
-                num_edge_block_elements = 0
-
                 # convert matrices to torch tensors for loss computation
                 output_fock_matrix = torch.tensor(output_fock_matrix)
                 label_fock_matrix = torch.tensor(label_fock_matrix)
@@ -801,9 +763,9 @@ class SplitTrainer():
                 del edge_output, this_edge_target, output_fock_matrix, label_fock_matrix
 
 
-            for param1, param2 in zip(self.backbone.parameters(), self.head.parameters()):
-                param1.grad = None
-                param2.grad = None
+            # for param1, param2 in zip(self.backbone.parameters(), self.head.parameters()):
+            #     param1.grad = None
+            #     param2.grad = None
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 
@@ -1083,6 +1045,143 @@ class SplitTrainer():
             f.write(f"Edge distances shape: {batch.edge_attr.shape}\n")
 
         del backbone_out
+
+
+    def prepare_global_graph_data(
+            self,
+            batch,
+            uncoupled_node_outputs,
+            uncoupled_node_labels,
+            uncoupled_edge_outputs,
+            uncoupled_edge_labels,
+            neighbour_list,
+            atomic_numbers,
+            orbitals_per_atom,
+            distributed_graphs,
+            device,
+            rank,
+            world_size
+        ):
+            """
+            Gathers, reorders, and structures node/edge outputs and labels across distributed ranks.
+            """
+            if distributed_graphs:
+                if rank == 0:
+                    print("Gathering consolidated graph data from all ranks...", flush=True)
+
+                def _gather_uneven_tensors(local_tensor, local_counts):
+                    max_count = max(local_counts)
+                    local_count = local_counts[rank]
+                    
+                    # Pad along dimension 0 if this rank has fewer elements than the max rank
+                    pad_len = max_count - local_count
+                    if pad_len > 0:
+                        pad_shape = list(local_tensor.shape)
+                        pad_shape[0] = pad_len
+                        padding = torch.zeros(pad_shape, dtype=local_tensor.dtype, device=local_tensor.device)
+                        padded_tensor = torch.cat([local_tensor, padding], dim=0)
+                    else:
+                        padded_tensor = local_tensor
+                        
+                    # Allocate equal-sized gathering targets
+                    gather_list = [
+                        torch.zeros(max_count, *local_tensor.shape[1:], dtype=local_tensor.dtype, device=local_tensor.device) 
+                        for _ in range(world_size)
+                    ]
+                    
+                    # Collective communication call
+                    dist.all_gather(gather_list, padded_tensor)
+                    
+                    # pace the local GPU stream so back-to-back calls don't hang 
+                    torch.cuda.synchronize()
+                    
+                    # Trim padding rows out based on each rank's true count metadata
+                    trimmed_tensors = [gather_list[i][:local_counts[i]] for i in range(world_size)]
+                    return torch.cat(trimmed_tensors, dim=0)
+
+                # Extract exact allocation counts per rank from domain distribution objects
+                edge_counts = [len(x) for x in batch.fock_target_object[0].domain.all_local_edge_indices]
+                node_counts = [len(x) for x in batch.fock_target_object[0].domain.all_local_node_indices]
+
+                # Consolidate outputs and labels into a single stacked tensor to halve network roundtrips
+                local_edge_combined = torch.stack([uncoupled_edge_outputs, uncoupled_edge_labels], dim=1)
+                local_node_combined = torch.stack([uncoupled_node_outputs, uncoupled_node_labels], dim=1)
+
+                # Gather the stacked collections 
+                gathered_edge_combined = _gather_uneven_tensors(local_edge_combined, edge_counts)
+                gathered_node_combined = _gather_uneven_tensors(local_node_combined, node_counts)
+
+                # Flatten original global layout arrays across all ranks
+                all_local_node_indices = np.concatenate(batch.fock_target_object[0].domain.all_local_node_indices)
+                all_local_edge_indices = np.concatenate(batch.fock_target_object[0].domain.all_local_edge_indices)
+
+                edge_indices_device = torch.tensor(all_local_edge_indices, device=gathered_edge_combined.device, dtype=torch.long)
+                node_indices_device = torch.tensor(all_local_node_indices, device=gathered_node_combined.device, dtype=torch.long)
+
+                # Execute inverse permutation sorting to map rank-chunks back to global sequential order
+                edge_inv_permutation = torch.argsort(edge_indices_device)
+                final_edge_combined = gathered_edge_combined[edge_inv_permutation]
+
+                node_inv_permutation = torch.argsort(node_indices_device)
+                final_node_combined = gathered_node_combined[node_inv_permutation]
+
+                # Unpack the consolidated tensors locally on the GPU
+                final_edge_outputs = final_edge_combined[:, 0, :]
+                final_edge_labels = final_edge_combined[:, 1, :]
+                final_node_outputs = final_node_combined[:, 0, :]
+                final_node_labels = final_node_combined[:, 1, :]
+
+                # Process the global merged graph topology 
+                num_atoms = len(atomic_numbers)
+                merged_neighbour_list = batch.fock_target_object[0].merged_atomic_graph.edge_matrix
+                src_idx, target_idx = merged_neighbour_list[0], merged_neighbour_list[1]
+                src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
+                target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
+
+                # Track down orbital configuration using metadata broadcast
+                local_data = {
+                    "orbitals_per_atom": orbitals_per_atom if (orbitals_per_atom is not None and len(orbitals_per_atom) > 0) else None
+                }
+                gather_list = [None for _ in range(world_size)]
+                dist.all_gather_object(gather_list, local_data)
+                
+                valid_orbitals = None
+                for rank_info in gather_list:
+                    if rank_info["orbitals_per_atom"] is not None:
+                        valid_orbitals = rank_info["orbitals_per_atom"]
+                        graph_source_rank = gather_list.index(rank_info)
+                        break
+                
+                fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(valid_orbitals)]).astype(np.int64)
+                fock_block_offsets = torch.tensor(fock_block_offsets, device=device, dtype=torch.long)
+                matrix_size = fock_block_offsets[-1]
+
+            else:
+                # Standard Single Rank 
+                src_idx, target_idx = neighbour_list[0], neighbour_list[1]
+                num_atoms = len(atomic_numbers)
+                src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
+                target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
+                fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(orbitals_per_atom)])
+                matrix_size = fock_block_offsets[-1]
+                graph_source_rank = 0
+
+                final_edge_outputs = uncoupled_edge_outputs
+                final_edge_labels = uncoupled_edge_labels
+                final_node_outputs = uncoupled_node_outputs
+                final_node_labels = uncoupled_node_labels
+
+            return (
+                final_edge_outputs,
+                final_edge_labels,
+                final_node_outputs,
+                final_node_labels,
+                src_idxes,
+                target_idxes,
+                fock_block_offsets,
+                matrix_size,
+                graph_source_rank
+            )
 
     def get_orbital(self, tensor, irreps_list, l):
         """

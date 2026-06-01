@@ -32,7 +32,8 @@ def get_loader(database,
                 loss_target_string='fock_matrix', 
                 distribute_graphs=False,
                 tiling_dims=None,
-                partition_type='linear'):
+                partition_type='linear',
+                train_or_eval='train'):
     """
     Make dataloader with the given indices of the mocules in the input database
     Currently set up for three datasets: QM7, nablaDFT, omol. Need to modify for others.
@@ -152,9 +153,10 @@ def get_loader(database,
             hamiltonians.append(hamiltonian)
             print(f"Hamiltonian loaded with shape {hamiltonian.shape} and {hamiltonian.nnz} non-zero elements", flush=True)
 
-            # overlap_file = [f for f in os.listdir(data_folder) if '-S_SPIN_1-1_0' in f][0]
-            # overlap = read_cp2k_matrix(os.path.join(data_folder, overlap_file))
-            overlaps.append(0) # dummy overlaps for now!!!
+            overlap_file = [f for f in os.listdir(data_folder) if '-S_SPIN_1-1_0' in f][0]
+            overlap = read_cp2k_matrix(os.path.join(data_folder, overlap_file))
+            # overlaps.append(0) # dummy overlaps for now!!!
+            overlaps.append(overlap)
 
     else:
         raise ValueError("Unknown database!")
@@ -168,7 +170,7 @@ def get_loader(database,
     if distribute_graphs:
 
         # Use 'one_rank_contributes' if the structures are periodic:
-        if periodic_dataset:
+        if periodic_dataset or train_or_eval == 'eval':
             dist_type = 'one_rank_contributes'
             assert batch_size == 1, "When using 'one_rank_contributes' distribution, the batch size must be 1 since only one rank contributes to each graph!"
         else:
@@ -232,7 +234,8 @@ def get_loader(database,
                     node_y=graph_targets.node_labels_list,
                     atomic_numbers=torch.tensor(batch_atomic_numbers, dtype=torch.long).cpu(),
                     energies=torch.tensor(global_energy[atom_mol_id], dtype=dtype), 
-                    forces=torch.tensor(global_forces[atom_mol_id], dtype=dtype),                                     
+                    forces=torch.tensor(global_forces[atom_mol_id], dtype=dtype),  
+                    num_atoms_in_molecule=len(graph_targets.atomic_numbers_list),                                   
                     atom_mol_id=atom_mol_id,
                     fock_target_object=graph_targets,
                     overlap_matrix=None,
@@ -274,28 +277,30 @@ def get_loader(database,
                         b_atomic_numbers = atomic_numbers[batch_idxs]
                         b_positions = positions[batch_idxs]
                         b_hamiltonians = hamiltonians[batch_idxs]
+                        b_overlaps = overlaps[batch_idxs]
                         b_periodic_boxes = periodic_boxes[batch_idxs] if periodic_dataset else None
                     
                     # If I am a receiver, I prepare empty variables
                     else:
-                        b_energy, b_forces, b_charges, b_spins = None, None, None, None
+                        b_energy, b_forces, b_charges, b_spins, b_overlaps = None, None, None, None, None
                         b_atomic_numbers, b_positions, b_hamiltonians, b_periodic_boxes = [], [], [], []
 
                     # 4. Pack everything into a single list for easy broadcasting
                     data_pack = [[
-                        b_energy, b_forces, b_charges, b_spins
+                        b_energy, b_forces, b_charges, b_spins, b_overlaps
                     ]] if my_rank == source_rank else [None]
 
                     # 5. The Source Rank broadcasts the pack to everyone else
                     dist.broadcast_object_list(data_pack, src=source_rank)
 
                     # 6. Unpack the data. Now EVERY rank has the exact same batch of molecules
-                    (b_energy, b_forces, b_charges, b_spins) = data_pack[0]
+                    (b_energy, b_forces, b_charges, b_spins, b_overlaps) = data_pack[0]
 
                     global_energy = np.array(b_energy)
                     global_forces = np.array(b_forces)
                     global_charges = np.array(b_charges)
                     global_spins = np.array(b_spins)
+                    global_overlaps = np.array(b_overlaps)
 
                     # 7. Set up the Graph targets for this batch 
                     # (Fock_Targets will now partition this specific batch across all ranks)
@@ -321,10 +326,11 @@ def get_loader(database,
                         node_y=graph_targets.node_labels_list,
                         atomic_numbers=torch.tensor(batch_atomic_numbers, dtype=torch.long).cpu(),
                         energies=torch.tensor(global_energy[atom_mol_id], dtype=dtype), 
-                        forces=torch.tensor(global_forces[atom_mol_id], dtype=dtype),                                     
+                        forces=torch.tensor(global_forces[atom_mol_id], dtype=dtype),  
+                        num_atoms_in_molecule=len(graph_targets.atomic_numbers_list),                                   
                         atom_mol_id=atom_mol_id,
                         fock_target_object=graph_targets,
-                        overlap_matrix=None,
+                        overlap_matrix=global_overlaps[0] if train_or_eval=='eval' else None,
                         charge=torch.tensor(global_charges[atom_mol_id], dtype=torch.long),
                         spin_multiplicity=torch.tensor(global_spins[atom_mol_id], dtype=torch.long), 
                         distributed_graph_training=distribute_graphs,
