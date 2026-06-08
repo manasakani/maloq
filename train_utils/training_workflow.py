@@ -76,8 +76,8 @@ class TrainingWorkflow:
             if self.config['dtype'] == torch.float64:
                 raise ValueError("Triton Wigner backend does not support float64 dtype.")
 
-        # Write config settings to the output file:
-        if self.rank == 0:
+        # Write config settings to the output file if not eval:
+        if self.rank == 0 and self.config['train_or_eval'] == 'train':
             config_path = os.path.join(self.config['output_folder'], f"config_{self.config['run_name']}.json")
             serializable_config = {
                 k: (v.__name__ if hasattr(v, '__name__') else str(v)) 
@@ -154,6 +154,7 @@ class TrainingWorkflow:
                     dtype=self.config['dtype'], reduce_edge=self.config['reduce_edge'], 
                     filename=filename
                 )
+                print('Finished computing scale/shift factors! Will use these to scale the node data.')
             
             if self.config['open_shell']:
                 return {
@@ -208,18 +209,37 @@ class TrainingWorkflow:
         c = self.config
 
         db_source = database_input if database_input is not None else c['dbpath']
-        is_folder = isinstance(db_source, str) and os.path.isdir(db_source)
+
+        if isinstance(db_source, str):
+            db_sources = [db_source]
+        elif isinstance(db_source, list):
+            db_sources = db_source
+        else:
+            db_sources = []
+        is_folder = any(os.path.isdir(src) for src in db_sources)
+        # is_folder = isinstance(db_source, str) and os.path.isdir(db_source)
 
         if is_folder:
 
             # Custom cp2k datasets - each subfolder contains a structure, hamiltonian, and overlap matrix
             if self.config['dataset_name'] == 'cp2k_material':
-                data_folders = [os.path.join(db_source, f) for f in os.listdir(db_source) if os.path.isdir(os.path.join(db_source, f))]
+                # data_folders = [os.path.join(db_source, f) for f in os.listdir(db_source) if os.path.isdir(os.path.join(db_source, f))]
+                data_folders = []
+                for src in db_sources:
+                    if os.path.isdir(src):
+                        subdirs = [
+                            os.path.join(src, f) 
+                            for f in os.listdir(src) 
+                            if os.path.isdir(os.path.join(src, f))
+                        ]
+                        data_folders.extend(subdirs)
+                data_folders.sort()
+                
                 total_needed = c['num_train'] + c['num_val']
                 print(f"Found {len(data_folders)} data folders in {db_source}", flush=True)
 
-                scale_shift_data = self._handle_scale_shift()
                 train_database = data_folders[:c['num_train']]
+                scale_shift_data = self._handle_scale_shift(train_database)
 
                 # if c['dbpath_val'] is provided, take validation folders from there instead of splitting from the training folders:
                 if c.get('dbpath_val') is not None:
@@ -527,7 +547,9 @@ class TrainingWorkflow:
                 output_folder=self.config['output_folder'],
                 train_backbone=self.config['train_backbone'],
                 train_head=self.config['train_head'],
-                basis_transform=basis_trans, step_every_epoch=self.config.get('step_every_epoch', True),
+                basis_transform=basis_trans, 
+                compute_uncoupled_loss=self.config.get('compute_uncoupled_loss', False),
+                step_every_epoch=self.config.get('step_every_epoch', True),
                 element_references=self.config.get('element_references', None),
             )
         else:

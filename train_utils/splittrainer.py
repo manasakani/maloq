@@ -73,10 +73,26 @@ class SplitTrainer():
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank()
             world_size = dist.get_world_size()
+
+            # wrapper to mock DDP's '.module' behavior, to use manual gradient reduction
+            class DDPMock:
+                def __init__(self, module):
+                    self.module = module
+                def __getattr__(self, name):
+                    return getattr(self.module, name)
+                def __call__(self, *args, **kwargs):
+                    return self.module(*args, **kwargs)
+
+            # Wrap instead of using DistributedDataParallel
             if train_backbone:
-                self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, gradient_as_bucket_view=True)
+                self.backbone = DDPMock(self.backbone)
             if train_head:
-                self.head = nn.parallel.DistributedDataParallel(self.head, device_ids=[0], output_device=0, gradient_as_bucket_view=True)
+                self.head = DDPMock(self.head)
+
+            # if train_backbone:
+            #     self.backbone = nn.parallel.DistributedDataParallel(self.backbone, device_ids=[0], output_device=0, gradient_as_bucket_view=True)
+            # if train_head:
+            #     self.head = nn.parallel.DistributedDataParallel(self.head, device_ids=[0], output_device=0, gradient_as_bucket_view=True)
         else:
             rank = 0
 
@@ -180,19 +196,25 @@ class SplitTrainer():
                 loss.backward()
                 # torch.cuda.synchronize()
                 backward_end = time.perf_counter()
+
+                # === Manual gradient reduction! ===
+                if dist.is_initialized():
+                    world_size = dist.get_world_size()
+                    
+                    if train_backbone:
+                        for param in self.backbone.parameters():
+                            if param.grad is not None:
+                                dist.all_reduce(param.grad, op=dist.ReduceOp.SUM)
+                                param.grad /= world_size  # Average the gradients across domains
+                                
+                    if train_head:
+                        for param in self.head.parameters():
+                            if param.grad is not None:
+                                dist.all_reduce(param.grad, op=dist.ReduceOp.SUM)
+                                param.grad /= world_size
+
                 optimizer.step()
                 optimizer.zero_grad()
-
-
-                # -- Scheduler --
-                if not step_every_epoch:
-                    if hasattr(scheduler, 'patience'):  # ReduceLROnPlateau
-                        scheduler.step(val_loss)
-                    else:                               # CosineAnnealingLR
-                        scheduler.step()
-                    current_lr = optimizer.param_groups[0]['lr']
-                    if rank == 0:
-                        print("Current learning rate: ", current_lr)
 
                 # Garbage collection
                 if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
@@ -286,6 +308,16 @@ class SplitTrainer():
                     del batch, backbone_out
                     # torch.cuda.empty_cache()
                     # torch.cuda.synchronize()
+
+            # -- Scheduler --
+            if not step_every_epoch:
+                if hasattr(scheduler, 'patience'):  # ReduceLROnPlateau
+                    scheduler.step(val_loss)
+                else:                               # CosineAnnealingLR
+                    scheduler.step()
+                current_lr = optimizer.param_groups[0]['lr']
+                if rank == 0:
+                    print("Current learning rate: ", current_lr)
 
             # -- Output dump --
             if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
@@ -476,37 +508,15 @@ class SplitTrainer():
                     atomic_numbers = batch.fock_target_object[0].atomic_numbers_list[index]
                     orbitals_per_atom = batch.fock_target_object[0].orbitals_per_atom_list[index]
                     
-                # Undo scale/shift layers on output:
-                print("Undoing scale/shift...", flush=True)
-                node_output = batch.fock_target_object[0].undo_scale_shift(node_output, atomic_numbers)
-
-                # for nabladft, we left the node scaling in
-                if dataset_name == 'nablaDFT':
-                    this_node_target = batch.fock_target_object[0].undo_scale_shift(this_node_target, atomic_numbers) # note: remove node scaling from evals
-
-                # Transform back to uncoupled basis:
-                print("Transforming to uncoupled basis...", flush=True)
-                start_basis = time.perf_counter()
-                uncoupled_node_outputs = basis_transform.get_H(node_output)
-                uncoupled_edge_outputs = basis_transform.get_H(edge_output)
-                uncoupled_node_labels = basis_transform.get_H(this_node_target)
-                uncoupled_edge_labels = basis_transform.get_H(this_edge_target)
-                end_basis = time.perf_counter()
-                if rank == 0:
-                    print(f"Basis transform time: {end_basis - start_basis:.4f}s", flush=True)
-
-                ## LABEL -> MATRIX START ##
-                method = 'cupy_kernel' # 'numpy_kernel' or 'cupy_kernel'
-                torch.cuda.synchronize()
 
                 # ========================================
                 # Handle distributed graph data if needed
                 # ========================================
                 (
-                    final_edge_outputs,
-                    final_edge_labels,
                     final_node_outputs,
                     final_node_labels,
+                    final_edge_outputs,
+                    final_edge_labels,
                     src_idxes,
                     target_idxes,
                     fock_block_offsets,
@@ -514,10 +524,10 @@ class SplitTrainer():
                     graph_source_rank
                 ) = self.prepare_global_graph_data(
                     batch=batch,
-                    uncoupled_node_outputs=uncoupled_node_outputs,
-                    uncoupled_node_labels=uncoupled_node_labels,
-                    uncoupled_edge_outputs=uncoupled_edge_outputs,
-                    uncoupled_edge_labels=uncoupled_edge_labels,
+                    uncoupled_node_outputs=node_output,
+                    uncoupled_node_labels=this_node_target,
+                    uncoupled_edge_outputs=edge_output,
+                    uncoupled_edge_labels=this_edge_target,
                     neighbour_list=neighbour_list,
                     atomic_numbers=atomic_numbers,
                     orbitals_per_atom=orbitals_per_atom,
@@ -526,7 +536,29 @@ class SplitTrainer():
                     rank=rank,
                     world_size=world_size
                 )
-    
+
+                # Undo scale/shift layers on output:
+                print("Undoing scale/shift for outputs and labels...", flush=True)
+                final_node_outputs = batch.fock_target_object[0].undo_scale_shift(final_node_outputs, atomic_numbers)
+
+                # for nabladft and cp2k, we left the node scaling in
+                if dataset_name == 'nablaDFT' or 'cp2k' in dataset_name:
+                    final_node_labels = batch.fock_target_object[0].undo_scale_shift(final_node_labels, atomic_numbers) # note: remove node scaling from evals
+
+                # Transform back to uncoupled basis:
+                print("Transforming to uncoupled basis...", flush=True)
+                start_basis = time.perf_counter()
+                final_node_outputs = basis_transform.get_H(final_node_outputs)
+                final_edge_outputs = basis_transform.get_H(final_edge_outputs)
+                final_node_labels = basis_transform.get_H(final_node_labels)
+                final_edge_labels = basis_transform.get_H(final_edge_labels)
+                end_basis = time.perf_counter()
+                if rank == 0:
+                    print(f"Basis transform time: {end_basis - start_basis:.4f}s", flush=True)
+
+                ## LABEL -> MATRIX START ##
+                method = 'cupy_kernel' # 'numpy_kernel' or 'cupy_kernel'
+                torch.cuda.synchronize()
 
                 if method == 'cupy_kernel':
 
@@ -578,12 +610,12 @@ class SplitTrainer():
 
                 else:
 
-                    output_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
-                    output_targets = np.concatenate([uncoupled_edge_outputs.detach().cpu().numpy(), uncoupled_node_outputs.detach().cpu().numpy()])
-                    label_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
-                    label_targets = np.concatenate([uncoupled_edge_labels.detach().cpu().numpy(), uncoupled_node_labels.detach().cpu().numpy()])
-
                     torch.cuda.synchronize()
+                    output_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
+                    output_targets = np.concatenate([final_edge_outputs.detach().cpu().numpy(), final_node_outputs.detach().cpu().numpy()])
+                    label_fock_matrix = np.zeros((matrix_size, matrix_size), dtype=np.float32)
+                    label_targets = np.concatenate([final_edge_labels.detach().cpu().numpy(), final_node_labels.detach().cpu().numpy()])
+
                     start_conversion = time.perf_counter()
 
                     matrix2labels_kernels.numpy_single_matrix2label(
@@ -623,20 +655,20 @@ class SplitTrainer():
                 if dump_plots:
                     matrix_out = output_fock_matrix.copy()
                     matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                    plt.imshow(matrix_out, vmin=-0.05, vmax=0.05, cmap='bwr')
+                    plt.imshow(matrix_out, vmin=-0.01, vmax=0.01, cmap='bwr')
                     plt.colorbar()
                     plt.savefig("predicted_fock.png", dpi=500, bbox_inches='tight')
                     plt.close()
 
                     matrix_out = label_fock_matrix.copy()
                     matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
-                    plt.imshow(matrix_out, vmin=-0.05, vmax=0.05, cmap='bwr')
+                    plt.imshow(matrix_out, vmin=-0.01, vmax=0.01, cmap='bwr')
                     plt.colorbar()
                     plt.savefig("label_fock.png", dpi=500, bbox_inches='tight')
                     plt.close()
 
                     diff_matrix_out = output_fock_matrix.copy() - label_fock_matrix.copy()
-                    plt.imshow(np.abs(diff_matrix_out), cmap='bone_r', vmin=0, vmax=0.05)
+                    plt.imshow(np.abs(diff_matrix_out), cmap='bone_r', vmin=0, vmax=0.01)
                     plt.colorbar()
                     plt.savefig("fock_diff.png", dpi=500, bbox_inches='tight')
                     plt.close()
@@ -667,24 +699,25 @@ class SplitTrainer():
                         overlap_matrix = None
                         label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix) 
                         pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix)
+                        print("Finished eigenvalue computation.", flush=True)
+                    
+                    if dump_plots and rank == 0:
+                        self.plot_eigenvalues(label_eigenvalues, pred_eigenvalues, index)
+                        self.plot_eigenvalue_diff(label_eigenvalues, pred_eigenvalues)
+                    dist.barrier()
 
                     # take the first half (occupied):
-                    num_occupied = len(label_eigenvalues) // 2
-                    label_eigenvalues = label_eigenvalues[:num_occupied]
-                    pred_eigenvalues = pred_eigenvalues[:num_occupied]
+                    # num_occupied = len(label_eigenvalues) // 2
+                    # label_eigenvalues = label_eigenvalues[:num_occupied]
+                    # pred_eigenvalues = pred_eigenvalues[:num_occupied]
 
                     eigenvalue_MAE = np.abs(label_eigenvalues - pred_eigenvalues).sum() / len(label_eigenvalues)
                     eigenvalue_maes.append(eigenvalue_MAE)
 
                     if rank == 0:
-                        print("MAE error in (H!) occupied eigenvalues: ", eigenvalue_MAE, flush=True)
+                        print("MAE error in (H!) eigenvalues: ", eigenvalue_MAE, flush=True)
                 else:
                     eigenvalue_maes.append(0)
-
-
-                if dump_plots:
-                    self.plot_eigenvalues(label_eigenvalues, pred_eigenvalues)
-                    self.plot_eigenvalue_diff(label_eigenvalues, pred_eigenvalues)
 
                 num_atoms_in_molecule_list.append(batch.num_atoms_in_molecule.cpu().detach().numpy().tolist()[0])
 
@@ -997,13 +1030,20 @@ class SplitTrainer():
                 node_output = node_output[0]
                 edge_output = edge_output[0]
 
-            output = torch.cat([node_output, edge_output], dim=0)
-            labels = torch.cat([this_node_target, this_edge_target], dim=0)
+            # np.save(os.path.join('./', f"node_labels_coupled.npy"), this_node_target.cpu().detach().numpy())
+            # np.save(os.path.join('./', f"edge_labels_coupled.npy"), this_edge_target.cpu().detach().numpy())
 
             # Transform from direct sum of irreps to matrix elements
             if compute_uncoupled_loss:
-                output = basis_transform.get_H(output)
-                labels = basis_transform.get_H(labels)
+                node_output = basis_transform.get_H(node_output)
+                edge_output = basis_transform.get_H(edge_output)
+                this_node_target = basis_transform.get_H(this_node_target)
+                this_edge_target = basis_transform.get_H(this_edge_target)
+                # np.save(os.path.join('./', f"node_labels_uncoupled.npy"), this_node_target.cpu().detach().numpy())
+                # np.save(os.path.join('./', f"edge_labels_uncoupled.npy"), this_edge_target.cpu().detach().numpy())
+
+            output = torch.cat([node_output, edge_output], dim=0)
+            labels = torch.cat([this_node_target, this_edge_target], dim=0)
 
             loss_node = loss_fxn(node_output, this_node_target, self.head_irreps)
             loss_edge = loss_fxn(edge_output, this_edge_target, self.head_irreps)
@@ -1131,7 +1171,7 @@ class SplitTrainer():
                 final_node_outputs = final_node_combined[:, 0, :]
                 final_node_labels = final_node_combined[:, 1, :]
 
-                # Process the global merged graph topology 
+                # Process the global merged graph topology (we put self edges are at the end for the nodes)
                 num_atoms = len(atomic_numbers)
                 merged_neighbour_list = batch.fock_target_object[0].merged_atomic_graph.edge_matrix
                 src_idx, target_idx = merged_neighbour_list[0], merged_neighbour_list[1]
@@ -1172,10 +1212,10 @@ class SplitTrainer():
                 final_node_labels = uncoupled_node_labels
 
             return (
-                final_edge_outputs,
-                final_edge_labels,
                 final_node_outputs,
                 final_node_labels,
+                final_edge_outputs,
+                final_edge_labels,
                 src_idxes,
                 target_idxes,
                 fock_block_offsets,
@@ -1219,29 +1259,47 @@ class SplitTrainer():
             plt.savefig(output_folder+"/" + keyword + "_emb_"+str(i)+".png", dpi=300, bbox_inches='tight')
             plt.close()
 
-    def plot_eigenvalues(self, label_eigs, pred_eigs):
+    def plot_eigenvalues(self, label_eigs, pred_eigs, index):
         """
         Here for convinience, just plots the eigenvalues of the matrix
         """
         plt.figure(figsize=(3, 2))
 
+        hartree_to_eV = 27.2114
+
+        # convert data to eV 
+        label_eigs = label_eigs * hartree_to_eV
+        pred_eigs = pred_eigs * hartree_to_eV
+
         # find the halfway point of the predicted eigenvalues and draw a horizontal dashed line:
-        halfway_index = len(pred_eigs) // 2
-        plt.axhline(y=pred_eigs[halfway_index], color='black', linestyle='--', linewidth=0.5)
+        halfway_index = len(label_eigs) // 2
+        plt.axhline(y=label_eigs[halfway_index], color='black', linestyle='--', linewidth=0.5)
 
         plt.scatter(range(len(label_eigs)), label_eigs, s=15, alpha=0.4, label=r'$H^{ref}$', color='darkcyan', edgecolors='none')
         plt.scatter(range(len(pred_eigs)), pred_eigs, s=2, alpha=0.6, label=r'$H^{pred}$', color='mediumblue', marker='x', linewidths=0.5 )
-        plt.ylabel('$\lambda$ ($E_h$)', color='mediumblue')
+        plt.ylabel('$\lambda$ (eV)', color='mediumblue')
         plt.legend(frameon=False, loc='upper right')
         plt.xlabel('Eigenvalue #')
+
+        # xmin = 0
+        # xmax = 10000
+        # ymin = -30
+        # ymax = 20
+
+        # plt.xlim(xmin, xmax)
+        # plt.ylim(ymin, ymax)
 
         diff_eigenvalues = np.abs(label_eigs - pred_eigs)
         ax2 = plt.gca().twinx()
         ax2.scatter(range(len(diff_eigenvalues)), diff_eigenvalues, s=5, alpha=0.5, color='red', edgecolors='none')
-        ax2.set_ylabel('$\delta\lambda$ ($E_h$)', color='red')
+        ax2.set_ylabel('$\delta\lambda$ (eV)', color='red')
+
+        # ymin_diff = 0
+        # ymax_diff = 10
+        # ax2.set_ylim(ymin_diff, ymax_diff)
 
         # plt.legend(frameon=False)
-        plt.savefig("eigenvalues_fock_tests.png", dpi=500, bbox_inches='tight')
+        plt.savefig("eigenvalues_fock_" + str(index) + ".png", dpi=500, bbox_inches='tight')
         plt.close()
 
 
@@ -1257,7 +1315,7 @@ class SplitTrainer():
         plt.xlabel('Eigenvalue #')
         plt.ylabel('$\delta\lambda$ ($E_h$)')
         plt.legend(frameon=False)
-        plt.savefig("eigenvalues_diff_fock_omol.png", dpi=500, bbox_inches='tight')
+        plt.savefig("eigenvalues_diff_fock.png", dpi=500, bbox_inches='tight')
         plt.close()
 
     def get_total_energy(self, batch, fock_matrix, orbital_basis, dataset_name, overlap_matrix=None, save_density=False, key='0'):
