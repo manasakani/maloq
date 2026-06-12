@@ -4,8 +4,52 @@ import time
 import sys
 from fock_utils.utils_tensor_decomp import e3TensorDecomp, make_output_irreps
 import fock_utils.triton_backend as foo2
+import pytest
 from fock_utils import basis_sets as basis_sets_module
 
+def test_triton_backend_get_H_matches_torch():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available; skipping Triton backend test.")
+    device = torch.device("cuda")
+    dtype = torch.float32
+    
+    # Small mock basis to keep this test fast in CI
+    orbital_basis = {1: [0], 6: [0, 0, 1], 8: [0, 0, 1]}
+    targets, req_output_irreps, net_irreps_out, ls_list, out_js_list, out_slices, full_orb_interaction_list = make_output_irreps(orbital_basis)
+    
+    decomp = e3TensorDecomp(
+        net_irreps_out=net_irreps_out,
+        out_js_list=out_js_list,
+        default_dtype_torch=dtype,
+        if_sort=True,
+        device_torch=device,
+    )
+    decomp_triton = foo2.TritonE3TensorDecomp(decomp)
+    
+    x = torch.randn((256, decomp.in_slices[-1]), dtype=dtype, device=device)
+    # PyTorch baseline
+    out_rows = 0
+    out_cols = 0
+    cols = []
+    for i in range(len(decomp.out_js_list)):
+        wms_shape = decomp.wms[i].shape
+        out_rows += wms_shape[2]
+        tmp = wms_shape[0] * wms_shape[1]
+        out_cols += wms_shape[0] * wms_shape[1]
+        cols.append(tmp)
+    wms = torch.zeros((out_cols, out_rows), dtype=x.dtype, device=x.device)
+    out_cols = 0
+    for i in range(len(decomp.out_js_list)):
+        rows = decomp.in_slices[i+1] - decomp.in_slices[i]
+        in_slice = slice(decomp.in_slices[i], decomp.in_slices[i + 1])
+        wms[out_cols:out_cols + cols[i], in_slice] = decomp.wms[i].reshape(-1, rows)
+        out_cols += cols[i]
+    y_ref = x @ wms.T
+    
+    # Triton backend
+    y = decomp_triton.get_H(x)
+    
+    assert torch.allclose(y, y_ref, atol=1e-4, rtol=1e-4), "Triton mismatch vs PyTorch reference"
 
 def _fmt_triton_config(cfg):
     if cfg is None:
