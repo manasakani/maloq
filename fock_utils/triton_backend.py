@@ -211,19 +211,17 @@ class TritonGetHFunction(torch.autograd.Function):
     """
     @staticmethod
     def forward(ctx, net_out, decomp_obj):
-        # Save shapes in case we need to return dummy gradients in backward
-        ctx.net_out_shape = net_out.shape
-        ctx.net_out_dtype = net_out.dtype
-        ctx.net_out_device = net_out.device
+        # Save wrapper so backward can compute the adjoint.
+        ctx.decomp_obj = decomp_obj
         return decomp_obj._get_H_impl(net_out)
 
     @staticmethod
     def backward(ctx, grad_output):
-        # DUMMY BACKWARD: returning zero gradients since we removed `get_net_out` 
-        # (which is the mathematical inverse/backward of `get_H`).
-        # This allows profiling/training pipelines to run fully without crashing, 
-        # even if gradients are zeroed out here.
-        grad_net_out = torch.zeros(ctx.net_out_shape, dtype=ctx.net_out_dtype, device=ctx.net_out_device)
+        decomp_obj = ctx.decomp_obj
+        # Adjoint of: H = (sort.inverse(net_out) if sort else net_out) @ W_global
+        grad_net_out = torch.matmul(grad_output, decomp_obj._decomp_obj.W_global.T)
+        if decomp_obj.sort is not None:
+            grad_net_out = decomp_obj.sort(grad_net_out)
         return grad_net_out, None
 
 
