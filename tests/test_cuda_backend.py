@@ -61,9 +61,7 @@ def test_cuda_backend():
     print(f"(PyTorch == CUDA)? -> {'YES' if match_forward else 'NO'}")
     print(f"Maximum absolute difference: {max_diff_fwd:.2e}\n")
 
-    if not match_forward:
-        print("Forward pass failed. Aborting test.")
-        return
+    assert match_forward, f"CUDA get_H mismatch vs PyTorch (max_abs_diff={max_diff_fwd:.2e})"
 
     # --- TEST BACKWARD PASS (get_net_out / autograd) ---
     print("--- [2] BACKWARD CHECK (Gradients) ---")
@@ -79,9 +77,7 @@ def test_cuda_backend():
     print(f"(PyTorch == CUDA)? -> {'YES' if match_backward else 'NO'}")
     print(f"Maximum absolute difference: {max_diff_bwd:.2e}\n")
 
-    if not match_backward:
-        print("Backward pass failed. Aborting test.")
-        return
+    assert match_backward, f"CUDA get_net_out backward mismatch vs PyTorch (max_abs_diff={max_diff_bwd:.2e})"
 
     # --- BENCHMARK ---
     print("--- [3] MICRO-BENCHMARK for SPEEDUP ---")
