@@ -6,7 +6,10 @@ import time
 
 def next_power_of_2(n):
     """Returns the next power of 2 for a given number, used to pad dimensions for Triton."""
-    return 2 ** math.ceil(math.log2(n)) if n > 0 else 1
+    n = int(n)
+    if n <= 1:
+        return 1
+    return 1 << (n - 1).bit_length()
 
 @triton.autotune(
     configs=[
@@ -1001,10 +1004,6 @@ class BalancedTritonE3TensorDecomp(TritonE3TensorDecomp):
         return super()._get_H_impl(net_out)
 
 
-# --- FUNDAMENTAL UTILITY TO PREVENT GPU HANG IN TRITON ---
-def next_power_of_2(n):
-    """Returns the next power of 2 to avoid crashes on tl.arange"""
-    return 1 << (int(n) - 1).bit_length()
 
 _CACHE = {}
 
