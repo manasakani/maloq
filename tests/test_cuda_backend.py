@@ -1,3 +1,4 @@
+import pytest
 import torch
 import time
 from fock_utils.utils_tensor_decomp import e3TensorDecomp, make_output_irreps
@@ -6,8 +7,7 @@ from fock_utils.cuda_backend import CudaE3TensorDecomp
 def test_cuda_backend():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if device.type != 'cuda':
-        print("CUDA not available. The test requires a GPU.")
-        return
+        pytest.skip("CUDA not available; skipping CUDA backend test.")
         
     dtype = torch.float32
     print(f"Running test on: {device}\n")
