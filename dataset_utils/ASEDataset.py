@@ -177,13 +177,17 @@ def distribute_data(base_folder, world_size, rank, N_global_train, N_global_val)
     current_global_idx = 0
     total_molecules_available = 0
 
-    # extract all the .db file names inside base folder:
-    num_db_files = len([f for f in os.listdir(base_folder) if f.endswith('.db')])
-    db_files = [f for f in os.listdir(base_folder) if f.endswith('.db')]
+    if isinstance(base_folder, str):
+        base_folders = [base_folder]
+    else:
+        base_folders = base_folder
+
+    # extract all the .db file names inside base folders:
+    db_files = []
+    for folder in base_folders:
+        db_files.extend([os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.db')])
 
     for i, db_file in enumerate(db_files):
-        db_file = os.path.join(base_folder, db_file)
-
         try:
             db = ase.db.connect(db_file)
             count = db.count()

@@ -255,11 +255,11 @@ class TrainingWorkflow:
             
             # (Omol) folders of db files
             else:
-                print(f"Rank {self.rank}: Loading data from folder {db_source}", flush=True)
+                print(f"Rank {self.rank}: Loading data from folders {db_sources}", flush=True)
 
                 # --- 1. Distribute Data across ranks ---
                 train_data_dict, val_data_dict = distribute_data(
-                    base_folder=db_source,
+                    base_folder=db_sources,
                     world_size=self.world_size,
                     rank=self.rank,
                     N_global_train=c['num_train'],
