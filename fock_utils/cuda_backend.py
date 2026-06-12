@@ -150,7 +150,7 @@ class CUDAGetHFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        grad_net_out = ctx.decomp_obj.get_net_out(grad_output)
+        grad_net_out = ctx.decomp_obj._get_adjoint(grad_output)
         return grad_net_out, None
 
 class CudaE3TensorDecomp:
@@ -165,6 +165,7 @@ class CudaE3TensorDecomp:
         
         wms_flat_list = []
         wms_H_flat_list = []
+        wms_adjoint_flat_list = []
         wm_slices = [0]
         wm_H_slices = [0]
         
@@ -176,16 +177,20 @@ class CudaE3TensorDecomp:
             wms_flat_list.append(wm.flatten())
             wm_slices.append(wm_slices[-1] + h_dim * in_dim)
             
-            # GRADIENTS CORRECTION: Use the exact transpose (wm.T) instead of the physical inverse (wms_H)
-            # This ensures that the backward pass aligns with the rules of Autograd (W^T)
-            wm_h = wm.T.contiguous()
-            wms_H_flat_list.append(wm_h.flatten())
+            # Physical inverse (for get_net_out to match original semantics)
+            wm_H_phys = decomp_obj.wms_H[i].clone().view(in_dim, h_dim).contiguous()
+            wms_H_flat_list.append(wm_H_phys.flatten())
             wm_H_slices.append(wm_H_slices[-1] + in_dim * h_dim)
+
+            # Mathematical adjoint (for backward pass autograd)
+            wm_adjoint = wm.T.contiguous()
+            wms_adjoint_flat_list.append(wm_adjoint.flatten())
             
         self.wms_flat = torch.cat(wms_flat_list).to(device=self.device, dtype=self.dtype)
         self.wm_slices = torch.tensor(wm_slices[:-1], dtype=torch.int32, device=self.device)
         
         self.wms_H_flat = torch.cat(wms_H_flat_list).to(device=self.device, dtype=self.dtype)
+        self.wms_adjoint_flat = torch.cat(wms_adjoint_flat_list).to(device=self.device, dtype=self.dtype)
         self.wm_H_slices = torch.tensor(wm_H_slices[:-1], dtype=torch.int32, device=self.device)
         
         self.total_h_dim_val = int(decomp_obj.H_slices[-1])
@@ -215,6 +220,19 @@ class CudaE3TensorDecomp:
 
         out = cuda_backend.launch_get_net_out(
             H.contiguous(), self.wms_H_flat.contiguous(), 
+            self.in_slices, self.H_slices, self.wm_H_slices, 
+            self.num_blocks, self.total_in_dim_val
+        )
+        if self.sort is not None:
+            out = self.sort(out)
+        return out
+
+    def _get_adjoint(self, grad_output):
+        if cuda_backend is None:
+            raise RuntimeError("CUDA extension failed to load. Please check PyTorch setup.")
+
+        out = cuda_backend.launch_get_net_out(
+            grad_output.contiguous(), self.wms_adjoint_flat.contiguous(), 
             self.in_slices, self.H_slices, self.wm_H_slices, 
             self.num_blocks, self.total_in_dim_val
         )
