@@ -58,6 +58,7 @@ config = {
 
     # Model Architecture
     "wigner_backend": "triton",  # "triton" for fused Triton kernel (requires GPU + triton)
+    "basis_transform_backend": "torch", # "cuda" or "triton" for optimized basis transformations
     "l_embedding_dim": 128,
     "num_distance_basis": 128,
     "num_mp_layers": 3,

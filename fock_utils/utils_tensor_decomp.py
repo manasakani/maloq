@@ -107,6 +107,18 @@ class e3TensorDecomp:
         self.H_slices = H_slices
         self.wms_H = wms_H
 
+        # Dense block-diagonal transform used by torch.matmul.
+        # On CUDA this dispatches to cuBLAS, and autograd uses the transpose in backward.
+        self.W_global = torch.zeros((self.in_slices[-1], self.H_slices[-1]), device=self.device, dtype=self.dtype)
+        for i in range(len(self.out_js_list)):
+            in_start = self.in_slices[i]
+            in_end = self.in_slices[i + 1]
+            h_start = self.H_slices[i]
+            h_end = self.H_slices[i + 1]
+
+            block = self.wms[i].reshape(h_end - h_start, in_end - in_start)
+            self.W_global[in_start:in_end, h_start:h_end] = block.T.contiguous()
+
         self.sort = None
         if if_sort:
             self.sort = sort_irreps(required_irreps_out) 
@@ -122,31 +134,13 @@ class e3TensorDecomp:
 
         if self.sort is not None:
             net_out = self.sort.inverse(net_out)
-        out = []
+        out = torch.matmul(net_out, self.W_global)
 
-        for i in range(len(self.out_js_list)):
-            in_slice = slice(self.in_slices[i], self.in_slices[i + 1])
-            net_out_block = net_out[:, in_slice]
-            H_block = torch.sum(self.wms[i][None, :, :, :] * net_out_block[:, None, None, :], dim=-1)
-            out.append(H_block.reshape(net_out.shape[0], -1))
-
-        return torch.cat(out, dim=-1) # output shape: [edge, (4 spin components,) H_flattened_concatenated]
+        return out # output shape: [edge, (4 spin components,) H_flattened_concatenated]
 
     def get_net_out(self, H):
         r'''get net output from openmx type H'''
-        out = []
-        for i in range(len(self.out_js_list)):
-            H_slice = slice(self.H_slices[i], self.H_slices[i + 1])
-            l1, l2 = self.out_js_list[i]
-
-            l1 = l1 % 10  # handle convention for diffuse functions
-            l2 = l2 % 10
-            
-            H_block = H[:, H_slice].reshape(-1, 2 * l1 + 1, 2 * l2 + 1)
-            net_out_block = torch.sum(self.wms_H[i][None, :, :, :] * H_block[:, None, :, :], dim=(-1, -2))
-            out.append(net_out_block)
-
-        out = torch.cat(out, dim=-1)
+        out = torch.matmul(H, self.W_global.T)
         
         if self.sort is not None:
             out = self.sort(out)

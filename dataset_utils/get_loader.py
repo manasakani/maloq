@@ -33,7 +33,8 @@ def get_loader(database,
                 distribute_graphs=False,
                 tiling_dims=None,
                 partition_type='linear',
-                train_or_eval='train'):
+                train_or_eval='train',
+                basis_transform_backend='torch'):
     """
     Make dataloader with the given indices of the mocules in the input database
     Currently set up for three datasets: QM7, nablaDFT, omol. Need to modify for others.
@@ -221,7 +222,8 @@ def get_loader(database,
                                                                     scale_shift_data=scale_shift_data,
                                                                     periodic_boxes=periodic_boxes[batch_idxs] if periodic_dataset else None,
                                                                     tiling_dims=tiling_dims,
-                                                                    distribute_graphs=distribute_graphs)
+                                                                    distribute_graphs=distribute_graphs,
+                                                                    basis_transform_backend=basis_transform_backend)
 
                 atom_mol_id = graph_targets.atom_mol_id
                 batch_atomic_numbers = graph_targets.atomic_numbers_list
@@ -312,7 +314,8 @@ def get_loader(database,
                         scale_shift_data=scale_shift_data,
                         periodic_boxes=b_periodic_boxes,
                         tiling_dims=tiling_dims,
-                        distribute_graphs=distribute_graphs
+                        distribute_graphs=distribute_graphs,
+                        basis_transform_backend=basis_transform_backend
                     )
 
                     atom_mol_id = graph_targets.atom_mol_id
@@ -345,7 +348,9 @@ def get_loader(database,
                                                             dataset_name=dataset_name,
                                                             scale_shift_data=scale_shift_data,
                                                             periodic_boxes=periodic_boxes if periodic_dataset else None,
-                                                            tiling_dims=tiling_dims)
+                                                            tiling_dims=tiling_dims,
+                                                            partition_type=partition_type,
+                                                            basis_transform_backend=basis_transform_backend)
 
         # Add the molecules into the dataloader
         for i in range(num_molecules_to_process):

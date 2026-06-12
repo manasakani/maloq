@@ -212,7 +212,7 @@ class TrainingWorkflow:
 
         if isinstance(db_source, str):
             db_sources = [db_source]
-        elif isinstance(db_source, list):
+        elif isinstance(db_source, list) and len(db_source) > 0 and isinstance(db_source[0], str):
             db_sources = db_source
         else:
             db_sources = []
@@ -348,7 +348,8 @@ class TrainingWorkflow:
                 distribute_graphs=c['distribute_graphs'],
                 tiling_dims=c['tiling_dims'],
                 partition_type=c['partition_type'],
-                train_or_eval=c['train_or_eval']
+                train_or_eval=c['train_or_eval'],
+                basis_transform_backend=c.get('basis_transform_backend', 'torch')
             )
 
             dist.barrier()
@@ -383,7 +384,8 @@ class TrainingWorkflow:
                     distribute_graphs=c['distribute_graphs'],
                     tiling_dims=c['tiling_dims'],
                     partition_type=c['partition_type'],
-                    train_or_eval=c['train_or_eval']
+                    train_or_eval=c['train_or_eval'],
+                    basis_transform_backend=c.get('basis_transform_backend', 'torch')
                 )
             return train_loader, val_loader, required_irreps, basis_trans, orb_basis, ls_list
             
@@ -408,7 +410,8 @@ class TrainingWorkflow:
                 distribute_graphs=c['distribute_graphs'],
                 tiling_dims=c['tiling_dims'],
                 partition_type=c['partition_type'],
-                train_or_eval=c['train_or_eval']
+                train_or_eval=c['train_or_eval'],
+                basis_transform_backend=c.get('basis_transform_backend', 'torch')
             )
         
         return test_loader, None, required_irreps, basis_trans, orb_basis, ls_list

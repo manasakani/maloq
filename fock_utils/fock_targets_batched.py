@@ -43,7 +43,8 @@ class Fock_Targets:
                 orbital_template=None,
                 req_output_irreps=None,
                 out_js_list=None,
-                ls_list=None):
+                ls_list=None,
+                basis_transform_backend='torch'):
         """
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]]
         orbital_basis - H2O: {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]} (ex. dzvp)
@@ -147,7 +148,24 @@ class Fock_Targets:
             self.ls_list = ls_list
 
         # --> Create coupled/uncoupled basis transformation
-        self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
+        if basis_transform_backend == 'triton':
+            from fock_utils.triton_backend import BalancedTritonE3TensorDecompL2
+            base_decomp = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
+                                                                       self.out_js_list,
+                                                                       default_dtype_torch=dtype,
+                                                                       if_sort=False,
+                                                                       device_torch=self.device)
+            self.basis_transformation = BalancedTritonE3TensorDecompL2(base_decomp)
+        elif basis_transform_backend == 'cuda':
+            from fock_utils.cuda_backend import CudaE3TensorDecomp
+            base_decomp = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
+                                                                       self.out_js_list,
+                                                                       default_dtype_torch=dtype,
+                                                                       if_sort=False,
+                                                                       device_torch=self.device)
+            self.basis_transformation = CudaE3TensorDecomp(base_decomp)
+        else:
+            self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
                                                                        self.out_js_list,
                                                                        default_dtype_torch=dtype,
                                                                        if_sort=False,
@@ -320,7 +338,7 @@ class Fock_Targets:
         spin_strings = ['_alpha', '_beta']
 
         # each target should fit in a NxN matrix (to be flattened)
-        self.target_len = self.basis_transformation.required_irreps_out.dim
+        self.target_len = self.req_output_irreps.dim
 
         if self.distribute_graphs:
             node_labels_list = []
