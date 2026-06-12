@@ -1227,7 +1227,7 @@ class TritonGetHFunctionL2(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        grad_net_out = ctx.decomp_obj._get_net_out_impl(grad_output)
+        grad_net_out = ctx.decomp_obj._get_adjoint_impl(grad_output)
         return grad_net_out, None
 
 
