@@ -110,6 +110,7 @@ class e3TensorDecomp:
         # Dense block-diagonal transform used by torch.matmul.
         # On CUDA this dispatches to cuBLAS, and autograd uses the transpose in backward.
         self.W_global = torch.zeros((self.in_slices[-1], self.H_slices[-1]), device=self.device, dtype=self.dtype)
+        self.W_global_inv = torch.zeros((self.H_slices[-1], self.in_slices[-1]), device=self.device, dtype=self.dtype)
         for i in range(len(self.out_js_list)):
             in_start = self.in_slices[i]
             in_end = self.in_slices[i + 1]
@@ -118,6 +119,9 @@ class e3TensorDecomp:
 
             block = self.wms[i].reshape(h_end - h_start, in_end - in_start)
             self.W_global[in_start:in_end, h_start:h_end] = block.T.contiguous()
+            
+            block_inv = self.wms_H[i].reshape(in_end - in_start, h_end - h_start)
+            self.W_global_inv[h_start:h_end, in_start:in_end] = block_inv.T.contiguous()
 
         self.sort = None
         if if_sort:
@@ -140,7 +144,7 @@ class e3TensorDecomp:
 
     def get_net_out(self, H):
         r'''get net output from openmx type H'''
-        out = torch.matmul(H, self.W_global.T)
+        out = torch.matmul(H, self.W_global_inv)
         
         if self.sort is not None:
             out = self.sort(out)
