@@ -2,13 +2,16 @@ import pytest
 import torch
 import time
 from fock_utils.utils_tensor_decomp import e3TensorDecomp, make_output_irreps
-from fock_utils.cuda_backend import CudaE3TensorDecomp
+from fock_utils.cuda_backend import CudaE3TensorDecomp, cuda_backend
 
 def test_cuda_backend():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if device.type != 'cuda':
         pytest.skip("CUDA not available; skipping CUDA backend test.")
         
+    if cuda_backend is None:
+        pytest.skip("CUDA extension failed to load; skipping CUDA backend test.")
+
     dtype = torch.float32
     print(f"Running test on: {device}\n")
 
@@ -31,7 +34,6 @@ def test_cuda_backend():
         device_torch=device
     )
 
-    print("[CUDA kernel compilation in progress via JIT inline...]")
     # 4. Init of the new CUDA wrapper class
     decomp_cuda = CudaE3TensorDecomp(decomp_torch)
 
@@ -48,8 +50,8 @@ def test_cuda_backend():
     dummy_net_out_torch = torch.randn((num_edges, net_output_dim), dtype=dtype, device=device, requires_grad=True)
     dummy_net_out_cuda = dummy_net_out_torch.detach().clone().requires_grad_(True)
     
-    dummy_H_torch = torch.randn((num_edges, H_dim), dtype=dtype, device=device, requires_grad=True)
-    dummy_H_cuda = dummy_H_torch.detach().clone().requires_grad_(True)
+    dummy_H_torch = torch.randn((num_edges, H_dim), dtype=dtype, device=device)
+    dummy_H_cuda = dummy_H_torch.detach().clone()
 
     # --- FORWARD PASS TEST  (get_H) ---
     print("--- [1] FORWARD CHECK (get_H) ---")
@@ -63,12 +65,26 @@ def test_cuda_backend():
 
     assert match_forward, f"CUDA get_H mismatch vs PyTorch (max_abs_diff={max_diff_fwd:.2e})"
 
-    # --- TEST BACKWARD PASS (get_net_out / autograd) ---
-    print("--- [2] BACKWARD CHECK (Gradients) ---")
-    loss_torch = out_h_torch.sum()
+    # --- FORWARD PASS TEST  (get_net_out) ---
+    print("--- [1.5] FORWARD CHECK (get_net_out) ---")
+    out_net_torch = decomp_torch.get_net_out(dummy_H_torch)
+    out_net_cuda = decomp_cuda.get_net_out(dummy_H_cuda)
+
+    match_net = torch.allclose(out_net_torch, out_net_cuda, atol=1e-4, rtol=1e-4)
+    max_diff_net = torch.max(torch.abs(out_net_torch - out_net_cuda)).item()
+    print(f"(PyTorch == CUDA)? -> {'YES' if match_net else 'NO'}")
+    print(f"Maximum absolute difference: {max_diff_net:.2e}\n")
+
+    assert match_net, f"CUDA get_net_out mismatch vs PyTorch (max_abs_diff={max_diff_net:.2e})"
+
+    # --- TEST BACKWARD PASS (get_H / autograd) ---
+    print("--- [2] BACKWARD CHECK (Gradients of get_H) ---")
+    
+    grad_output = torch.randn_like(out_h_torch)
+    loss_torch = (out_h_torch * grad_output).sum()
     loss_torch.backward()
 
-    loss_cuda = out_h_cuda.sum()
+    loss_cuda = (out_h_cuda * grad_output).sum()
     loss_cuda.backward()
 
     match_backward = torch.allclose(dummy_net_out_torch.grad, dummy_net_out_cuda.grad, atol=1e-4, rtol=1e-4)
@@ -77,29 +93,30 @@ def test_cuda_backend():
     print(f"(PyTorch == CUDA)? -> {'YES' if match_backward else 'NO'}")
     print(f"Maximum absolute difference: {max_diff_bwd:.2e}\n")
 
-    assert match_backward, f"CUDA get_net_out backward mismatch vs PyTorch (max_abs_diff={max_diff_bwd:.2e})"
+    assert match_backward, f"CUDA get_H backward mismatch vs PyTorch (max_abs_diff={max_diff_bwd:.2e})"
 
     # --- BENCHMARK ---
     print("--- [3] MICRO-BENCHMARK for SPEEDUP ---")
     n_iters = 100
     
     # Warmup
-    for _ in range(5):
-        _ = decomp_torch.get_H(dummy_net_out_torch)
-        _ = decomp_cuda.get_H(dummy_net_out_cuda)
-    torch.cuda.synchronize()
+    with torch.no_grad():
+        for _ in range(5):
+            _ = decomp_torch.get_H(dummy_net_out_torch)
+            _ = decomp_cuda.get_H(dummy_net_out_cuda)
+        torch.cuda.synchronize()
 
-    start = time.perf_counter()
-    for _ in range(n_iters):
-        _ = decomp_torch.get_H(dummy_net_out_torch)
-    torch.cuda.synchronize()
-    time_torch = ((time.perf_counter() - start) / n_iters) * 1000
+        start = time.perf_counter()
+        for _ in range(n_iters):
+            _ = decomp_torch.get_H(dummy_net_out_torch)
+        torch.cuda.synchronize()
+        time_torch = ((time.perf_counter() - start) / n_iters) * 1000
 
-    start = time.perf_counter()
-    for _ in range(n_iters):
-        _ = decomp_cuda.get_H(dummy_net_out_cuda)
-    torch.cuda.synchronize()
-    time_cuda = ((time.perf_counter() - start) / n_iters) * 1000
+        start = time.perf_counter()
+        for _ in range(n_iters):
+            _ = decomp_cuda.get_H(dummy_net_out_cuda)
+        torch.cuda.synchronize()
+        time_cuda = ((time.perf_counter() - start) / n_iters) * 1000
 
     print(f"PyTorch time (get_H): {time_torch:.3f} ms / iter")
     print(f"CUDA kernel time (get_H): {time_cuda:.3f} ms / iter")

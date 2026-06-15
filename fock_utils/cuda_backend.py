@@ -1,6 +1,6 @@
 import torch
 import torch.utils.cpp_extension
-import math
+# import math
 
 # --- CUDA C++ SOURCE CODE ---
 cuda_src = r'''
@@ -83,7 +83,9 @@ torch::Tensor launch_get_H(
 {
     int num_edges = net_out.size(0);
     int total_in_dim = net_out.size(1);
-    auto H_out = torch::zeros({num_edges, total_h_dim}, net_out.options());
+    auto H_out = torch::empty({num_edges, total_h_dim}, net_out.options());
+
+    if (num_edges == 0 || num_blocks == 0) return H_out;
 
     const int threads_per_block = 256;
     const int blocks_per_grid_x = (num_edges + threads_per_block - 1) / threads_per_block;
@@ -91,7 +93,7 @@ torch::Tensor launch_get_H(
     dim3 grid(blocks_per_grid_x, num_blocks);
     dim3 block(threads_per_block);
 
-    AT_DISPATCH_FLOATING_TYPES(net_out.scalar_type(), "get_H_cuda", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(net_out.scalar_type(), "get_H_cuda", ([&] {
         get_H_cuda_kernel<scalar_t><<<grid, block>>>(
             net_out.data_ptr<scalar_t>(), wms.data_ptr<scalar_t>(),
             H_out.data_ptr<scalar_t>(),
@@ -109,7 +111,9 @@ torch::Tensor launch_get_net_out(
 {
     int num_edges = H_in.size(0);
     int total_h_dim = H_in.size(1);
-    auto net_out = torch::zeros({num_edges, total_in_dim}, H_in.options());
+    auto net_out = torch::empty({num_edges, total_in_dim}, H_in.options());
+
+    if (num_edges == 0 || num_blocks == 0) return net_out;
 
     const int threads_per_block = 256;
     const int blocks_per_grid_x = (num_edges + threads_per_block - 1) / threads_per_block;
@@ -117,7 +121,7 @@ torch::Tensor launch_get_net_out(
     dim3 grid(blocks_per_grid_x, num_blocks);
     dim3 block(threads_per_block);
 
-    AT_DISPATCH_FLOATING_TYPES(H_in.scalar_type(), "get_net_out_cuda", ([&] {
+    AT_DISPATCH_FLOATING_TYPES_AND_HALF(H_in.scalar_type(), "get_net_out_cuda", ([&] {
         get_net_out_cuda_kernel<scalar_t><<<grid, block>>>(
             H_in.data_ptr<scalar_t>(), wms_H.data_ptr<scalar_t>(),
             net_out.data_ptr<scalar_t>(),
@@ -208,7 +212,7 @@ class CudaE3TensorDecomp:
             raise RuntimeError("CUDA extension failed to load. Please check PyTorch setup.")
 
         out = cuda_backend.launch_get_H(
-            net_out.contiguous(), self.wms_flat.contiguous(), 
+            net_out.contiguous(), self.wms_flat.to(net_out.dtype).contiguous(), 
             self.in_slices, self.H_slices, self.wm_slices, 
             self.num_blocks, self.total_h_dim_val
         )
@@ -219,7 +223,7 @@ class CudaE3TensorDecomp:
             raise RuntimeError("CUDA extension failed to load. Please check PyTorch setup.")
 
         out = cuda_backend.launch_get_net_out(
-            H.contiguous(), self.wms_H_flat.contiguous(), 
+            H.contiguous(), self.wms_H_flat.to(H.dtype).contiguous(), 
             self.in_slices, self.H_slices, self.wm_H_slices, 
             self.num_blocks, self.total_in_dim_val
         )
@@ -232,7 +236,7 @@ class CudaE3TensorDecomp:
             raise RuntimeError("CUDA extension failed to load. Please check PyTorch setup.")
 
         out = cuda_backend.launch_get_net_out(
-            grad_output.contiguous(), self.wms_adjoint_flat.contiguous(), 
+            grad_output.contiguous(), self.wms_adjoint_flat.to(grad_output.dtype).contiguous(), 
             self.in_slices, self.H_slices, self.wm_H_slices, 
             self.num_blocks, self.total_in_dim_val
         )

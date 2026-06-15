@@ -1,8 +1,8 @@
 import torch
 import triton
 import triton.language as tl
-import math
-import time
+#import math
+# import time
 
 def next_power_of_2(n):
     """Returns the next power of 2 for a given number, used to pad dimensions for Triton."""
@@ -573,6 +573,7 @@ class TritonE3TensorDecomp:
         This version computes one block product per decomposition block,
         matching the blockwise matmul reference implementation.
         """
+        net_out = net_out.contiguous()
         num_edges = net_out.shape[0]
         total_in_dim = net_out.shape[1]
         total_h_dim = self.total_h_dim_val
@@ -630,112 +631,6 @@ class TritonE3TensorDecomp:
                 MAX_H_DIM=self.MAX_H_DIM,
             )
         return out
-
-
-@triton.autotune(
-    configs=[
-        triton.Config({'BLOCK_M': 32}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 32}, num_warps=2, num_stages=3),
-        triton.Config({'BLOCK_M': 32}, num_warps=2, num_stages=4),
-        triton.Config({'BLOCK_M': 32}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 32}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 32}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 32}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_M': 32}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 32}, num_warps=8, num_stages=4),
-        triton.Config({'BLOCK_M': 64}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 64}, num_warps=2, num_stages=3),
-        triton.Config({'BLOCK_M': 64}, num_warps=2, num_stages=4),
-        triton.Config({'BLOCK_M': 64}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 64}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 64}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 64}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_M': 64}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 64}, num_warps=8, num_stages=4),
-        triton.Config({'BLOCK_M': 128}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 128}, num_warps=2, num_stages=3),
-        triton.Config({'BLOCK_M': 128}, num_warps=2, num_stages=4),
-        triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 128}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_M': 128}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 128}, num_warps=8, num_stages=4),
-        triton.Config({'BLOCK_M': 256}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 256}, num_warps=2, num_stages=3),
-        triton.Config({'BLOCK_M': 256}, num_warps=2, num_stages=4),
-        triton.Config({'BLOCK_M': 256}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 256}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 256}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 256}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_M': 256}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 256}, num_warps=8, num_stages=4)
-    ],
-    key=['num_edges'],
-)
-@triton.jit
-def get_H_triton_grouped_balanced_kernel(
-    net_out_ptr,
-    balanced_wms_ptr,
-    H_out_ptr,
-    in_col_indices_ptr,
-    group_block_counts_ptr,
-    group_block_in_starts_ptr,
-    group_block_in_dims_ptr,
-    group_block_h_starts_ptr,
-    group_block_h_dims_ptr,
-    group_block_wm_starts_ptr,
-    num_edges,
-    total_in_dim,
-    total_h_dim,
-    BLOCK_M: tl.constexpr,
-    MAX_BLOCKS_PER_GROUP: tl.constexpr,
-    MAX_IN_DIM: tl.constexpr,
-    MAX_H_DIM: tl.constexpr,
-):
-    """
-    Compute one balanced group product where each group contains arbitrary (non-contiguous)
-    original blocks. Each program handles one edge tile and one group, and loops through
-    blocks assigned to that group.
-    """
-    pid_m = tl.program_id(0)
-    pid_group = tl.program_id(1)
-
-    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    offs_n = tl.arange(0, MAX_H_DIM)
-    offs_k = tl.arange(0, MAX_IN_DIM)
-
-    group_count = tl.load(group_block_counts_ptr + pid_group)
-
-    for slot in range(MAX_BLOCKS_PER_GROUP):
-        active = slot < group_count
-        flat_idx = pid_group * MAX_BLOCKS_PER_GROUP + slot
-
-        in_start = tl.load(group_block_in_starts_ptr + flat_idx, mask=active, other=0)
-        in_dim = tl.load(group_block_in_dims_ptr + flat_idx, mask=active, other=0)
-        h_start = tl.load(group_block_h_starts_ptr + flat_idx, mask=active, other=0)
-        h_dim = tl.load(group_block_h_dims_ptr + flat_idx, mask=active, other=0)
-        wm_start = tl.load(group_block_wm_starts_ptr + flat_idx, mask=active, other=0)
-
-        col_idx = tl.load(
-            in_col_indices_ptr + in_start + offs_k,
-            mask=active & (offs_k < in_dim),
-            other=0,
-        )
-
-        a_ptrs = net_out_ptr + offs_m[:, None] * total_in_dim + col_idx[None, :]
-        a_mask = active & (offs_m[:, None] < num_edges) & (offs_k[None, :] < in_dim)
-        a = tl.load(a_ptrs, mask=a_mask, other=0.0)
-
-        b_ptrs = balanced_wms_ptr + wm_start + offs_n[None, :] * in_dim + offs_k[:, None]
-        b_mask = active & (offs_k[:, None] < in_dim) & (offs_n[None, :] < h_dim)
-        b = tl.load(b_ptrs, mask=b_mask, other=0.0)
-
-        acc = tl.dot(a, b, allow_tf32=False)
-
-        out_ptrs = H_out_ptr + offs_m[:, None] * total_h_dim + (h_start + offs_n[None, :])
-        out_mask = active & (offs_m[:, None] < num_edges) & (offs_n[None, :] < h_dim)
-        tl.store(out_ptrs, acc, mask=out_mask)
 
 
 class BalancedTritonE3TensorDecomp(TritonE3TensorDecomp):
@@ -856,14 +751,6 @@ class BalancedTritonE3TensorDecomp(TritonE3TensorDecomp):
             h_restore_indices[orig_h] = perm_h
         self.h_restore_indices = h_restore_indices
 
-        # Keep placeholders for compatibility with old balanced kernel fields.
-        self.group_block_counts = torch.empty((0,), dtype=torch.int32, device=self.device)
-        self.group_block_in_starts = torch.empty((0,), dtype=torch.int32, device=self.device)
-        self.group_block_in_dims = torch.empty((0,), dtype=torch.int32, device=self.device)
-        self.group_block_h_starts = torch.empty((0,), dtype=torch.int32, device=self.device)
-        self.group_block_h_dims = torch.empty((0,), dtype=torch.int32, device=self.device)
-        self.group_block_wm_starts = torch.empty((0,), dtype=torch.int32, device=self.device)
-
         self.group_ranges = [(-1, -1) for _ in range(self.num_groups)]
         self.MAX_GROUP_IN_DIM, self.MAX_GROUP_H_DIM = self._compute_group_kernel_dims(
             max_group_in, max_group_h
@@ -967,6 +854,7 @@ class BalancedTritonE3TensorDecomp(TritonE3TensorDecomp):
             print(f"... ({len(info) - shown} more groups)")
 
     def _get_H_impl(self, net_out):
+        net_out = net_out.contiguous()
         num_edges = net_out.shape[0]
         total_in_dim = net_out.shape[1]
         total_h_dim = self.total_h_dim_val
@@ -1227,7 +1115,7 @@ class TritonGetHFunctionL2(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        grad_net_out = ctx.decomp_obj._get_adjoint_impl(grad_output)
+        grad_net_out = ctx.decomp_obj._get_net_out_impl(grad_output)
         return grad_net_out, None
 
 
@@ -1280,12 +1168,8 @@ class TritonE3TensorDecompL2(TritonE3TensorDecomp):
         import torch
         wms_padded_list = []
         for i in range(self.num_blocks):
-            in_start = int(self.decomp_obj.in_slices[i])
-            in_end = int(self.decomp_obj.in_slices[i+1])
-            h_start = int(self.decomp_obj.H_slices[i])
-            h_end = int(self.decomp_obj.H_slices[i+1])
-            in_dim = in_end - in_start
-            h_dim = h_end - h_start
+            in_dim = int(self.decomp_obj.in_slices[i+1] - self.decomp_obj.in_slices[i])
+            h_dim = int(self.decomp_obj.H_slices[i+1] - self.decomp_obj.H_slices[i])
             wm = self.decomp_obj.wms[i].clone().view(h_dim, in_dim)
             wm_padded = torch.zeros((self.MAX_H_DIM, self.MAX_IN_DIM), dtype=self.dtype, device=self.device)
             wm_padded[:h_dim, :in_dim] = wm
@@ -1313,7 +1197,7 @@ class TritonE3TensorDecompL2(TritonE3TensorDecomp):
                 for block_idx in blocks:
                     b_in = int(self.decomp_obj.in_slices[block_idx+1] - self.decomp_obj.in_slices[block_idx])
                     b_h = int(self.decomp_obj.H_slices[block_idx+1] - self.decomp_obj.H_slices[block_idx])
-                    g_wm[h_offset:h_offset+b_h, in_offset:in_offset+b_in] = self.decomp_obj.wms[block_idx].view(b_h, b_in)
+                    g_wm[h_offset:h_offset+b_h, in_offset:in_offset+b_in] = self.decomp_obj.wms[block_idx].reshape(b_h, b_in)
                     in_offset += b_in
                     h_offset += b_h
                     
@@ -1343,9 +1227,16 @@ class TritonE3TensorDecompL2(TritonE3TensorDecomp):
         return TritonGetHFunctionL2.apply(net_out, self)
 
     def get_net_out(self, H):
-        return self._get_net_out_impl(H)
+        out = self._get_net_out_impl(H)
+        if not hasattr(self, 'net_out_scale'):
+            scale = []
+            for mul, ir in self.decomp_obj.required_irreps_out:
+                scale.extend([2 * ir.l + 1] * (mul * (2 * ir.l + 1)))
+            self.net_out_scale = torch.tensor(scale, dtype=self.dtype, device=self.device)
+        return out * self.net_out_scale
 
     def _get_H_impl(self, net_out):
+        net_out = net_out.contiguous()
         num_edges = net_out.shape[0]
         total_in_dim = net_out.shape[1]
         total_h_dim = self.total_h_dim_val
@@ -1376,6 +1267,7 @@ class TritonE3TensorDecompL2(TritonE3TensorDecomp):
         return out
 
     def _get_net_out_impl(self, H):
+        H = H.contiguous()
         num_edges = H.shape[0]
         total_in_dim = int(self.decomp_obj.in_slices[-1])
         total_h_dim = self.total_h_dim_val
@@ -1449,12 +1341,8 @@ class BalancedTritonE3TensorDecompL2(BalancedTritonE3TensorDecomp):
 
         wms_padded_list = []
         for i in range(self.num_blocks):
-            in_start = int(self.decomp_obj.in_slices[i])
-            in_end = int(self.decomp_obj.in_slices[i+1])
-            h_start = int(self.decomp_obj.H_slices[i])
-            h_end = int(self.decomp_obj.H_slices[i+1])
-            in_dim = in_end - in_start
-            h_dim = h_end - h_start
+            in_dim = int(self.decomp_obj.in_slices[i+1] - self.decomp_obj.in_slices[i])
+            h_dim = int(self.decomp_obj.H_slices[i+1] - self.decomp_obj.H_slices[i])
             
             wm = self.decomp_obj.wms[i].clone().view(h_dim, in_dim)
             wm_padded = torch.zeros((self.MAX_H_DIM, self.MAX_IN_DIM), dtype=self.dtype, device=self.device)
@@ -1483,7 +1371,7 @@ class BalancedTritonE3TensorDecompL2(BalancedTritonE3TensorDecomp):
                 for block_idx in blocks:
                     b_in = int(self.decomp_obj.in_slices[block_idx+1] - self.decomp_obj.in_slices[block_idx])
                     b_h = int(self.decomp_obj.H_slices[block_idx+1] - self.decomp_obj.H_slices[block_idx])
-                    g_wm[h_offset:h_offset+b_h, in_offset:in_offset+b_in] = self.decomp_obj.wms[block_idx].view(b_h, b_in)
+                    g_wm[h_offset:h_offset+b_h, in_offset:in_offset+b_in] = self.decomp_obj.wms[block_idx].reshape(b_h, b_in)
                     in_offset += b_in
                     h_offset += b_h
                 wm_padded = torch.zeros((self.MAX_GROUP_H_DIM, self.MAX_GROUP_IN_DIM), dtype=self.dtype, device=self.device)
@@ -1513,9 +1401,16 @@ class BalancedTritonE3TensorDecompL2(BalancedTritonE3TensorDecomp):
         return TritonGetHFunctionL2.apply(net_out, self)
 
     def get_net_out(self, H):
-        return self._get_net_out_impl(H)
+        out = self._get_net_out_impl(H)
+        if not hasattr(self, 'net_out_scale'):
+            scale = []
+            for mul, ir in self.decomp_obj.required_irreps_out:
+                scale.extend([2 * ir.l + 1] * (mul * (2 * ir.l + 1)))
+            self.net_out_scale = torch.tensor(scale, dtype=self.dtype, device=self.device)
+        return out * self.net_out_scale
 
     def _get_H_impl(self, net_out):
+        net_out = net_out.contiguous()
         num_edges = net_out.shape[0]
         total_in_dim = net_out.shape[1]
         total_h_dim = self.total_h_dim_val
@@ -1534,9 +1429,22 @@ class BalancedTritonE3TensorDecompL2(BalancedTritonE3TensorDecomp):
             )
             return out_perm[:, self.h_restore_indices]
 
-        return super()._get_H_impl(net_out)
+        else:
+            out = torch.empty((num_edges, total_h_dim), device=net_out.device, dtype=net_out.dtype)
+            num_pid_n = self.num_blocks
+            grid = lambda meta: (triton.cdiv(num_edges, meta['BLOCK_M']) * num_pid_n,)
+            get_H_triton_block_kernel_l2[grid](
+                net_out, self.wms_flat, out,
+                self.in_col_indices, self.in_starts, self.in_dims,
+                self.h_starts, self.h_dims, self.wm_starts,
+                num_edges, total_in_dim, total_h_dim, num_pid_n,
+                self.MAX_IN_DIM, self.MAX_H_DIM,
+                MAX_IN_DIM=self.MAX_IN_DIM, MAX_H_DIM=self.MAX_H_DIM,
+            )
+            return out
 
     def _get_net_out_impl(self, H):
+        H = H.contiguous()
         num_edges = H.shape[0]
         total_in_dim = int(self.decomp_obj.in_slices[-1])
         total_h_dim = self.total_h_dim_val

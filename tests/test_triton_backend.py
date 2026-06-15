@@ -1,7 +1,8 @@
 import torch
 import time
+import statistics
 
-import sys
+# import sys
 from fock_utils.utils_tensor_decomp import e3TensorDecomp, make_output_irreps
 import fock_utils.triton_backend as foo2
 import pytest
@@ -44,7 +45,8 @@ def test_triton_backend_get_H_matches_torch():
         in_slice = slice(decomp.in_slices[i], decomp.in_slices[i + 1])
         wms[out_cols:out_cols + cols[i], in_slice] = decomp.wms[i].reshape(-1, rows)
         out_cols += cols[i]
-    y_ref = x @ wms.T
+    x_unsorted = decomp.sort.inverse(x) if decomp.sort is not None else x
+    y_ref = x_unsorted @ wms.T
     
     # Triton backend
     y = decomp_triton.get_H(x)
@@ -141,28 +143,33 @@ def get_H(self, net_out):
 
     if self.sort is not None:
         net_out = self.sort.inverse(net_out)
-    # out = []
-    out_rows = 0
-    out_cols = 0
-    cols = []
-    for i in range(len(self.out_js_list)):
-        wms_shape = self.wms[i].shape
-        out_rows += wms_shape[2]
-        tmp = wms_shape[0] * wms_shape[1]
-        out_cols += wms_shape[0] * wms_shape[1]
-        cols.append(tmp)
-    wms = torch.zeros((out_cols, out_rows), dtype=net_out.dtype, device=net_out.device)
-    out_cols = 0
-    useful_flop = 0
-    for i in range(len(self.out_js_list)):
-        rows = self.in_slices[i+1] - self.in_slices[i]
-        in_slice = slice(self.in_slices[i], self.in_slices[i + 1])
-        wms[out_cols:out_cols + cols[i], in_slice] = self.wms[i].reshape(-1, rows)
-        out_cols += cols[i]
-        useful_flop += 2 * net_out.shape[0] * rows * cols[i] 
-    total_flop = 2 * net_out.shape[0] * out_rows * out_cols
-    
-    return net_out @ wms.T, total_flop, useful_flop
+        
+    if not hasattr(self, '_cached_wms'):
+        out_rows = 0
+        out_cols = 0
+        cols = []
+        for i in range(len(self.out_js_list)):
+            wms_shape = self.wms[i].shape
+            out_rows += wms_shape[2]
+            tmp = wms_shape[0] * wms_shape[1]
+            out_cols += wms_shape[0] * wms_shape[1]
+            cols.append(tmp)
+        wms = torch.zeros((out_cols, out_rows), dtype=net_out.dtype, device=net_out.device)
+        out_cols = 0
+        useful_flop = 0
+        for i in range(len(self.out_js_list)):
+            rows = self.in_slices[i+1] - self.in_slices[i]
+            in_slice = slice(self.in_slices[i], self.in_slices[i + 1])
+            wms[out_cols:out_cols + cols[i], in_slice] = self.wms[i].reshape(-1, rows)
+            out_cols += cols[i]
+            useful_flop += 2 * net_out.shape[0] * rows * cols[i] 
+        total_flop = 2 * net_out.shape[0] * out_rows * out_cols
+        
+        self._cached_wms = wms
+        self._cached_total_flop = total_flop
+        self._cached_useful_flop = useful_flop
+        
+    return net_out @ self._cached_wms.T, self._cached_total_flop, self._cached_useful_flop
 
 
 def get_H_original(self, net_out):
@@ -199,31 +206,13 @@ def get_H_2(self, net_out):
         net_out_block = net_out[:, in_slice]
         # H_block = torch.sum(self.wms[i][None, :, :, :] * net_out_block[:, None, None, :], dim=-1)
         wms_shape = self.wms[i].shape
-        cols = wms_shape[0] * wms_shape[1]
-        wms = self.wms[i].reshape(cols, wms_shape[2])
+        block_cols = wms_shape[0] * wms_shape[1]
+        wms = self.wms[i].reshape(block_cols, wms_shape[2])
         H_block = net_out_block @ wms.T
         # out.append(H_block.reshape(net_out.shape[0], -1))
-        out[:, offset:offset+cols] = H_block
-        offset += cols
+        out[:, offset:offset+block_cols] = H_block
+        offset += block_cols
     return out
-
-    # out = torch.empty((net_out.shape[0], out_cols), dtype=net_out.dtype, device=net_out.device)
-    # offset = 0
-    # for i in range(len(self.out_js_list)):
-    #     in_slice = slice(self.in_slices[i], self.in_slices[i + 1])
-    #     net_out_block = net_out[:, in_slice]
-    #     # H_block = torch.sum(self.wms[i][None, :, :, :] * net_out_block[:, None, None, :], dim=-1)
-    #     wms_shape = self.wms[i].shape
-    #     cols = wms_shape[0] * wms_shape[1]
-    #     wms = self.wms[i].reshape(cols, wms_shape[2])
-    #     H_block = net_out_block @ wms.T
-    #     # out.append(H_block.reshape(net_out.shape[0], -1))
-    #     out[:, offset:offset+cols] = H_block
-    #     offset += cols
-    # return out
-    # torch.cuda.synchronize()
-    # nvtx.range_pop()
-    # return torch.cat(out, dim=-1) # output shape: [edge, (4 spin components,) H_flattened_concatenated]
 
 def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=100000, n_iters=100, n_warmup=10):
     """Run the full benchmark flow for a single basis set."""
@@ -281,7 +270,6 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
         torch.cuda.synchronize()
         end = time.perf_counter()
         times.append((end - start) * 1000)
-    import statistics
     get_H_time_ms = statistics.median(times)
     print(f"--> get_H median time: {get_H_time_ms:.3f} ms")
 
@@ -298,7 +286,7 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
     print(f"--> get_H_original (PyTorch) median time: {get_H_original_time_ms:.3f} ms")
     print(f"    Speedup of get_H over get_H_original: {get_H_original_time_ms / get_H_time_ms:.2f}x")
     match_original_ref = torch.allclose(out_h, out_h_original, atol=1e-5, rtol=1e-5)
-    rel_error_original_ref = torch.norm(out_h - out_h_original) / torch.norm(out_h)
+    rel_error_original_ref = torch.norm(out_h - out_h_original) / (torch.norm(out_h) + 1e-8)
 
     # Benchmark: get_H_2 (PyTorch)
     print(f"\n[Benchmarking get_H_2 (PyTorch) over {n_iters} iterations...]")
@@ -309,12 +297,11 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
         torch.cuda.synchronize()
         end = time.perf_counter()
         times.append((end - start) * 1000)
-    import statistics
     get_H_2_time_ms = statistics.median(times)
     print(f"--> get_H_2 (PyTorch) median time: {get_H_2_time_ms:.3f} ms")
     print(f"    Speedup of get_H_2 over get_H_original: {get_H_original_time_ms / get_H_2_time_ms:.2f}x")
     match_h2_ref = torch.allclose(out_h, out_h_2, atol=1e-5, rtol=1e-5)
-    rel_error_h2_ref = torch.norm(out_h - out_h_2) / torch.norm(out_h)
+    rel_error_h2_ref = torch.norm(out_h - out_h_2) / (torch.norm(out_h) + 1e-8)
 
 
 
@@ -331,7 +318,6 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
         torch.cuda.synchronize()
         end = time.perf_counter()
         times.append((end - start) * 1000)
-    import statistics
     get_H_triton_time_ms = statistics.median(times)
     print(f"--> get_H (Triton) median time: {get_H_triton_time_ms:.3f} ms")
     print(f"    Speedup over get_H_original: {get_H_original_time_ms / get_H_triton_time_ms:.2f}x")
@@ -339,12 +325,12 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
     # Sanity Check to confirm numerics match!
     match_triton_ref = torch.allclose(out_h, out_h_triton, atol=1e-5, rtol=1e-5)
     print(f"\n[Sanity Check] Do Triton and PyTorch provide the identical H matrix? -> {'YES' if match_triton_ref else 'NO!!!'}")
-    rel_error = torch.norm(out_h - out_h_triton) / torch.norm(out_h)
+    rel_error = torch.norm(out_h - out_h_triton) / (torch.norm(out_h) + 1e-8)
     print(f"Relative error between PyTorch and Triton outputs: {rel_error:.2e}")
 
     match_h2_triton = torch.allclose(out_h_2, out_h_triton, atol=1e-5, rtol=1e-5)
     print(f"\n[Sanity Check] Do get_H_2 (PyTorch) and Triton provide the identical H matrix? -> {'YES' if match_h2_triton else 'NO!!!'}")
-    rel_error_2 = torch.norm(out_h_2 - out_h_triton) / torch.norm(out_h_2)
+    rel_error_2 = torch.norm(out_h_2 - out_h_triton) / (torch.norm(out_h_2) + 1e-8)
     print(f"Relative error between get_H_2 (PyTorch) and Triton outputs: {rel_error_2:.2e}")
 
     get_H_triton_l2_time_ms = None
@@ -363,14 +349,13 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
             torch.cuda.synchronize()
             end = time.perf_counter()
             times.append((end - start) * 1000)
-        import statistics
         get_H_triton_l2_time_ms = statistics.median(times)
         print(f"--> get_H (Triton L2) median time: {get_H_triton_l2_time_ms:.3f} ms")
         print(f"    Speedup over get_H_original: {get_H_original_time_ms / get_H_triton_l2_time_ms:.2f}x")
         print(f"    Speedup over Triton naive: {get_H_triton_time_ms / get_H_triton_l2_time_ms:.2f}x")
 
         match_triton_l2_ref = torch.allclose(out_h, out_h_triton_l2, atol=1e-5, rtol=1e-5)
-        rel_error_l2 = torch.norm(out_h - out_h_triton_l2) / torch.norm(out_h)
+        rel_error_l2 = torch.norm(out_h - out_h_triton_l2) / (torch.norm(out_h) + 1e-8)
         print(
             "[Sanity Check] Do Triton L2 and PyTorch provide the identical H matrix? "
             f"-> {'YES' if match_triton_l2_ref else 'NO!!!'}"
@@ -454,7 +439,6 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
             torch.cuda.synchronize()
             end = time.perf_counter()
             times.append((end - start) * 1000)
-        import statistics
         get_H_triton_grouped_time_ms = statistics.median(times)
         print(
             f"--> get_H (Triton Grouped, size={grouping_size}) median time: "
@@ -474,7 +458,7 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
             "\n[Sanity Check] Do Triton Grouped and PyTorch provide the identical H matrix? "
             f"-> {'YES' if match else 'NO!!!'}"
         )
-        rel_error_grouped = torch.norm(out_h - out_h_triton_grouped) / torch.norm(out_h)
+        rel_error_grouped = torch.norm(out_h - out_h_triton_grouped) / (torch.norm(out_h) + 1e-8)
         print(f"Relative error between PyTorch and Triton Grouped outputs: {rel_error_grouped:.2e}")
 
         grouped_results.append(
@@ -493,8 +477,8 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
             }
         )
 
-        if foo2_l2 is not None and hasattr(foo2_l2, "TritonE3TensorDecompL2"):
-            decomp_triton_grouped_l2 = foo2_l2.TritonE3TensorDecompL2(
+        if foo2 is not None and hasattr(foo2, "TritonE3TensorDecompL2"):
+            decomp_triton_grouped_l2 = foo2.TritonE3TensorDecompL2(
                 decomp,
                 grouped_max_in_dim=grouping_size,
                 grouped_max_h_dim=grouping_size,
@@ -516,7 +500,6 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
                 torch.cuda.synchronize()
                 end = time.perf_counter()
                 times.append((end - start) * 1000)
-            import statistics
             get_H_triton_grouped_l2_time_ms = statistics.median(times)
             print(
                 f"--> get_H (Triton Grouped L2, size={grouping_size}) median time: "
@@ -532,7 +515,7 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
             )
 
             match_l2 = torch.allclose(out_h, out_h_triton_grouped_l2, atol=1e-5, rtol=1e-5)
-            rel_error_grouped_l2 = torch.norm(out_h - out_h_triton_grouped_l2) / torch.norm(out_h)
+            rel_error_grouped_l2 = torch.norm(out_h - out_h_triton_grouped_l2) / (torch.norm(out_h) + 1e-8)
             print(
                 "\n[Sanity Check] Do Triton Grouped L2 and PyTorch provide the identical H matrix? "
                 f"-> {'YES' if match_l2 else 'NO!!!'}"
@@ -613,7 +596,6 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
                 torch.cuda.synchronize()
                 end = time.perf_counter()
                 times.append((end - start) * 1000)
-            import statistics
             get_H_triton_grouped_balanced_time_ms = statistics.median(times)
             print(
                 f"--> get_H (Triton Grouped Balanced, size={grouping_size}) median time: "
@@ -633,7 +615,7 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
                 "\n[Sanity Check] Do Triton Grouped Balanced and PyTorch provide the identical H matrix? "
                 f"-> {'YES' if match_balanced else 'NO!!!'}"
             )
-            rel_error_balanced = torch.norm(out_h - out_h_triton_grouped_balanced) / torch.norm(out_h)
+            rel_error_balanced = torch.norm(out_h - out_h_triton_grouped_balanced) / (torch.norm(out_h) + 1e-8)
             print(
                 "Relative error between PyTorch and Triton Grouped Balanced outputs: "
                 f"{rel_error_balanced:.2e}"
@@ -655,8 +637,8 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
                 }
             )
 
-            if foo2_l2 is not None and hasattr(foo2_l2, "BalancedTritonE3TensorDecompL2"):
-                decomp_triton_grouped_balanced_l2 = foo2_l2.BalancedTritonE3TensorDecompL2(
+            if foo2 is not None and hasattr(foo2, "BalancedTritonE3TensorDecompL2"):
+                decomp_triton_grouped_balanced_l2 = foo2.BalancedTritonE3TensorDecompL2(
                     decomp,
                     grouped_max_in_dim=grouping_size,
                     grouped_max_h_dim=grouping_size,
@@ -678,7 +660,6 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
                     torch.cuda.synchronize()
                     end = time.perf_counter()
                     times.append((end - start) * 1000)
-                import statistics
                 get_H_triton_grouped_balanced_l2_time_ms = statistics.median(times)
                 print(
                     f"--> get_H (Triton Grouped Balanced L2, size={grouping_size}) median time: "
@@ -694,7 +675,7 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
                 )
 
                 match_balanced_l2 = torch.allclose(out_h, out_h_triton_grouped_balanced_l2, atol=1e-5, rtol=1e-5)
-                rel_error_balanced_l2 = torch.norm(out_h - out_h_triton_grouped_balanced_l2) / torch.norm(out_h)
+                rel_error_balanced_l2 = torch.norm(out_h - out_h_triton_grouped_balanced_l2) / (torch.norm(out_h) + 1e-8)
                 print(
                     "\n[Sanity Check] Do Triton Grouped Balanced L2 and PyTorch provide the identical H matrix? "
                     f"-> {'YES' if match_balanced_l2 else 'NO!!!'}"
@@ -826,7 +807,6 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
         torch.cuda.synchronize()
         end = time.perf_counter()
         times.append((end - start) * 1000)
-    import statistics
     get_net_out_original_time_ms = statistics.median(times)
     print(f"--> get_net_out (PyTorch) median time: {get_net_out_original_time_ms:.3f} ms")
     net_out_results.append({
@@ -851,7 +831,6 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
             torch.cuda.synchronize()
             end = time.perf_counter()
             times.append((end - start) * 1000)
-        import statistics
         get_net_out_triton_l2_gs_time_ms = statistics.median(times)
         print(f"--> get_net_out_groupsweep (Triton L2) median time: {get_net_out_triton_l2_gs_time_ms:.3f} ms")
         print(f"    Speedup over get_net_out (PyTorch): {get_net_out_original_time_ms / get_net_out_triton_l2_gs_time_ms:.2f}x")
@@ -894,7 +873,6 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
             torch.cuda.synchronize()
             end = time.perf_counter()
             times.append((end - start) * 1000)
-        import statistics
         get_net_out_triton_l2_time_ms = statistics.median(times)
         print(f"--> get_net_out (Triton L2) median time: {get_net_out_triton_l2_time_ms:.3f} ms")
         print(f"    Speedup over get_net_out (PyTorch): {get_net_out_original_time_ms / get_net_out_triton_l2_time_ms:.2f}x")
@@ -938,7 +916,10 @@ def run_benchmark_for_basis(basis_name, orbital_basis, device, dtype, num_edges=
 
 
 def run_benchmark():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if not torch.cuda.is_available():
+        print("CUDA not available, skipping benchmarks.")
+        return
+    device = torch.device('cuda')
     dtype = torch.float32
 
     print(f"Running on device: {device}")
