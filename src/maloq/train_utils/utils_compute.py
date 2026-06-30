@@ -1,8 +1,42 @@
 import os
+import atexit
 import torch
 import torch.distributed as dist
 import numpy as np
 from torch.distributed.launcher.api import LaunchConfig, elastic_launch
+
+
+_DIST_CLEANUP_REGISTERED = False
+
+
+def cleanup_process_group(sync_barrier=True):
+    """Safely tears down torch.distributed process group if initialized."""
+    if not dist.is_available() or not dist.is_initialized():
+        return
+
+    # Barrier before teardown helps avoid backend warnings on clean shutdown.
+    if sync_barrier:
+        try:
+            dist.barrier()
+        except Exception:
+            # Do not block teardown if one of the ranks has already failed.
+            pass
+
+    try:
+        dist.destroy_process_group()
+    except Exception:
+        # We intentionally swallow teardown errors so cleanup never masks root errors.
+        pass
+
+
+def register_dist_cleanup():
+    """Registers a best-effort process-group cleanup hook for interpreter exit."""
+    global _DIST_CLEANUP_REGISTERED
+    if _DIST_CLEANUP_REGISTERED:
+        return
+
+    atexit.register(cleanup_process_group, False)
+    _DIST_CLEANUP_REGISTERED = True
 
 def setup_env(rank, world_size, backend='nccl'):
 
@@ -43,6 +77,8 @@ def setup_env(rank, world_size, backend='nccl'):
 
     if dist.is_initialized():
         dist.barrier()
+
+    register_dist_cleanup()
 
     return device
 
