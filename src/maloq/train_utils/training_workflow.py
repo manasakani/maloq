@@ -500,66 +500,72 @@ class TrainingWorkflow:
                 if optimizer and 'optimizer_state_dict' in ckpt:
                     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
 
+    def close(self):
+        """Best-effort distributed cleanup for explicit shutdown paths."""
+        utils_compute.cleanup_process_group(sync_barrier=True)
+
     def run(self):
+        try:
+            # HELM's data and training pipeline currently supports these datasets:
+            if self.config['dataset_name'] == 'QM7':
+                database = ASEAtomsData(self.config['dbpath'])
+                if self.config['shuffle']:
+                    print("Shuffling QM7 dataset for training...")
+                    indices = list(range(len(database)))
+                    random.shuffle(indices)
+                    database = [database[i] for i in indices]
 
-        # HELM's data and training pipeline currently supports these datasets:
-        if self.config['dataset_name'] == 'QM7':
-            database = ASEAtomsData(self.config['dbpath'])
-            if self.config['shuffle']:
-                print("Shuffling QM7 dataset for training...")
-                indices = list(range(len(database)))
-                random.shuffle(indices)
-                database = [database[i] for i in indices]
+            elif self.config['dataset_name'] == 'nablaDFT':
+                database = HamiltonianDatabase(self.config['dbpath'])
+            elif self.config['dataset_name'] == 'omol':
+                database = None
+            elif self.config['dataset_name'] == 'cp2k_material':
+                database = None
+            else:
+                raise ValueError(f"Unknown dataset name: {self.config['dataset_name']}")
 
-        elif self.config['dataset_name'] == 'nablaDFT':
-            database = HamiltonianDatabase(self.config['dbpath'])
-        elif self.config['dataset_name'] == 'omol':
-            database = None
-        elif self.config['dataset_name'] == 'cp2k_material':
-            database = None
-        else:
-            raise ValueError(f"Unknown dataset name: {self.config['dataset_name']}")
+            """Main execution loop."""
+            loader, val_loader, irreps, basis_trans, orb_basis, ls_list = self.prepare_loaders(database)
+            backbone, head, optimizer = self.build_model(irreps, orb_basis, ls_list)
+            scheduler = self._get_scheduler(optimizer, loader) if loader else None
 
-        """Main execution loop."""
-        loader, val_loader, irreps, basis_trans, orb_basis, ls_list = self.prepare_loaders(database)
-        backbone, head, optimizer = self.build_model(irreps, orb_basis, ls_list)
-        scheduler = self._get_scheduler(optimizer, loader) if loader else None
-
-        trainer = splittrainer.SplitTrainer(
-            backbone=backbone, head=head, head_irreps=irreps, # Note: update if forces
-            run_name=self.config.get('run_name', 'run'),
-            save_frequency=self.config.get('save_frequency', 10)
-        )
-
-        target_map = {
-            'fock_matrix': ('node_y', 'y'),
-            'density_matrix': ('node_y', 'y'),
-            'forces': ('forces', None),
-            'energies': ('energies', None)
-        }
-        node_target, edge_target = target_map[self.config['loss_target']]
-
-        if self.config['train_or_eval'] == "train":
-            trainer.train(
-                self.config['num_epochs'], self.config['train_loss_fxn'],
-                optimizer, scheduler, self.device, train_loader=loader,
-                val_loader=val_loader, loss_target_string=self.config['loss_target'],
-                node_target_name=node_target, edge_target_name=edge_target,
-                output_folder=self.config['output_folder'],
-                train_backbone=self.config['train_backbone'],
-                train_head=self.config['train_head'],
-                basis_transform=basis_trans, 
-                compute_uncoupled_loss=self.config.get('compute_uncoupled_loss', False),
-                step_every_epoch=self.config.get('step_every_epoch', True),
-                element_references=self.config.get('element_references', None),
+            trainer = splittrainer.SplitTrainer(
+                backbone=backbone, head=head, head_irreps=irreps, # Note: update if forces
+                run_name=self.config.get('run_name', 'run'),
+                save_frequency=self.config.get('save_frequency', 10)
             )
-        else:
-            trainer.evaluate(
-                self.config['test_loss_fxn'], self.device, loader,
-                loss_target_string=self.config['loss_target'],
-                node_target_name=node_target, edge_target_name=edge_target, compute_total_energy=self.config['compute_total_energy'],
-                basis_transform=basis_trans, output_folder=self.config['output_folder'],
-                dataset_name=self.config['dataset_name'], orbital_basis=orb_basis,
-                element_references=self.config.get('element_references', None),
-                distributed_graphs=self.config['distribute_graphs']
-            )
+
+            target_map = {
+                'fock_matrix': ('node_y', 'y'),
+                'density_matrix': ('node_y', 'y'),
+                'forces': ('forces', None),
+                'energies': ('energies', None)
+            }
+            node_target, edge_target = target_map[self.config['loss_target']]
+
+            if self.config['train_or_eval'] == "train":
+                trainer.train(
+                    self.config['num_epochs'], self.config['train_loss_fxn'],
+                    optimizer, scheduler, self.device, train_loader=loader,
+                    val_loader=val_loader, loss_target_string=self.config['loss_target'],
+                    node_target_name=node_target, edge_target_name=edge_target,
+                    output_folder=self.config['output_folder'],
+                    train_backbone=self.config['train_backbone'],
+                    train_head=self.config['train_head'],
+                    basis_transform=basis_trans, 
+                    compute_uncoupled_loss=self.config.get('compute_uncoupled_loss', False),
+                    step_every_epoch=self.config.get('step_every_epoch', True),
+                    element_references=self.config.get('element_references', None),
+                )
+            else:
+                trainer.evaluate(
+                    self.config['test_loss_fxn'], self.device, loader,
+                    loss_target_string=self.config['loss_target'],
+                    node_target_name=node_target, edge_target_name=edge_target, compute_total_energy=self.config['compute_total_energy'],
+                    basis_transform=basis_trans, output_folder=self.config['output_folder'],
+                    dataset_name=self.config['dataset_name'], orbital_basis=orb_basis,
+                    element_references=self.config.get('element_references', None),
+                    distributed_graphs=self.config['distribute_graphs']
+                )
+        finally:
+            self.close()

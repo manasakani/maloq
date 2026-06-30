@@ -13,6 +13,7 @@ dependencies = [
   "torch>=2.12",
   "pydantic>=2.8",
   "pyyaml>=6.0",
+  "tomli>=2.0; python_version < '3.11'",
   "ase>=3.29",
   "scipy>=1.18",
   "matplotlib>=3.11",

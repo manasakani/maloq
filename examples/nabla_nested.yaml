@@ -1,0 +1,62 @@
+dataset:
+  dataset_name: nablaDFT
+  dbpath: /scratch/alziogas/maloq_datasets/train_2k.db
+  output_folder: outputs_nabla_nested
+  run_name: nabla_nested
+  open_shell: false
+
+execution:
+  train_or_eval: train
+  train_backbone: true
+  train_head: true
+  compute_total_energy: false
+
+splits:
+  num_train: 100
+  num_val: 16
+  num_test: 1
+  batch_size: 4
+  shuffle: false
+  distribute_graphs: false
+  partition_type: metis
+  dist_backend: nccl
+
+model:
+  wigner_backend: triton
+  l_embedding_dim: 128
+  num_distance_basis: 128
+  num_mp_layers: 3
+  rcut_orbitals: 8.0
+  rcut_gaussian: 16.0
+  gaussian_width: 1.0
+  reduce_edge: false
+  reduce_node: true
+  reduce_node_intra: true
+
+optimization:
+  num_epochs: 10
+  lr_init: 0.0001
+  optimizer_type: adam
+  weight_decay: 0.0
+  scheduler_type: cosine
+  eta_min: 1.0e-8
+  patience: 100
+  threshold: 1.0e-8
+  step_every_epoch: false
+
+loss:
+  loss_target: energies
+  train_loss: rmse_mse_padded_loss
+  test_loss: l1_unpadded_loss
+  scale_and_shift: true
+
+checkpointing:
+  save_frequency: 10
+  restart_backbone: false
+  restart_head: false
+  restart_optimizer: false
+  backbone_checkpoint: backbone.pt
+  head_checkpoint: head.pt
+
+runtime:
+  dtype: float32

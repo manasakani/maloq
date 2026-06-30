@@ -26,7 +26,10 @@ def main() -> None:
     wf_config = cfg.to_workflow_config()
 
     if args.print_effective_config:
-        printable = {k: (v.__name__ if hasattr(v, "__name__") else str(v)) for k, v in wf_config.items()}
+        printable = {
+            "config": cfg.model_dump(),
+            "workflow": {k: (v.__name__ if hasattr(v, "__name__") else str(v)) for k, v in wf_config.items()},
+        }
         print(json.dumps(printable, indent=2))
         return
 

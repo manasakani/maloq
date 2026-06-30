@@ -1,5 +1,5 @@
 dataset_name: nablaDFT
-dbpath: /path/to/train_2k.db
+dbpath: /scratch/alziogas/maloq_datasets/train_2k.db
 output_folder: outputs_nabla_minimal
 run_name: nabla_min
 
