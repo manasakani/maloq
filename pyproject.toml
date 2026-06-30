@@ -11,6 +11,8 @@ requires-python = ">=3.10"
 dependencies = [
   "numpy>=2.5",
   "torch>=2.12",
+  "pydantic>=2.8",
+  "pyyaml>=6.0",
   "ase>=3.29",
   "scipy>=1.18",
   "matplotlib>=3.11",
@@ -53,3 +55,6 @@ include = ["maloq*"]
 "maloq.helm" = ["*.pt", "triton_kernels/*.cuh", "triton_kernels/*.cu"]
 "maloq.fock_utils" = ["*.pt"]
 "maloq.dataset_utils" = ["stats_nablaDFT/*.npz"]
+
+[project.scripts]
+maloq = "maloq.cli.main:main"
