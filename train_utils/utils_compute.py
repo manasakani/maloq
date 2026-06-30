@@ -6,16 +6,43 @@ from torch.distributed.launcher.api import LaunchConfig, elastic_launch
 
 def setup_env(rank, world_size, backend='nccl'):
 
-    # !! make sure visibility is restricted to "gpu 0" in .sh file !!
-    gpu_id = 0
-    torch.cuda.set_device(gpu_id)
-    device = torch.device('cuda:'+ str(gpu_id))
+    use_cuda = torch.cuda.is_available()
+    if use_cuda:
+        # !! make sure visibility is restricted to "gpu 0" in .sh file !!
+        gpu_id = 0
+        torch.cuda.set_device(gpu_id)
+        device = torch.device('cuda:' + str(gpu_id))
+    else:
+        device = torch.device('cpu')
 
-    dist.init_process_group(backend=backend, rank=rank, world_size=world_size, device_id=device) #'gloo'
-    print("Initialized distributed process group", flush=True)
+    # Single-process local runs should not require MASTER_ADDR/MASTER_PORT.
+    if world_size <= 1:
+        if not dist.is_initialized():
+            init_kwargs = {
+                'backend': backend,
+                'rank': 0,
+                'world_size': 1,
+                'init_method': 'tcp://127.0.0.1:29500',
+            }
+            if use_cuda:
+                init_kwargs['device_id'] = device
+            dist.init_process_group(**init_kwargs)
+        print("Initialized local single-process distributed group", flush=True)
+    else:
+        init_kwargs = {
+            'backend': backend,
+            'rank': rank,
+            'world_size': world_size,
+        }
+        if use_cuda:
+            init_kwargs['device_id'] = device
+        dist.init_process_group(**init_kwargs)  # Uses env:// when rank/world size > 1.
+        print("Initialized distributed process group", flush=True)
+
     os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "1"
 
-    dist.barrier()
+    if dist.is_initialized():
+        dist.barrier()
 
     return device
 
