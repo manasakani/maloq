@@ -11,7 +11,7 @@ import math
 
 from ase import Atoms
 from ase.db import connect
-from fock_utils import utils_orca_out, utils_tensor_decomp, fock_targets, basis_sets
+from ..fock_utils import utils_orca_out, utils_tensor_decomp, fock_targets, basis_sets
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Create OMOL dataset (array version)')

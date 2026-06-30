@@ -9,10 +9,10 @@ from torch.utils.data import ConcatDataset
 import torch.distributed as dist
 
 from . import loss, utils_compute, splittrainer
-from dataset_utils import get_loader, get_scale_shift
-from dataset_utils.ASEDataset import distribute_data, ASEDataset, ASEAtomsData
-from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
-from helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, HELM_Force_Head, HELM_Energy_Head
+from ..dataset_utils import get_loader, get_scale_shift
+from ..dataset_utils.ASEDataset import distribute_data, ASEDataset, ASEAtomsData
+from ..dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
+from ..helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, HELM_Force_Head, HELM_Energy_Head
 
 class TrainingWorkflow:
 
@@ -174,7 +174,8 @@ class TrainingWorkflow:
         elif self.config['loss_target'] in ['energies']:
 
             filename = 'stats_nablaDFT/lin_ref_coeffs_nablaDFT.npz'
-            energy_ref_file = os.path.join("./dataset_utils/", filename)
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            energy_ref_file = os.path.join(current_dir, "../dataset_utils/", filename)
 
             if os.path.exists(energy_ref_file):
                 print(f"Loading energy reference coefficients from {energy_ref_file}")

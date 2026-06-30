@@ -2,9 +2,9 @@
 import torch
 import numpy as np
 from torch_geometric.data import Data as gnnData
-from fock_utils import fock_targets, utils_tensor_decomp, matrix2labels_kernels
+from ..fock_utils import fock_targets, utils_tensor_decomp, matrix2labels_kernels
 from e3nn.o3 import Irreps
-from helm.esen_new import eSEN_Backbone, Fock_Irreps_Head
+from .esen_new import eSEN_Backbone, Fock_Irreps_Head
 from ase.neighborlist import NeighborList
 
 def make_graph(atoms):

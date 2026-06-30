@@ -1,5 +1,5 @@
 import torch
-from train_utils import loss, training_workflow
+from maloq.train_utils import loss, training_workflow
 
 # ---------------------------------------------------------
 # QM7 Water Dataset Training & Evaluation

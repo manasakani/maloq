@@ -13,7 +13,7 @@ from ase.neighborlist import NeighborList
 from ase.io import write
 
 from . import utils_tensor_decomp, matrix2labels_kernels, reorder
-from fock_utils.domain_decomp import MergedStructure, Domain_Decomp
+from .domain_decomp import MergedStructure, Domain_Decomp
 
 from torch.utils.dlpack import from_dlpack
 import torch.distributed as dist

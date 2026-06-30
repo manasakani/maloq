@@ -42,20 +42,14 @@ dev = [
   "isort",
 ]
 
-[project.scripts]
-maloq-qm7 = "run_QM7:main"
-maloq-nablaDFT = "run_nablaDFT:main"
-maloq-omol-csh = "run_omol_csh:main"
-maloq-cp2k-pbc = "run_cp2k_pbc:main"
-
 [tool.setuptools]
 include-package-data = true
-py-modules = ["run_QM7", "run_nablaDFT", "run_omol_csh", "run_cp2k_pbc"]
 
 [tool.setuptools.packages.find]
-include = ["helm*", "fock_utils*", "dataset_utils*", "train_utils*"]
+where = ["src"]
+include = ["maloq*"]
 
 [tool.setuptools.package-data]
-helm = ["*.pt", "triton_kernels/*.cuh", "triton_kernels/*.cu"]
-fock_utils = ["*.pt"]
-dataset_utils = ["stats_nablaDFT/*.npz"]
+"maloq.helm" = ["*.pt", "triton_kernels/*.cuh", "triton_kernels/*.cu"]
+"maloq.fock_utils" = ["*.pt"]
+"maloq.dataset_utils" = ["stats_nablaDFT/*.npz"]

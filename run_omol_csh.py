@@ -1,6 +1,6 @@
 import torch
 import os
-from train_utils import loss, training_workflow
+from maloq.train_utils import loss, training_workflow
 
 # ---------------------------------------------------------
 # OMol Dataset Configuration - closed shell version

@@ -1,5 +1,5 @@
 import torch
-from train_utils import loss, training_workflow
+from maloq.train_utils import loss, training_workflow
 
 # ---------------------------------------------------------
 # nablaDFT Dataset Training & Evaluation
@@ -7,7 +7,8 @@ from train_utils import loss, training_workflow
 config = {
     # Dataset Paths & Naming
     "dataset_name": 'nablaDFT',
-    "dbpath": "/capstor/store/cscs/pasc/c33/manasa/nablaDFT_datasets/train_2k.db",
+    # "dbpath": "/capstor/store/cscs/pasc/c33/manasa/nablaDFT_datasets/train_2k.db",
+    "dbpath": "/scratch/alziogas/maloq_datasets/train_2k.db",
     "output_folder": 'outputs_nablaDFT_test',
     "run_name": 'nabla_2k',           # used in config filename saved to output folder
     "open_shell": False,
@@ -18,7 +19,8 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    "num_train": 12081,
+    # "num_train": 12081,
+    "num_train": 100,
     "num_val": 64,
     "num_test": 1,
     "batch_size": 10,                # if distributing graphs, this is the number of molecules per distributed graph

@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-from fock_utils import utils_orca_out, basis_sets, utils_tensor_decomp
+from ..fock_utils import utils_orca_out, basis_sets, utils_tensor_decomp
 from ase import Atoms
 import matplotlib.pyplot as plt
 from e3nn.o3 import Irreps

@@ -15,11 +15,11 @@ import cupy as cp
 from e3nn.o3 import Irreps
 from pyscf import gto, scf
 
-from dataset_utils import get_scale_shift
-from fock_utils.get_energy_from_fock import build_density, get_integrals, get_permute_phase, permute_mat
-from fock_utils.utils_orca_out import periodic_table_number, sort_by_m, read_orca_out, periodic_table
-from fock_utils.utils_orca_out import extract_charge_and_spin_from_path
-from fock_utils import basis_sets, matrix2labels_kernels
+from ..dataset_utils import get_scale_shift
+from ..fock_utils.get_energy_from_fock import build_density, get_integrals, get_permute_phase, permute_mat
+from ..fock_utils.utils_orca_out import periodic_table_number, sort_by_m, read_orca_out, periodic_table
+from ..fock_utils.utils_orca_out import extract_charge_and_spin_from_path
+from ..fock_utils import basis_sets, matrix2labels_kernels
 
 def get_timestamp_uid() -> str:
     return datetime.datetime.now().strftime("%Y%m-%d%H-%M%S-") + str(uuid4())[:4]

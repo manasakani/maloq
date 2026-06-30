@@ -4,8 +4,8 @@ import os
 from scipy.sparse import coo_matrix, diags
 import matplotlib.pyplot as plt
 
-from fock_utils import utils_orca_out, fock_targets_batched, matrix2labels_kernels, basis_sets
-from dataset_utils.ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
+from ..fock_utils import utils_orca_out, fock_targets_batched, matrix2labels_kernels, basis_sets
+from .ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
 
 from ase import Atoms
 from ase.neighborlist import NeighborList
