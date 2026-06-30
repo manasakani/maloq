@@ -69,9 +69,13 @@ config = {
     "compute_total_energy": False,    # Whether to compute total energy from fock matrix
 }
 
-if __name__ == "__main__":
+def main():
     os.makedirs(config['output_folder'], exist_ok=True)
     
     # Initialize and run the workflow
     workflow = training_workflow.TrainingWorkflow(config)
     workflow.run()
+
+
+if __name__ == "__main__":
+    main()

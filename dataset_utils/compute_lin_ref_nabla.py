@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from nablaDFT_dataset_utils import HamiltonianDatabase
+from .nablaDFT_dataset_utils import HamiltonianDatabase
 from ase import Atoms
 
 

@@ -6,7 +6,7 @@ from scipy.sparse import coo_matrix
 
 import torch.distributed as dist
 from mpi4py import MPI
-from fock_utils import reorder
+from . import reorder
 
 class MergedStructure:
     def __init__(self, z, pos, edges, cutoff, periodicity):

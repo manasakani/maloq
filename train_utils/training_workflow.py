@@ -8,7 +8,7 @@ from e3nn.o3 import Irreps
 from torch.utils.data import ConcatDataset
 import torch.distributed as dist
 
-from train_utils import loss, utils_compute, splittrainer
+from . import loss, utils_compute, splittrainer
 from dataset_utils import get_loader, get_scale_shift
 from dataset_utils.ASEDataset import distribute_data, ASEDataset, ASEAtomsData
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase

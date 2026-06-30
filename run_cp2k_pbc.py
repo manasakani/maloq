@@ -67,7 +67,10 @@ config = {
     "gaussian_width": 1.0,
 }
 
-if __name__ == "__main__":
-
+def main():
     workflow = training_workflow.TrainingWorkflow(config)
     workflow.run()
+
+
+if __name__ == "__main__":
+    main()
