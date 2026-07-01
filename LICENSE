@@ -1,8 +1,29 @@
-BSD 3-Clause License
-
-Copyright (c) 2024-2026, Computational Nanoelectronics Group, ETH
-Zurich, and all contributors listed in AUTHORS.
+Project MALOQ
+Copyright (c) 2024-2026, Computational Nanoelectronics Group, ETH Zurich,
+and all contributors listed in AUTHORS.
 All rights reserved.
+
+This project is licensed under the BSD 3-Clause License - see below for details.
+
+-------------------------------------------------------------------------
+Third-Party Software and Contributions:
+
+1. Subsets of this software were developed by project contributors during 
+   an internship at Meta, Inc. (FAIR). 
+   Copyright (c) 2025, Meta, Inc. and its affiliates.
+
+2. This project includes code derived from DeepH-E3, e3nn, fairchem, and SchNetPack,
+   which are licensed under the MIT License.
+   Copyright (c) 2023 Xiaoxun-Gong.
+   Copyright (c) 2020 Euclidean neural networks (e3nn), The Regents of theUniversity
+     of California, through Lawrence Berkeley National Laboratory (subject to receipt
+     of any required approvals from the U.S. Dept. of Energy), Ecole Polytechnique
+     Federale de Lausanne (EPFL), Free University of Berlin and Kostiantyn Lapchevskyi.
+   Copyright (c) Meta, Inc. and its affiliates.
+   Copyright (c) 2018 Kristof Schütt, Michael Gastegger, Pan Kessel, Kim Nicoli.
+-------------------------------------------------------------------------
+
+BSD 3-Clause License
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
