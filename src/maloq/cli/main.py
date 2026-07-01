@@ -1,3 +1,4 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
 """Data-independent CLI runner for MALOQ."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
 """
 Fused Wigner D-matrix kernel supporting lmax up to 8.
 

@@ -1,3 +1,4 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
 """Pydantic configuration scaffold for MALOQ runs.
 
 This module is intentionally minimal and designed to be extended.

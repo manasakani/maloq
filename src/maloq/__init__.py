@@ -1,3 +1,4 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
 """Top-level MALOQ package.
 
 The public API is organized as immediate subpackages:

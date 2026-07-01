@@ -1,3 +1,4 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
 """Module with interfaces for nablaDFT's Hamiltonian Databases.
 
 Create torch HamiltonianDataset object and get a DataLoader:

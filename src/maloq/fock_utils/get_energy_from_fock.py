@@ -1,3 +1,5 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
+
 import json
 import numpy as np
 import scipy

@@ -1,3 +1,5 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
+
 from e3nn.o3 import Irreps, wigner_3j
 from e3nn.nn import Extract
 import torch
@@ -5,6 +7,7 @@ import numpy as np
 import re
 
 # the e3TensorDecomp class is adapted from: https://github.com/Xiaoxun-Gong/DeepH-E3 and modified to account for diffuse functions
+# See LICENSES/MIT-DeepH-E3 for license information.
 
 def l1l2_to_l3s(l1, l2):
 

@@ -1,8 +1,8 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
 """
-Copyright (c) Meta, Inc. and its affiliates.
-
-This source code is licensed under the MIT license found in the
-LICENSE file in the root directory of this source tree.
+The codes in this file are adapted from fairchem (https://github.com/facebookresearch/fairchem).
+The FAIR Chemistry team have, in turn, adapted the codes from e3nn (https://github.com/e3nn/e3nn).
+See LICENSES/MIT-fairchem.md and LICENSES/MIT-e3nn for license information.
 """
 
 from __future__ import annotations

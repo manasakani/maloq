@@ -1,3 +1,4 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
 """
 1. Normalize features of shape (N, sphere_basis, C),
 with sphere_basis = (lmax + 1) ** 2.

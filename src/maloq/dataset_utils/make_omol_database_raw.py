@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
 
 import argparse
 import os

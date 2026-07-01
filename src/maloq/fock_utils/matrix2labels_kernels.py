@@ -1,3 +1,5 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
+
 import torch
 from pathlib import Path
 import numpy as np

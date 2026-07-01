@@ -1,5 +1,8 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
 """
-This is directly taken from schenetpack, to avoid installing the whole package. Link to source: []
+This is directly taken from SchNetPack, to avoid installing the whole package.
+Link to source: [https://github.com/atomistic-machine-learning/schnetpack/blob/de850ebf5dc00f6327c12824e20afb7879f5b596/src/schnetpack/properties.py]
+See LICENSES/MIT-SchNetPack for license information.
 Keys to access structure properties.
 """
 

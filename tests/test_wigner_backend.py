@@ -1,3 +1,5 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
+
 """
 Tests for the Wigner D-matrix Triton kernel (wigner_backend="triton").
 Validates correctness against PyTorch reference for lmax 0-8.

@@ -1,3 +1,4 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
 
 orbital_basis_def2_svp_nabla = {35: [0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2],
                                 17: [0, 0, 0, 0, 1, 1, 1, 2],

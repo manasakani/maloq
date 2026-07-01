@@ -1,3 +1,5 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
+
 import numpy as np
 import re
 from cclib.parser.orcaparser import ORCA

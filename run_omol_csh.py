@@ -1,3 +1,5 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
+
 import torch
 import os
 from maloq.train_utils import loss, training_workflow
