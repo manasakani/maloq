@@ -7,8 +7,8 @@ from e3nn import o3
 from torch_geometric.data import Data, Batch
 
 # --- Project Specific Imports ---
-from helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, HELM_Force_Head, HELM_Energy_Head
-from fock_utils import fock_targets_batched, utils_tensor_decomp
+from maloq.helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, HELM_Force_Head, HELM_Energy_Head
+from maloq.fock_utils import fock_targets_batched, utils_tensor_decomp
 
 def build_batch_nabla(pos_cart, z, edge_index, device, R_cart=None):
     """
