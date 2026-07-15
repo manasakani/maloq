@@ -222,8 +222,9 @@ class ExchangeNodes(torch.autograd.Function):
         if num_nodes_to_recv == 0:
             edge_embeddings[is_local] = embedding[local_indices_torch]
 
-        # torch.cuda.synchronize(device)
-        # dist.barrier()
+        # Note: this barrier is needed, otherwise the forward pass time becomes very unstable
+        torch.cuda.synchronize(device)
+        dist.barrier()
         # comm_start_time = time.time()
 
         # 3. Communication Group
@@ -267,7 +268,7 @@ class ExchangeNodes(torch.autograd.Function):
             all_received = torch.cat([recv_buffers[rank] for rank in nodes_to_recv.keys()], dim=0)
             edge_embeddings[is_remote] = all_received[remote_indices_torch]
         
-        # torch.cuda.synchronize(device)
+        torch.cuda.synchronize(device)
         # comm_end_time = time.time()
         # print(f"Rank {dist.get_rank()} - Message exchange completed in {comm_end_time - comm_start_time:.4f} seconds", flush=True)
 
@@ -289,6 +290,8 @@ class ExchangeNodes(torch.autograd.Function):
         # Remote gradients
         p2p_ops = []
         recv_grad_bufs = {}
+
+        torch.cuda.synchronize(device)
 
         # RECV: Gradients for nodes SENT in forward
         for target_rank, nodes in comm_dict['nodes_to_send'].items():
@@ -324,6 +327,8 @@ class ExchangeNodes(torch.autograd.Function):
             reqs = dist.batch_isend_irecv(p2p_ops)
             for req in reqs:
                 req.wait()
+
+        torch.cuda.synchronize(device)
 
         # Accumulate received gradients
         for target_rank, buf in recv_grad_bufs.items():
