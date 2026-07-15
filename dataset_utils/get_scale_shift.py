@@ -1,12 +1,16 @@
 import torch
+import os
 import numpy as np
 
-from fock_utils import utils_orca_out, basis_sets, utils_tensor_decomp
+from fock_utils import utils_orca_out, basis_sets, utils_tensor_decomp, fock_targets_batched
+from dataset_utils.get_loader import load_periodic_cp2k_structure, read_cp2k_matrix
+
 from ase import Atoms
 import matplotlib.pyplot as plt
 from e3nn.o3 import Irreps
 import time
 import copy
+import re
 
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Data as gnnData, Dataset, Batch
@@ -20,6 +24,8 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
 
     num_molecules = len(database)
 
+    molecular_database = True if dataset_name in ["QM7", "nablaDFT", "omol"] else False
+
     # 1. Get the indices of the scalar components in every target
     # -----------------------------------------------------------
     if dataset_name == "QM7":
@@ -28,30 +34,13 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
         orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
     elif dataset_name == "omol":
         orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
+    elif dataset_name == "cp2k_material":
+        orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.orbital_basis_def2_svp_cp2k[element] for element in basis_sets.orbital_basis_def2_svp_cp2k.keys()}
     else:
         print("Unknown dataset name!")
 
     # orbital_basis = {k: sorted(v) for k, v in orbital_basis.items()} # If need to sort by l (but this is not needed)
-    orbital_basis = dict(sorted(orbital_basis.items(), key=lambda item: len(item[1]), reverse=True)) # put elements with the largest basis first
 
-    # 0. Compute locations of scalars and higher ranks from required_irreps for this dataset's basis:
-    _, required_irreps, simplified_out_irreps, _, _, _, _ = utils_tensor_decomp.make_output_irreps(orbital_basis)
-    required_irreps = Irreps(required_irreps)
-
-    # Find the indices of l=0 elements in the labels
-    scalar_indices = []
-    irrep_track = 0
-    for _, irrep in required_irreps:
-        l = irrep.l
-        if l == 0:
-            scalar_indices.append(irrep_track)
-        irrep_track += 2 * l + 1
-
-    # Fock matrix analysis parameters:
-    orbital_template = None
-    orbital_starts = None
-    out_js_list = None
-    req_output_irreps = None
 
     # Extract the magnitudes of those irreps to make scaling/shifting factors
     if open_shell:
@@ -60,89 +49,136 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
     else:
         element_scalar_values = {}
 
-    for i in range(num_molecules):
-        mol = database[i]
 
-        print("working on molecule", i, "of", num_molecules)
-        time_start = time.perf_counter()
+    time_start = time.perf_counter()
 
-        if dataset_name == "QM7":
-            energy = mol['energy']
-            forces = mol['forces']
-            hamiltonian = mol['hamiltonian'].numpy()
-            atomic_numbers = mol['_atomic_numbers'].numpy()
-            positions=mol['_positions'].numpy()
-            orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
+    if molecular_database:
+        for i in range(num_molecules):
+            if dataset_name == "QM7":
+                energy = mol['energy']
+                forces = mol['forces']
+                hamiltonian = mol['hamiltonian'].numpy()
+                atomic_numbers = mol['_atomic_numbers'].numpy()
+                positions=mol['_positions'].numpy()
+                orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
 
-        elif dataset_name == "nablaDFT":
-            atomic_numbers, positions, energy, forces, hamiltonian, overlap, coeff_matrix, moses_id, conformation_id = database[i]
-            orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
+            elif dataset_name == "nablaDFT":
+                atomic_numbers, positions, energy, forces, hamiltonian, overlap, coeff_matrix, moses_id, conformation_id = database[i]
+                orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
 
-        elif dataset_name == "omol":
-            atomic_numbers = mol.atomic_numbers
-            if open_shell:
-                node_labels = [mol.node_y_alpha, mol.node_y_beta]
-            else:
-                node_labels = mol.node_y
-            energies = mol.energies
-            # forces = mol.forces
+            elif dataset_name == "omol":
+                atomic_numbers = mol.atomic_numbers
+                if open_shell:
+                    node_labels = [mol.node_y_alpha, mol.node_y_beta]
+                else:
+                    node_labels = mol.node_y
+                energies = mol.energies
+                # forces = mol.forces
+    
+    else:
+        elif dataset_name == "cp2k_material":
+            periodic_dataset = True
+
+            start_idx = 0
+            end_idx = len(database) 
+            
+            hamiltonians = []
+            overlaps = []
+            positions = []
+            atomic_numbers = []
+            energy = []
+            forces = []
+            periodic_boxes = []
+            charges = [0 for i in range(start_idx, end_idx)]
+            spins = [1 for i in range(start_idx, end_idx)]
+
+            for data_folder in database[start_idx : end_idx]:
+
+                # parse xyx file
+                xyz_file = [f for f in os.listdir(data_folder) if f.endswith('.xyz')][0]
+                structure = load_periodic_cp2k_structure(os.path.join(data_folder, xyz_file))
+                # print(f"Structure has {len(structure)} atoms and cell dimensions {structure.get_cell()} with PBC {structure.get_pbc()}", flush=True)
+                
+                atomic_numbers.append(structure.get_atomic_numbers())
+                positions.append(structure.get_positions())
+                periodic_boxes.append(structure.get_cell())
+
+                # find the Hamiltonian file of type *..-KS_Spin_1-1_0.csr:
+                hamiltonian_file = [f for f in os.listdir(data_folder) if '-KS_SPIN_1-1_0' in f or 'H.csr' in f][0]
+                print(f"Loading Hamiltonian from {hamiltonian_file}...", flush=True)
+                hamiltonian = read_cp2k_matrix(os.path.join(data_folder, hamiltonian_file), dtype=dtype)
+                # print(f"Hamiltonian loaded with shape {hamiltonian.shape} and {hamiltonian.nnz} non-zero elements", flush=True)
+
+                overlap_file = [f for f in os.listdir(data_folder) if '-S_SPIN_1-1_0' in f][0]
+                overlap = read_cp2k_matrix(os.path.join(data_folder, overlap_file))
+                # print(f"Overlap loaded with shape {overlap.shape} and {overlap.nnz} non-zero elements", flush=True)
+
+                shift_fermi = True
+                if shift_fermi:
+                    print(f"Shifting Hamiltonian by Fermi energy...", flush=True)
+                    out_file = [f for f in os.listdir(data_folder) if f.endswith('.out') and 'slurm' not in f][0]
+                    mu = get_fermi_energy(os.path.join(data_folder, out_file))
+                    print(f"Fermi energy: {mu}", flush=True)
+
+                    # Apply gauge transformation: H' = H - mu * S
+                    hamiltonian = hamiltonian - mu * overlap
+
+                hamiltonians.append(hamiltonian)
 
         else:
             print("Unknown database!")
 
-        # if the dataset is not omol, we need to create the atomic structure and set up the graph targets
-        if dataset_name != "omol":
+    # Set up the graph targets:
+    graph_targets = fock_targets_batched.Fock_Targets(atomic_numbers, positions, rcut, orbital_basis, hamiltonians, 
+                                                        dtype=dtype, 
+                                                        dataset_name=dataset_name,
+                                                        scale_shift_data=None,
+                                                        periodic_boxes=periodic_boxes if periodic_dataset else None,
+                                                        tiling_dims=None)
+        
+    # Get rid of the molecule dimension:
+    node_labels_tensors = [torch.as_tensor(x)[0] for x in graph_targets.node_labels_list]
+    atomic_numbers_tensors = [torch.as_tensor(x).flatten() for x in atomic_numbers]
+    node_labels = torch.cat(node_labels_tensors, dim=0)       # Shape: [total_atoms, 676]  (e.g., [2088, 676])
+    atomic_numbers = torch.cat(atomic_numbers_tensors, dim=0) # Shape: [total_atoms]       (e.g., [2088])
 
-            # 1. Make the atomic structure
-            mol_atoms = Atoms(symbols=atomic_numbers, positions=positions)
+    # Get the locations of the l=0 irreps:
+    required_irreps = graph_targets.req_output_irreps
 
-            # 2. Set up the Graph targets
-            if dataset_name == "QM7":
-                hamiltonian = utils_orca_out.sort_by_m(hamiltonian, orbital_basis, atomic_numbers)      # QM7 comes in zxy coordinates from ORCA, so need to rotate
+    scalar_indices = []
+    irrep_track = 0
+    for _, irrep in required_irreps:
+        l = irrep.l
+        if l == 0:
+            scalar_indices.append(irrep_track)
+        irrep_track += 2 * l + 1
 
-            graph_targets = fock_targets.Fock_Targets(mol_atoms, rcut, orbital_basis, hamiltonian, dtype=dtype, half_edges=reduce_edge,
-                                                    orbital_template=orbital_template,
-                                                    orbital_starts=orbital_starts,
-                                                    req_output_irreps=req_output_irreps,
-                                                    out_js_list=out_js_list)
 
-            # Save the analysis objects to use for the next structure (these depend only on the basis)
-            orbital_template = graph_targets.orbital_template
-            orbital_starts = graph_targets.orbital_starts
-            out_js_list = graph_targets.out_js_list
-            req_output_irreps = graph_targets.req_output_irreps
+    # 3. Compute the scale and shift for each atomic number and irrep degree
+    for atom_ind, atomic_number in enumerate(atomic_numbers):
 
-            # Shift back all the diffuse orbitals (which were incremented by 10 in utils_tensor_decomp.py)
-            for atom, orbitals in orbital_basis.items():
-                orbital_basis[atom] = [orb % 10 for orb in orbitals]
+        atomic_number = int(atomic_number.item())
 
-            node_labels = graph_targets.node_labels[0] # Extract spin dimension
+        if open_shell:
+            if atomic_number not in element_scalar_values_alpha:
+                element_scalar_values_alpha[atomic_number] = []
+                element_scalar_values_beta[atomic_number] = []
 
-        # 3. Compute the scale and shift for each atomic number and irrep degree
-        for atom_ind, atomic_number in enumerate(atomic_numbers):
+            orbital_onsite_scalars_alpha = node_labels[0][atom_ind][scalar_indices]
+            orbital_onsite_scalars_beta = node_labels[1][atom_ind][scalar_indices]
 
-            atomic_number = int(atomic_number.item())
+            element_scalar_values_alpha[atomic_number].append(orbital_onsite_scalars_alpha)
+            element_scalar_values_beta[atomic_number].append(orbital_onsite_scalars_beta)
+        else:
+            node_block = node_labels[atom_ind] # remove spin dimension
+            if atomic_number not in element_scalar_values:
+                element_scalar_values[atomic_number] = []
 
-            if open_shell:
-                if atomic_number not in element_scalar_values_alpha:
-                    element_scalar_values_alpha[atomic_number] = []
-                    element_scalar_values_beta[atomic_number] = []
+            orbital_onsite_scalars = node_block[scalar_indices]
+            element_scalar_values[atomic_number].append(orbital_onsite_scalars)
 
-                orbital_onsite_scalars_alpha = node_labels[0][atom_ind][scalar_indices]
-                orbital_onsite_scalars_beta = node_labels[1][atom_ind][scalar_indices]
-
-                element_scalar_values_alpha[atomic_number].append(orbital_onsite_scalars_alpha)
-                element_scalar_values_beta[atomic_number].append(orbital_onsite_scalars_beta)
-            else:
-                node_block = node_labels[atom_ind] # remove spin dimension
-                if atomic_number not in element_scalar_values:
-                    element_scalar_values[atomic_number] = []
-
-                orbital_onsite_scalars = node_block[scalar_indices]
-                element_scalar_values[atomic_number].append(orbital_onsite_scalars)
-
-        time_end = time.perf_counter()
-        print(f"Time to extract node irreps for molecule {i}: {time_end - time_start} seconds", flush=True)
+    time_end = time.perf_counter()
+    print(f"Time to extract node irreps for all molecules: {time_end - time_start} seconds", flush=True)
 
     if open_shell:
         # print(f"Element scalar values [alpha]: {element_scalar_values_alpha}")
@@ -158,61 +194,12 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
     # print(f"Rank {rank} - Element scalar values keys: {list(element_scalar_values.keys())}", flush=True)
     # dist.barrier()
 
-    # if distributed, allgather the element_scalar_values dictionary
-    if dist.is_available() and dist.is_initialized():
-        rank = dist.get_rank()
-        world_size = dist.get_world_size()
-
-        if open_shell:
-            print(f"Rank {rank} - Allgathering element_scalar_values from all ranks...", flush=True)
-            gathered_data_alpha = [None for _ in range(world_size)]
-            gathered_data_beta = [None for _ in range(world_size)]
-            dist.all_gather_object(gathered_data_alpha, element_scalar_values_alpha)
-            dist.all_gather_object(gathered_data_beta, element_scalar_values_beta)
-            combined_element_scalar_values_alpha = {}
-            combined_element_scalar_values_beta = {}
-            if rank == 0:
-                # Combine the gathered dictionaries
-                for data in gathered_data_alpha:
-                    for key, value in data.items():
-                        if key not in combined_element_scalar_values_alpha:
-                            combined_element_scalar_values_alpha[key] = []
-                        combined_element_scalar_values_alpha[key].extend(value)
-                for data in gathered_data_beta:
-                    for key, value in data.items():
-                        if key not in combined_element_scalar_values_beta:
-                            combined_element_scalar_values_beta[key] = []
-                        combined_element_scalar_values_beta[key].extend(value)
-                print(f"Rank {rank} - Combined element_scalar_values keys [alpha]: {list(element_scalar_values_alpha.keys())}", flush=True)
-                print(f"Rank {rank} - Combined element_scalar_values keys [beta]: {list(element_scalar_values_beta.keys())}", flush=True)
-
-            # sort the keys in increasing order
-            combined_element_scalar_values_alpha = {k: combined_element_scalar_values_alpha[k] for k in sorted(combined_element_scalar_values_alpha.keys())}
-            combined_element_scalar_values_beta = {k: combined_element_scalar_values_beta[k] for k in sorted(combined_element_scalar_values_beta.keys())}
-
-        else:
-            print(f"Rank {rank} - Allgathering element_scalar_values from all ranks...", flush=True)
-            gathered_data = [None for _ in range(world_size)]
-            dist.all_gather_object(gathered_data, element_scalar_values)
-            combined_element_scalar_values = {}
-            if rank == 0:
-                # Combine the gathered dictionaries
-                for data in gathered_data:
-                    for key, value in data.items():
-                        if key not in combined_element_scalar_values:
-                            combined_element_scalar_values[key] = []
-                        combined_element_scalar_values[key].extend(value)
-                print(f"Rank {rank} - Combined element_scalar_values keys: {list(element_scalar_values.keys())}", flush=True)
-
-            # sort the keys in increasing order
-            combined_element_scalar_values = {k: combined_element_scalar_values[k] for k in sorted(combined_element_scalar_values.keys())}
+    rank = 0
+    if open_shell:
+        combined_element_scalar_values_alpha = element_scalar_values_alpha
+        combined_element_scalar_values_beta = element_scalar_values_beta
     else:
-        rank = 0
-        if open_shell:
-            combined_element_scalar_values_alpha = element_scalar_values_alpha
-            combined_element_scalar_values_beta = element_scalar_values_beta
-        else:
-            combined_element_scalar_values = element_scalar_values
+        combined_element_scalar_values = element_scalar_values
 
     if rank == 0:
 
@@ -231,7 +218,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
                 means = stacked.mean(dim=0)  # shape: [6]
                 stds = stacked.std(dim=0, unbiased=False)
 
-                # Fix always-zero positions
+                # Fix always-zero positions - revisit this
                 threshold = 1e-4
                 zero_mask = (means == 0.0)
                 means[zero_mask] = 0.0
@@ -312,88 +299,25 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
     return scale_shift_data
 
 
-def scale_shift_database(database, start_mol, end_mol, rcut_orbitals, orbital_basis, reduce_edge, scale_shift_data, dataset_name='', scale_nodes=False, open_shell=False, train_or_eval='train'):
-    """
-    Scale and shift the node labels in the database using the scale_shift_data
-    """
+def get_fermi_energy(out_file_path):
+    patterns = [
+        r'Fermi Energy \[eV\] :\s*([-+]?\d*\.\d+)',  # Matches "Fermi Energy [eV] :   -4.747024"
+        r'Fermi energy:\s*([-+]?\d*\.\d+)',          # Matches "Fermi energy: -4.747024"
+        r'Fermi level:\s*([-+]?\d*\.\d+)',           # Matches "Fermi level: -4.747024"
+    ]
+    with open(out_file_path, 'r') as f:
+        for line in f:
+            for pattern in patterns:
+                match = re.search(pattern, line)
+                if match:
+                    # convert to hartree if it's in eV:
+                    if 'eV' in pattern:
+                        print(f"Fermi energy found in eV: {match.group(1)}. Converting to Hartree...", flush=True)
+                        return float(match.group(1)) / 27.211386245988
+                    return float(match.group(1))
+    raise ValueError(f"Fermi energy not found in {out_file_path}")
+    
 
-    # For analysis only (not reconstruction of the matrix), we just create a sample structure and fock target object
-    print("Making analysis fock target object for the first molecule in the database", flush=True)
-    sample_structure = Atoms(symbols=database[start_mol].atomic_numbers, positions=database[start_mol].pos)
-    sample_fock_target_object = fock_targets.Fock_Targets(
-                                                            sample_structure,
-                                                            rcut_orbitals,
-                                                            orbital_basis,
-                                                            fock_matrix=None,
-                                                            dataset_name=dataset_name,
-                                                            half_edges=reduce_edge,
-                                                            scale_shift_data=scale_shift_data
-                                                        )
-    orbital_template = sample_fock_target_object.orbital_template
-    orbital_starts = sample_fock_target_object.orbital_starts
-    out_js_list = sample_fock_target_object.out_js_list
-    req_output_irreps = sample_fock_target_object.req_output_irreps
-
-    data_list = []
-    for i in range(start_mol, end_mol):
-
-        data_obj = database[i]
-        data_obj.fock_target_object = sample_fock_target_object
-
-        # If running evaluation, we need to create a structure-dependent fock target object
-        if train_or_eval == 'eval':
-            print("Making fock analysis object for molecule", i, flush=True)
-            structure = Atoms(symbols=data_obj.atomic_numbers, positions=data_obj.pos)
-            fock_target_object = fock_targets.Fock_Targets(
-                                                            structure, rcut_orbitals, orbital_basis, fock_matrix=None,
-                                                            dataset_name=dataset_name,
-                                                            half_edges=reduce_edge, scale_shift_data=scale_shift_data,
-                                                            orbital_template=orbital_template,
-                                                            orbital_starts=orbital_starts,
-                                                            out_js_list=out_js_list,
-                                                            req_output_irreps=req_output_irreps
-                                                        )
-            data_obj.fock_target_object = fock_target_object
-
-        if train_or_eval == 'train' and scale_nodes:
-            print(f"Scaling and shifting the node labels in database[{i}]", flush=True)
-            start_time = time.perf_counter()
-
-            # Check if open shell:
-            if hasattr(data_obj, "node_y_alpha") and hasattr(data_obj, "node_y_beta"):
-                print(f"Node labels [alpha] before scaling molecule {i}: max={data_obj.node_y_alpha.max().item():.6f}, min={data_obj.node_y_alpha.min().item():.6f}", flush=True)
-                print(f"Node labels [beta] before scaling molecule {i}: max={data_obj.node_y_beta.max().item():.6f}, min={data_obj.node_y_beta.min().item():.6f}", flush=True)
-                scaled_node_y_alpha = data_obj.fock_target_object.scale_shift_node_blocks(
-                    data_obj.node_y_alpha, data_obj.atomic_numbers, spin_string='_alpha'
-                )
-                scaled_node_y_beta = data_obj.fock_target_object.scale_shift_node_blocks(
-                    data_obj.node_y_beta, data_obj.atomic_numbers, spin_string='_beta'
-                )
-                data_obj.node_y_alpha = scaled_node_y_alpha
-                data_obj.node_y_beta = scaled_node_y_beta
-                print(f"Node labels [alpha]  after scaling molecule {i}: max={data_obj.node_y_alpha.max().item():.6f}, min={data_obj.node_y_alpha.min().item():.6f}", flush=True)
-                print(f"Node labels [beta]  after scaling molecule {i}: max={data_obj.node_y_beta.max().item():.6f}, min={data_obj.node_y_beta.min().item():.6f}", flush=True)
-
-                if data_obj.node_y_alpha.max().item() > 500 or data_obj.node_y_beta.max().item() > 500:
-                    print("WARNING: This node is too big [openshell]!")
-                    # exit()
-            else:
-                print(f"Node labels before scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)
-                scaled_node_y = data_obj.fock_target_object.scale_shift_node_blocks(
-                    data_obj.node_y, data_obj.atomic_numbers
-                )
-                data_obj.node_y = scaled_node_y
-                print(f"Node labels after scaling molecule {i}: max={data_obj.node_y.max().item():.6f}, min={data_obj.node_y.min().item():.6f}", flush=True)
-
-                if data_obj.node_y.max().item() > 500:
-                    print("WARNING: This node is too big [closedshell]!")
-                    # exit()
-
-            end_time = time.perf_counter()
-
-        data_list.append(data_obj)
-
-    return data_list
 
 
 # --------------------------------------------
