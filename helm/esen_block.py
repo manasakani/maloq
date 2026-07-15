@@ -83,7 +83,6 @@ class Edgewise(torch.nn.Module):
             self.concat_size = 2
         else:
             raise ValueError(f"Unknown message type {message_type}")
-        self.concat_size = 3
 
         self.so2_conv_1 = SO2_Convolution(
             self.concat_size * self.sphere_channels,  

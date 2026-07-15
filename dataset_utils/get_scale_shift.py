@@ -75,8 +75,9 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
                 energies = mol.energies
                 # forces = mol.forces
     
+    # materials databases with one folder per structure
     else:
-        elif dataset_name == "cp2k_material":
+        if dataset_name == "cp2k_material":
             periodic_dataset = True
 
             start_idx = 0
