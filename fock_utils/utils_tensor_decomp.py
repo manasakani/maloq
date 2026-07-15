@@ -117,18 +117,49 @@ class e3TensorDecomp:
         else:
             self.required_irreps_out = required_irreps_out
     
+    # def get_H(self, net_out):
+    #     r''' get openmx type H from net output '''
+
+    #     if self.sort is not None:
+    #         net_out = self.sort.inverse(net_out)
+    #     out = []
+
+    #     for i in range(len(self.out_js_list)):
+    #         in_slice = slice(self.in_slices[i], self.in_slices[i + 1])
+    #         net_out_block = net_out[:, in_slice]
+    #         H_block = torch.sum(self.wms[i][None, :, :, :] * net_out_block[:, None, None, :], dim=-1)
+    #         out.append(H_block.reshape(net_out.shape[0], -1))
+
+    #     return torch.cat(out, dim=-1) # output shape: [edge, (4 spin components,) H_flattened_concatenated]
+
     def get_H(self, net_out):
         r''' get openmx type H from net output '''
-
-        if self.sort is not None:
-            net_out = self.sort.inverse(net_out)
         out = []
+        chunk_size = 10000
 
         for i in range(len(self.out_js_list)):
             in_slice = slice(self.in_slices[i], self.in_slices[i + 1])
             net_out_block = net_out[:, in_slice]
-            H_block = torch.sum(self.wms[i][None, :, :, :] * net_out_block[:, None, None, :], dim=-1)
-            out.append(H_block.reshape(net_out.shape[0], -1))
+            n_edges = net_out_block.shape[0]
+            
+            # Pre-allocate output for this specific block: (n_edges, Out * In1)
+            # The original reshape was (n_edges, -1), calculated here as out_dim
+            out_dim = self.wms[i].shape[0] * self.wms[i].shape[1]
+            block_result = torch.empty((n_edges, out_dim), device=net_out.device, dtype=net_out.dtype)
+
+            # Process in chunks to avoid OOM
+            for start in range(0, n_edges, chunk_size):
+                end = min(start + chunk_size, n_edges)
+                chunk = net_out_block[start:end]
+                
+                # Calculate chunk (broadcast multiplication then sum)
+                # This is the memory-intensive operation now limited to chunk_size
+                H_block = torch.sum(self.wms[i][None, :, :, :] * chunk[:, None, None, :], dim=-1)
+                
+                # Reshape to (chunk_size, Out * In1) and fill the pre-allocated slice
+                block_result[start:end] = H_block.reshape(chunk.shape[0], -1)
+
+            out.append(block_result)
 
         return torch.cat(out, dim=-1) # output shape: [edge, (4 spin components,) H_flattened_concatenated]
 
