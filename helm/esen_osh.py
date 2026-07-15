@@ -83,7 +83,8 @@ class eSEN_Backbone(nn.Module):
         include_edges=True,
         open_shell=False,
         wigner_backend: str = "torch",
-        distributed_graph_training=False
+        distributed_graph_training=False,
+        message_type='source-target'
     ):
         super().__init__()
 
@@ -231,6 +232,7 @@ class eSEN_Backbone(nn.Module):
                 self.norm_type,
                 self.act_type,
                 self.mlp_type,
+                message_type,
                 self.include_edges,
                 node_or_edge='node'
             )
@@ -249,6 +251,7 @@ class eSEN_Backbone(nn.Module):
                     self.norm_type,
                     self.act_type,
                     self.mlp_type,
+                    message_type,
                     self.include_edges,
                     node_or_edge='edge'
                 )

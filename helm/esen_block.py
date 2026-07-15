@@ -43,8 +43,9 @@ class Edgewise(torch.nn.Module):
         mappingReduced,
         SO3_grid,
         cutoff,
+        message_type,
         act_type="gate",
-        include_edges=True
+        include_edges=True,
     ):
         super().__init__()
 
@@ -76,10 +77,16 @@ class Edgewise(torch.nn.Module):
         else:
             raise ValueError(f"Unknown activation type {self.act_type}")
         
-        concat_size = 2
+        if message_type == "source-target-message":
+            self.concat_size = 3
+        elif message_type == "source-target":
+            self.concat_size = 2
+        else:
+            raise ValueError(f"Unknown message type {message_type}")
+        self.concat_size = 3
 
         self.so2_conv_1 = SO2_Convolution(
-            concat_size * self.sphere_channels,  
+            self.concat_size * self.sphere_channels,  
             self.hidden_channels,
             self.lmax,
             self.mmax,
@@ -167,7 +174,10 @@ class Edgewise(torch.nn.Module):
             x_target = x[edge_index[1]]
 
         # Create messages 
-        x_message = torch.cat((x_source, x_target), dim=2) 
+        if self.concat_size == 3:
+            x_message = torch.cat((x_source, x_target, x_message_edge), dim=2)
+        else:   
+            x_message = torch.cat((x_source, x_target), dim=2) 
 
         # Rotate the irreps to align with the edge
         x_message = torch.bmm(wigner, x_message)
@@ -227,8 +237,11 @@ class Edgewise(torch.nn.Module):
             x_source = x[edge_index[0]]
             x_target = x[edge_index[1]]
 
-        # Create regular messages
-        x_message = torch.cat((x_source, x_target), dim=2) 
+        # Create messages 
+        if self.concat_size == 3:
+            x_message = torch.cat((x_source, x_target, x_message_edge), dim=2)
+        else:   
+            x_message = torch.cat((x_source, x_target), dim=2) 
 
 
         # Rotate the irreps to align with the edge
@@ -301,6 +314,7 @@ class eSEN_Block(torch.nn.Module):
         norm_type: str,
         act_type: str,
         mlp_type: str,
+        message_type: str,
         include_edges=True,
         node_or_edge: str = 'node',  # 'node' or 'edge'
     ) -> None:
@@ -327,6 +341,7 @@ class eSEN_Block(torch.nn.Module):
             mappingReduced=mappingReduced,
             SO3_grid=SO3_grid,
             cutoff=cutoff,
+            message_type=message_type,
             act_type=act_type,
             include_edges=include_edges
         )
