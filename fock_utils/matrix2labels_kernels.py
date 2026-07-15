@@ -5,9 +5,45 @@ import matplotlib.pyplot as plt
 import cupy as cp
 import sys
 import time
+from typing import NamedTuple
+import scipy.sparse as sparse
 
 max_elements = 100
 THREADS_PER_BLOCK = 128
+
+def sparse_block_matrix_to_scipy_csr(sparse_matrix):
+    """One-off conversion from the GPU block-list SparseBlockMatrix to a CPU
+    scipy.sparse.csr_matrix, for writing to disk. Builds explicit per-element
+    row/col indices -- fine for an I/O-time conversion, not meant for the
+    training hot path."""
+    rows = cp.asnumpy(sparse_matrix.fock_block_rows)
+    cols = cp.asnumpy(sparse_matrix.fock_block_cols)
+    offsets = cp.asnumpy(sparse_matrix.fock_block_offsets)
+    data = cp.asnumpy(sparse_matrix.data)
+    matrix_size = int(offsets[-1])
+
+    row_idx_parts = []
+    col_idx_parts = []
+    for b in range(len(rows)):
+        i, j = rows[b], cols[b]
+        r0, r1 = offsets[i], offsets[i + 1]
+        c0, c1 = offsets[j], offsets[j + 1]
+        rr, cc = np.meshgrid(np.arange(r0, r1), np.arange(c0, c1), indexing='ij')
+        row_idx_parts.append(rr.ravel())
+        col_idx_parts.append(cc.ravel())
+
+    row_idx = np.concatenate(row_idx_parts)
+    col_idx = np.concatenate(col_idx_parts)
+
+    coo = sparse.coo_matrix((data, (row_idx, col_idx)), shape=(matrix_size, matrix_size))
+    return coo.tocsr()
+
+class SparseBlockMatrix(NamedTuple):
+    data: cp.ndarray                # (total_elements,) float32 -- block values, row-major, back-to-back
+    block_data_offsets: cp.ndarray  # (num_blocks + 1,) int64   -- start of block b in `data`
+    fock_block_rows: cp.ndarray     # (num_blocks,) int32       -- atom index, row side of each block
+    fock_block_cols: cp.ndarray     # (num_blocks,) int32       -- atom index, col side of each block
+    fock_block_offsets: cp.ndarray  # (num_atoms + 1,) int32    -- same per-atom offsets as the dense path
 
 _multiple_matrix2label_fp32 = cp.RawKernel(r'''
 #define MAX_ELEMENTS 100
@@ -518,11 +554,11 @@ void _single_matrix2label_fp32(
     const int ** __restrict__  orbital_templates,
     const int * __restrict__  orbital_template_lengths,
     float * __restrict__  fock_matrix,
-    const int stride_fock_matrice_m,
-    const int stride_fock_matrice_n,
+    const long long stride_fock_matrice_m,
+    const long long stride_fock_matrice_n,
     float * __restrict__  target,
-    const int stride_target_m,
-    const int stride_target_n,
+    const long long stride_target_m,
+    const long long stride_target_n,
     const bool forward
 ){
 
@@ -553,7 +589,7 @@ void _single_matrix2label_fp32(
     const int block_size_col = block_col_end - block_col_start;
 
     float *block_target = target
-        + bidx * stride_target_m;
+        + (long long)bidx * stride_target_m;
 
     const int atomic_element_i = idx_to_atomic_number[block_i];
     const int atomic_element_j = idx_to_atomic_number[block_j];
@@ -565,16 +601,16 @@ void _single_matrix2label_fp32(
     extern __shared__ float shared_interaction_block[];
 
     float *global_interaction_block = fock_matrix +
-        block_row_start * stride_fock_matrice_m +
-        block_col_start * stride_fock_matrice_n;
+        (long long)block_row_start * stride_fock_matrice_m +
+        (long long)block_col_start * stride_fock_matrice_n;
 
     if(true){
         for(int i = idx; i < block_size_row * block_size_col; i += blockDim.x){
             const int row = i / block_size_col;
             const int col = i % block_size_col;
             shared_interaction_block[row * block_size_col + col] = global_interaction_block[
-                row * stride_fock_matrice_m +
-                col * stride_fock_matrice_n
+                (long long)row * stride_fock_matrice_m +
+                (long long)col * stride_fock_matrice_n
             ];
         }
         __syncthreads();
@@ -605,7 +641,7 @@ void _single_matrix2label_fp32(
             const int row = k / subblock_size_col;
             const int col = k % subblock_size_col;
 
-            const int output_idx = (output_slice_block_start + k) * stride_target_n;
+            const long long output_idx = (long long)(output_slice_block_start + k) * stride_target_n;
 
             if(forward){
                 block_target[
@@ -636,8 +672,8 @@ void _single_matrix2label_fp32(
             const int row = i / block_size_col;
             const int col = i % block_size_col;
             global_interaction_block[
-                row * stride_fock_matrice_m +
-                col * stride_fock_matrice_n
+                (long long)row * stride_fock_matrice_m +
+                (long long)col * stride_fock_matrice_n
             ] = shared_interaction_block[row * block_size_col + col];
 
         }
@@ -646,6 +682,119 @@ void _single_matrix2label_fp32(
 }
 ''',
     "_single_matrix2label_fp32",
+)
+
+_single_matrix2label_fp32_sparse = cp.RawKernel(r'''
+#define MAX_ELEMENTS 100
+
+extern "C" __global__
+void _single_matrix2label_fp32_sparse(
+    const int * __restrict__  fock_block_rows,
+    const int * __restrict__  fock_block_cols,
+    const int * __restrict__  fock_block_offsets,
+    const long long * __restrict__  block_data_offsets,
+    const int * __restrict__  idx_to_atomic_number,
+    const int ** __restrict__  orbital_templates,
+    const int * __restrict__  orbital_template_lengths,
+    float * __restrict__  fock_matrix_sparse,
+    float * __restrict__  target,
+    const long long stride_target_m,
+    const long long stride_target_n,
+    const bool forward
+){
+
+    const int bidx = blockIdx.x;
+    const int idx = threadIdx.x;
+
+    const int warp_idx = idx / 32;
+    const int lane_idx = idx % 32;
+    const int warp_per_block = blockDim.x / 32;
+
+    const int block_i = fock_block_rows[bidx];
+    const int block_j = fock_block_cols[bidx];
+
+    const int block_row_start = fock_block_offsets[block_i];
+    const int block_row_end = fock_block_offsets[block_i + 1];
+    const int block_col_start = fock_block_offsets[block_j];
+    const int block_col_end = fock_block_offsets[block_j + 1];
+
+    const int block_size_row = block_row_end - block_row_start;
+    const int block_size_col = block_col_end - block_col_start;
+
+    float *block_target = target
+        + (long long)bidx * stride_target_m;
+
+    const int atomic_element_i = idx_to_atomic_number[block_i];
+    const int atomic_element_j = idx_to_atomic_number[block_j];
+
+    const int element_interaction_key = atomic_element_i * MAX_ELEMENTS + atomic_element_j;
+
+    extern __shared__ float shared_interaction_block[];
+
+    // block b lives contiguously (row-major, block_size_row x block_size_col)
+    // starting at block_data_offsets[b] -- no strides needed, unlike the dense
+    // kernel which has to walk into a (matrix_size, matrix_size) buffer.
+    float *global_interaction_block = fock_matrix_sparse + block_data_offsets[bidx];
+
+    if(true){
+        for(int i = idx; i < block_size_row * block_size_col; i += blockDim.x){
+            shared_interaction_block[i] = global_interaction_block[i];
+        }
+        __syncthreads();
+    }
+
+    const int *orbital_template = orbital_templates[element_interaction_key];
+    const int orbital_template_length = orbital_template_lengths[element_interaction_key];
+
+    for(int j = warp_idx; j < orbital_template_length; j += warp_per_block){
+        const int subblock_row_start = orbital_template[j * 5 + 0];
+        const int subblock_row_end = orbital_template[j * 5 + 1];
+        const int subblock_col_start = orbital_template[j * 5 + 2];
+        const int subblock_col_end = orbital_template[j * 5 + 3];
+        const int output_slice_block_start = orbital_template[j * 5 + 4];
+
+        const int subblock_size_row = subblock_row_end - subblock_row_start;
+        const int subblock_size_col = subblock_col_end - subblock_col_start;
+
+        float *shared_interaction_subblock = shared_interaction_block
+             +
+            subblock_row_start * block_size_col +
+            subblock_col_start;
+
+        for(int k = lane_idx; k < subblock_size_row * subblock_size_col; k += 32){
+            const int row = k / subblock_size_col;
+            const int col = k % subblock_size_col;
+
+            const long long output_idx = (long long)(output_slice_block_start + k) * stride_target_n;
+
+            if(forward){
+                block_target[
+                    output_idx
+                ] = shared_interaction_subblock[
+                    row * block_size_col +
+                    col
+                ];
+            }
+            else{
+                shared_interaction_subblock[
+                    row * block_size_col +
+                    col
+                ] = block_target[
+                    output_idx
+                ];
+            }
+        }
+    }
+
+    if(!forward){
+        __syncthreads();
+        for(int i = idx; i < block_size_row * block_size_col; i += blockDim.x){
+            global_interaction_block[i] = shared_interaction_block[i];
+        }
+    }
+}
+''',
+    "_single_matrix2label_fp32_sparse",
 )
 
 _single_matrix2label_fp64 = cp.RawKernel(r'''
@@ -817,11 +966,11 @@ def cupy_single_matrix2label(
     target = cp.ascontiguousarray(target)
     fock_matrix = cp.ascontiguousarray(fock_matrix)
 
-    target_stride_m = np.int32(target.strides[0] // float_size)
-    target_stride_n = np.int32(target.strides[1] // float_size)
+    target_stride_m = np.int64(target.strides[0] // float_size)
+    target_stride_n = np.int64(target.strides[1] // float_size)
 
-    fock_matrix_stride_m = np.int32(fock_matrix.strides[0] // float_size)
-    fock_matrix_stride_n = np.int32(fock_matrix.strides[1] // float_size)
+    fock_matrix_stride_m = np.int64(fock_matrix.strides[0] // float_size)
+    fock_matrix_stride_n = np.int64(fock_matrix.strides[1] // float_size)
 
 
     fock_block_rows = cp.array(fock_block_rows, dtype=cp.int32)
@@ -883,6 +1032,85 @@ def cupy_single_matrix2label(
             ),
             shared_mem = float_size * max_block_size**2,
         )
+
+def cupy_single_matrix2label_sparse(
+    orbital_templates,
+    fock_block_offsets,
+    idx_to_atomic_number,
+    fock_block_rows,
+    fock_block_cols,
+    target,
+    orbital_template_ptrs,
+    forward,
+    sparse_matrix=None,       # a SparseBlockMatrix -- required when forward=True
+    block_data_offsets=None,  # pass a cached one in if the block structure is unchanged since last call
+):
+    assert target.dtype == cp.float32, "sparse kernel only implements fp32"
+    float_size = 4
+
+    target = cp.ascontiguousarray(target)
+    target_stride_m = np.int64(target.strides[0] // float_size)
+    target_stride_n = np.int64(target.strides[1] // float_size)
+
+    fock_block_rows = cp.asarray(fock_block_rows, dtype=cp.int32)
+    fock_block_cols = cp.asarray(fock_block_cols, dtype=cp.int32)
+    fock_block_offsets = cp.asarray(fock_block_offsets, dtype=cp.int32)
+    idx_to_atomic_number = cp.asarray(idx_to_atomic_number, dtype=cp.int32)
+
+    orbital_template_lengths = cp.array(
+        [len(orbital_templates[i]) for i in range(len(orbital_templates))],
+        dtype=cp.int32,
+    )
+
+    num_blocks = len(fock_block_rows)
+
+    block_row_sizes = fock_block_offsets[fock_block_rows + 1] - fock_block_offsets[fock_block_rows]
+    block_col_sizes = fock_block_offsets[fock_block_cols + 1] - fock_block_offsets[fock_block_cols]
+    max_block_size = int(cp.maximum(block_row_sizes, block_col_sizes).max().get())
+
+    if block_data_offsets is None:
+        block_elem_counts = (block_row_sizes * block_col_sizes).astype(cp.int64)
+        block_data_offsets = cp.concatenate([
+            cp.zeros(1, dtype=cp.int64),
+            cp.cumsum(block_elem_counts),
+        ])
+
+    total_elements = int(block_data_offsets[-1].get())
+
+    if forward:
+        assert sparse_matrix is not None, "sparse_matrix (with populated .data) is required when forward=True"
+        data = cp.ascontiguousarray(sparse_matrix.data)
+        assert data.size == total_elements, "sparse_matrix.data doesn't match the current block structure"
+    else:
+        data = cp.zeros((total_elements,), dtype=cp.float32)
+
+    _single_matrix2label_fp32_sparse(
+        (num_blocks,),
+        (THREADS_PER_BLOCK,),
+        (
+            fock_block_rows,
+            fock_block_cols,
+            fock_block_offsets,
+            block_data_offsets,
+            idx_to_atomic_number,
+            orbital_template_ptrs,
+            orbital_template_lengths,
+            data,
+            target,
+            target_stride_m,
+            target_stride_n,
+            cp.bool_(forward),
+        ),
+        shared_mem=float_size * max_block_size**2,
+    )
+
+    return SparseBlockMatrix(
+        data=data,
+        block_data_offsets=block_data_offsets,
+        fock_block_rows=fock_block_rows,
+        fock_block_cols=fock_block_cols,
+        fock_block_offsets=fock_block_offsets,
+    )
 
 def numpy_single_matrix2label(
     orbital_template,
