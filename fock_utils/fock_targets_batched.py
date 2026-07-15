@@ -49,6 +49,7 @@ class Fock_Targets:
         orbital_basis - H2O: {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]} (ex. dzvp)
         fock_matrix - Norb x Norb fock matrix (dense)
         """
+        self.max_num_elements = 100
 
         if torch.cuda.is_available():
             self.device = torch.device('cuda')
@@ -97,7 +98,6 @@ class Fock_Targets:
         if orbital_template is None or out_js_list is None or req_output_irreps is None or ls_list is None:
             cache_path = "orbital_cache_"+str(dataset_name)+".pkl"
             if os.path.exists(cache_path) and dataset_name != 'test':  # dataset name is 'test' in test scripts
-                print("Reading orbital info from cache")
                 with open(cache_path, "rb") as f:
                     cache = pickle.load(f)
                 self.req_output_irreps = cache["req_output_irreps"]
@@ -157,9 +157,20 @@ class Fock_Targets:
         self.scale_shift_data = scale_shift_data
 
         # Decompose the Fock matrix into orbital blocks and insert them into the targets
+        total_num_focks = self.comm.allreduce(len(fock_matrices), op=MPI.SUM) if self.distribute_graphs else len(fock_matrices)
         self.target_len = None
-        if fock_matrices is not None:
-            self.make_targets(fock_matrices)
+        if total_num_focks > 0:
+
+            if total_num_focks > 1 or not self.distribute_graphs:
+                if self.rank == 0:
+                    print("Multiple graphs in the dataset, doing molecule-wise load followed by label re-distribution...", flush=True)
+                self.make_targets(fock_matrices)
+            else:
+                if self.rank == 0:
+                    print("Only one graph in the dataset, building distributed labels...", flush=True)
+                self.make_targets_singlegraph(fock_matrices)
+
+            self.create_label_unpadding_mask() # This will be used to compute the loss only on the padded entries in the target
         else:
             self.make_no_targets()
             
@@ -193,10 +204,8 @@ class Fock_Targets:
             indices0 = mol_neighbour_list[0]  # First atom indices 
             indices1 = mol_neighbour_list[1]  # Second atom indices
 
-            # NOTE: in the distribution, we have swapped the labels for src and dst across every edge, 
-            # so we recover that by simply switching the order of indices when we compute the edge distances (so the vector points from src to dst in both cases)
             mol_edge_dist = torch.zeros((len(indices0), 4), dtype=self.dtype)
-            mol_edge_dist[:, 1:4] = torch.from_numpy(atoms.get_distances(indices1, indices0, vector=True))    # Vector components
+            mol_edge_dist[:, 1:4] = torch.from_numpy(atoms.get_distances(indices1, indices0, vector=True, mic=True))    # Vector components
             mol_edge_dist[:, 0] = torch.linalg.norm(mol_edge_dist[:, 1:4], dim=-1, keepdim=False)             # Scalar distances
             self.edge_dist_list.append(mol_edge_dist)
 
@@ -215,6 +224,8 @@ class Fock_Targets:
         3. Build one global graph.
         4. Apply Domain Decomposition.
         """
+        dist.barrier()
+
         # --- 1: Local Pre-processing ---
         local_mol_data = []
         for i, (numbers, positions) in enumerate(zip(atomic_numbers, atomic_positions)):
@@ -298,17 +309,17 @@ class Fock_Targets:
         dist.barrier()
         self.merged_atomic_graph = MergedStructure(global_structure_z, global_structure_pos, global_structure_edges, cutoff, periodicity)
         self.domain = Domain_Decomp(self.merged_atomic_graph, device=self.device, partition_type=self.partition_type)
-        self.domain.print_info()
+        # self.domain.print_info()
         dist.barrier()
 
         # Store global molecule ID of every atom this rank owns
         self.atom_mol_id = global_mol_ids[self.domain.local_node_indices]        
 
         if self.rank == 0:
-            print(f"Global graph created with {len(global_structure_z)} nodes and {global_structure_edges.shape[1]} edges.")
+            print(f"Global graph created with {len(global_structure_z)} nodes and {global_structure_edges.shape[1]} edges.", flush=True)
 
-        dist.barrier()      # Clear PyTorch/Gloo buffer
-        self.comm.Barrier() # Clear MPI buffer
+        dist.barrier()      
+        self.comm.Barrier() 
 
     def make_targets(self, fock_matrices):
         """
@@ -792,16 +803,192 @@ class Fock_Targets:
             # print(f"Rank {self.rank} self.edge_dist_list after allgather: ", self.edge_dist_list, flush=True)
             self.comm.Barrier()
     
+    def make_targets_singlegraph(self, fock_matrices):
+        """
+        Creates padded node/edge labels from the fock matrix by broadcasting 
+        the global matrix and extracting blocks locally on each rank. Can be used if there is only one large
+        graph being partitioned between the ranks (i.e. not multiple small graphs). 
+        """
+        method = 'cupy_kernel' # cupy_kernel
+        spin_strings = ['_alpha', '_beta']
+        comm = self.domain.comm
+        
+        self.target_len = self.basis_transformation.required_irreps_out.dim
+        self.node_labels_list = []
+        self.edge_labels_list = []
+
+        # 1. Prepare GPU Pointers for CuPy Kernel
+        orbital_template_ptrs = []
+        orbital_template_tmp = []
+        for o in self.orbital_template:
+            inner_size = 5 * len(o)
+            tmp = np.zeros((inner_size,), dtype=cp.int32)
+            for j, (row_slice, col_slice, output_slice) in enumerate(o):
+                tmp[j * 5 + 0] = row_slice.start
+                tmp[j * 5 + 1] = row_slice.stop
+                tmp[j * 5 + 2] = col_slice.start
+                tmp[j * 5 + 3] = col_slice.stop
+                tmp[j * 5 + 4] = output_slice.start
+            tmp = cp.array(tmp, dtype=cp.int32)
+            orbital_template_tmp.append(tmp)
+            orbital_template_ptrs.append(matrix2labels_kernels.get_ptr(tmp))
+        orbital_template_ptrs = cp.array(orbital_template_ptrs, dtype=cp.uintp)
+        cp.cuda.Stream.null.synchronize()
+        
+        # in this case, there is only one fock matrix to process, but we have the outer 'molecule index' regardless
+        num_local_fock_matrices = 1
+
+        for i in range(num_local_fock_matrices):
+
+            # find the rank which has the fock matrix and data
+            is_source = 0
+            if len(fock_matrices) > 0:
+                is_source = 1
+            
+            local_source_rank = self.rank if is_source else -1
+            source_rank = comm.allreduce(local_source_rank, op=MPI.MAX)
+
+            if source_rank == -1:
+                raise ValueError(f"Error: No rank found containing fock_matrices at index {i}!")
+
+            if self.rank == source_rank:
+                print(f"Rank {self.rank} is the data source, broadcasting the fock matrix...", flush=True)
+
+            # 2. BROADCAST REGIME: Share the global matrix structure from Rank 0
+            if self.rank == source_rank:
+                fock_matrix = fock_matrices[i]
+                if sp.issparse(fock_matrix):
+                    fock_matrix = fock_matrix.toarray()
+                open_shell = fock_matrix.ndim == 3
+                matrix_shape = fock_matrix.shape
+                matrix_dtype = fock_matrix.dtype
+                orbitals_per_atom = self.orbitals_per_atom_list[i]
+                atomic_numbers = self.atomic_numbers_list[i]
+            else:
+                fock_matrix = None
+                open_shell = None
+                matrix_shape = None
+                matrix_dtype = None
+                orbitals_per_atom = None
+                atomic_numbers = None
+
+            open_shell = comm.bcast(open_shell, root=source_rank)
+            matrix_shape = comm.bcast(matrix_shape, root=source_rank)
+            matrix_dtype = comm.bcast(matrix_dtype, root=source_rank)
+            orbitals_per_atom = comm.bcast(orbitals_per_atom, root=source_rank)
+            atomic_numbers = comm.bcast(atomic_numbers, root=source_rank)
+
+            # Allocate matrix buffer on worker ranks, then broadcast the array values natively
+            if self.rank != source_rank:
+                fock_matrix = np.empty(matrix_shape, dtype=matrix_dtype)
+            
+            comm.Bcast(fock_matrix, root=source_rank)
+            
+            # Bring shared matrix data into torch/GPU space locally on every rank
+            if not isinstance(fock_matrix, torch.Tensor):
+                fock_matrix = torch.from_numpy(fock_matrix)
+            fock_matrix = fock_matrix.to(device=self.device)
+
+            # 3. DOMAIN DECOMPOSITION: Target local allocations directly
+            # Extract assigned subgraphs from domain layout definition
+            local_nodes = self.domain.local_node_indices
+            local_edges = self.domain.local_edge_indices
+            
+            num_atoms = len(local_nodes)
+            num_edges = len(local_edges)
+            num_spins = 2 if open_shell else 1
+
+            # Extract local edge-connectivity rules
+            neighbour_list = self.domain.local_edges  # [2, num_edges]
+            src_idx, target_idx = neighbour_list[0], neighbour_list[1]
+            
+            # Stack nodes along with edges 
+            src_idxes = np.concatenate([src_idx, local_nodes])
+            target_idxes = np.concatenate([target_idx, local_nodes])
+            
+            # The global offsets vector mapping atoms to orbital boundaries
+            # Shared uniformly because every rank now evaluates offsets relative to the full matrix
+            fock_block_offsets = np.concatenate([np.array([0]), np.cumsum(orbitals_per_atom)])
+
+            node_labels = torch.zeros((num_spins, num_atoms, self.target_len), device=self.device)
+            edge_labels = torch.zeros((num_spins, num_edges, self.target_len), device=self.device)
+            mol_atomic_numbers = atomic_numbers # Full atomic numbers array
+
+            # 4. Direct local kernel execution
+            for spin in range(num_spins):
+                cupy_dtype = self.torch_dtype_to_cupy_dtype(self.dtype)
+                matrix = cp.array(fock_matrix[spin], dtype=cupy_dtype) if open_shell else cp.array(fock_matrix, dtype=cupy_dtype)
+                
+                # Each rank only extracts (num_edges + num_atoms) subblocks local to its domain
+                labels = cp.zeros((num_edges + num_atoms, self.target_len), dtype=cupy_dtype)
+                
+                matrix2labels_kernels.cupy_single_matrix2label(
+                    self.orbital_template,
+                    fock_block_offsets,
+                    mol_atomic_numbers,
+                    src_idxes,
+                    target_idxes,
+                    matrix,
+                    labels,
+                    orbital_template_ptrs,
+                    forward=True
+                )
+                
+                labels = from_dlpack(labels.toDlpack())
+                labels = self.basis_transformation.get_net_out(labels)
+
+                node_labels[spin] = labels[num_edges:, :]
+                edge_labels[spin] = labels[:num_edges, :]
+
+                print("Rank ", self.rank, ": scaling nodes", flush=True)
+
+                if self.scale_shift_data is not None:
+                    local_atom_types = [mol_atomic_numbers[idx] for idx in local_nodes]
+                    if open_shell:
+                        node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], local_atom_types, spin_string=spin_strings[spin])
+                    else:
+                        node_labels[spin] = self.scale_shift_node_blocks(node_labels[spin], local_atom_types)
+
+            # Append directly into output tensors since there was only one matrix
+            self.node_labels_list = node_labels
+            self.edge_labels_list = edge_labels
+
+            print("Rank ", self.rank, ": Node label magnitude range: ", torch.max(node_labels).item(), torch.min(node_labels).item(), flush=True)
+
+        # Synchronize other structural lists 
+        if len(self.atomic_numbers_list) > 0:
+            self.edge_dist_list = torch.vstack(self.edge_dist_list)
+        all_edge_dists = comm.allgather(self.edge_dist_list)
+        global_dist = torch.cat([x for x in all_edge_dists if len(x) > 0], dim=0)
+
+        self.atomic_numbers_list = self.merged_atomic_graph.atomic_numbers
+        self.atomic_positions_list = self.merged_atomic_graph.atomic_positions[self.domain.local_node_indices]
+        self.neighbour_list_list = self.domain.local_edges
+        self.edge_dist_list = global_dist[self.domain.local_edge_indices, :]
+        
+        comm.Barrier()
+
     def make_no_targets(self):
+
+        print("No targets requested, skipping fock matrix processing...", flush=True)
 
         if len(self.atomic_numbers_list) > 0:
             self.edge_dist_list = torch.vstack(self.edge_dist_list)
 
         # allgather the data and then index only the current rank's portion
-        all_edge_dists = self.comm.allgather(self.edge_dist_list)
+        # all_edge_dists = self.comm.allgather(self.edge_dist_list)
 
         # filtering out any empty lists (in case some ranks had no data)
-        global_dist  = torch.cat([x for x in all_edge_dists if len(x) > 0], dim=0)
+        # global_dist  = torch.cat([x for x in all_edge_dists if len(x) > 0], dim=0)
+
+        # Switchng from allgather to gather + bcast due to comm issue with objects on Alps
+        all_edge_dists = self.comm.gather(self.edge_dist_list, root=0)
+        if self.rank == 0:
+            global_dist = torch.cat([x for x in all_edge_dists if len(x) > 0], dim=0)
+        else:
+            global_dist = None
+        global_dist = self.comm.bcast(global_dist, root=0)
+        # DEBUG
 
         # Global
         self.atomic_numbers_list = self.merged_atomic_graph.atomic_numbers
@@ -810,6 +997,77 @@ class Fock_Targets:
         self.atomic_positions_list = self.merged_atomic_graph.atomic_positions[self.domain.local_node_indices]
         self.neighbour_list_list = self.domain.local_edges
         self.edge_dist_list = global_dist[self.domain.local_edge_indices, :]
+
+
+    def create_label_unpadding_mask(self):
+        """
+        Generates boolean masks for the final distributed nodes and edges, indicating which positions in 
+        the padded target tensors correspond to actual data (True) vs padding (False).
+        """
+
+        if self.distribute_graphs:
+            num_atoms = len(self.node_labels_list[0])  
+            num_edges = len(self.edge_labels_list[0])
+            
+            # Pull neighbor lists
+            src_idx = self.neighbour_list_list[0]
+            target_idx = self.neighbour_list_list[1]
+            
+            # augment nodes as self-neighbors in the targets
+            src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
+            target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
+            
+            mask = torch.zeros((num_edges + num_atoms, self.target_len), dtype=torch.bool, device=self.device)
+
+            # Populate mask based on atomic interactions
+            for idx in range(len(src_idxes)):
+                local_i = src_idxes[idx].item()
+                local_j = target_idxes[idx].item()
+
+                atomic_element_i = self.atomic_numbers_list[local_i].item()
+                atomic_element_j = self.atomic_numbers_list[local_j].item()
+
+                element_interaction_key = atomic_element_j + self.max_num_elements * atomic_element_i
+                
+                # Read the target slices from orbital template
+                for _, _, output_slice_block in self.orbital_template[element_interaction_key]:
+                    mask[idx, output_slice_block] = True
+                    
+            # 4. Split and save locally as instance attributes
+            # Unsqueezing to match the target molecule dimension [1, num_elements, target_len]
+            self.edge_unpadding_mask_list = mask[:num_edges, :].unsqueeze(0)
+            self.node_unpadding_mask_list = mask[num_edges:, :].unsqueeze(0)
+        
+        else:
+            self.edge_unpadding_mask_list = []
+            self.node_unpadding_mask_list = []
+
+            for i, neighbour_list in enumerate(self.neighbour_list_list):
+                num_atoms = len(self.atomic_numbers_list[i])
+                num_edges = len(neighbour_list[0])
+                
+                src_idx = neighbour_list[0]
+                target_idx = neighbour_list[1]
+                
+                src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
+                target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
+                
+                mask = torch.zeros((num_edges + num_atoms, self.target_len), dtype=torch.bool, device=self.device)
+                
+                for idx in range(len(src_idxes)):
+                    i_atom = src_idxes[idx].item()
+                    j_atom = target_idxes[idx].item()
+                    
+                    atomic_element_i = self.atomic_numbers_list[i][i_atom].item()
+                    atomic_element_j = self.atomic_numbers_list[i][j_atom].item()
+                    
+                    element_interaction_key = atomic_element_j + self.max_num_elements * atomic_element_i
+                    
+                    for _, _, output_slice_block in self.orbital_template[element_interaction_key]:
+                        mask[idx, output_slice_block] = True
+                
+                self.edge_unpadding_mask_list.append(mask[:num_edges, :].unsqueeze(0))
+                self.node_unpadding_mask_list.append(mask[num_edges:, :].unsqueeze(0))
 
 
     def torch_dtype_to_cupy_dtype(self, torch_dtype):
@@ -822,6 +1080,31 @@ class Fock_Targets:
         else:
             raise ValueError(f"Unsupported torch dtype: {torch_dtype}, add to conversion")
 
+    # Faster implementation, integrate and test later for open shell support and scaling
+    # def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers):
+
+    #     # On the very first run, convert the dict to a fast lookup tensor and cache it
+    #     if isinstance(self.scale_shift_data['element_scalar_means'], dict):
+    #         means_dict = self.scale_shift_data['element_scalar_means']
+    #         scalar_idx = self.scale_shift_data['scalar_irrep_indices']
+            
+    #         # Create a dense tensor where row index = atomic number Z
+    #         max_z = int(max(means_dict.keys()))
+    #         means_tensor = torch.zeros((max_z + 1, len(scalar_idx)), device=node_blocks.device, dtype=node_blocks.dtype)
+    #         for z, values in means_dict.items():
+    #             means_tensor[int(z)] = torch.as_tensor(values, device=node_blocks.device, dtype=node_blocks.dtype)
+                
+    #         # Cache them back into self so this setup block never runs again
+    #         self.scale_shift_data['element_scalar_means'] = means_tensor
+    #         self.scale_shift_data['scalar_irrep_indices'] = torch.as_tensor(scalar_idx, device=node_blocks.device, dtype=torch.long)
+
+    #     # convert the input (list, array, or tensor) into a long tensor on the proper device
+    #     z_tensor = torch.as_tensor(node_atomic_numbers, dtype=torch.long, device=node_blocks.device)
+
+    #     # Pulls means for all Zs at once and subtracts them in-place
+    #     node_blocks[:, self.scale_shift_data['scalar_irrep_indices']] -= self.scale_shift_data['element_scalar_means'][z_tensor]
+
+    #     return node_blocks
 
     def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers, spin_string=''):
         """
@@ -832,6 +1115,9 @@ class Fock_Targets:
         self.node_labels - the node labels that will be scaled
         NOTE: if an element does not have that scalar value, the corresponding mean is 0.0 and std is 1.0
         """
+
+        scale_nodes = False
+        shift_nodes = True
  
         # if node_atomic_numbers is None:
             # node_atomic_numbers = self.atomic_numbers
@@ -841,10 +1127,6 @@ class Fock_Targets:
         scalar_indices = self.scale_shift_data['scalar_irrep_indices']
 
         # check for leading spin dimension (only one spin is passed in)
-        unsqueeze = False
-        if node_blocks.ndim == 3:
-            unsqueeze = True
-            node_blocks = node_blocks[0]
 
         # Process each node block
         for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
@@ -854,10 +1136,11 @@ class Fock_Targets:
 
             # Scale and shift the l=0 values in the node block
             for idx_offset, idx in enumerate(scalar_indices):
-                node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
+                if scale_nodes and shift_nodes:
+                    node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
 
-        if unsqueeze:
-            node_blocks = node_blocks.unsqueeze(0)
+                else:
+                    node_block[idx] = node_block[idx] - mean_vals[idx_offset]
 
         return node_blocks
 
@@ -866,6 +1149,8 @@ class Fock_Targets:
         Undo the scaling and shifting applied to the targets (l=0 values and optionally all irrep degrees).
         """
 
+        scale_nodes = False
+        shift_nodes = True
 
         new_node_blocks = node_blocks.clone()  # Create a copy to avoid modifying the original list
 
@@ -880,7 +1165,11 @@ class Fock_Targets:
             std_vals = stds[z]
 
             for idx_offset, idx in enumerate(scalar_indices):
-                new_node_blocks[i][idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
+                if scale_nodes and shift_nodes:
+                    new_node_blocks[i][idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
+
+                else:
+                    new_node_blocks[i][idx] = node_block[idx] + mean_vals[idx_offset]
 
         return new_node_blocks
 
