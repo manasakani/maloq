@@ -123,6 +123,16 @@ class TrainingWorkflow:
         if self.config['distribute_graphs'] and 'matrix' not in self.config['loss_target']:
             raise ValueError("Distributed graph training is currently only implemented for matrix-valued learning targets (e.g. fock_matrix).")
 
+        # if hidden_dim is not provided, set it to l_embedding_dim:
+        if 'hidden_dim' not in self.config:
+            self.config['hidden_dim'] = self.config['l_embedding_dim']
+            print(f"hidden_dim not specified; defaulting to l_embedding_dim={self.config['l_embedding_dim']}")
+
+        # if c['message_type'] is not provided, set it to 'source-target':
+        if 'message_type' not in self.config:
+            self.config['message_type'] = 'source-target'
+            print(f"message_type not specified; defaulting to 'source-target'")
+
     def _handle_scale_shift(self, database=None):
         """Manages the computation or loading of scale/shift factors."""
         if not self.config.get('scale_and_shift'):
@@ -233,7 +243,13 @@ class TrainingWorkflow:
                             if os.path.isdir(os.path.join(src, f))
                         ]
                         data_folders.extend(subdirs)
+
+                print(f"Data folders found: {data_folders}")
+                print("Number of data folders found:", len(data_folders))
                 data_folders.sort()
+
+                if c['shuffle']:
+                    random.shuffle(data_folders)
                 
                 total_needed = c['num_train'] + c['num_val']
                 print(f"Found {len(data_folders)} data folders in {db_source}", flush=True)
@@ -333,37 +349,40 @@ class TrainingWorkflow:
         # 4. Data loading logic
         if c['train_or_eval'] == 'train':
             # Note: argument name in get_loader is 'rcut', not 'rcut_orbitals'
-            train_loader, required_irreps, basis_trans, orb_basis, ls_list = get_loader.get_loader(
-                database=train_database,
-                start_idx=tr_start,
-                end_idx=tr_end,
-                dataset_name=c['dataset_name'],
-                rcut=c['rcut_orbitals'],
-                batch_size=c['batch_size'],
-                dtype=c['dtype'],
-                half_edges=c['reduce_edge'],
-                loss_target_string=c['loss_target'],
-                is_open_shell=c['open_shell'],
-                scale_shift_data=scale_shift_data,
-                distribute_graphs=c['distribute_graphs'],
-                tiling_dims=c['tiling_dims'],
-                partition_type=c['partition_type'],
-                train_or_eval=c['train_or_eval']
-            )
+            if train_database is None or len(train_database) == 0:
+                train_loader = None
+            else:
+                train_loader, required_irreps, basis_trans, orb_basis, ls_list = get_loader.get_loader(
+                    database=train_database,
+                    start_idx=tr_start,
+                    end_idx=tr_end,
+                    dataset_name=c['dataset_name'],
+                    rcut=c['rcut_orbitals'],
+                    batch_size=c['batch_size'],
+                    dtype=c['dtype'],
+                    half_edges=c['reduce_edge'],
+                    loss_target_string=c['loss_target'],
+                    is_open_shell=c['open_shell'],
+                    scale_shift_data=scale_shift_data,
+                    distribute_graphs=c['distribute_graphs'],
+                    tiling_dims=c['tiling_dims'],
+                    partition_type=c['partition_type'],
+                    train_or_eval=c['train_or_eval']
+                )
 
-            dist.barrier()
-            for i in range(self.world_size):
-                if self.rank == i:
-                    for batch in train_loader:
-                        if not c['open_shell']:
-                            num_atoms = batch['node_y'].shape[1] if c['distribute_graphs'] else batch['node_y'].shape[0]
-                            num_edges = batch['y'].shape[1] if c['distribute_graphs'] else batch['y'].shape[0]
-                        else:
-                            num_atoms = batch['node_y_alpha'].shape[1] if c['distribute_graphs'] else batch['node_y_alpha'].shape[0]
-                            num_edges = batch['y_alpha'].shape[1] if c['distribute_graphs'] else batch['y_alpha'].shape[0]
-                        
-                        print(f"Rank {self.rank}: Train batch - Num atoms: {num_atoms}, Num edges: {num_edges}", flush=True)
                 dist.barrier()
+                for i in range(self.world_size):
+                    if self.rank == i:
+                        for batch in train_loader:
+                            if not c['open_shell']:
+                                num_atoms = batch['node_y'].shape[1] if c['distribute_graphs'] else batch['node_y'].shape[0]
+                                num_edges = batch['y'].shape[1] if c['distribute_graphs'] else batch['y'].shape[0]
+                            else:
+                                num_atoms = batch['node_y_alpha'].shape[1] if c['distribute_graphs'] else batch['node_y_alpha'].shape[0]
+                                num_edges = batch['y_alpha'].shape[1] if c['distribute_graphs'] else batch['y_alpha'].shape[0]
+                            
+                            print(f"Rank {self.rank}: Train batch - Num atoms: {num_atoms}, Num edges: {num_edges}", flush=True)
+                    dist.barrier()
             
             if val_database is None or len(val_database) == 0:
                 val_loader = None
@@ -387,7 +406,7 @@ class TrainingWorkflow:
                 )
             return train_loader, val_loader, required_irreps, basis_trans, orb_basis, ls_list
             
-        else:
+        elif c['train_or_eval'] == 'eval':
             # print("Using validation set for testing/evaluation.")
             # test_start = val_start 
             # test_end = val_end 
@@ -411,7 +430,29 @@ class TrainingWorkflow:
                 train_or_eval=c['train_or_eval']
             )
         
-        return test_loader, None, required_irreps, basis_trans, orb_basis, ls_list
+        # inference mode:
+        else:
+            print("Inference mode: using the entire dataset for evaluation.")   
+            test_loader, required_irreps, basis_trans, orb_basis, ls_list = get_loader.get_loader(
+                database=val_database,
+                start_idx=val_start,
+                end_idx=val_end,
+                dataset_name=c['dataset_name'],
+                rcut=c['rcut_orbitals'],
+                batch_size=1, 
+                dtype=c['dtype'],
+                half_edges=c['reduce_edge'],
+                loss_target_string=c['loss_target'],
+                is_open_shell=c['open_shell'],
+                scale_shift_data=scale_shift_data,
+                distribute_graphs=c['distribute_graphs'],
+                tiling_dims=c['tiling_dims'],
+                partition_type=c['partition_type'],
+                train_or_eval=c['train_or_eval']
+            )
+
+        
+        return None, test_loader, required_irreps, basis_trans, orb_basis, ls_list
 
     def build_model(self, required_irreps, orb_basis, ls_list):
         """Initializes backbone, head, optimizer, and scheduler."""
@@ -420,7 +461,7 @@ class TrainingWorkflow:
         # 1. Backbone
         backbone = eSEN_Backbone(
             required_irreps, sphere_channels=c['l_embedding_dim'],
-            hidden_channels=c['l_embedding_dim'], lmax=required_irreps.lmax,
+            hidden_channels=c['hidden_dim'], lmax=required_irreps.lmax,
             mmax=required_irreps.lmax, cutoff=c['rcut_gaussian'],
             edge_channels=c['l_embedding_dim'], num_layers=c['num_mp_layers'],
             act_type='gate', mlp_type='spectral', 
@@ -428,7 +469,8 @@ class TrainingWorkflow:
             gaussian_width=c['gaussian_width'], include_edges=c['include_edges'],
             open_shell=c['open_shell'],
             wigner_backend=c.get('wigner_backend', 'torch'),
-            distributed_graph_training=c['distribute_graphs']
+            distributed_graph_training=c['distribute_graphs'],
+            message_type=c['message_type'] 
         ).to(self.device)
 
         # 2. Head
@@ -552,11 +594,21 @@ class TrainingWorkflow:
                 step_every_epoch=self.config.get('step_every_epoch', True),
                 element_references=self.config.get('element_references', None),
             )
-        else:
+        elif self.config['train_or_eval'] == "eval":
             trainer.evaluate(
-                self.config['test_loss_fxn'], self.device, loader,
+                self.config['test_loss_fxn'], self.device, val_loader,
                 loss_target_string=self.config['loss_target'],
                 node_target_name=node_target, edge_target_name=edge_target, compute_total_energy=self.config['compute_total_energy'],
+                basis_transform=basis_trans, output_folder=self.config['output_folder'],
+                dataset_name=self.config['dataset_name'], orbital_basis=orb_basis,
+                element_references=self.config.get('element_references', None),
+                distributed_graphs=self.config['distribute_graphs']
+            )
+        else:
+            trainer.infer(
+                self.config['test_loss_fxn'], self.device, val_loader,
+                loss_target_string=self.config['loss_target'],
+                compute_total_energy=self.config['compute_total_energy'],
                 basis_transform=basis_trans, output_folder=self.config['output_folder'],
                 dataset_name=self.config['dataset_name'], orbital_basis=orb_basis,
                 element_references=self.config.get('element_references', None),
