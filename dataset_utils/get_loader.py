@@ -135,28 +135,52 @@ def get_loader(database,
 
         for data_folder in database[start_idx : end_idx]:
 
+            print(f"Rank {rank}: Processing folder {data_folder}...", flush=True)
+
             # parse xyx file
             xyz_file = [f for f in os.listdir(data_folder) if f.endswith('.xyz')][0]
             structure = load_periodic_cp2k_structure(os.path.join(data_folder, xyz_file))
             print(f"Structure has {len(structure)} atoms and cell dimensions {structure.get_cell()} with PBC {structure.get_pbc()}", flush=True)
             
+            # Randomly translate training structures so something will look obviously wrong if the periodicity is incorrect
+            if train_or_eval == 'train':
+                apply_random_translation_ase(structure)
+
+            # coordinates MUST be wrapped
+            structure.wrap()
+
             atomic_numbers.append(structure.get_atomic_numbers())
             positions.append(structure.get_positions())
-            energy.append(0) # there is no energy readout for now
+            energy.append(0) 
             forces.append(0) 
             periodic_boxes.append(structure.get_cell())
+            
+            if train_or_eval != 'infer':
 
-            # find the Hamiltonian file of type *..-KS_Spin_1-1_0.csr:
-            hamiltonian_file = [f for f in os.listdir(data_folder) if '-KS_SPIN_1-1_0' in f or 'H.csr' in f][0]
-            print(f"Loading Hamiltonian from {hamiltonian_file}...", flush=True)
-            hamiltonian = read_cp2k_matrix(os.path.join(data_folder, hamiltonian_file), dtype=dtype)
-            hamiltonians.append(hamiltonian)
-            print(f"Hamiltonian loaded with shape {hamiltonian.shape} and {hamiltonian.nnz} non-zero elements", flush=True)
+                overlap_file = [f for f in os.listdir(data_folder) if '-S_SPIN_1-1_0' in f][0]
+                overlap = read_cp2k_matrix(os.path.join(data_folder, overlap_file))
+                overlaps.append(overlap)
 
-            overlap_file = [f for f in os.listdir(data_folder) if '-S_SPIN_1-1_0' in f][0]
-            overlap = read_cp2k_matrix(os.path.join(data_folder, overlap_file))
-            # overlaps.append(0) # dummy overlaps for now!!!
-            overlaps.append(overlap)
+                # find the Hamiltonian file of type *..-KS_Spin_1-1_0.csr:
+                hamiltonian_file = [f for f in os.listdir(data_folder) if '-KS_SPIN_1-1_0' in f or 'H.csr' in f][0]
+                print(f"Loading Hamiltonian from {hamiltonian_file}...", flush=True)
+                hamiltonian = read_cp2k_matrix(os.path.join(data_folder, hamiltonian_file), dtype=dtype)
+                print(f"Hamiltonian loaded with shape {hamiltonian.shape} and {hamiltonian.nnz} non-zero elements", flush=True)
+
+                shift_fermi = True
+                if shift_fermi:
+                    # find files that end with .out and dont have 'slurm' in the name - likely the cp2k output file
+                    out_file = [f for f in os.listdir(data_folder) if f.endswith('.out') and 'slurm' not in f][0]
+                    mu = get_fermi_energy(os.path.join(data_folder, out_file))
+                    print(f"Fermi energy: {mu}", flush=True)
+
+                    # Apply gauge transformation: H' = H - mu * S
+                    hamiltonian = hamiltonian - mu * overlap
+
+                hamiltonians.append(hamiltonian)
+
+            else:
+                print(f"Rank {rank}: Inference mode - skipping Hamiltonian and overlap loading for {data_folder}", flush=True)
 
     else:
         raise ValueError("Unknown database!")
@@ -232,6 +256,8 @@ def get_loader(database,
                     edge_attr=graph_targets.edge_dist_list,
                     y=graph_targets.edge_labels_list, 
                     node_y=graph_targets.node_labels_list,
+                    edge_padding_mask=graph_targets.edge_unpadding_mask_list,
+                    node_padding_mask=graph_targets.node_unpadding_mask_list,
                     atomic_numbers=torch.tensor(batch_atomic_numbers, dtype=torch.long).cpu(),
                     energies=torch.tensor(global_energy[atom_mol_id], dtype=dtype), 
                     forces=torch.tensor(global_forces[atom_mol_id], dtype=dtype),  
@@ -322,8 +348,10 @@ def get_loader(database,
                         pos=torch.tensor(graph_targets.atomic_positions_list, dtype=dtype),
                         edge_index=torch.tensor(graph_targets.neighbour_list_list),
                         edge_attr=graph_targets.edge_dist_list,
-                        y=graph_targets.edge_labels_list, 
-                        node_y=graph_targets.node_labels_list,
+                        y=graph_targets.edge_labels_list if train_or_eval!='infer' else None,
+                        node_y=graph_targets.node_labels_list  if train_or_eval!='infer' else None,
+                        edge_padding_mask=graph_targets.edge_unpadding_mask_list if train_or_eval!='infer' else None,
+                        node_padding_mask=graph_targets.node_unpadding_mask_list  if train_or_eval!='infer' else None,
                         atomic_numbers=torch.tensor(batch_atomic_numbers, dtype=torch.long).cpu(),
                         energies=torch.tensor(global_energy[atom_mol_id], dtype=dtype), 
                         forces=torch.tensor(global_forces[atom_mol_id], dtype=dtype),  
@@ -336,7 +364,8 @@ def get_loader(database,
                         distributed_graph_training=distribute_graphs,
                     )
                     datalist.append(data)
-    
+                    print(f"Rank {my_rank}: Finished processing batch {i // batch_size + 1} from source rank {source_rank}.", flush=True)
+                    dist.barrier()
     else:
 
         # Set up the Graph targets            
@@ -361,6 +390,8 @@ def get_loader(database,
                             edge_attr=graph_targets.edge_dist_list[i],
                             y=graph_targets.edge_labels_list[i][0],
                             node_y=graph_targets.node_labels_list[i][0],
+                            edge_padding_mask=graph_targets.edge_unpadding_mask_list[i][0],
+                            node_padding_mask=graph_targets.node_unpadding_mask_list[i][0],
                             atomic_numbers=torch.tensor(graph_targets.atomic_numbers_list[i], dtype=torch.long).cpu(),
                             energies=torch.tensor(energy[i], dtype=dtype),
                             forces=torch.tensor(forces[i], dtype=dtype),                                      # Hartree/Angstrom
@@ -483,8 +514,8 @@ def read_cp2k_matrix(file_name, dtype=torch.float32):
         record_size = 24
         
         # Quick check: If it's binary CSR from CP2K, it MUST be a multiple of 24
-        if file_size % record_size != 0 or file_size == 0:
-            raise ValueError("Not a binary CSR file!")
+        # if file_size % record_size != 0 or file_size == 0:
+        #     raise ValueError("Not a binary CSR file!")
 
         # Define the Fortran unformatted record structure
         # (4-byte pad, 4-byte int, 4-byte int, 8-byte float, 4-byte pad)
@@ -498,13 +529,13 @@ def read_cp2k_matrix(file_name, dtype=torch.float32):
         # We check the first few records to ensure they look like CP2K binary
         if len(raw_data) > 0:
             if not np.all(raw_data['pad1'][:10] == 16) or not np.all(raw_data['pad2'][:10] == 16):
-                raise ValueError("Invalid binary markers: Likely an ASCII file.")
+                raise ValueError("Invalid binary markers: Likely an ASCII file.", flush=True)
             
             # Additional safety: indices shouldn't be astronomically high (adjust if expecting billions of atoms...)
             if np.any(raw_data['x'][:10] > 100_000_000):
-                raise ValueError("Indices too large: Likely garbage data from ASCII.")
+                raise ValueError("Indices too large: Likely garbage data from ASCII.", flush=True)
 
-        print(f"Detected Binary Format: {file_name}")
+        print(f"Detected Binary Format: {file_name}", flush=True)
 
         x_indices = raw_data['x']
         y_indices = raw_data['y']
@@ -550,6 +581,18 @@ def read_cp2k_matrix(file_name, dtype=torch.float32):
     H_full = H + H.T - D
 
     return H_full
+
+def apply_random_translation_ase(atoms):
+    """
+    Applies a random translation to an ASE Atoms object, keeping 
+    atoms within the unit cell.
+    """
+
+    cell = atoms.get_cell()
+    translation_vector = np.dot(np.random.rand(3), cell)
+    atoms.translate(translation_vector)
+    atoms.wrap()
+    return atoms
 
 def load_periodic_cp2k_structure(file_path):
     """
@@ -617,6 +660,24 @@ def load_periodic_cp2k_structure(file_path):
     
     return atoms
 
+def get_fermi_energy(out_file_path):
+    patterns = [
+        r'Fermi Energy \[eV\] :\s*([-+]?\d*\.\d+)',  # Matches "Fermi Energy [eV] :   -4.747024"
+        r'Fermi energy:\s*([-+]?\d*\.\d+)',          # Matches "Fermi energy: -4.747024"
+        r'Fermi level:\s*([-+]?\d*\.\d+)',           # Matches "Fermi level: -4.747024"
+    ]
+    with open(out_file_path, 'r') as f:
+        for line in f:
+            for pattern in patterns:
+                match = re.search(pattern, line)
+                if match:
+                    # convert to hartree if it's in eV:
+                    if 'eV' in pattern:
+                        print(f"Fermi energy found in eV: {match.group(1)}. Converting to Hartree...", flush=True)
+                        return float(match.group(1)) / 27.211386245988
+                    return float(match.group(1))
+    raise ValueError(f"Fermi energy not found in {out_file_path}")
+    
 # --------------------------------------------
 # Loading balancing batches 
 # --------------------------------------------
