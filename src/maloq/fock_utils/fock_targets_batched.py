@@ -150,28 +150,16 @@ class Fock_Targets:
             self.ls_list = ls_list
 
         # --> Create coupled/uncoupled basis transformation
+        base_decomp = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
+                                                        self.out_js_list,
+                                                        default_dtype_torch=dtype,
+                                                        if_sort=False,
+                                                        device_torch=self.device)
         if basis_transform_backend == 'triton':
-            from fock_utils.triton_backend import BalancedTritonE3TensorDecompL2
-            base_decomp = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
-                                                                       self.out_js_list,
-                                                                       default_dtype_torch=dtype,
-                                                                       if_sort=False,
-                                                                       device_torch=self.device)
+            from ..fock_utils.basis_transform_triton_backend import BalancedTritonE3TensorDecompL2
             self.basis_transformation = BalancedTritonE3TensorDecompL2(base_decomp)
-        elif basis_transform_backend == 'cuda':
-            from fock_utils.cuda_backend import CudaE3TensorDecomp
-            base_decomp = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
-                                                                       self.out_js_list,
-                                                                       default_dtype_torch=dtype,
-                                                                       if_sort=False,
-                                                                       device_torch=self.device)
-            self.basis_transformation = CudaE3TensorDecomp(base_decomp)
         else:
-            self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
-                                                                       self.out_js_list,
-                                                                       default_dtype_torch=dtype,
-                                                                       if_sort=False,
-                                                                       device_torch=self.device)
+            self.basis_transformation = base_decomp
 
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         self.scale_shift_data = scale_shift_data
