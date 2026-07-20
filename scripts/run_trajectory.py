@@ -11,7 +11,7 @@ from fock_utils import basis_sets
 from fock_utils.get_energy_from_fock import get_density_from_fock
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
-import run_HELM
+from helm import run_HELM
 
 # Checkpoints:
 predictor = pretrained_mlip.get_predict_unit("uma-s-1p1", device="cuda")

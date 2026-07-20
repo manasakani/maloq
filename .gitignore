@@ -17,3 +17,11 @@ wandb/
 plot_env/
 ICLR_2025
 configs/
+
+# Ignore IDE files
+.vscode/*
+
+# Ignore egg-info folder
+*.egg-info/*
+src/*.egg-info/*
+src/maloq/*.egg-info/*

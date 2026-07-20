@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maloq"
+version = "0.1.0"
+description = "MALOQ: Massively Accelerated Learning of Operators for Quantum-transport"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=2.5",
+  "torch>=2.12",
+  "pydantic>=2.8",
+  "pyyaml>=6.0",
+  "tomli>=2.0; python_version < '3.11'",
+  "ase>=3.29",
+  "scipy>=1.18",
+  "matplotlib>=3.11",
+  "e3nn>=0.6",
+  "torch-geometric>=2.8",
+  "mpi4py>=4.1",
+  "cclib>=1.8",
+  "pyscf>=2.13",
+  "apsw>=3.53",
+  "tqdm>=4.68",
+  "scikit-learn>=1.9",
+  "seaborn>=0.13",
+]
+
+[project.optional-dependencies]
+fairchem = [
+  # fairchem-core declares <3.14; install manually on Python 3.14+ with:
+  #   pip install "fairchem-core>=2.21" --ignore-requires-python
+  "fairchem-core>=2.21",
+]
+gpu = [
+  # triton is omitted here — it is a hard dependency of torch and installed automatically
+  "cupy-cuda13x>=14.1",  # CUDA 13.x; swap for cupy-cuda12x on CUDA 12
+]
+dev = [
+  "pytest",
+  "black",
+  "ruff",
+  "isort",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["maloq*"]
+
+[tool.setuptools.package-data]
+"maloq.helm" = ["*.pt", "triton_kernels/*.cuh", "triton_kernels/*.cu"]
+"maloq.fock_utils" = ["*.pt"]
+"maloq.dataset_utils" = ["stats_nablaDFT/*.npz"]
+
+[project.scripts]
+maloq = "maloq.cli.main:main"

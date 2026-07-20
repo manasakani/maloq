@@ -1,6 +1,8 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
+
 import torch
 import os
-from train_utils import loss, training_workflow
+from maloq.train_utils import loss, training_workflow
 
 # ---------------------------------------------------------
 # OMol Dataset Configuration - closed shell version
@@ -69,9 +71,13 @@ config = {
     "compute_total_energy": False,    # Whether to compute total energy from fock matrix
 }
 
-if __name__ == "__main__":
+def main():
     os.makedirs(config['output_folder'], exist_ok=True)
     
     # Initialize and run the workflow
     workflow = training_workflow.TrainingWorkflow(config)
     workflow.run()
+
+
+if __name__ == "__main__":
+    main()

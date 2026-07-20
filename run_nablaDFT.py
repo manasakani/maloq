@@ -1,5 +1,7 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
+
 import torch
-from train_utils import loss, training_workflow
+from maloq.train_utils import loss, training_workflow
 
 # ---------------------------------------------------------
 # nablaDFT Dataset Training & Evaluation
@@ -18,7 +20,8 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    "num_train": 12081,
+    # "num_train": 12081,
+    "num_train": 100,
     "num_val": 64,
     "num_test": 1,
     "batch_size": 10,                # if distributing graphs, this is the number of molecules per distributed graph
@@ -68,7 +71,10 @@ config = {
     "gaussian_width": 1.0,
 }
 
-if __name__ == "__main__":
-
+def main():
     workflow = training_workflow.TrainingWorkflow(config)
     workflow.run()
+
+
+if __name__ == "__main__":
+    main()
