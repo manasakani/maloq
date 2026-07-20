@@ -1,0 +1,51 @@
+Project MALOQ
+Copyright (c) 2024-2026, Computational Nanoelectronics Group, ETH Zurich,
+and all contributors listed in AUTHORS.
+All rights reserved.
+
+This project is licensed under the BSD 3-Clause License - see below for details.
+
+-------------------------------------------------------------------------
+Third-Party Software and Contributions:
+
+1. Subsets of this software were developed by project contributors during 
+   an internship at Meta, Inc. (FAIR). 
+   Copyright (c) 2025, Meta, Inc. and its affiliates.
+
+2. This project includes code derived from DeepH-E3, e3nn, fairchem, and SchNetPack,
+   which are licensed under the MIT License.
+   Copyright (c) 2023 Xiaoxun-Gong.
+   Copyright (c) 2020 Euclidean neural networks (e3nn), The Regents of theUniversity
+     of California, through Lawrence Berkeley National Laboratory (subject to receipt
+     of any required approvals from the U.S. Dept. of Energy), Ecole Polytechnique
+     Federale de Lausanne (EPFL), Free University of Berlin and Kostiantyn Lapchevskyi.
+   Copyright (c) Meta, Inc. and its affiliates.
+   Copyright (c) 2018 Kristof Schütt, Michael Gastegger, Pan Kessel, Kim Nicoli.
+-------------------------------------------------------------------------
+
+BSD 3-Clause License
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

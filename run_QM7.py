@@ -1,5 +1,7 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
+
 import torch
-from train_utils import loss, training_workflow
+from maloq.train_utils import loss, training_workflow
 
 # ---------------------------------------------------------
 # QM7 Water Dataset Training & Evaluation
@@ -69,7 +71,10 @@ config = {
     "gaussian_width": 1.0,
 }
 
-if __name__ == "__main__":
-
+def main():
     workflow = training_workflow.TrainingWorkflow(config)
     workflow.run()
+
+
+if __name__ == "__main__":
+    main()

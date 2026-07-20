@@ -1,0 +1,4 @@
+include README.md
+recursive-include helm *.pt *.cu *.cuh
+recursive-include fock_utils *.pt
+recursive-include dataset_utils *.npz

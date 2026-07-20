@@ -1,3 +1,5 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
+
 """
 Tests for the Wigner D-matrix Triton kernel (wigner_backend="triton").
 Validates correctness against PyTorch reference for lmax 0-8.
@@ -8,14 +10,15 @@ import os
 import pytest
 import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from helm.common.rotation import (
+from maloq.helm.common.rotation import (
     init_edge_rot_euler_angles,
     eulers_to_wigner,
     wigner_D,
 )
-from helm.triton_kernels import edge_vec_to_wigner_fused, extract_euler_angles
+from maloq.helm.triton_kernels import edge_vec_to_wigner_fused, extract_euler_angles
+
+import maloq.helm
+helm_path = os.path.dirname(maloq.helm.__file__)
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +33,7 @@ def device():
 
 @pytest.fixture(scope="module")
 def jd_list(device):
-    jd = torch.load("helm/Jd.pt", weights_only=True)
+    jd = torch.load(os.path.join(helm_path, "Jd.pt"), weights_only=True)
     return [j.to(device).float() for j in jd]
 
 
