@@ -13,27 +13,23 @@
 ## 📌 About
 **MALOQ** is a scalable, equivariant Graph Neural Network (GNN) framework designed for the rapid prediction of Hamiltonian matrices and quantum operators. By leveraging $SO(2)$-equivariant kernels, symmetry reductions, and efficient data processing pipelines, MALOQ learns structure-property mappings to complex orbital interactions across diverse chemical spaces.
 
-This repository is the official implementation for our submission to **SC26**
-
 ---
 
 ## 📊 Supported Datasets
-The model is pre-configured to work with three Hamiltonian matrix datasets. Ensure you download the datasets and update the `dbpath` in the respective config files.
+The model is pre-configured to work with three molecular Hamiltonian matrix datasets. Ensure you download the datasets and update the `dbpath` in the respective config files. In addition, it's possible to set up your own materials dataset, using the `cp2k_material' option. This option is not yet documented, and there are a lot of small details to iron out in the data generation process. If you're interested in doing this, please contact mkaniselvan@ethz.ch.
 
 | Dataset | Type | Download Link | Config File | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | **MD17/QM7** | Small Molecules | [Website](https://quantum-machine.org/datasets/) | `run_QM7.py` | Water and other small molecules. |
 | **nablaDFT** | DFT Benchmarks | [GitHub](https://github.com/AIRI-Institute/nablaDFT) | `run_nablaDFT.py` | Druglike molecules (30-50 atoms) with heavy atoms. |
-| **OMol electronic structures** | Large Molecules | [Link](https://www.materialsdatafacility.org/spotlight/omol25#access-data) | `run_omol_csh.py` | Large molecules (10-150 atoms). |
-| **Amorphous materials** | Material | [Link](https://huggingface.co/datasets/chexia8/Amorphous-Hamiltonians) | `run_cp2k_dataset.py` | Amorphous materials |
+| **OMol_CSH_58k** | Large Molecules | [Link](https://huggingface.co/facebook/OMol25/blob/main/DATASET.md) | `run_omol_csh.py` | Large molecules (10-150 atoms). |
 
 ---
 
-## 👥 Contributors
+## 👥 Code contributors
 
-* **ICLR2026 (HELM)** – Manasa Kaniselvan and Daniel Levine
-* **SC26 submission (MALOQ)** – Manasa Kaniselvan, Denghui Lu, Alexander Maeder, Alexandros Nikolaos Ziogas
-
+* **(MALOQ)** – Manasa Kaniselvan, Denghui Lu, Alexander Maeder, Alexandros Nikolaos Ziogas
+* **(HELM)** – Manasa Kaniselvan and Daniel Levine
 ---
 
 ## 📜 Citation
@@ -44,11 +40,10 @@ If you use **MALOQ** in your research or find the framework helpful, please cite
 ```bibtex
 @misc{maloq,
   title  = {MALOQ: Massively Accelerated Learning of Operators for Quantum-transport},
-  author = {TBD},
+  author = {Kaniselvan, Manasa and Maeder, Alexander and Lu, Denghui and Ziogas, Alexandros Nikolaos and Luisier, Mathieu},
   year   = {2026},
-  note   = {TBD},
-  doi    = {X},
-  url    = {X}
+  doi    = {10.48550/arXiv.2606.28911},
+  url    = {https://arxiv.org/abs/2606.28911}
 }
 ```
 

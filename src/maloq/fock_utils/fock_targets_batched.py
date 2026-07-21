@@ -821,7 +821,7 @@ class Fock_Targets:
         spin_strings = ['_alpha', '_beta']
         comm = self.domain.comm
         
-        self.target_len = self.basis_transformation.required_irreps_out.dim
+        self.target_len = self.req_output_irreps.dim
         self.node_labels_list = []
         self.edge_labels_list = []
 
@@ -986,17 +986,16 @@ class Fock_Targets:
         # allgather the data and then index only the current rank's portion
         # all_edge_dists = self.comm.allgather(self.edge_dist_list)
 
-        # filtering out any empty lists (in case some ranks had no data)
-        # global_dist  = torch.cat([x for x in all_edge_dists if len(x) > 0], dim=0)
-
-        # Switchng from allgather to gather + bcast due to comm issue with objects on Alps
+        # Switch to gather + broadcast
         all_edge_dists = self.comm.gather(self.edge_dist_list, root=0)
         if self.rank == 0:
             global_dist = torch.cat([x for x in all_edge_dists if len(x) > 0], dim=0)
         else:
             global_dist = None
         global_dist = self.comm.bcast(global_dist, root=0)
-        # DEBUG
+
+        # filtering out any empty lists (in case some ranks had no data)
+        # global_dist  = torch.cat([x for x in all_edge_dists if len(x) > 0], dim=0)
 
         # Global
         self.atomic_numbers_list = self.merged_atomic_graph.atomic_numbers
@@ -1088,69 +1087,69 @@ class Fock_Targets:
         else:
             raise ValueError(f"Unsupported torch dtype: {torch_dtype}, add to conversion")
 
-    # Faster implementation, integrate and test later for open shell support and scaling
-    # def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers):
-
-    #     # On the very first run, convert the dict to a fast lookup tensor and cache it
-    #     if isinstance(self.scale_shift_data['element_scalar_means'], dict):
-    #         means_dict = self.scale_shift_data['element_scalar_means']
-    #         scalar_idx = self.scale_shift_data['scalar_irrep_indices']
+    def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers):
+        # 1. On the very first run, convert the dict to a fast lookup tensor and cache it
+        if isinstance(self.scale_shift_data['element_scalar_means'], dict):
+            means_dict = self.scale_shift_data['element_scalar_means']
+            scalar_idx = self.scale_shift_data['scalar_irrep_indices']
             
-    #         # Create a dense tensor where row index = atomic number Z
-    #         max_z = int(max(means_dict.keys()))
-    #         means_tensor = torch.zeros((max_z + 1, len(scalar_idx)), device=node_blocks.device, dtype=node_blocks.dtype)
-    #         for z, values in means_dict.items():
-    #             means_tensor[int(z)] = torch.as_tensor(values, device=node_blocks.device, dtype=node_blocks.dtype)
+            # Create a dense tensor where row index = atomic number Z
+            max_z = int(max(means_dict.keys()))
+            means_tensor = torch.zeros((max_z + 1, len(scalar_idx)), device=node_blocks.device, dtype=node_blocks.dtype)
+            for z, values in means_dict.items():
+                means_tensor[int(z)] = torch.as_tensor(values, device=node_blocks.device, dtype=node_blocks.dtype)
                 
-    #         # Cache them back into self so this setup block never runs again
-    #         self.scale_shift_data['element_scalar_means'] = means_tensor
-    #         self.scale_shift_data['scalar_irrep_indices'] = torch.as_tensor(scalar_idx, device=node_blocks.device, dtype=torch.long)
+            # Cache them back into self so this setup block never runs again
+            self.scale_shift_data['element_scalar_means'] = means_tensor
+            self.scale_shift_data['scalar_irrep_indices'] = torch.as_tensor(scalar_idx, device=node_blocks.device, dtype=torch.long)
 
-    #     # convert the input (list, array, or tensor) into a long tensor on the proper device
-    #     z_tensor = torch.as_tensor(node_atomic_numbers, dtype=torch.long, device=node_blocks.device)
+        # convert the input (list, array, or tensor) into a long tensor on the proper device
+        z_tensor = torch.as_tensor(node_atomic_numbers, dtype=torch.long, device=node_blocks.device)
 
-    #     # Pulls means for all Zs at once and subtracts them in-place
-    #     node_blocks[:, self.scale_shift_data['scalar_irrep_indices']] -= self.scale_shift_data['element_scalar_means'][z_tensor]
-
-    #     return node_blocks
-
-    def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers, spin_string=''):
-        """
-        Scale the l=0 values in the targets
-        scales - a list of scaling factors for each l=0 irrep component
-        shifts - a list of shifts for each l=0 irrep component
-        scalar_indices - a list of indices in the node_labels that correspond to the l=0 irreps
-        self.node_labels - the node labels that will be scaled
-        NOTE: if an element does not have that scalar value, the corresponding mean is 0.0 and std is 1.0
-        """
-
-        scale_nodes = False
-        shift_nodes = True
- 
-        # if node_atomic_numbers is None:
-            # node_atomic_numbers = self.atomic_numbers
-
-        means = self.scale_shift_data['element_scalar_means'+spin_string]
-        stds = self.scale_shift_data['element_scalar_stds'+spin_string]
-        scalar_indices = self.scale_shift_data['scalar_irrep_indices']
-
-        # check for leading spin dimension (only one spin is passed in)
-
-        # Process each node block
-        for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
-            z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
-            mean_vals = means[z]
-            std_vals = stds[z]
-
-            # Scale and shift the l=0 values in the node block
-            for idx_offset, idx in enumerate(scalar_indices):
-                if scale_nodes and shift_nodes:
-                    node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
-
-                else:
-                    node_block[idx] = node_block[idx] - mean_vals[idx_offset]
+        # Pulls means for all Zs at once and subtracts them in-place
+        node_blocks[:, self.scale_shift_data['scalar_irrep_indices']] -= self.scale_shift_data['element_scalar_means'][z_tensor]
 
         return node_blocks
+
+    # def scale_shift_node_blocks(self, node_blocks, node_atomic_numbers, spin_string=''):
+    #     """
+    #     Scale the l=0 values in the targets
+    #     scales - a list of scaling factors for each l=0 irrep component
+    #     shifts - a list of shifts for each l=0 irrep component
+    #     scalar_indices - a list of indices in the node_labels that correspond to the l=0 irreps
+    #     self.node_labels - the node labels that will be scaled
+    #     NOTE: if an element does not have that scalar value, the corresponding mean is 0.0 and std is 1.0
+    #     """
+ 
+    #     # if node_atomic_numbers is None:
+    #         # node_atomic_numbers = self.atomic_numbers
+
+    #     means = self.scale_shift_data['element_scalar_means'+spin_string]
+    #     stds = self.scale_shift_data['element_scalar_stds'+spin_string]
+    #     scalar_indices = self.scale_shift_data['scalar_irrep_indices']
+
+    #     # check for leading spin dimension (only one spin is passed in)
+    #     # unsqueeze = False
+    #     # if node_blocks.ndim == 3:
+    #     #     unsqueeze = True
+    #     #     node_blocks = node_blocks[0]
+
+    #     # Process each node block
+    #     for i, (node_block, z) in enumerate(zip(node_blocks, node_atomic_numbers)):
+    #         z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
+    #         mean_vals = means[z]
+    #         std_vals = stds[z]
+
+    #         # Scale and shift the l=0 values in the node block
+    #         for idx_offset, idx in enumerate(scalar_indices):
+    #             # node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
+    #             # only shifting:
+    #             node_block[idx] = node_block[idx] - mean_vals[idx_offset]
+
+    #     # if unsqueeze:
+    #     #     node_blocks = node_blocks.unsqueeze(0)
+
+    #     return node_blocks
 
     def unscale_shift_node_blocks(self, node_blocks, atomic_numbers):
         """
@@ -1175,7 +1174,6 @@ class Fock_Targets:
             for idx_offset, idx in enumerate(scalar_indices):
                 if scale_nodes and shift_nodes:
                     new_node_blocks[i][idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
-
                 else:
                     new_node_blocks[i][idx] = node_block[idx] + mean_vals[idx_offset]
 

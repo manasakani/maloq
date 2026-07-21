@@ -395,7 +395,7 @@ class SplitTrainer():
         self.backbone.eval()
         self.head.eval()
 
-        dump_plots = True
+        dump_plots = False
         dump_embeddings = False
         compute_eigenvalues = True
         save_density = False
@@ -457,8 +457,7 @@ class SplitTrainer():
 
             batch = batch.to(device)
 
-            with torch.inference_mode():
-            # with torch.no_grad():
+            with torch.no_grad():
 
                 torch.cuda.synchronize()
                 start_backbone = time.perf_counter()
@@ -686,6 +685,12 @@ class SplitTrainer():
                             elif hasattr(overlap_matrix, 'numpy'):
                                 overlap_matrix = overlap_matrix.cpu().numpy()
 
+                            # print("Filtering the overlap...", flush=True)
+                            # tolerance = 1e-1
+                            # output_fock_matrix, label_fock_matrix, overlap_matrix, idx_kept = self.remove_linear_dep_from_matrices(
+                            #     output_fock_matrix, label_fock_matrix, overlap_matrix, threshold=tolerance
+                            # )
+
                             # write the output fock matrix to file:
                             if rank == 0:
                                 print("Writing matrices to file...", flush=True)
@@ -873,6 +878,8 @@ class SplitTrainer():
             orbital_template_ptrs = cp.array(orbital_template_ptrs, dtype=cp.uintp)
             cp.cuda.Stream.null.synchronize()
 
+        torch.cuda.synchronize() # safety
+        dist.barrier()
 
         for index, batch in enumerate(eval_loader):
             if rank == 0:
@@ -880,10 +887,12 @@ class SplitTrainer():
                 print(f"Number of atoms in molecule {index}: {batch.num_nodes}", flush=True)
 
             batch = batch.to(device)
+            torch.cuda.synchronize() # safety
+            dist.barrier()
             
             with torch.inference_mode():
 
-                num_measurements = 1  # number of times to run the forward pass for timing purposes, if needed
+                num_measurements = 1  # number of times to run the forward pass for timing purposes
                 for i in range(num_measurements):
 
                     torch.cuda.synchronize()
@@ -915,6 +924,11 @@ class SplitTrainer():
                     else:
                         del backbone_out
                         torch.cuda.empty_cache()
+
+                # free_bytes, total_bytes = cp.cuda.runtime.memGetInfo()
+                # print(f"[rank {rank}] driver free: {free_bytes/1024**3:.2f} / {total_bytes/1024**3:.2f} GB, "
+                #     f"torch reserved: {torch.cuda.memory_reserved()/1024**3:.2f} GB, "
+                #     f"torch allocated: {torch.cuda.memory_allocated()/1024**3:.2f} GB", flush=True)
 
                 # Remove the spin dimension if needed
                 if not self.open_shell and node_output.ndim == 3:
@@ -960,6 +974,9 @@ class SplitTrainer():
                 print("Undoing scale/shift for outputs and labels...", flush=True)
                 final_node_outputs = batch.fock_target_object[0].undo_scale_shift(final_node_outputs, atomic_numbers)
 
+                torch.cuda.synchronize() # safety
+                dist.barrier()
+
                 # Transform back to uncoupled basis:
                 print("Transforming to uncoupled basis...", flush=True)
                 start_basis = time.perf_counter()
@@ -969,11 +986,13 @@ class SplitTrainer():
                 if rank == 0:
                     print(f"Basis transform time: {end_basis - start_basis:.4f}s", flush=True)
 
+                torch.cuda.synchronize() # safety
+                dist.barrier()
 
                 ## LABEL -> MATRIX START ##
                 method = 'sparse_cupy_kernel' # 'numpy_kernel' or 'cupy_kernel' or 'sparse_cupy_kernel
                 # move batch to cpu to save some memory
-                # batch = batch.to('cpu')
+                batch = batch.to('cpu')
 
                 if method == 'cupy_kernel':
 
@@ -1008,7 +1027,6 @@ class SplitTrainer():
 
                 elif method == 'sparse_cupy_kernel':
 
-                    # NOTE: switch to direct cupy using cp.cuda.set_allocator(_torch_alloc)!!
                     # edge_output_cupy = cp.from_dlpack(final_edge_outputs)
                     # node_output_cupy = cp.from_dlpack(final_node_outputs)
                     # output_targets = cp.concatenate([edge_output_cupy, node_output_cupy])
@@ -1017,13 +1035,17 @@ class SplitTrainer():
                     node_output_np = final_node_outputs.detach().cpu().numpy()
                     output_targets_np = np.concatenate([edge_output_np, node_output_np])
 
-                    del final_edge_outputs, final_node_outputs  # free the GPU copies
+                    del final_edge_outputs, final_node_outputs  # needed to actually free the GPU copies
                     torch.cuda.empty_cache()
+                    # free_bytes, total_bytes = cp.cuda.runtime.memGetInfo()
+                    # print(f"[rank {rank}] driver free: {free_bytes/1024**3:.2f} / {total_bytes/1024**3:.2f} GB, "
+                    #     f"torch reserved: {torch.cuda.memory_reserved()/1024**3:.2f} GB, "
+                    #     f"torch allocated: {torch.cuda.memory_allocated()/1024**3:.2f} GB", flush=True)
                     output_targets = cp.asarray(output_targets_np)
 
                     torch.cuda.synchronize()
                     start_conversion = time.perf_counter()
-                    print("Calling sparse cupy kernel for label -> matrix conversion...", flush=True)
+                    print("Calling SPARSE cupy kernel for label -> matrix conversion...", flush=True)
 
                     output_fock_matrix_sparse = matrix2labels_kernels.cupy_single_matrix2label_sparse(
                         orbital_template,
@@ -1113,6 +1135,9 @@ class SplitTrainer():
                             os.path.join(output_folder, f"output_fock_test_{index}.npz"), 
                             output_fock_matrix
                         )
+
+                        # sp.save_npz(os.path.join(output_folder, f"output_fock_Fig4HfO2_{index}.npz"), sp.csr_matrix(output_fock_matrix))
+                        # sp.save_npz(os.path.join(output_folder, f"overlap_matrix_{index}.npz"), sp.csr_matrix(overlap_matrix))
 
                     else:
                         np.save(os.path.join(output_folder, f"output_fock_{index}.npy"), output_fock_matrix)

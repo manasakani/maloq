@@ -349,13 +349,134 @@ class Domain_Decomp():
                 'remote_indices_torch': remote_indices
             }
 
+    # def init_comm_pattern_expand_ref(self, src0_or_dst1):
+
+    #     with torch.no_grad():
+
+    #         edge_index = self.local_edges[src0_or_dst1, :]
+
+    #         if torch.is_tensor(edge_index):
+    #             edge_index_np = edge_index.detach().cpu().contiguous().numpy().astype(np.int32)
+    #         else:
+    #             edge_index_np = np.ascontiguousarray(edge_index, dtype=np.int32)
+
+    #         # expand edge:
+    #         local_num_nodes = len(self.local_node_indices)
+    #         total_num_nodes = self.comm.allreduce(local_num_nodes, op=MPI.SUM)
+    #         num_nodes_local = total_num_nodes // self.size
+
+    #         #  get 'remote' nodes in this rank to be recieved from remote ranks
+    #         remote_node_ranks = []
+    #         remote_nodes = []
+    #         for node in edge_index:
+    #             # if the node is not local, it is remote
+    #             if node not in self.local_node_indices:
+    #                 for i in range(self.size):
+    #                     if i == self.rank:
+    #                         continue
+    #                     # check if the node is in the local nodes for rank i
+    #                     if node in self.all_local_node_indices[i]: 
+    #                         if node not in remote_nodes:
+    #                             remote_node_ranks.append(i)
+    #                             remote_nodes.append(node)
+    #                         break 
+            
+    #         # print(f"Rank {self.rank} remote nodes: {remote_nodes} from ranks {remote_node_ranks}", flush=True)
+
+    #         # Nodes to recieve on this rank 
+    #         nodes_to_recv = {}
+    #         for i, remote_rank in enumerate(remote_node_ranks):
+    #             if remote_rank not in nodes_to_recv:
+    #                 nodes_to_recv[remote_rank] = []
+    #             if remote_nodes[i].item() not in nodes_to_recv[remote_rank]:
+    #                 nodes_to_recv[remote_rank].append(remote_nodes[i].item())
+
+    #         # print(f"Rank {self.rank} nodes to receive: {nodes_to_recv}", flush=True)
+
+    #         # the nodes in the global edge list corresponding to the dst or src of the local edges
+    #         global_edge_nodes = self.global_edge_index[src0_or_dst1, :] 
+
+    #         # Nodes to send from this rank
+    #         nodes_to_send = {}
+    #         # if 'this' rank has a node which 'that' rank does not, add it to the nodes to send
+    #         for i in range(self.size):
+    #             # look at all the nodes in the edge index for rank i ('that' rank)
+    #             that_ranks_edge_nodes = global_edge_nodes[self.all_local_edge_indices[i]] 
+    #             for node in that_ranks_edge_nodes:
+    #                 # if the node is not in the local nodes for rank 1, but is in the current local nodes:
+    #                 if node in self.local_node_indices and node not in self.all_local_node_indices[i]:
+    #                     # add the note to the send list, i is the rank to send to
+    #                     if i not in nodes_to_send:
+    #                         nodes_to_send[i] = []
+
+    #                     if node not in nodes_to_send[i]:
+    #                         nodes_to_send[i].append(int(node))
+
+    #         # print(f"Rank {self.rank} nodes to send: {nodes_to_send}", flush=True)
+
+    #         indices_to_send = {}
+    #         for target_rank, nodes in nodes_to_send.items():
+    #             if nodes:
+    #                 nodes_tensor = torch.tensor(nodes, dtype=torch.int64, requires_grad=False)
+    #                 indices = torch.empty_like(nodes_tensor)
+    #                 for j, node in enumerate(nodes_tensor):
+    #                     idx = torch.where(self.local_node_indices == node)[0]
+    #                     indices[j] = idx
+    #                 indices_to_send[target_rank] = indices.to(self.device)
+            
+    #         # print(f"Rank {self.rank} indices to send: {indices_to_send}", flush=True)
+
+    #         # indices of local embedding to slot into the new embedding
+    #         # this should be the same as edge_index[is_local] - self.start_node, but works even if the local nodes are not a contiguous chunk of the global node list
+    #         is_local = np.isin(edge_index, self.local_node_indices)
+    #         node_to_local_pos = {int(node): i for i, node in enumerate(self.local_node_indices)}
+    #         local_indices = [node_to_local_pos[int(node)] for node in edge_index[is_local]]
+    #         # print(f"Rank {self.rank} local indices: {local_indices}", flush=True)
+
+    #         # indices of recieved remote embeddings to slot into the new embedding
+    #         is_remote = np.isin(edge_index, remote_nodes)
+    #         remote_edge_nodes = torch.from_numpy(edge_index[is_remote]).to(self.device)
+    #         remote_indices = torch.ones(len(remote_edge_nodes), dtype=torch.long, device=self.device) 
+
+    #         node_track = 0
+    #         for i, (source_rank, nodes) in enumerate(nodes_to_recv.items()):
+    #             if nodes: 
+    #                 for node in nodes:  # node is the identity of the recieved node, not the index
+    #                     remote_indices[torch.where(remote_edge_nodes == node)[0]] = node_track # locations in the new embedding where this recieved embedding should go
+    #                     node_track += 1 # track the number of nodes received
+
+    #         # print(f"Rank {self.rank} remote indices: {remote_indices}", flush=True)
+
+    #         expand_edge_dict = {}
+    #         expand_edge_dict['local_indices'] = local_indices
+    #         expand_edge_dict['remote_indices'] = remote_indices
+    #         expand_edge_dict['is_local'] = is_local
+    #         expand_edge_dict['is_remote'] = is_remote
+    #         expand_edge_dict['nodes_to_send'] = nodes_to_send
+    #         expand_edge_dict['indices_to_send'] = indices_to_send
+    #         expand_edge_dict['nodes_to_recv'] = nodes_to_recv
+
+    #         # Convert PyTorch tensor directly to CuPy array to use when indexing flattened embeddings
+    #         indices_to_send_cp = {
+    #             target_rank: cp.asarray(nodes.to(self.device))  
+    #             for target_rank, nodes in indices_to_send.items()
+    #         }
+    #         expand_edge_dict['indices_to_send_cp'] = indices_to_send_cp
+
+    #         # torch versions of some index arrays, to allow for skipping of memory copies
+    #         local_indices_torch = torch.tensor(local_indices, dtype=torch.long, device=self.device)
+    #         remote_indices_torch = torch.tensor(remote_indices, dtype=torch.long, device=self.device)
+    #         expand_edge_dict['local_indices_torch'] = local_indices_torch
+    #         expand_edge_dict['remote_indices_torch'] = remote_indices_torch
+
+    #     return expand_edge_dict
+
     def init_comm_pattern_reduce(self, edge_index):
 
         is_local = np.isin(edge_index, self.local_node_indices)
         node_to_local_pos = {int(node): i for i, node in enumerate(self.local_node_indices)}
         local_indices = [node_to_local_pos[int(node)] for node in edge_index[is_local]]
         local_indices = torch.tensor(local_indices, dtype=torch.long, device=self.device)
-
 
         reduce_edge_dict = {}
         reduce_edge_dict['is_local'] = is_local

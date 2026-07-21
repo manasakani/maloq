@@ -151,6 +151,7 @@ class ModelConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     wigner_backend: Literal["torch", "triton"] = "torch"
+    basis_transform_backend: Literal["torch", "triton"] = "torch"
     l_embedding_dim: int = 128
     num_distance_basis: int = 128
     num_mp_layers: int = 3
