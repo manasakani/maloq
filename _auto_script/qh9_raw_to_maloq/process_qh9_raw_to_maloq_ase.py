@@ -30,11 +30,12 @@ from pyscf import gto
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+SOURCE_ROOT = PROJECT_ROOT / "src"
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
-from dataset_utils.ASEDataset import ASEAtomsData  # noqa: E402
-from fock_utils import basis_sets, utils_orca_out  # noqa: E402
+from maloq.dataset_utils.ASEDataset import ASEAtomsData  # noqa: E402
+from maloq.fock_utils import basis_sets, utils_orca_out  # noqa: E402
 
 
 PROPERTY_UNITS = {

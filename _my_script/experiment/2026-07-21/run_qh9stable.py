@@ -12,8 +12,10 @@ from zoneinfo import ZoneInfo
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+SOURCE_ROOT = PROJECT_ROOT / "src"
+for source_path in (PROJECT_ROOT, SOURCE_ROOT):
+    if str(source_path) not in sys.path:
+        sys.path.insert(0, str(source_path))
 
 DEFAULT_FULL_DB = Path(
     "/dataset/seongsu/shared-home/data/QH9_maloq_ase/QH9Stable_random.db"
@@ -53,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def validate_database(dbpath: Path, expected_counts: dict[str, int]) -> None:
-    from dataset_utils.ASEDataset import ASEAtomsData
+    from maloq.dataset_utils.ASEDataset import ASEAtomsData
 
     database = ASEAtomsData(str(dbpath))
     expected_total = sum(expected_counts.values())
@@ -102,7 +104,7 @@ def main() -> None:
     import torch.distributed as dist
 
     from run_QM7 import config as qm7_config
-    from train_utils.training_workflow import TrainingWorkflow
+    from maloq.train_utils.training_workflow import TrainingWorkflow
 
     validate_database(dbpath, counts)
     timestamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d-%H%M%S")

@@ -2,7 +2,7 @@ import copy
 
 import torch
 
-from train_utils.optimizers import Muon, SOAP, zeropower_via_newton_schulz5
+from maloq.train_utils.optimizers import Muon, SOAP, zeropower_via_newton_schulz5
 
 
 def test_newton_schulz_update_is_finite_and_shape_preserving():

@@ -10,7 +10,7 @@ These rules apply to the canonical SC26-seongsu project at
 - Organize experiment scripts as `_my_script/experiment/YYYY-MM-DD/`, using the `Asia/Seoul` calendar date. Create the dated directory when it does not exist.
 - If an experiment spans several days, keep its original dated directory and record later changes in that directory's README or notes instead of moving it.
 - Treat existing files under `_my_script/` as user-owned. Do not rewrite, move, or delete them unless the user explicitly asks.
-- Existing production modules stay in their canonical directories (`helm/`, `fock_utils/`, `dataset_utils/`, `train_utils/`, and `tests/`). The `_auto_script/` rule applies to newly created standalone scripts, not to necessary edits of existing source files.
+- Existing production modules stay in their canonical directories (`src/maloq/` and `tests/`). The `_auto_script/` rule applies to newly created standalone scripts, not to necessary edits of existing source files.
 - Do not add new one-off scripts at the repository root or in `scripts/`.
 
 ## Experiment hygiene

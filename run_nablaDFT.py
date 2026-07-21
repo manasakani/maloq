@@ -1,9 +1,11 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the MALOQ package.
+
 import argparse
 import os
 
 import torch
 import torch.distributed as dist
-from train_utils import loss, training_workflow
+from maloq.train_utils import loss, training_workflow
 
 # ---------------------------------------------------------
 # nablaDFT Dataset Training & Evaluation
