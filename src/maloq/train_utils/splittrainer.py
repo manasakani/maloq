@@ -68,9 +68,15 @@ class SplitTrainer():
             step_every_epoch=False,
             validation_matrix_metrics=False,
             validation_matrix_metrics_frequency=1,
+            gradient_clip_val=None,
             min_lr=1e-10):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}", flush=True)
+        if gradient_clip_val is not None:
+            print(
+                f"Global gradient clipping: {float(gradient_clip_val)}",
+                flush=True,
+            )
         dist.barrier()
 
         # Torch compile:
@@ -228,6 +234,17 @@ class SplitTrainer():
                             if param.grad is not None:
                                 dist.all_reduce(param.grad, op=dist.ReduceOp.SUM)
                                 param.grad /= world_size
+
+                if gradient_clip_val is not None:
+                    parameters = []
+                    if train_backbone:
+                        parameters.extend(self.backbone.parameters())
+                    if train_head:
+                        parameters.extend(self.head.parameters())
+                    torch.nn.utils.clip_grad_norm_(
+                        parameters,
+                        max_norm=float(gradient_clip_val),
+                    )
 
                 optimizer.step()
                 optimizer.zero_grad()

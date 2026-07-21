@@ -12,7 +12,13 @@ import torch
 
 
 class SO3_Linear(torch.nn.Module):
-    def __init__(self, in_features: int, out_features: int, lmax: int) -> None:
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        lmax: int,
+        bias: bool = True,
+    ) -> None:
         """
         1. Use `torch.einsum` to prevent slicing and concatenation
         2. Need to specify some behaviors in `no_weight_decay` and weight initialization.
@@ -27,7 +33,9 @@ class SO3_Linear(torch.nn.Module):
         )
         bound = 1 / math.sqrt(self.in_features)
         torch.nn.init.uniform_(self.weight, -bound, bound)
-        self.bias = torch.nn.Parameter(torch.zeros(out_features)) # comment out for antisym
+        self.bias = (
+            torch.nn.Parameter(torch.zeros(out_features)) if bias else None
+        )
 
         expand_index = torch.zeros([(lmax + 1) ** 2]).long()
         for lval in range(lmax + 1):
@@ -43,8 +51,9 @@ class SO3_Linear(torch.nn.Module):
         out = torch.einsum(
             "bmi, moi -> bmo", input_embedding, weight
         )  # [N, (L_max + 1) ** 2, C_out]
-        bias = self.bias.view(1, 1, self.out_features)            # Note: comment out for antisymmetic node updates?
-        out[:, 0:1, :] = out.narrow(1, 0, 1) + bias               # Note: comment out for antisymmetic node updates?
+        if self.bias is not None:
+            bias = self.bias.view(1, 1, self.out_features)
+            out[:, 0:1, :] = out.narrow(1, 0, 1) + bias
         return out
 
     def __repr__(self) -> str:

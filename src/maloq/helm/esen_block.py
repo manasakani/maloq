@@ -7,7 +7,6 @@ See LICENSES/MIT-fairchem.md for license information.
 from __future__ import annotations
 
 import copy
-
 import torch
 import torch.nn as nn
 
@@ -44,7 +43,10 @@ class Edgewise(torch.nn.Module):
         cutoff,
         message_type,
         act_type="gate",
+        gate_act_type="tanh",
         include_edges=True,
+        use_edge_envelope=False,
+        use_edge_scalar_modulation=False,
     ):
         super().__init__()
 
@@ -61,7 +63,20 @@ class Edgewise(torch.nn.Module):
         self.SO3_grid = SO3_grid
         self.edge_channels_list = copy.deepcopy(edge_channels_list)
         self.act_type = act_type
+        self.gate_act_type = gate_act_type
         self.include_edges = include_edges
+        self.cutoff = float(cutoff)
+        self.use_edge_envelope = bool(use_edge_envelope)
+        self.envelope = PolynomialEnvelope(exponent=5)
+        self.use_edge_scalar_modulation = bool(use_edge_scalar_modulation)
+        self.edge_scalar_modulator = None
+        if self.use_edge_scalar_modulation:
+            edge_feature_dim = self.edge_channels_list[0]
+            self.edge_scalar_modulator = nn.Sequential(
+                nn.Linear(self.sphere_channels, self.hidden_channels),
+                nn.SiLU(),
+                nn.Linear(self.hidden_channels, edge_feature_dim),
+            )
 
         if self.act_type == "gate":
             # Get permutation to rearrange the gate scalars from l to m order
@@ -70,7 +85,12 @@ class Edgewise(torch.nn.Module):
             ]
 
             self.act = GateActivation( # in m-major
-                lmax=self.lmax, mmax=self.mmax, num_channels=self.hidden_channels, outer_dim='m', l_to_m_permute=l_to_m_permute
+                lmax=self.lmax,
+                mmax=self.mmax,
+                num_channels=self.hidden_channels,
+                outer_dim='m',
+                l_to_m_permute=l_to_m_permute,
+                gate_act_type=self.gate_act_type,
             )
             extra_m0_output_channels = self.lmax * self.hidden_channels
         else:
@@ -115,6 +135,7 @@ class Edgewise(torch.nn.Module):
         x,
         x_message_edge,
         x_edge,
+        edge_distance,
         edge_index,
         wigner,
         wigner_inv,
@@ -126,6 +147,7 @@ class Edgewise(torch.nn.Module):
             return self.forward_node(x,
                                     x_message_edge,
                                     x_edge,
+                                    edge_distance,
                                     edge_index,
                                     wigner,
                                     wigner_inv,
@@ -137,6 +159,7 @@ class Edgewise(torch.nn.Module):
             return self.forward_edge(x,
                                     x_message_edge,
                                     x_edge,
+                                    edge_distance,
                                     edge_index,
                                     wigner,
                                     wigner_inv,
@@ -148,6 +171,7 @@ class Edgewise(torch.nn.Module):
         x,
         x_message_edge,
         x_edge,
+        edge_distance,
         edge_index,
         wigner,
         wigner_inv,
@@ -185,6 +209,9 @@ class Edgewise(torch.nn.Module):
         x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)                     # SO2 Convolution #1 (embedding dim 2E -> H)
         x_message = self.act(x_0_gating, x_message)                                    # Gate activation
         x_message = self.so2_conv_2(x_message, x_edge)                                 # SO2 Convolution #2 (embedding dim H -> E)
+        if self.use_edge_envelope:
+            envelope = self.envelope(edge_distance / self.cutoff)
+            x_message = x_message * envelope.view(-1, 1, 1)
         x_message = torch.einsum("nac,ab->nbc", x_message, self.mappingReduced.to_m)   # m-major -> l-major
 
         # Rotate back the irreps
@@ -212,6 +239,7 @@ class Edgewise(torch.nn.Module):
         x,
         x_message_edge,
         x_edge,
+        edge_distance,
         edge_index,
         wigner,
         wigner_inv,
@@ -238,8 +266,13 @@ class Edgewise(torch.nn.Module):
         # Create messages 
         if self.concat_size == 3:
             x_message = torch.cat((x_source, x_target, x_message_edge), dim=2)
-        else:   
-            x_message = torch.cat((x_source, x_target), dim=2) 
+        else:
+            x_message = torch.cat((x_source, x_target), dim=2)
+        modulated_x_edge = x_edge
+        if self.use_edge_scalar_modulation:
+            scalar_pair_features = x_source[:, 0, :] * x_target[:, 0, :]
+            modulation = self.edge_scalar_modulator(scalar_pair_features)
+            modulated_x_edge = x_edge * modulation
 
 
         # Rotate the irreps to align with the edge
@@ -247,9 +280,12 @@ class Edgewise(torch.nn.Module):
 
         # SO2 convolutions + Gating
         x_message = torch.einsum("nac,ba->nbc", x_message, self.mappingReduced.to_m) # l-major -> m-major
-        x_message, x_0_gating = self.so2_conv_1(x_message, x_edge)
+        x_message, x_0_gating = self.so2_conv_1(x_message, modulated_x_edge)
         x_message = self.act(x_0_gating, x_message)
         x_message = self.so2_conv_2(x_message, x_edge)
+        if self.use_edge_envelope:
+            envelope = self.envelope(edge_distance / self.cutoff)
+            x_message = x_message * envelope.view(-1, 1, 1)
         x_message = torch.einsum("nac,ab->nbc", x_message, self.mappingReduced.to_m) # m-major -> l-major
 
         # Rotate back the irreps
@@ -265,6 +301,7 @@ class SpectralAtomwise(torch.nn.Module):
         hidden_channels: int,
         lmax: int,
         mmax: int,
+        gate_act_type: str = "tanh",
     ):
         super().__init__()
         self.sphere_channels = sphere_channels
@@ -285,7 +322,10 @@ class SpectralAtomwise(torch.nn.Module):
             self.sphere_channels, self.hidden_channels, lmax=self.lmax
         )
         self.act = GateActivation(
-            lmax=self.lmax, mmax=self.lmax, num_channels=self.hidden_channels
+            lmax=self.lmax,
+            mmax=self.lmax,
+            num_channels=self.hidden_channels,
+            gate_act_type=gate_act_type,
         )
         self.so3_linear_2 = SO3_Linear(
             self.hidden_channels, self.sphere_channels, lmax=self.lmax
@@ -296,6 +336,88 @@ class SpectralAtomwise(torch.nn.Module):
         x = self.so3_linear_1(x)
         x = self.act(gating_scalars, x)
         return self.so3_linear_2(x)
+
+
+class GridAtomwise(torch.nn.Module):
+    """QHFlow3-style atomwise feed-forward network on an SO(3) grid."""
+
+    def __init__(
+        self,
+        sphere_channels: int,
+        hidden_channels: int,
+        lmax: int,
+        mmax: int,
+        SO3_grid,
+    ) -> None:
+        super().__init__()
+        self.lmax = lmax
+        self.mmax = mmax
+        self.SO3_grid = SO3_grid
+        self.grid_mlp = nn.Sequential(
+            nn.Linear(sphere_channels, hidden_channels, bias=False),
+            nn.SiLU(),
+            nn.Linear(hidden_channels, hidden_channels, bias=False),
+            nn.SiLU(),
+            nn.Linear(hidden_channels, sphere_channels, bias=False),
+        )
+
+    def forward(self, x):
+        x_grid = self.SO3_grid["lmax_lmax"].to_grid(
+            x,
+            self.lmax,
+            self.lmax,
+        )
+        x_grid = self.grid_mlp(x_grid)
+        return self.SO3_grid["lmax_lmax"].from_grid(
+            x_grid,
+            self.lmax,
+            self.lmax,
+        )
+
+
+class DegreeLayerScale(torch.nn.Module):
+    """Equivariant per-degree scale for one residual-update branch."""
+
+    def __init__(
+        self,
+        lmax: int,
+        mode: str = "none",
+        init: float = 1.0,
+        log_range: float = 0.0,
+    ) -> None:
+        super().__init__()
+        if mode not in {"none", "bounded_degree"}:
+            raise ValueError(
+                "residual_update_scale_mode must be 'none' or "
+                f"'bounded_degree', got {mode!r}."
+            )
+        if init <= 0.0:
+            raise ValueError("residual_update_scale_init must be positive.")
+        if log_range < 0.0:
+            raise ValueError("residual_update_scale_log_range cannot be negative.")
+        self.mode = mode
+        self.init = float(init)
+        self.log_range = float(log_range)
+        if self.mode == "bounded_degree":
+            self.raw = nn.Parameter(torch.zeros(lmax + 1))
+            expand_index = torch.cat(
+                [torch.full((2 * degree + 1,), degree) for degree in range(lmax + 1)]
+            ).long()
+            self.register_buffer("expand_index", expand_index, persistent=False)
+        else:
+            self.register_parameter("raw", None)
+
+    def degree_scales(self):
+        if self.raw is None:
+            return None
+        return self.init * torch.exp(self.log_range * torch.tanh(self.raw))
+
+    def forward(self, update):
+        scales = self.degree_scales()
+        if scales is None:
+            return update
+        component_scales = scales.index_select(0, self.expand_index)
+        return update * component_scales.view(1, -1, 1)
 
 
 class eSEN_Block(torch.nn.Module):
@@ -313,8 +435,14 @@ class eSEN_Block(torch.nn.Module):
         act_type: str,
         mlp_type: str,
         message_type: str,
+        gate_act_type: str = "tanh",
         include_edges=True,
         node_or_edge: str = 'node',  # 'node' or 'edge'
+        use_edge_envelope: bool = False,
+        use_edge_scalar_modulation: bool = False,
+        residual_update_scale_mode: str = "none",
+        residual_update_scale_init: float = 1.0,
+        residual_update_scale_log_range: float = 0.0,
     ) -> None:
         super().__init__()
         self.sphere_channels = sphere_channels
@@ -341,15 +469,41 @@ class eSEN_Block(torch.nn.Module):
             cutoff=cutoff,
             message_type=message_type,
             act_type=act_type,
-            include_edges=include_edges
+            gate_act_type=gate_act_type,
+            include_edges=include_edges,
+            use_edge_envelope=use_edge_envelope,
+            use_edge_scalar_modulation=(
+                use_edge_scalar_modulation and node_or_edge == 'edge'
+            ),
         )
 
-        self.atom_wise = SpectralAtomwise(
-            sphere_channels=sphere_channels,
-            hidden_channels=hidden_channels,
-            lmax=lmax,
-            mmax=mmax,
-        )
+        if mlp_type == "spectral":
+            self.atom_wise = SpectralAtomwise(
+                sphere_channels=sphere_channels,
+                hidden_channels=hidden_channels,
+                lmax=lmax,
+                mmax=mmax,
+                gate_act_type=gate_act_type,
+            )
+        elif mlp_type == "grid":
+            self.atom_wise = GridAtomwise(
+                sphere_channels=sphere_channels,
+                hidden_channels=hidden_channels,
+                lmax=lmax,
+                mmax=mmax,
+                SO3_grid=SO3_grid,
+            )
+        else:
+            raise ValueError(f"Unknown MLP type {mlp_type!r}")
+
+        scale_kwargs = {
+            "lmax": lmax,
+            "mode": residual_update_scale_mode,
+            "init": residual_update_scale_init,
+            "log_range": residual_update_scale_log_range,
+        }
+        self.edge_update_scale = DegreeLayerScale(**scale_kwargs)
+        self.atom_update_scale = DegreeLayerScale(**scale_kwargs)
 
     def forward(
         self,
@@ -373,6 +527,7 @@ class eSEN_Block(torch.nn.Module):
                 x_message_node,
                 x_message_edge,
                 x_edge,
+                edge_distance,
                 edge_index,
                 wigner,
                 wigner_inv,
@@ -381,14 +536,14 @@ class eSEN_Block(torch.nn.Module):
             )
 
 
-            x_message_node = x_message_node + x_res
+            x_message_node = self.edge_update_scale(x_message_node) + x_res
             x_res = x_message_node
 
             x_message_node = self.norm_2(x_message_node)
             x_message_node = self.atom_wise(x_message_node)
 
 
-            return x_message_node + x_res
+            return self.atom_update_scale(x_message_node) + x_res
             
         else:
             x_res = x_message_edge
@@ -398,6 +553,7 @@ class eSEN_Block(torch.nn.Module):
                 x_message_node,
                 x_message_edge,
                 x_edge,
+                edge_distance,
                 edge_index,
                 wigner,
                 wigner_inv,
@@ -407,7 +563,7 @@ class eSEN_Block(torch.nn.Module):
             torch.cuda.nvtx.range_pop() # <--- END
             x_message_edge = self.norm_1(x_message_edge) 
 
-            x_message_edge = x_message_edge + x_res
+            x_message_edge = self.edge_update_scale(x_message_edge) + x_res
             x_res = x_message_edge 
 
             x_message_edge = self.norm_2(x_message_edge)
@@ -416,4 +572,4 @@ class eSEN_Block(torch.nn.Module):
             x_message_edge = self.atom_wise(x_message_edge)
             torch.cuda.nvtx.range_pop() # <--- END
 
-            return x_message_edge + x_res
+            return self.atom_update_scale(x_message_edge) + x_res

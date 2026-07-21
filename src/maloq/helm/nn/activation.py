@@ -6,16 +6,27 @@ See LICENSES/MIT-fairchem.md for license information.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import torch
 
 
 class GateActivation(torch.nn.Module):
-    def __init__(self, lmax: int, mmax: int, num_channels: int, outer_dim='l', l_to_m_permute=None) -> None:
+    def __init__(
+        self,
+        lmax: int,
+        mmax: int,
+        num_channels: int,
+        outer_dim='l',
+        l_to_m_permute=None,
+        gate_act_type: Literal["sigmoid", "tanh"] = "tanh",
+    ) -> None:
         super().__init__()
 
         self.lmax = lmax
         self.mmax = mmax
         self.num_channels = num_channels
+        self.gate_act_type = str(gate_act_type).lower()
 
         # if outer_dim == 'm', check that l_to_m_permute is provided
         if outer_dim == 'm':
@@ -51,8 +62,15 @@ class GateActivation(torch.nn.Module):
             torch.nn.SiLU()
             # torch.nn.Tanh()  # for antisym
         )  # SwiGLU(self.num_channels, self.num_channels)  # #
-        # self.gate_act = torch.nn.Sigmoid()  # torch.nn.SiLU() # #
-        self.gate_act = torch.nn.Tanh()  # torch.nn.SiLU() # #
+        if self.gate_act_type == "sigmoid":
+            self.gate_act = torch.nn.Sigmoid()
+        elif self.gate_act_type == "tanh":
+            self.gate_act = torch.nn.Tanh()
+        else:
+            raise ValueError(
+                "gate_act_type must be 'sigmoid' or 'tanh', "
+                f"got {gate_act_type!r}."
+            )
 
     def forward(self, gating_scalars, input_tensors):
         """

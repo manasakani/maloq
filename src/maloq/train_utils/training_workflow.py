@@ -27,9 +27,20 @@ class TrainingWorkflow:
     DEFAULTS = {
         "run_name": "run",
         "output_folder": "outputs/run",
+        "seed": 42,
         "open_shell": False,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "wigner_backend": "torch",
+        "gate_act_type": "tanh",
+        "mlp_type": "spectral",
+        "message_passing_schedule": "interleaved",
+        "num_edge_layers": None,
+        "output_l_embedding_dim": None,
+        "use_edge_envelope": False,
+        "use_edge_scalar_modulation": False,
+        "residual_update_scale_mode": "none",
+        "residual_update_scale_init": 1.0,
+        "residual_update_scale_log_range": 0.0,
         "distribute_graphs": False,
         "partition_type": None,
         "tiling_dims": None,
@@ -50,6 +61,10 @@ class TrainingWorkflow:
         "muon_adamw_lr": None,
         "muon_adamw_betas": (0.9, 0.95),
         "muon_adamw_eps": 1e-10,
+        "gradient_clip_val": None,
+        "warmup_steps": 1000,
+        "scheduler_power": 1.0,
+        "min_lr_ratio": 0.0,
         "compute_total_energy": False,
         "dist_backend": "nccl" if torch.cuda.is_available() else "gloo",
         "use_wandb": False,
@@ -147,9 +162,10 @@ class TrainingWorkflow:
 
     def setup_environment(self):
         """Initializes seeds, dtypes, and distributed compute environment."""
-        torch.manual_seed(42)
-        np.random.seed(42)
-        random.seed(42)
+        seed = int(self.config['seed'])
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
         torch.set_default_dtype(self.config['dtype'])
 
         # SLURM / Distributed setup
@@ -177,6 +193,28 @@ class TrainingWorkflow:
                 f"{sorted(valid_optimizers)}."
             )
         self.config['optimizer_type'] = optimizer_type
+
+        if self.config['gate_act_type'] not in {'tanh', 'sigmoid'}:
+            raise ValueError("gate_act_type must be 'tanh' or 'sigmoid'.")
+        if self.config['mlp_type'] not in {'spectral', 'grid'}:
+            raise ValueError("mlp_type must be 'spectral' or 'grid'.")
+        if self.config['message_passing_schedule'] not in {
+            'interleaved', 'node_then_edge'
+        }:
+            raise ValueError(
+                "message_passing_schedule must be 'interleaved' or "
+                "'node_then_edge'."
+            )
+        if self.config['residual_update_scale_mode'] not in {
+            'none', 'bounded_degree'
+        }:
+            raise ValueError(
+                "residual_update_scale_mode must be 'none' or "
+                "'bounded_degree'."
+            )
+        gradient_clip_val = self.config['gradient_clip_val']
+        if gradient_clip_val is not None and float(gradient_clip_val) <= 0.0:
+            raise ValueError("gradient_clip_val must be positive when specified.")
 
         if 'matrix' in self.config['loss_target']:
             self.config['include_edges'] = True
@@ -591,22 +629,41 @@ class TrainingWorkflow:
             hidden_channels=c['hidden_dim'], lmax=required_irreps.lmax,
             mmax=required_irreps.lmax, cutoff=c['rcut_gaussian'],
             edge_channels=c['l_embedding_dim'], num_layers=c['num_mp_layers'],
-            act_type='gate', mlp_type='spectral', 
+            act_type='gate', mlp_type=c['mlp_type'],
+            gate_act_type=c['gate_act_type'],
             num_distance_basis=c['num_distance_basis'],
             gaussian_width=c['gaussian_width'], include_edges=c['include_edges'],
             open_shell=c['open_shell'],
             wigner_backend=c.get('wigner_backend', 'torch'),
             distributed_graph_training=c['distribute_graphs'],
-            message_type=c['message_type'] 
+            message_type=c['message_type'],
+            message_passing_schedule=c['message_passing_schedule'],
+            num_edge_layers=c['num_edge_layers'],
+            output_sphere_channels=c['output_l_embedding_dim'],
+            use_edge_envelope=c['use_edge_envelope'],
+            use_edge_scalar_modulation=c['use_edge_scalar_modulation'],
+            residual_update_scale_mode=c['residual_update_scale_mode'],
+            residual_update_scale_init=c['residual_update_scale_init'],
+            residual_update_scale_log_range=c['residual_update_scale_log_range'],
         ).to(self.device)
 
         # 2. Head
-        irreps_in = Irreps([(c['l_embedding_dim'], (l, 1)) for l in range(required_irreps.lmax + 1)])
+        head_channels = (
+            c['l_embedding_dim']
+            if c['output_l_embedding_dim'] is None
+            else c['output_l_embedding_dim']
+        )
+        irreps_in = Irreps(
+            [
+                (head_channels, (degree, 1))
+                for degree in range(required_irreps.lmax + 1)
+            ]
+        )
         
         if c['loss_target'] == 'fock_matrix' or c['loss_target'] == 'density_matrix':
             head = Fock_Irreps_Head(
                 irreps_in=irreps_in, irreps_out=required_irreps,
-                lmax=required_irreps.lmax, sphere_channels=c['l_embedding_dim'],
+                lmax=required_irreps.lmax, sphere_channels=head_channels,
                 reduce_edge=c['reduce_edge'], open_shell=c['open_shell'],
                 ls_list=ls_list, reduce_node=c['reduce_node'],
                 reduce_node_intra=c['reduce_node_intra'], orbital_basis=orb_basis
@@ -618,6 +675,40 @@ class TrainingWorkflow:
             head = HELM_Energy_Head(backbone)
         
         head = head.to(self.device)
+
+        if self.rank == 0:
+            model_summary = {
+                'model_variant': c.get('model_variant', 'maloq-baseline'),
+                'seed': int(c['seed']),
+                'backbone_parameters': sum(p.numel() for p in backbone.parameters()),
+                'head_parameters': sum(p.numel() for p in head.parameters()),
+                'total_parameters': sum(p.numel() for p in backbone.parameters())
+                + sum(p.numel() for p in head.parameters()),
+                'trainable_parameters': sum(
+                    p.numel()
+                    for p in list(backbone.parameters()) + list(head.parameters())
+                    if p.requires_grad
+                ),
+                'trunk_channels': int(c['l_embedding_dim']),
+                'output_channels': int(head_channels),
+                'node_layers': int(c['num_mp_layers']),
+                'edge_layers': int(
+                    c['num_mp_layers']
+                    if c['num_edge_layers'] is None
+                    else c['num_edge_layers']
+                ),
+                'message_passing_schedule': c['message_passing_schedule'],
+                'mlp_type': c['mlp_type'],
+                'gate_act_type': c['gate_act_type'],
+                'residual_update_scale_mode': c['residual_update_scale_mode'],
+            }
+            summary_path = Path(c['output_folder']) / 'model_summary.json'
+            summary_path.write_text(json.dumps(model_summary, indent=2) + '\n')
+            print(
+                f"Model parameters: {model_summary['total_parameters']:,} "
+                f"({model_summary['model_variant']})",
+                flush=True,
+            )
 
         # 3. Optimizer
         backbone_params = []
@@ -739,6 +830,41 @@ class TrainingWorkflow:
             if self.rank == 0: 
                 print(f"T_max for scheduler: {t_max}")
             return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max, eta_min=c['eta_min'])
+        elif c['scheduler_type'] == 'warmup_polynomial':
+            max_steps = max(1, c['num_epochs'] * len(train_loader))
+            warmup_steps = int(c['warmup_steps'])
+            power = float(c['scheduler_power'])
+            min_lr_ratio = float(c['min_lr_ratio'])
+            if warmup_steps < 0:
+                raise ValueError("warmup_steps cannot be negative.")
+            if power <= 0.0:
+                raise ValueError("scheduler_power must be positive.")
+            if not 0.0 <= min_lr_ratio <= 1.0:
+                raise ValueError("min_lr_ratio must be between 0 and 1.")
+
+            def lr_lambda(step):
+                if warmup_steps > 0 and step < warmup_steps:
+                    return max(min_lr_ratio, float(step + 1) / warmup_steps)
+                decay_steps = max(1, max_steps - warmup_steps)
+                progress = min(
+                    1.0,
+                    max(0.0, float(step - warmup_steps) / decay_steps),
+                )
+                return min_lr_ratio + (1.0 - min_lr_ratio) * (
+                    (1.0 - progress) ** power
+                )
+
+            if self.rank == 0:
+                print(
+                    "Warmup-polynomial scheduler: "
+                    f"warmup_steps={warmup_steps}, max_steps={max_steps}, "
+                    f"power={power}, min_lr_ratio={min_lr_ratio}",
+                    flush=True,
+                )
+            return torch.optim.lr_scheduler.LambdaLR(
+                optimizer,
+                lr_lambda=lr_lambda,
+            )
         else:
             raise ValueError(f"Unknown scheduler: {c['scheduler_type']}")
 
@@ -813,6 +939,7 @@ class TrainingWorkflow:
                     element_references=self.config.get('element_references', None),
                     validation_matrix_metrics=self.config.get('validation_matrix_metrics', False),
                     validation_matrix_metrics_frequency=self.config.get('validation_matrix_metrics_frequency', 1),
+                    gradient_clip_val=self.config.get('gradient_clip_val'),
                 )
             elif self.config['train_or_eval'] == "eval":
                 trainer.evaluate(

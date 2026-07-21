@@ -77,13 +77,22 @@ class eSEN_Backbone(nn.Module):
         hidden_channels: int = 128,
         norm_type: str = "rms_norm_sh",
         act_type: str = "gate",
+        gate_act_type: str = "tanh",
         mlp_type: str = "spectral",
         gaussian_width = 1.0,
         include_edges=True,
         open_shell=False,
         wigner_backend: str = "torch",
         distributed_graph_training=False,
-        message_type='source-target'
+        message_type='source-target',
+        message_passing_schedule: str = "interleaved",
+        num_edge_layers: int | None = None,
+        output_sphere_channels: int | None = None,
+        use_edge_envelope: bool = False,
+        use_edge_scalar_modulation: bool = False,
+        residual_update_scale_mode: str = "none",
+        residual_update_scale_init: float = 1.0,
+        residual_update_scale_log_range: float = 0.0,
     ):
         super().__init__()
 
@@ -91,6 +100,20 @@ class eSEN_Backbone(nn.Module):
             f"wigner_backend must be 'torch' or 'triton', got '{wigner_backend}'"
         self.wigner_backend = wigner_backend
         self._wigner_buf = None  # upper-bound pre-allocated, grown only when num_edges exceeds capacity
+
+        if message_passing_schedule not in {"interleaved", "node_then_edge"}:
+            raise ValueError(
+                "message_passing_schedule must be 'interleaved' or "
+                f"'node_then_edge', got {message_passing_schedule!r}."
+            )
+        self.message_passing_schedule = message_passing_schedule
+        self.use_edge_envelope = bool(use_edge_envelope)
+        self.use_edge_scalar_modulation = bool(use_edge_scalar_modulation)
+        self.residual_update_scale_mode = residual_update_scale_mode
+        self.residual_update_scale_init = float(residual_update_scale_init)
+        self.residual_update_scale_log_range = float(
+            residual_update_scale_log_range
+        )
 
         if not include_edges:
             print("Note: Initializing eSEN backbone without edge_embeddings!")
@@ -108,6 +131,13 @@ class eSEN_Backbone(nn.Module):
         self.lmax = lmax
         self.mmax = mmax
         self.sphere_channels = sphere_channels
+        self.output_sphere_channels = int(
+            sphere_channels
+            if output_sphere_channels is None
+            else output_sphere_channels
+        )
+        if self.output_sphere_channels <= 0:
+            raise ValueError("output_sphere_channels must be positive.")
         self.gaussian_width = gaussian_width
 
         self.regress_forces = regress_forces
@@ -207,9 +237,22 @@ class eSEN_Backbone(nn.Module):
             )
 
         self.num_layers = num_layers
+        self.num_edge_layers = int(
+            num_layers if num_edge_layers is None else num_edge_layers
+        )
+        if self.num_edge_layers <= 0:
+            raise ValueError("num_edge_layers must be positive.")
+        if (
+            self.message_passing_schedule == "interleaved"
+            and self.num_edge_layers != self.num_layers
+        ):
+            raise ValueError(
+                "The interleaved schedule requires num_edge_layers == num_layers."
+            )
         self.hidden_channels = hidden_channels
         self.norm_type = norm_type
         self.act_type = act_type
+        self.gate_act_type = gate_act_type
 
         # Initialize the blocks for each layer
         self.node_blocks = nn.ModuleList()
@@ -217,6 +260,15 @@ class eSEN_Backbone(nn.Module):
         if self.include_edges:
             self.edge_blocks = nn.ModuleList()
 
+
+        block_kwargs = {
+            "gate_act_type": self.gate_act_type,
+            "use_edge_envelope": self.use_edge_envelope,
+            "use_edge_scalar_modulation": self.use_edge_scalar_modulation,
+            "residual_update_scale_mode": self.residual_update_scale_mode,
+            "residual_update_scale_init": self.residual_update_scale_init,
+            "residual_update_scale_log_range": self.residual_update_scale_log_range,
+        }
 
         for _ in range(self.num_layers):
             node_block = eSEN_Block(
@@ -232,12 +284,14 @@ class eSEN_Backbone(nn.Module):
                 self.act_type,
                 self.mlp_type,
                 message_type,
-                self.include_edges,
-                node_or_edge='node'
+                include_edges=self.include_edges,
+                node_or_edge='node',
+                **block_kwargs,
             )
             self.node_blocks.append(node_block)
 
-            if self.include_edges:
+        if self.include_edges:
+            for _ in range(self.num_edge_layers):
                 edge_block = eSEN_Block(
                     self.sphere_channels,
                     self.hidden_channels,
@@ -251,8 +305,9 @@ class eSEN_Backbone(nn.Module):
                     self.act_type,
                     self.mlp_type,
                     message_type,
-                    self.include_edges,
-                    node_or_edge='edge'
+                    include_edges=self.include_edges,
+                    node_or_edge='edge',
+                    **block_kwargs,
                 )
                 self.edge_blocks.append(edge_block)
 
@@ -262,6 +317,22 @@ class eSEN_Backbone(nn.Module):
             lmax=self.lmax,
             num_channels=self.sphere_channels
         )
+        if self.output_sphere_channels == self.sphere_channels:
+            self.node_output_projection = nn.Identity()
+            self.edge_output_projection = nn.Identity()
+        else:
+            self.node_output_projection = SO3_Linear(
+                self.sphere_channels,
+                self.output_sphere_channels,
+                lmax=self.lmax,
+                bias=False,
+            )
+            self.edge_output_projection = SO3_Linear(
+                self.sphere_channels,
+                self.output_sphere_channels,
+                lmax=self.lmax,
+                bias=False,
+            )
 
     def _get_rotmat_and_wigner(self, edge_distance_vecs):
         Jd_buffers = [
@@ -294,6 +365,64 @@ class eSEN_Backbone(nn.Module):
         wigner_inv = torch.transpose(wigner, 1, 2).contiguous()
 
         return wigner, wigner_inv
+
+    def _run_message_passing(
+        self,
+        x_message_node,
+        x_message_edge,
+        x_edge,
+        graph_dict,
+        wigner,
+        wigner_inv,
+    ):
+        def update_node(block, node_state, edge_state):
+            return block(
+                node_state,
+                edge_state,
+                x_edge,
+                graph_dict["edge_distance"],
+                graph_dict["edge_index"],
+                wigner,
+                wigner_inv,
+                node_or_edge='node',
+                partition=graph_dict["partition"],
+            )
+
+        def update_edge(block, node_state, edge_state):
+            return block(
+                node_state,
+                edge_state,
+                x_edge,
+                graph_dict["edge_distance"],
+                graph_dict["edge_index"],
+                wigner,
+                wigner_inv,
+                node_or_edge='edge',
+                partition=graph_dict["partition"],
+            )
+
+        if not self.include_edges:
+            for node_block in self.node_blocks:
+                x_message_node = update_node(node_block, x_message_node, None)
+        elif self.message_passing_schedule == "interleaved":
+            for node_block, edge_block in zip(self.node_blocks, self.edge_blocks):
+                x_message_node = update_node(
+                    node_block, x_message_node, x_message_edge
+                )
+                x_message_edge = update_edge(
+                    edge_block, x_message_node, x_message_edge
+                )
+        else:
+            for node_block in self.node_blocks:
+                x_message_node = update_node(
+                    node_block, x_message_node, x_message_edge
+                )
+            if self.include_edges:
+                for edge_block in self.edge_blocks:
+                    x_message_edge = update_edge(
+                        edge_block, x_message_node, x_message_edge
+                    )
+        return x_message_node, x_message_edge
 
 
     @conditional_grad(torch.enable_grad())
@@ -435,38 +564,22 @@ class eSEN_Backbone(nn.Module):
         ###############################################################
         # Update spherical node embeddings
         ###############################################################
-        for i in range(self.num_layers):
-
-            x_message_node  = self.node_blocks[i](
-                x_message_node,
-                x_message_edge,
-                x_edge,
-                graph_dict["edge_distance"],
-                graph_dict["edge_index"],
-                wigner,
-                wigner_inv,
-                node_or_edge='node',
-                partition=graph_dict["partition"]
-            )
-
-            if self.include_edges:
-                x_message_edge = self.edge_blocks[i](
-                    x_message_node,
-                    x_message_edge,
-                    x_edge,
-                    graph_dict["edge_distance"],
-                    graph_dict["edge_index"],
-                    wigner,
-                    wigner_inv,
-                    node_or_edge='edge',
-                    partition=graph_dict["partition"]
-                )
+        x_message_node, x_message_edge = self._run_message_passing(
+            x_message_node,
+            x_message_edge,
+            x_edge,
+            graph_dict,
+            wigner,
+            wigner_inv,
+        )
 
         # Final layer norm
         x_message_node = self.norm(x_message_node)
+        x_message_node = self.node_output_projection(x_message_node)
 
         if self.include_edges:
             x_message_edge  = self.norm(x_message_edge)
+            x_message_edge = self.edge_output_projection(x_message_edge)
 
         # Return the output
         if self.include_edges: # all we need for the fock output head
