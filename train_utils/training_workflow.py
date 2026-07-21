@@ -29,6 +29,12 @@ class TrainingWorkflow:
         "optimizer_type": "adam",
         "compute_total_energy": False,
         "dist_backend": "nccl" if torch.cuda.is_available() else "gloo",
+        "use_wandb": False,
+        "wandb_project": "maloq",
+        "wandb_entity": None,
+        "wandb_mode": "online",
+        "validation_matrix_metrics": False,
+        "validation_matrix_metrics_frequency": 1,
     }
 
     def __init__(self, config):
@@ -37,6 +43,50 @@ class TrainingWorkflow:
 
         # check_input_config will raise errors if there are incompatible settings
         self.check_input_config()
+        self.wandb_run = self.setup_tracking()
+
+    def setup_tracking(self):
+        """Initializes optional experiment tracking on the primary rank."""
+        if self.rank != 0 or not self.config.get('use_wandb', False):
+            return None
+
+        try:
+            import wandb
+        except ImportError as exc:
+            raise RuntimeError(
+                "W&B tracking was requested, but wandb is not installed."
+            ) from exc
+
+        wandb_config = {
+            key: (
+                value
+                if isinstance(value, (str, int, float, bool)) or value is None
+                else value.__name__
+                if hasattr(value, '__name__')
+                else str(value)
+            )
+            for key, value in self.config.items()
+        }
+        run = wandb.init(
+            project=self.config['wandb_project'],
+            entity=self.config.get('wandb_entity'),
+            name=self.config['run_name'],
+            dir=self.config['output_folder'],
+            config=wandb_config,
+            mode=self.config.get('wandb_mode', 'online'),
+        )
+        print(
+            f"W&B tracking enabled ({self.config.get('wandb_mode', 'online')}): "
+            f"{run.name}",
+            flush=True,
+        )
+        return run
+
+    def finish_tracking(self):
+        """Finishes the active experiment tracking run, if any."""
+        if self.wandb_run is not None:
+            self.wandb_run.finish()
+            self.wandb_run = None
         
     def setup_environment(self):
         """Initializes seeds, dtypes, and distributed compute environment."""
@@ -122,6 +172,18 @@ class TrainingWorkflow:
         # distribute_graphs cannot be used with non-matrix valued learning targets:
         if self.config['distribute_graphs'] and 'matrix' not in self.config['loss_target']:
             raise ValueError("Distributed graph training is currently only implemented for matrix-valued learning targets (e.g. fock_matrix).")
+
+        if self.config['validation_matrix_metrics']:
+            if self.config['loss_target'] not in ['fock_matrix', 'density_matrix']:
+                raise ValueError(
+                    "Validation matrix metrics require a Fock or density matrix loss target."
+                )
+            if self.config['distribute_graphs']:
+                raise ValueError(
+                    "Validation matrix metrics are not yet supported with distributed graphs."
+                )
+        if self.config['validation_matrix_metrics_frequency'] < 1:
+            raise ValueError("validation_matrix_metrics_frequency must be at least 1.")
 
         # if hidden_dim is not provided, set it to l_embedding_dim:
         if 'hidden_dim' not in self.config:
@@ -569,7 +631,8 @@ class TrainingWorkflow:
         trainer = splittrainer.SplitTrainer(
             backbone=backbone, head=head, head_irreps=irreps, # Note: update if forces
             run_name=self.config.get('run_name', 'run'),
-            save_frequency=self.config.get('save_frequency', 10)
+            save_frequency=self.config.get('save_frequency', 10),
+            wandb_run=self.wandb_run,
         )
 
         target_map = {
@@ -593,6 +656,8 @@ class TrainingWorkflow:
                 compute_uncoupled_loss=self.config.get('compute_uncoupled_loss', False),
                 step_every_epoch=self.config.get('step_every_epoch', True),
                 element_references=self.config.get('element_references', None),
+                validation_matrix_metrics=self.config.get('validation_matrix_metrics', False),
+                validation_matrix_metrics_frequency=self.config.get('validation_matrix_metrics_frequency', 1),
             )
         elif self.config['train_or_eval'] == "eval":
             trainer.evaluate(

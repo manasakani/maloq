@@ -27,13 +27,14 @@ def get_timestamp_uid() -> str:
 
 class SplitTrainer():
 
-    def __init__(self, backbone, head, head_irreps, save_frequency=10, run_id=None, run_name='noname'):
+    def __init__(self, backbone, head, head_irreps, save_frequency=10, run_id=None, run_name='noname', wandb_run=None):
 
         self.backbone = backbone      # takes atom graph, outputs internal embeddings
         self.head = head              # takes internal embeddings, outputs fixed irrep size
         self.head_irreps = head_irreps
         self.save_frequency = save_frequency
         self.open_shell = False
+        self.wandb_run = wandb_run
 
         if not run_id:
             run_id = str(get_timestamp_uid)
@@ -58,6 +59,8 @@ class SplitTrainer():
             compute_uncoupled_loss=False,
             element_references=None,
             step_every_epoch=False,
+            validation_matrix_metrics=False,
+            validation_matrix_metrics_frequency=1,
             min_lr=1e-10):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}", flush=True)
@@ -111,6 +114,7 @@ class SplitTrainer():
 
         track_loss_node = []
         track_loss_node_val = []
+        track_loss_total = []
         if include_edges:
             track_loss_edge = []
             track_loss_edge_val = []
@@ -127,6 +131,7 @@ class SplitTrainer():
 
             train_loss_node = 0.0
             train_loss_edge = 0.0
+            train_loss_total = 0.0
             torch.cuda.reset_peak_memory_stats()
             for batch_idx, batch in enumerate(train_loader):
 
@@ -192,6 +197,8 @@ class SplitTrainer():
                 else:
                     raise ValueError(f"Unknown loss target string: {loss_target_string}")
 
+                train_loss_total += loss.item()
+
                 # -- Backwards --
                 # torch.cuda.synchronize()
                 backward_start = time.perf_counter()
@@ -230,12 +237,13 @@ class SplitTrainer():
                 track_loss_edge.append(train_loss_edge/num_train_batches)
             else:
                 track_loss_node.append(train_loss_node/num_train_batches)
+            track_loss_total.append(train_loss_total/num_train_batches)
 
             if rank == 0:
                 if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
-                    print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]} [edge] {track_loss_edge[-1]}", flush=True)
+                    print(f"Epoch {epoch+1}, Train Loss: [total] {track_loss_total[-1]} [node] {track_loss_node[-1]} [edge] {track_loss_edge[-1]}", flush=True)
                 else:
-                    print(f"Epoch {epoch+1}, Train Loss: [node] {track_loss_node[-1]}", flush=True)
+                    print(f"Epoch {epoch+1}, Train Loss: [total] {track_loss_total[-1]} [node] {track_loss_node[-1]}", flush=True)
 
             epoch_end = time.perf_counter()
             if rank == 0:
@@ -247,6 +255,13 @@ class SplitTrainer():
             val_loss = 0.0
             val_loss_node = 0.0
             val_loss_edge = 0.0
+            compute_matrix_metrics = (
+                validation_matrix_metrics
+                and (epoch + 1) % validation_matrix_metrics_frequency == 0
+            )
+            matrix_abs_error = 0.0
+            matrix_squared_error = 0.0
+            matrix_num_elements = 0
             with torch.no_grad():
                 for batch in val_loader:
 
@@ -275,6 +290,19 @@ class SplitTrainer():
 
                         val_loss_node += loss_node.item()
                         val_loss_edge += loss_edge.item()
+
+                        if compute_matrix_metrics:
+                            batch_matrix_stats = self.compute_validation_matrix_error_sums(
+                                batch,
+                                node_output,
+                                edge_output,
+                                this_node_target,
+                                this_edge_target,
+                                basis_transform,
+                            )
+                            matrix_abs_error += batch_matrix_stats[0]
+                            matrix_squared_error += batch_matrix_stats[1]
+                            matrix_num_elements += batch_matrix_stats[2]
 
                     elif loss_target_string == 'forces':
                         node_output = self.head(backbone_out, batch)
@@ -334,11 +362,30 @@ class SplitTrainer():
                 val_loss_node = val_loss_node_tensor.item() / world_size
                 val_loss_edge = val_loss_edge_tensor.item() / world_size
 
+            matrix_mae = None
+            matrix_mse = None
+            if compute_matrix_metrics:
+                matrix_stats = torch.tensor(
+                    [matrix_abs_error, matrix_squared_error, matrix_num_elements],
+                    dtype=torch.float64,
+                    device=device,
+                )
+                if dist.is_initialized():
+                    dist.all_reduce(matrix_stats, op=dist.ReduceOp.SUM)
+                matrix_mae = (matrix_stats[0] / matrix_stats[2]).item()
+                matrix_mse = (matrix_stats[1] / matrix_stats[2]).item()
+
             if rank == 0:   
                 if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
-                    print(f"Epoch {epoch+1}, Averaged Val Loss across ranks [node] {track_loss_node_val[-1]} [edge] {track_loss_edge_val[-1]}", flush=True)
+                    print(f"Epoch {epoch+1}, Averaged Val Loss across ranks [total] {val_loss/num_val_batches} [node] {val_loss_node/num_val_batches} [edge] {val_loss_edge/num_val_batches}", flush=True)
                 else:
-                    print(f"Epoch {epoch+1}, Averaged Val Loss across ranks [node] {track_loss_node_val[-1]}", flush=True)
+                    print(f"Epoch {epoch+1}, Averaged Val Loss across ranks [total] {val_loss/num_val_batches} [node] {val_loss_node/num_val_batches}", flush=True)
+                if compute_matrix_metrics:
+                    print(
+                        f"Epoch {epoch+1}, Validation Matrix MAE: {matrix_mae} "
+                        f"MSE: {matrix_mse}",
+                        flush=True,
+                    )
 
             # -- Scheduler --
             if step_every_epoch:
@@ -349,6 +396,33 @@ class SplitTrainer():
                 current_lr = optimizer.param_groups[0]['lr']
                 if rank == 0:
                     print("Current learning rate: ", current_lr)
+
+            if rank == 0 and self.wandb_run is not None:
+                metrics = {
+                    "epoch": epoch + 1,
+                    "train/node_loss": track_loss_node[-1],
+                    "validation/node_loss": val_loss_node / num_val_batches,
+                    "train/total_loss": track_loss_total[-1],
+                    "validation/total_loss": val_loss / num_val_batches,
+                    "optimizer/learning_rate": current_lr,
+                    "time/train_epoch_seconds": epoch_end - epoch_start,
+                    "time/epoch_seconds": time.perf_counter() - epoch_start,
+                }
+                if include_edges:
+                    metrics.update({
+                        "train/edge_loss": track_loss_edge[-1],
+                        "validation/edge_loss": val_loss_edge / num_val_batches,
+                    })
+                if compute_matrix_metrics:
+                    metrics.update({
+                        "validation/matrix_mae": matrix_mae,
+                        "validation/matrix_mse": matrix_mse,
+                    })
+                if torch.cuda.is_available():
+                    metrics["system/gpu_peak_memory_mb"] = (
+                        torch.cuda.max_memory_allocated() / (1024 * 1024)
+                    )
+                self.wandb_run.log(metrics, step=epoch + 1)
 
             # save state
             if rank == 0:
@@ -1204,6 +1278,89 @@ class SplitTrainer():
         loss = loss_fxn(output, labels, self.head_irreps)
 
         return loss_node, loss_edge, loss
+
+    def compute_validation_matrix_error_sums(
+            self,
+            batch,
+            node_output,
+            edge_output,
+            node_target,
+            edge_target,
+            basis_transform):
+        """Returns absolute error sum, squared error sum, and AO matrix size."""
+        if self.open_shell:
+            spin_tensors = zip(node_output, edge_output, node_target, edge_target)
+        else:
+            if node_output.ndim == 3:
+                node_output = node_output[0]
+                edge_output = edge_output[0]
+            if node_target.ndim == 3:
+                node_target = node_target[0]
+                edge_target = edge_target[0]
+            spin_tensors = [(node_output, edge_output, node_target, edge_target)]
+
+        node_slices = batch.ptr
+        edge_graph_indices = batch.batch[batch.edge_index[0]]
+        target_indices = batch.fock_target_id.reshape(-1)
+        abs_error_sum = 0.0
+        squared_error_sum = 0.0
+        num_elements = 0
+
+        for spin_node_output, spin_edge_output, spin_node_target, spin_edge_target in spin_tensors:
+            for graph_index in range(batch.num_graphs):
+                node_start = int(node_slices[graph_index].item())
+                node_end = int(node_slices[graph_index + 1].item())
+                edge_mask = edge_graph_indices == graph_index
+
+                node_error = (
+                    spin_node_output[node_start:node_end]
+                    - spin_node_target[node_start:node_end]
+                )
+                edge_error = spin_edge_output[edge_mask] - spin_edge_target[edge_mask]
+                node_error = basis_transform.get_H(node_error)
+                edge_error = basis_transform.get_H(edge_error)
+
+                target_object = batch.fock_target_object[graph_index]
+                target_index = int(target_indices[graph_index].item())
+                neighbour_list = target_object.neighbour_list_list[target_index]
+                atomic_numbers = target_object.atomic_numbers_list[target_index]
+                orbitals_per_atom = target_object.orbitals_per_atom_list[target_index]
+                num_atoms = len(atomic_numbers)
+                src_idxes = np.concatenate([
+                    neighbour_list[0], np.arange(num_atoms)
+                ])
+                target_idxes = np.concatenate([
+                    neighbour_list[1], np.arange(num_atoms)
+                ])
+                fock_block_offsets = np.concatenate([
+                    np.array([0]), np.cumsum(orbitals_per_atom)
+                ])
+                matrix_size = int(fock_block_offsets[-1])
+                error_matrix = np.zeros(
+                    (matrix_size, matrix_size), dtype=np.float32
+                )
+                error_targets = torch.cat(
+                    [edge_error, node_error], dim=0
+                ).detach().cpu().numpy()
+                matrix2labels_kernels.numpy_single_matrix2label(
+                    target_object.orbital_template,
+                    fock_block_offsets,
+                    atomic_numbers,
+                    src_idxes,
+                    target_idxes,
+                    error_matrix,
+                    error_targets,
+                    forward=False,
+                )
+                if not np.allclose(error_matrix, error_matrix.T, atol=1e-4):
+                    error_matrix = (error_matrix + error_matrix.T) / 2
+
+                error_matrix = error_matrix.astype(np.float64, copy=False)
+                abs_error_sum += np.abs(error_matrix).sum()
+                squared_error_sum += np.square(error_matrix).sum()
+                num_elements += error_matrix.size
+
+        return abs_error_sum, squared_error_sum, num_elements
 
     def write_embeddings_to_file(self, backbone_out, batch, index, output_folder, rank):
         """
