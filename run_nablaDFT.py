@@ -47,8 +47,23 @@ config = {
     "num_epochs": 700,
     "dtype": torch.float32,          # nablaDFT often uses float64 - 32 here for cupy kernel
     "lr_init": 1e-4,
-    "optimizer_type": "adam",        
+    "optimizer_type": "adam",
     "weight_decay": 0.0,
+    # SOAP uses lr_init unless soap_lr is set explicitly. The dimension limit
+    # prevents allocating very large quadratic preconditioner matrices.
+    "soap_lr": None,
+    "soap_betas": (0.95, 0.95),
+    "soap_precondition_frequency": 10,
+    "soap_max_precondition_dim": 256,
+    "soap_precondition_1d": False,
+    # Muon is applied to backbone matrices; the output head and vector/scalar
+    # parameters use AdamW at muon_adamw_lr (or lr_init when unset).
+    "muon_lr": 2e-2,
+    "muon_momentum": 0.95,
+    "muon_nesterov": True,
+    "muon_ns_steps": 5,
+    "muon_adamw_lr": None,
+    "muon_adamw_betas": (0.9, 0.95),
     "scheduler_type": 'cosine',      # 'plateau' or 'cosine'
     "eta_min": 1e-8,                 # For cosine scheduler
     "patience": 500,                 # For plateau scheduler (if swapped)
@@ -89,6 +104,21 @@ def parse_args():
     parser.add_argument("--output-folder", default=None)
     parser.add_argument("--wigner-backend", choices=("torch", "triton"), default=None)
     parser.add_argument(
+        "--optimizer-type",
+        choices=("adam", "adamw", "soap", "muon"),
+        default=None,
+    )
+    parser.add_argument("--soap-lr", type=float, default=None)
+    parser.add_argument("--soap-precondition-frequency", type=int, default=None)
+    parser.add_argument("--soap-max-precondition-dim", type=int, default=None)
+    parser.add_argument("--muon-lr", type=float, default=None)
+    parser.add_argument("--muon-adamw-lr", type=float, default=None)
+    parser.add_argument("--muon-momentum", type=float, default=None)
+    parser.add_argument("--muon-ns-steps", type=int, default=None)
+    parser.add_argument(
+        "--muon-nesterov", action=argparse.BooleanOptionalAction, default=None
+    )
+    parser.add_argument(
         "--wandb", action=argparse.BooleanOptionalAction, default=None
     )
     parser.add_argument("--wandb-project", default=None)
@@ -117,6 +147,24 @@ def build_config(args):
         run_config["output_folder"] = args.output_folder
     if args.wigner_backend is not None:
         run_config["wigner_backend"] = args.wigner_backend
+    if args.optimizer_type is not None:
+        run_config["optimizer_type"] = args.optimizer_type
+    if args.soap_lr is not None:
+        run_config["soap_lr"] = args.soap_lr
+    if args.soap_precondition_frequency is not None:
+        run_config["soap_precondition_frequency"] = args.soap_precondition_frequency
+    if args.soap_max_precondition_dim is not None:
+        run_config["soap_max_precondition_dim"] = args.soap_max_precondition_dim
+    if args.muon_lr is not None:
+        run_config["muon_lr"] = args.muon_lr
+    if args.muon_adamw_lr is not None:
+        run_config["muon_adamw_lr"] = args.muon_adamw_lr
+    if args.muon_momentum is not None:
+        run_config["muon_momentum"] = args.muon_momentum
+    if args.muon_ns_steps is not None:
+        run_config["muon_ns_steps"] = args.muon_ns_steps
+    if args.muon_nesterov is not None:
+        run_config["muon_nesterov"] = args.muon_nesterov
     if args.wandb is not None:
         run_config["use_wandb"] = args.wandb
     if args.wandb_project is not None:

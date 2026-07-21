@@ -262,6 +262,12 @@ class SplitTrainer():
             matrix_abs_error = 0.0
             matrix_squared_error = 0.0
             matrix_num_elements = 0
+            node_matrix_abs_error = 0.0
+            node_matrix_squared_error = 0.0
+            node_matrix_num_elements = 0
+            edge_matrix_abs_error = 0.0
+            edge_matrix_squared_error = 0.0
+            edge_matrix_num_elements = 0
             with torch.no_grad():
                 for batch in val_loader:
 
@@ -303,6 +309,12 @@ class SplitTrainer():
                             matrix_abs_error += batch_matrix_stats[0]
                             matrix_squared_error += batch_matrix_stats[1]
                             matrix_num_elements += batch_matrix_stats[2]
+                            node_matrix_abs_error += batch_matrix_stats[3]
+                            node_matrix_squared_error += batch_matrix_stats[4]
+                            node_matrix_num_elements += batch_matrix_stats[5]
+                            edge_matrix_abs_error += batch_matrix_stats[6]
+                            edge_matrix_squared_error += batch_matrix_stats[7]
+                            edge_matrix_num_elements += batch_matrix_stats[8]
 
                     elif loss_target_string == 'forces':
                         node_output = self.head(backbone_out, batch)
@@ -364,9 +376,23 @@ class SplitTrainer():
 
             matrix_mae = None
             matrix_mse = None
+            node_matrix_mae = None
+            node_matrix_mse = None
+            edge_matrix_mae = None
+            edge_matrix_mse = None
             if compute_matrix_metrics:
                 matrix_stats = torch.tensor(
-                    [matrix_abs_error, matrix_squared_error, matrix_num_elements],
+                    [
+                        matrix_abs_error,
+                        matrix_squared_error,
+                        matrix_num_elements,
+                        node_matrix_abs_error,
+                        node_matrix_squared_error,
+                        node_matrix_num_elements,
+                        edge_matrix_abs_error,
+                        edge_matrix_squared_error,
+                        edge_matrix_num_elements,
+                    ],
                     dtype=torch.float64,
                     device=device,
                 )
@@ -374,6 +400,10 @@ class SplitTrainer():
                     dist.all_reduce(matrix_stats, op=dist.ReduceOp.SUM)
                 matrix_mae = (matrix_stats[0] / matrix_stats[2]).item()
                 matrix_mse = (matrix_stats[1] / matrix_stats[2]).item()
+                node_matrix_mae = (matrix_stats[3] / matrix_stats[5]).item()
+                node_matrix_mse = (matrix_stats[4] / matrix_stats[5]).item()
+                edge_matrix_mae = (matrix_stats[6] / matrix_stats[8]).item()
+                edge_matrix_mse = (matrix_stats[7] / matrix_stats[8]).item()
 
             if rank == 0:   
                 if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
@@ -384,6 +414,16 @@ class SplitTrainer():
                     print(
                         f"Epoch {epoch+1}, Validation Matrix MAE: {matrix_mae} "
                         f"MSE: {matrix_mse}",
+                        flush=True,
+                    )
+                    print(
+                        f"Epoch {epoch+1}, Validation Node Matrix MAE: "
+                        f"{node_matrix_mae} MSE: {node_matrix_mse}",
+                        flush=True,
+                    )
+                    print(
+                        f"Epoch {epoch+1}, Validation Edge Matrix MAE: "
+                        f"{edge_matrix_mae} MSE: {edge_matrix_mse}",
                         flush=True,
                     )
 
@@ -417,6 +457,10 @@ class SplitTrainer():
                     metrics.update({
                         "validation/matrix_mae": matrix_mae,
                         "validation/matrix_mse": matrix_mse,
+                        "validation/node_matrix_mae": node_matrix_mae,
+                        "validation/node_matrix_mse": node_matrix_mse,
+                        "validation/edge_matrix_mae": edge_matrix_mae,
+                        "validation/edge_matrix_mse": edge_matrix_mse,
                     })
                 if torch.cuda.is_available():
                     metrics["system/gpu_peak_memory_mb"] = (
@@ -1287,7 +1331,7 @@ class SplitTrainer():
             node_target,
             edge_target,
             basis_transform):
-        """Returns absolute error sum, squared error sum, and AO matrix size."""
+        """Returns total, node-block, and edge-block AO matrix error sums."""
         if self.open_shell:
             spin_tensors = zip(node_output, edge_output, node_target, edge_target)
         else:
@@ -1305,6 +1349,12 @@ class SplitTrainer():
         abs_error_sum = 0.0
         squared_error_sum = 0.0
         num_elements = 0
+        node_abs_error_sum = 0.0
+        node_squared_error_sum = 0.0
+        node_num_elements = 0
+        edge_abs_error_sum = 0.0
+        edge_squared_error_sum = 0.0
+        edge_num_elements = 0
 
         for spin_node_output, spin_edge_output, spin_node_target, spin_edge_target in spin_tensors:
             for graph_index in range(batch.num_graphs):
@@ -1360,7 +1410,40 @@ class SplitTrainer():
                 squared_error_sum += np.square(error_matrix).sum()
                 num_elements += error_matrix.size
 
-        return abs_error_sum, squared_error_sum, num_elements
+                for atom_index in range(num_atoms):
+                    block_start = fock_block_offsets[atom_index]
+                    block_end = fock_block_offsets[atom_index + 1]
+                    node_block = error_matrix[
+                        block_start:block_end, block_start:block_end
+                    ]
+                    node_abs_error_sum += np.abs(node_block).sum()
+                    node_squared_error_sum += np.square(node_block).sum()
+                    node_num_elements += node_block.size
+
+                for source_index, target_index in zip(
+                        neighbour_list[0], neighbour_list[1]):
+                    row_start = fock_block_offsets[source_index]
+                    row_end = fock_block_offsets[source_index + 1]
+                    col_start = fock_block_offsets[target_index]
+                    col_end = fock_block_offsets[target_index + 1]
+                    edge_block = error_matrix[
+                        row_start:row_end, col_start:col_end
+                    ]
+                    edge_abs_error_sum += np.abs(edge_block).sum()
+                    edge_squared_error_sum += np.square(edge_block).sum()
+                    edge_num_elements += edge_block.size
+
+        return (
+            abs_error_sum,
+            squared_error_sum,
+            num_elements,
+            node_abs_error_sum,
+            node_squared_error_sum,
+            node_num_elements,
+            edge_abs_error_sum,
+            edge_squared_error_sum,
+            edge_num_elements,
+        )
 
     def write_embeddings_to_file(self, backbone_out, batch, index, output_folder, rank):
         """

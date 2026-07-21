@@ -8,7 +8,7 @@ from e3nn.o3 import Irreps
 from torch.utils.data import ConcatDataset
 import torch.distributed as dist
 
-from train_utils import loss, utils_compute, splittrainer
+from train_utils import loss, optimizers, utils_compute, splittrainer
 from dataset_utils import get_loader, get_scale_shift
 from dataset_utils.ASEDataset import distribute_data, ASEDataset, ASEAtomsData
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
@@ -27,6 +27,21 @@ class TrainingWorkflow:
         "tiling_dims": None,
         "lr_init": 1e-4,
         "optimizer_type": "adam",
+        "soap_lr": None,
+        "soap_betas": (0.95, 0.95),
+        "soap_shampoo_beta": -1.0,
+        "soap_eps": 1e-8,
+        "soap_precondition_frequency": 10,
+        "soap_max_precondition_dim": 256,
+        "soap_precondition_1d": False,
+        "soap_normalize_grads": False,
+        "muon_lr": 2e-2,
+        "muon_momentum": 0.95,
+        "muon_nesterov": True,
+        "muon_ns_steps": 5,
+        "muon_adamw_lr": None,
+        "muon_adamw_betas": (0.9, 0.95),
+        "muon_adamw_eps": 1e-10,
         "compute_total_energy": False,
         "dist_backend": "nccl" if torch.cuda.is_available() else "gloo",
         "use_wandb": False,
@@ -111,6 +126,15 @@ class TrainingWorkflow:
 
     def check_input_config(self):
         """Validates the configuration for incompatible settings, and writes config to output folder."""
+
+        optimizer_type = self.config.get('optimizer_type', 'adam').lower()
+        valid_optimizers = {'adam', 'adamw', 'soap', 'muon'}
+        if optimizer_type not in valid_optimizers:
+            raise ValueError(
+                f"Unknown optimizer '{optimizer_type}'. Choose one of "
+                f"{sorted(valid_optimizers)}."
+            )
+        self.config['optimizer_type'] = optimizer_type
 
         if 'matrix' in self.config['loss_target']:
             self.config['include_edges'] = True
@@ -555,21 +579,102 @@ class TrainingWorkflow:
         head = head.to(self.device)
 
         # 3. Optimizer
-        params = []
-        if c['train_backbone']: 
-            params += list(backbone.parameters())
+        backbone_params = []
+        head_params = []
+        if c['train_backbone']:
+            backbone_params = list(backbone.parameters())
         else: 
             for p in backbone.parameters(): p.requires_grad = False
             
-        if c['train_head']: 
-            params += list(head.parameters())
+        if c['train_head']:
+            head_params = list(head.parameters())
         else:
             for p in head.parameters(): p.requires_grad = False
 
-        if c.get('optimizer_type', 'adam').lower() == 'adamw':
-            optimizer = torch.optim.AdamW(params, lr=c['lr_init'], weight_decay=c.get('weight_decay', 0.0))
-        else:
+        params = backbone_params + head_params
+        optimizer_type = c['optimizer_type']
+        if optimizer_type == 'adam':
             optimizer = torch.optim.Adam(params, lr=c['lr_init'])
+        elif optimizer_type == 'adamw':
+            optimizer = torch.optim.AdamW(params, lr=c['lr_init'], weight_decay=c.get('weight_decay', 0.0))
+        elif optimizer_type == 'soap':
+            soap_lr = c['lr_init'] if c.get('soap_lr') is None else c['soap_lr']
+            optimizer = optimizers.SOAP(
+                params,
+                lr=soap_lr,
+                betas=tuple(c['soap_betas']),
+                shampoo_beta=c['soap_shampoo_beta'],
+                eps=c['soap_eps'],
+                weight_decay=c.get('weight_decay', 0.0),
+                precondition_frequency=c['soap_precondition_frequency'],
+                max_precond_dim=c['soap_max_precondition_dim'],
+                precondition_1d=c['soap_precondition_1d'],
+                normalize_grads=c['soap_normalize_grads'],
+            )
+        elif optimizer_type == 'muon':
+            # Muon is designed for hidden matrix parameters. Keep the output
+            # head, embeddings, normalization gains, and scalar/vector
+            # backbone parameters on AdamW.
+            muon_params = []
+            muon_param_ids = set()
+            for module in backbone.modules():
+                module_is_auxiliary = (
+                    isinstance(module, torch.nn.Embedding)
+                    or 'norm' in type(module).__name__.lower()
+                )
+                for parameter in module.parameters(recurse=False):
+                    if (
+                        parameter.ndim >= 2
+                        and parameter.requires_grad
+                        and not module_is_auxiliary
+                        and id(parameter) not in muon_param_ids
+                    ):
+                        muon_params.append(parameter)
+                        muon_param_ids.add(id(parameter))
+            auxiliary_params = [p for p in params if id(p) not in muon_param_ids]
+            if not muon_params:
+                raise ValueError(
+                    "Muon requires at least one trainable backbone matrix parameter."
+                )
+
+            parameter_groups = [
+                {
+                    'params': muon_params,
+                    'use_muon': True,
+                    'lr': c['muon_lr'],
+                }
+            ]
+            if auxiliary_params:
+                auxiliary_lr = (
+                    c['lr_init']
+                    if c.get('muon_adamw_lr') is None
+                    else c['muon_adamw_lr']
+                )
+                parameter_groups.append(
+                    {
+                        'params': auxiliary_params,
+                        'use_muon': False,
+                        'lr': auxiliary_lr,
+                        'betas': tuple(c['muon_adamw_betas']),
+                        'eps': c['muon_adamw_eps'],
+                    }
+                )
+            optimizer = optimizers.Muon(
+                parameter_groups,
+                lr=c['muon_lr'],
+                momentum=c['muon_momentum'],
+                nesterov=c['muon_nesterov'],
+                ns_steps=c['muon_ns_steps'],
+                weight_decay=c.get('weight_decay', 0.0),
+                betas=tuple(c['muon_adamw_betas']),
+                eps=c['muon_adamw_eps'],
+            )
+            if self.rank == 0:
+                print(
+                    "Muon optimizer: "
+                    f"{sum(p.numel() for p in muon_params):,} matrix parameters, "
+                    f"{sum(p.numel() for p in auxiliary_params):,} AdamW parameters."
+                )
 
         # 4. Restarts
         self._load_checkpoint(backbone, c['backbone_checkpoint'], "backbone")
