@@ -16,6 +16,15 @@ of checkpoint compatibility with the `ml-dft` dynamic expansion head.
 The coupled-irrep head keeps native MALOQ's default `reduce_edge: false` in both
 lanes.
 
+The separate `qhflow3` lane ports the active `QHFlow3CleanFeatures` trunk and
+removes its external expansion head. It converts the native QM7 loader's real
+e3nn-ordered overlap matrices to padded per-atom QHFlow3 blocks, supplies a
+zero Hamiltonian state (the converted QH9Stable database has no independent
+initial Hamiltonian, and using the target would leak the answer), then feeds
+the QHFlow3 node/pair latents to MALOQ's coupled-irrep head. Its config is
+`qhflow3_maloq_head_qh9stable.yaml`; it has no runtime dependency on the
+`ml-dft` checkout, Lightning, or `torch_scatter`.
+
 The YAML value `dataset_name: QM7` is deliberate: converted QH9Stable records
 are stored in the original MALOQ QM7 matrix convention and consumed through
 that unchanged loader path. The runner separately requires QH9Stable metadata,
@@ -27,6 +36,9 @@ Smoke both lanes:
 /dataset/seongsu/shared-home/conda/envs/proj-dft-baselines-maloq-sc26/bin/python \
   _my_script/experiment/2026-07-21/compare_maloq_qh9.py --smoke --variant both
 ```
+
+Use `--variant all` for baseline, `maloq-qh9`, and headless QHFlow3, or
+`--variant qhflow3` for QHFlow3 alone.
 
 Add `--full-size-smoke` to retain the production 128-channel trunk and
 candidate 64-channel readout while still using only the ordered 2/1/1 sample.

@@ -16,6 +16,7 @@ from ..dataset_utils import get_loader, get_scale_shift
 from ..dataset_utils.ASEDataset import distribute_data, ASEDataset, ASEAtomsData
 from ..dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 from ..helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, HELM_Force_Head, HELM_Energy_Head
+from ..helm.qhflow3_clean import QHFlow3MaloqBackbone
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -28,6 +29,7 @@ class TrainingWorkflow:
         "run_name": "run",
         "output_folder": "outputs/run",
         "seed": 42,
+        "backbone_type": "esen",
         "open_shell": False,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "wigner_backend": "torch",
@@ -41,6 +43,8 @@ class TrainingWorkflow:
         "residual_update_scale_mode": "none",
         "residual_update_scale_init": 1.0,
         "residual_update_scale_log_range": 0.0,
+        "qhflow3_max_radius": 12.0,
+        "qhflow3_radius_embed_dim": 32,
         "distribute_graphs": False,
         "partition_type": None,
         "tiling_dims": None,
@@ -211,6 +215,15 @@ class TrainingWorkflow:
             raise ValueError(
                 "residual_update_scale_mode must be 'none' or "
                 "'bounded_degree'."
+            )
+        if self.config['backbone_type'] not in {'esen', 'qhflow3_clean'}:
+            raise ValueError("backbone_type must be 'esen' or 'qhflow3_clean'.")
+        if (
+            self.config['backbone_type'] == 'qhflow3_clean'
+            and self.config['output_l_embedding_dim'] is None
+        ):
+            raise ValueError(
+                "qhflow3_clean requires output_l_embedding_dim for its bottle width."
             )
         gradient_clip_val = self.config['gradient_clip_val']
         if gradient_clip_val is not None and float(gradient_clip_val) <= 0.0:
@@ -624,28 +637,49 @@ class TrainingWorkflow:
         c = self.config
         
         # 1. Backbone
-        backbone = eSEN_Backbone(
-            required_irreps, sphere_channels=c['l_embedding_dim'],
-            hidden_channels=c['hidden_dim'], lmax=required_irreps.lmax,
-            mmax=required_irreps.lmax, cutoff=c['rcut_gaussian'],
-            edge_channels=c['l_embedding_dim'], num_layers=c['num_mp_layers'],
-            act_type='gate', mlp_type=c['mlp_type'],
-            gate_act_type=c['gate_act_type'],
-            num_distance_basis=c['num_distance_basis'],
-            gaussian_width=c['gaussian_width'], include_edges=c['include_edges'],
-            open_shell=c['open_shell'],
-            wigner_backend=c.get('wigner_backend', 'torch'),
-            distributed_graph_training=c['distribute_graphs'],
-            message_type=c['message_type'],
-            message_passing_schedule=c['message_passing_schedule'],
-            num_edge_layers=c['num_edge_layers'],
-            output_sphere_channels=c['output_l_embedding_dim'],
-            use_edge_envelope=c['use_edge_envelope'],
-            use_edge_scalar_modulation=c['use_edge_scalar_modulation'],
-            residual_update_scale_mode=c['residual_update_scale_mode'],
-            residual_update_scale_init=c['residual_update_scale_init'],
-            residual_update_scale_log_range=c['residual_update_scale_log_range'],
-        ).to(self.device)
+        if c['backbone_type'] == 'qhflow3_clean':
+            backbone = QHFlow3MaloqBackbone(
+                sh_lmax=required_irreps.lmax,
+                hidden_size=c['l_embedding_dim'],
+                bottle_hidden_size=c['output_l_embedding_dim'],
+                num_gnn_layers=c['num_mp_layers'],
+                num_ham_gnn_layers=(
+                    c['num_mp_layers']
+                    if c['num_edge_layers'] is None
+                    else c['num_edge_layers']
+                ),
+                max_radius=c['qhflow3_max_radius'],
+                radius_embed_dim=c['qhflow3_radius_embed_dim'],
+                escn_edge_channels=c['hidden_dim'],
+                escn_num_distance_basis=c['num_distance_basis'],
+                esen_max_radius=c['rcut_gaussian'],
+                default_hamiltonian_input='zero',
+                use_block_S=True,
+                use_block_H=False,
+            ).to(self.device)
+        else:
+            backbone = eSEN_Backbone(
+                required_irreps, sphere_channels=c['l_embedding_dim'],
+                hidden_channels=c['hidden_dim'], lmax=required_irreps.lmax,
+                mmax=required_irreps.lmax, cutoff=c['rcut_gaussian'],
+                edge_channels=c['l_embedding_dim'], num_layers=c['num_mp_layers'],
+                act_type='gate', mlp_type=c['mlp_type'],
+                gate_act_type=c['gate_act_type'],
+                num_distance_basis=c['num_distance_basis'],
+                gaussian_width=c['gaussian_width'], include_edges=c['include_edges'],
+                open_shell=c['open_shell'],
+                wigner_backend=c.get('wigner_backend', 'torch'),
+                distributed_graph_training=c['distribute_graphs'],
+                message_type=c['message_type'],
+                message_passing_schedule=c['message_passing_schedule'],
+                num_edge_layers=c['num_edge_layers'],
+                output_sphere_channels=c['output_l_embedding_dim'],
+                use_edge_envelope=c['use_edge_envelope'],
+                use_edge_scalar_modulation=c['use_edge_scalar_modulation'],
+                residual_update_scale_mode=c['residual_update_scale_mode'],
+                residual_update_scale_init=c['residual_update_scale_init'],
+                residual_update_scale_log_range=c['residual_update_scale_log_range'],
+            ).to(self.device)
 
         # 2. Head
         head_channels = (
@@ -677,8 +711,10 @@ class TrainingWorkflow:
         head = head.to(self.device)
 
         if self.rank == 0:
+            is_qhflow3 = c['backbone_type'] == 'qhflow3_clean'
             model_summary = {
                 'model_variant': c.get('model_variant', 'maloq-baseline'),
+                'backbone_type': c['backbone_type'],
                 'seed': int(c['seed']),
                 'backbone_parameters': sum(p.numel() for p in backbone.parameters()),
                 'head_parameters': sum(p.numel() for p in head.parameters()),
@@ -697,11 +733,22 @@ class TrainingWorkflow:
                     if c['num_edge_layers'] is None
                     else c['num_edge_layers']
                 ),
-                'message_passing_schedule': c['message_passing_schedule'],
-                'mlp_type': c['mlp_type'],
-                'gate_act_type': c['gate_act_type'],
-                'residual_update_scale_mode': c['residual_update_scale_mode'],
+                'message_passing_schedule': (
+                    'qhflow3_node_then_pair'
+                    if is_qhflow3
+                    else c['message_passing_schedule']
+                ),
+                'mlp_type': 'grid' if is_qhflow3 else c['mlp_type'],
+                'gate_act_type': 'sigmoid' if is_qhflow3 else c['gate_act_type'],
+                'residual_update_scale_mode': (
+                    'none' if is_qhflow3 else c['residual_update_scale_mode']
+                ),
             }
+            if is_qhflow3:
+                model_summary.update(
+                    qhflow3_h_input='zero',
+                    qhflow3_overlap_input='native_qm7_e3nn_blocks',
+                )
             summary_path = Path(c['output_folder']) / 'model_summary.json'
             summary_path.write_text(json.dumps(model_summary, indent=2) + '\n')
             print(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 from e3nn.o3 import Irreps
@@ -11,6 +12,7 @@ from maloq.core.config import MaloqConfig
 from maloq.helm.esen_block import DegreeLayerScale, GridAtomwise
 from maloq.helm.esen_osh import eSEN_Backbone
 from maloq.helm.nn.activation import GateActivation
+from maloq.helm.qhflow3_clean import QHFlow3MaloqBackbone
 
 
 def _load_comparison_module():
@@ -141,3 +143,36 @@ def test_comparison_loss_reader_uses_persisted_edge_node_order(tmp_path):
         "validation_node_loss": 1.0,
         "validation_edge_loss": 3.0,
     }
+
+
+def test_qhflow3_native_overlap_bridge_uses_def2_svp_padding():
+    batch = SimpleNamespace(
+        overlap_matrix=[torch.eye(19).numpy()],
+        ptr=torch.tensor([0, 2]),
+        atomic_numbers=torch.tensor([1, 6]),
+        pos=torch.zeros(2, 3),
+    )
+
+    blocks = QHFlow3MaloqBackbone._overlap_blocks(batch)
+
+    assert blocks.shape == (2, 14, 14)
+    hydrogen_mask = torch.tensor([0, 1, 3, 4, 5])
+    torch.testing.assert_close(
+        blocks[0][hydrogen_mask[:, None], hydrogen_mask[None, :]],
+        torch.eye(5),
+    )
+    torch.testing.assert_close(blocks[1], torch.eye(14))
+
+
+def test_qhflow3_config_selects_headless_native_bridge():
+    workflow = MaloqConfig(
+        model={
+            "model_variant": "qhflow3-maloq-head",
+            "backbone_type": "qhflow3_clean",
+            "output_l_embedding_dim": 64,
+            "num_edge_layers": 2,
+        }
+    ).to_workflow_config()
+
+    assert workflow["backbone_type"] == "qhflow3_clean"
+    assert workflow["output_l_embedding_dim"] == 64

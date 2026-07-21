@@ -65,6 +65,7 @@ def _split_defaults() -> dict[str, Any]:
 def _model_defaults() -> dict[str, Any]:
     return {
         "model_variant": "maloq-baseline",
+        "backbone_type": "esen",
         "wigner_backend": "torch",
         "l_embedding_dim": 128,
         "num_distance_basis": 128,
@@ -85,6 +86,8 @@ def _model_defaults() -> dict[str, Any]:
         "residual_update_scale_mode": "none",
         "residual_update_scale_init": 1.0,
         "residual_update_scale_log_range": 0.0,
+        "qhflow3_max_radius": 12.0,
+        "qhflow3_radius_embed_dim": 32,
     }
 
 
@@ -192,6 +195,7 @@ class ModelConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     model_variant: str = "maloq-baseline"
+    backbone_type: Literal["esen", "qhflow3_clean"] = "esen"
     wigner_backend: Literal["torch", "triton"] = "torch"
     l_embedding_dim: int = 128
     num_distance_basis: int = 128
@@ -212,6 +216,8 @@ class ModelConfig(BaseModel):
     residual_update_scale_mode: Literal["none", "bounded_degree"] = "none"
     residual_update_scale_init: float = 1.0
     residual_update_scale_log_range: float = 0.0
+    qhflow3_max_radius: float = 12.0
+    qhflow3_radius_embed_dim: int = 32
 
 
 class OptimizationConfig(BaseModel):
@@ -334,6 +340,7 @@ class MaloqConfig(BaseModel):
             "dist_backend": "splits",
             # model
             "model_variant": "model",
+            "backbone_type": "model",
             "wigner_backend": "model",
             "l_embedding_dim": "model",
             "num_distance_basis": "model",
@@ -354,6 +361,8 @@ class MaloqConfig(BaseModel):
             "residual_update_scale_mode": "model",
             "residual_update_scale_init": "model",
             "residual_update_scale_log_range": "model",
+            "qhflow3_max_radius": "model",
+            "qhflow3_radius_embed_dim": "model",
             # optimization
             "num_epochs": "optimization",
             "lr_init": "optimization",

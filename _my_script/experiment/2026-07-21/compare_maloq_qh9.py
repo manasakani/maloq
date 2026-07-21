@@ -37,6 +37,7 @@ EXPECTED_METADATA = {
 CONFIGS = {
     "baseline": EXPERIMENT_ROOT / "maloq_baseline_qh9stable.yaml",
     "maloq-qh9": EXPERIMENT_ROOT / "maloq_qh9stable.yaml",
+    "qhflow3": EXPERIMENT_ROOT / "qhflow3_maloq_head_qh9stable.yaml",
 }
 REFERENCE_RUN = (
     "qh9_b3lyp5_maloq0713_nte_qhflow3_parity_"
@@ -48,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--variant",
-        choices=("baseline", "maloq-qh9", "both"),
+        choices=("baseline", "maloq-qh9", "qhflow3", "both", "all"),
         default="both",
     )
     parser.add_argument(
@@ -152,7 +153,7 @@ def run_variant(
             l_embedding_dim=16,
             hidden_dim=16,
             num_distance_basis=16,
-            output_l_embedding_dim=8 if variant == "maloq-qh9" else None,
+            output_l_embedding_dim=8 if variant != "baseline" else None,
         )
 
     started = time.perf_counter()
@@ -217,11 +218,12 @@ def main() -> None:
         raise SystemExit(f"Output directory already exists: {output_root}")
     output_root.mkdir(parents=True)
 
-    variants = (
-        ("baseline", "maloq-qh9")
-        if args.variant == "both"
-        else (args.variant,)
-    )
+    if args.variant == "both":
+        variants = ("baseline", "maloq-qh9")
+    elif args.variant == "all":
+        variants = ("baseline", "maloq-qh9", "qhflow3")
+    else:
+        variants = (args.variant,)
     results = [
         run_variant(
             variant,
@@ -238,8 +240,12 @@ def main() -> None:
     summary: dict[str, object] = {
         "reference_ml_dft_run": REFERENCE_RUN,
         "comparison_contract": (
-            "Both lanes use the same official QH9Stable order, native MALOQ "
+            "All selected lanes use the same official QH9Stable order, native MALOQ "
             "coupled-irrep head, target labels, loss, optimizer, and seed."
+        ),
+        "qhflow3_contract": (
+            "The headless QHFlow3 clean trunk uses zero H input to prevent target "
+            "leakage and consumes real overlap blocks from the native QM7 loader."
         ),
         "dbpath": str(dbpath),
         "split_counts": counts,
@@ -247,13 +253,17 @@ def main() -> None:
         "full_size_smoke": args.full_size_smoke,
         "results": results,
     }
-    if len(results) == 2:
-        baseline = results[0]["losses"]
-        candidate = results[1]["losses"]
-        summary["candidate_over_baseline"] = {
-            key: candidate[key] / baseline[key]
-            for key in baseline
-            if baseline[key] != 0.0
+    by_variant = {result["variant"]: result for result in results}
+    if "baseline" in by_variant:
+        baseline = by_variant["baseline"]["losses"]
+        summary["relative_to_baseline"] = {
+            variant: {
+                key: result["losses"][key] / baseline[key]
+                for key in baseline
+                if baseline[key] != 0.0
+            }
+            for variant, result in by_variant.items()
+            if variant != "baseline"
         }
     summary_path = output_root / "comparison.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n")
