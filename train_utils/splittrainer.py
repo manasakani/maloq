@@ -2,6 +2,7 @@ import os
 import json
 import re
 import time
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -21,6 +22,10 @@ from fock_utils.get_energy_from_fock import build_density, get_integrals, get_pe
 from fock_utils.utils_orca_out import periodic_table_number, sort_by_m, read_orca_out, periodic_table
 from fock_utils.utils_orca_out import extract_charge_and_spin_from_path
 from fock_utils import basis_sets, matrix2labels_kernels
+
+
+DEFAULT_OUTPUT_FOLDER = str(Path(__file__).resolve().parents[1] / "outputs" / "run")
+
 
 def get_timestamp_uid() -> str:
     return datetime.datetime.now().strftime("%Y%m-%d%H-%M%S-") + str(uuid4())[:4]
@@ -51,7 +56,7 @@ class SplitTrainer():
             node_target_name,
             val_loader=None,
             edge_target_name=None,
-            output_folder='outputs',
+            output_folder=DEFAULT_OUTPUT_FOLDER,
             num_warmup_epochs=0,
             train_backbone=True,
             train_head=True,
@@ -501,7 +506,7 @@ class SplitTrainer():
                 basis_transform=None,
                 element_references=None,
                 distributed_graphs=False,
-                output_folder='outputs',
+                output_folder=DEFAULT_OUTPUT_FOLDER,
                 dataset_name='omol',
                 orbital_basis=None,
                 compute_total_energy=True):
@@ -941,7 +946,7 @@ class SplitTrainer():
                 basis_transform=None,
                 element_references=None,
                 distributed_graphs=False,
-                output_folder='outputs',
+                output_folder=DEFAULT_OUTPUT_FOLDER,
                 dataset_name='omol',
                 orbital_basis=None,
                 compute_total_energy=True):

@@ -9,7 +9,7 @@ config = {
     # Dataset Paths & Naming
     "dataset_name": 'QM7',
     "dbpath": '/capstor/store/cscs/userlab/lp16/gnn_datasets/datasets/schnorb_hamiltonian_water.db',
-    "output_folder": 'outputs_QM7_water',
+    "output_folder": 'outputs/QM7_water',
     "run_name": 'water',
     "open_shell": False,
     

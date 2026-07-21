@@ -9,7 +9,7 @@ config = {
     "dataset_name": 'cp2k_material',
     "dbpath": ['/capstor/scratch/cscs/mdossena/MoS2_Al2O3_SELF_PASS_32_32_21_MH1', 
                 '/capstor/scratch/cscs/mdossena/MoS2_HfO2_SELF_PASS_32_32_21_MH1'],
-    "output_folder": 'outputs_maloq',
+    "output_folder": 'outputs/maloq',
     "run_name": 'cp2k_material',
     "open_shell": False,
     

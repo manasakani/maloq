@@ -1037,7 +1037,7 @@ def plot_embedding_statistics(embeddings, atomic_numbers, molecule_indices, outp
 def main(output_folder=None, max_molecules=10, start_molecule=0, lmax=4):
     """Main function to run all embedding analyses"""
     if output_folder is None:
-        output_folder = 'outputs_nablaDFT_focktrained_medium'  # Default folder
+        output_folder = 'outputs/nablaDFT_focktrained_medium'  # Default folder
 
     print(f"Loading embeddings from {output_folder}...")
     print(f"Loading {max_molecules} molecules starting from molecule {start_molecule}")
@@ -1151,7 +1151,7 @@ def main(output_folder=None, max_molecules=10, start_molecule=0, lmax=4):
 if __name__ == "__main__":
     
     # Configuration - modify these values directly
-    output_folder = 'outputs_omol_58k_E128/embeddings'  # Change this to your output folder
+    output_folder = 'outputs/omol_58k_E128/embeddings'  # Change this to your output folder
 
     max_molecules = 249  # Number of molecules to load
     start_molecule = 0  # Starting molecule index

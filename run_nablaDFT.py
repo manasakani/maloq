@@ -12,7 +12,7 @@ config = {
     # Dataset Paths & Naming
     "dataset_name": 'nablaDFT',
     "dbpath": "/capstor/store/cscs/pasc/c33/manasa/nablaDFT_datasets/train_2k.db",
-    "output_folder": 'outputs_nablaDFT_test',
+    "output_folder": 'outputs/nablaDFT_test',
     "run_name": 'nabla_2k',           # used in config filename saved to output folder
     "open_shell": False,
 
@@ -197,7 +197,7 @@ def build_config(args):
             num_mp_layers=1,
         )
         if args.output_folder is None:
-            run_config["output_folder"] = "outputs_nablaDFT_energy_smoke"
+            run_config["output_folder"] = "outputs/nablaDFT_energy_smoke"
     return run_config
 
 

@@ -7,6 +7,7 @@ import json
 from e3nn.o3 import Irreps
 from torch.utils.data import ConcatDataset
 import torch.distributed as dist
+from pathlib import Path
 
 from train_utils import loss, optimizers, utils_compute, splittrainer
 from dataset_utils import get_loader, get_scale_shift
@@ -14,11 +15,16 @@ from dataset_utils.ASEDataset import distribute_data, ASEDataset, ASEAtomsData
 from dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 from helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, HELM_Force_Head, HELM_Energy_Head
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+OUTPUT_ROOT = PROJECT_ROOT / "outputs"
+
+
 class TrainingWorkflow:
 
     DEFAULTS = {
         "run_name": "run",
-        "output_folder": "outputs",
+        "output_folder": "outputs/run",
         "open_shell": False,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "wigner_backend": "torch",
@@ -54,11 +60,44 @@ class TrainingWorkflow:
 
     def __init__(self, config):
         self.config = self.DEFAULTS | config
+        self.config['output_folder'] = self.resolve_output_folder(
+            self.config['output_folder'], self.config['run_name']
+        )
         self.setup_environment()
 
         # check_input_config will raise errors if there are incompatible settings
         self.check_input_config()
         self.wandb_run = self.setup_tracking()
+
+    @staticmethod
+    def resolve_output_folder(output_folder, run_name):
+        """Resolve every model-run output below the project ``outputs`` tree."""
+        output_path = Path(
+            os.path.expandvars(os.path.expanduser(str(output_folder)))
+        )
+
+        if output_path.is_absolute():
+            resolved = output_path.resolve()
+        else:
+            parts = output_path.parts
+            if parts and parts[0] == "outputs":
+                relative_path = output_path
+            elif len(parts) == 1 and parts[0].startswith("outputs_"):
+                relative_path = Path("outputs") / parts[0].removeprefix("outputs_")
+            else:
+                relative_path = Path("outputs") / output_path
+
+            if relative_path == Path("outputs"):
+                relative_path /= str(run_name)
+            resolved = (PROJECT_ROOT / relative_path).resolve()
+
+        output_root = OUTPUT_ROOT.resolve()
+        if resolved != output_root and output_root not in resolved.parents:
+            raise ValueError(
+                "Model outputs must be stored below "
+                f"{output_root}; received {output_folder!r}."
+            )
+        return str(resolved)
 
     def setup_tracking(self):
         """Initializes optional experiment tracking on the primary rank."""

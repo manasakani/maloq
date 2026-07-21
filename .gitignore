@@ -6,7 +6,10 @@
 *.pkl
 
 data_runs/*
-outputs_*
+/outputs/*
+!/outputs/README.md
+!/_auto_script/**/*.py
+!/_my_script/**/*.py
 fock_datasets/*
 slurm-*
 *.db

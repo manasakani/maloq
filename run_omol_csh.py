@@ -1,5 +1,4 @@
 import torch
-import os
 from train_utils import loss, training_workflow
 
 # ---------------------------------------------------------
@@ -9,7 +8,7 @@ config = {
     # Dataset Paths & Naming
     "dataset_name": 'omol',
     "dbpath": "/capstor/store/cscs/pasc/c33/manasa/omol_raw_datasets/omol_elytes_unsolvated_raw/",
-    "output_folder": 'outputs_omol_elytes',
+    "output_folder": 'outputs/omol_elytes',
     "run_name": 'omol',
     "open_shell": False,
     
@@ -70,8 +69,6 @@ config = {
 }
 
 if __name__ == "__main__":
-    os.makedirs(config['output_folder'], exist_ok=True)
-    
     # Initialize and run the workflow
     workflow = training_workflow.TrainingWorkflow(config)
     workflow.run()
