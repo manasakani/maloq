@@ -166,13 +166,28 @@ class Fock_Targets:
             if total_num_focks > 1 or not self.distribute_graphs:
                 if self.rank == 0:
                     print("Multiple graphs in the dataset, doing molecule-wise load followed by label re-distribution...", flush=True)
+                target_start = time.perf_counter()
                 self.make_targets(fock_matrices)
             else:
                 if self.rank == 0:
                     print("Only one graph in the dataset, building distributed labels...", flush=True)
+                target_start = time.perf_counter()
                 self.make_targets_singlegraph(fock_matrices)
 
+            if self.rank == 0:
+                print(
+                    "Matrix-to-label conversion finished in "
+                    f"{time.perf_counter() - target_start:.1f}s.",
+                    flush=True,
+                )
+            mask_start = time.perf_counter()
             self.create_label_unpadding_mask() # This will be used to compute the loss only on the padded entries in the target
+            if self.rank == 0:
+                print(
+                    "Label-mask construction finished in "
+                    f"{time.perf_counter() - mask_start:.1f}s.",
+                    flush=True,
+                )
         else:
             self.make_no_targets()
             
@@ -374,7 +389,7 @@ class Fock_Targets:
                 # Move fock matrix to device
                 if not isinstance(fock_matrix, torch.Tensor):
                     fock_matrix = torch.from_numpy(fock_matrix)
-                fock_matrix = fock_matrix.to(device=self.device)
+                fock_matrix = fock_matrix.to(device=self.device, dtype=self.dtype)
 
                 neighbour_list = self.neighbour_list_list[i]
                 num_atoms = len(self.atomic_numbers_list[i])
@@ -412,7 +427,8 @@ class Fock_Targets:
                     # call cupy kernel
                     else: 
                         cupy_dtype = self.torch_dtype_to_cupy_dtype(self.dtype)
-                        matrix = cp.array(fock_matrix[spin], dtype=cupy_dtype) if open_shell else cp.array(fock_matrix, dtype=cupy_dtype)
+                        matrix_tensor = fock_matrix[spin] if open_shell else fock_matrix
+                        matrix = cp.from_dlpack(matrix_tensor.contiguous())
                         labels = cp.zeros((num_edges + num_atoms, self.target_len), dtype=cupy_dtype)
                         matrix2labels_kernels.cupy_single_matrix2label(
                                                                         self.orbital_template,
@@ -450,6 +466,12 @@ class Fock_Targets:
                 else:
                     node_labels_list.append(node_labels)
                     edge_labels_list.append(edge_labels)
+
+                if self.rank == 0 and (i + 1) % 10000 == 0:
+                    print(
+                        f"Matrix-to-label progress: {i + 1}/{len(fock_matrices)}",
+                        flush=True,
+                    )
             
             if len(fock_matrices) > 0:
                 print("Rank ", self.rank, ": Node label magnitude range: ", torch.max(node_labels).item(), torch.min(node_labels).item(), flush=True)
@@ -1001,75 +1023,101 @@ class Fock_Targets:
         self.edge_dist_list = global_dist[self.domain.local_edge_indices, :]
 
 
+    def make_additional_targets(self, fock_matrices):
+        """Convert another matrix set while reusing graphs and orbital metadata.
+
+        Delta learning needs labels for both final and initial matrices. A
+        second ``Fock_Targets`` object used to rebuild the same ASE neighbor
+        graphs and masks. This method performs only the additional
+        matrix-to-label conversion and restores the primary target state.
+        """
+        original_node_labels = self.node_labels_list
+        original_edge_labels = self.edge_labels_list
+        original_target_len = self.target_len
+        try:
+            self.make_targets(fock_matrices)
+            additional_node_labels = self.node_labels_list
+            additional_edge_labels = self.edge_labels_list
+        finally:
+            self.node_labels_list = original_node_labels
+            self.edge_labels_list = original_edge_labels
+            self.target_len = original_target_len
+        return additional_node_labels, additional_edge_labels
+
+    def _interaction_mask_table(self):
+        """Build one padded-label mask for every element-pair key."""
+        interaction_masks = torch.zeros(
+            (len(self.orbital_template), self.target_len),
+            dtype=torch.bool,
+        )
+        for interaction_key, orbital_blocks in enumerate(self.orbital_template):
+            for _, _, output_slice_block in orbital_blocks:
+                interaction_masks[interaction_key, output_slice_block] = True
+        return interaction_masks
+
+    def _mask_for_interactions(
+        self,
+        interaction_masks,
+        atomic_numbers,
+        src_idxes,
+        target_idxes,
+    ):
+        atomic_numbers = np.asarray(atomic_numbers, dtype=np.int64)
+        src_idxes = np.asarray(src_idxes, dtype=np.int64)
+        target_idxes = np.asarray(target_idxes, dtype=np.int64)
+        interaction_keys = (
+            atomic_numbers[target_idxes]
+            + self.max_num_elements * atomic_numbers[src_idxes]
+        )
+        return interaction_masks.index_select(
+            0, torch.from_numpy(interaction_keys)
+        )
+
     def create_label_unpadding_mask(self):
-        """
-        Generates boolean masks for the final distributed nodes and edges, indicating which positions in 
-        the padded target tensors correspond to actual data (True) vs padding (False).
-        """
+        """Create exact label masks without per-entry CUDA assignments."""
+        # Masks are geometry/element metadata. Keeping them on CPU avoids
+        # millions of tiny CUDA slice assignments during QH9 startup; PyG moves
+        # each collated batch to the active GPU in the training loop.
+        interaction_masks = self._interaction_mask_table()
 
         if self.distribute_graphs:
-            num_atoms = len(self.node_labels_list[0])  
+            num_atoms = len(self.node_labels_list[0])
             num_edges = len(self.edge_labels_list[0])
-            
-            # Pull neighbor lists
             src_idx = self.neighbour_list_list[0]
             target_idx = self.neighbour_list_list[1]
-            
-            # augment nodes as self-neighbors in the targets
             src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
             target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
-            
-            mask = torch.zeros((num_edges + num_atoms, self.target_len), dtype=torch.bool, device=self.device)
-
-            # Populate mask based on atomic interactions
-            for idx in range(len(src_idxes)):
-                local_i = src_idxes[idx].item()
-                local_j = target_idxes[idx].item()
-
-                atomic_element_i = self.atomic_numbers_list[local_i].item()
-                atomic_element_j = self.atomic_numbers_list[local_j].item()
-
-                element_interaction_key = atomic_element_j + self.max_num_elements * atomic_element_i
-                
-                # Read the target slices from orbital template
-                for _, _, output_slice_block in self.orbital_template[element_interaction_key]:
-                    mask[idx, output_slice_block] = True
-                    
-            # 4. Split and save locally as instance attributes
-            # Unsqueezing to match the target molecule dimension [1, num_elements, target_len]
+            mask = self._mask_for_interactions(
+                interaction_masks,
+                self.atomic_numbers_list,
+                src_idxes,
+                target_idxes,
+            )
             self.edge_unpadding_mask_list = mask[:num_edges, :].unsqueeze(0)
             self.node_unpadding_mask_list = mask[num_edges:, :].unsqueeze(0)
-        
-        else:
-            self.edge_unpadding_mask_list = []
-            self.node_unpadding_mask_list = []
+            return
 
-            for i, neighbour_list in enumerate(self.neighbour_list_list):
-                num_atoms = len(self.atomic_numbers_list[i])
-                num_edges = len(neighbour_list[0])
-                
-                src_idx = neighbour_list[0]
-                target_idx = neighbour_list[1]
-                
-                src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
-                target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
-                
-                mask = torch.zeros((num_edges + num_atoms, self.target_len), dtype=torch.bool, device=self.device)
-                
-                for idx in range(len(src_idxes)):
-                    i_atom = src_idxes[idx].item()
-                    j_atom = target_idxes[idx].item()
-                    
-                    atomic_element_i = self.atomic_numbers_list[i][i_atom].item()
-                    atomic_element_j = self.atomic_numbers_list[i][j_atom].item()
-                    
-                    element_interaction_key = atomic_element_j + self.max_num_elements * atomic_element_i
-                    
-                    for _, _, output_slice_block in self.orbital_template[element_interaction_key]:
-                        mask[idx, output_slice_block] = True
-                
-                self.edge_unpadding_mask_list.append(mask[:num_edges, :].unsqueeze(0))
-                self.node_unpadding_mask_list.append(mask[num_edges:, :].unsqueeze(0))
+        self.edge_unpadding_mask_list = []
+        self.node_unpadding_mask_list = []
+        for i, neighbour_list in enumerate(self.neighbour_list_list):
+            num_atoms = len(self.atomic_numbers_list[i])
+            num_edges = len(neighbour_list[0])
+            src_idx = neighbour_list[0]
+            target_idx = neighbour_list[1]
+            src_idxes = np.concatenate([src_idx, np.arange(num_atoms)])
+            target_idxes = np.concatenate([target_idx, np.arange(num_atoms)])
+            mask = self._mask_for_interactions(
+                interaction_masks,
+                self.atomic_numbers_list[i],
+                src_idxes,
+                target_idxes,
+            )
+            self.edge_unpadding_mask_list.append(
+                mask[:num_edges, :].unsqueeze(0)
+            )
+            self.node_unpadding_mask_list.append(
+                mask[num_edges:, :].unsqueeze(0)
+            )
 
 
     def torch_dtype_to_cupy_dtype(self, torch_dtype):

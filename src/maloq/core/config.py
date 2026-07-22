@@ -66,6 +66,7 @@ def _model_defaults() -> dict[str, Any]:
     return {
         "model_variant": "maloq-baseline",
         "backbone_type": "esen",
+        "head_type": "maloq",
         "wigner_backend": "torch",
         "l_embedding_dim": 128,
         "num_distance_basis": 128,
@@ -88,6 +89,13 @@ def _model_defaults() -> dict[str, Any]:
         "residual_update_scale_log_range": 0.0,
         "qhflow3_max_radius": 12.0,
         "qhflow3_radius_embed_dim": 32,
+        "qhflow3_grid_resolution": 48,
+        "qhflow3_grid_ffn_chunk_size": 512,
+        "static_te_init_mode": "zero",
+        "static_te_init_std": 1.0,
+        "static_te_gate_degrees": (),
+        "static_te_gate_activation": "none",
+        "static_te_gate_init": 1.0,
     }
 
 
@@ -113,6 +121,7 @@ def _optimization_defaults() -> dict[str, Any]:
         "muon_adamw_betas": (0.9, 0.95),
         "muon_adamw_eps": 1e-10,
         "gradient_clip_val": None,
+        "gradient_accumulation_steps": 1,
         "scheduler_type": "cosine",
         "warmup_steps": 1000,
         "scheduler_power": 1.0,
@@ -130,6 +139,7 @@ def _loss_defaults() -> dict[str, Any]:
         "train_loss": "rmse_mse_padded_loss",
         "test_loss": "l1_unpadded_loss",
         "scale_and_shift": False,
+        "delta_learning": False,
     }
 
 
@@ -154,6 +164,7 @@ def _tracking_defaults() -> dict[str, Any]:
         "wandb_project": "maloq",
         "wandb_entity": None,
         "wandb_mode": "online",
+        "wandb_log_every_n_steps": 10,
         "validation_matrix_metrics": False,
         "validation_matrix_metrics_frequency": 1,
     }
@@ -196,6 +207,7 @@ class ModelConfig(BaseModel):
 
     model_variant: str = "maloq-baseline"
     backbone_type: Literal["esen", "qhflow3_clean"] = "esen"
+    head_type: Literal["maloq", "maloq_muon", "static_te"] = "maloq"
     wigner_backend: Literal["torch", "triton"] = "torch"
     l_embedding_dim: int = 128
     num_distance_basis: int = 128
@@ -218,6 +230,13 @@ class ModelConfig(BaseModel):
     residual_update_scale_log_range: float = 0.0
     qhflow3_max_radius: float = 12.0
     qhflow3_radius_embed_dim: int = 32
+    qhflow3_grid_resolution: int = 48
+    qhflow3_grid_ffn_chunk_size: int | None = 512
+    static_te_init_mode: Literal["zero", "normal"] = "zero"
+    static_te_init_std: float = Field(default=1.0, gt=0.0)
+    static_te_gate_degrees: tuple[int, ...] = ()
+    static_te_gate_activation: Literal["none", "residual_tanh", "sigmoid"] = "none"
+    static_te_gate_init: float = 1.0
 
 
 class OptimizationConfig(BaseModel):
@@ -243,6 +262,7 @@ class OptimizationConfig(BaseModel):
     muon_adamw_betas: tuple[float, float] = (0.9, 0.95)
     muon_adamw_eps: float = 1e-10
     gradient_clip_val: float | None = None
+    gradient_accumulation_steps: int = Field(default=1, ge=1)
     scheduler_type: Literal["plateau", "cosine", "warmup_polynomial"] = "cosine"
     warmup_steps: int = 1000
     scheduler_power: float = 1.0
@@ -260,6 +280,7 @@ class LossConfig(BaseModel):
     train_loss: LossName = "rmse_mse_padded_loss"
     test_loss: LossName = "l1_unpadded_loss"
     scale_and_shift: bool = False
+    delta_learning: bool = False
 
 
 class CheckpointConfig(BaseModel):
@@ -287,6 +308,7 @@ class TrackingConfig(BaseModel):
     wandb_project: str = "maloq"
     wandb_entity: str | None = None
     wandb_mode: Literal["online", "offline"] = "online"
+    wandb_log_every_n_steps: int = 10
     validation_matrix_metrics: bool = False
     validation_matrix_metrics_frequency: int = 1
 
@@ -316,6 +338,11 @@ class MaloqConfig(BaseModel):
         raw = dict(data)
         section_names = ("dataset", "execution", "splits", "model", "optimization", "loss", "checkpointing", "runtime", "tracking")
         nested = {name: dict(raw.pop(name, {}) or {}) for name in section_names}
+        # Muon matrix routing is intentionally no longer configurable. Drop
+        # the legacy option while loading old experiment files so every run
+        # uses the one corrected routing rule.
+        raw.pop("muon_parameter_policy", None)
+        nested["optimization"].pop("muon_parameter_policy", None)
 
         flat_to_section = {
             # dataset
@@ -341,6 +368,7 @@ class MaloqConfig(BaseModel):
             # model
             "model_variant": "model",
             "backbone_type": "model",
+            "head_type": "model",
             "wigner_backend": "model",
             "l_embedding_dim": "model",
             "num_distance_basis": "model",
@@ -363,6 +391,13 @@ class MaloqConfig(BaseModel):
             "residual_update_scale_log_range": "model",
             "qhflow3_max_radius": "model",
             "qhflow3_radius_embed_dim": "model",
+            "qhflow3_grid_resolution": "model",
+            "qhflow3_grid_ffn_chunk_size": "model",
+            "static_te_init_mode": "model",
+            "static_te_init_std": "model",
+            "static_te_gate_degrees": "model",
+            "static_te_gate_activation": "model",
+            "static_te_gate_init": "model",
             # optimization
             "num_epochs": "optimization",
             "lr_init": "optimization",
@@ -384,6 +419,7 @@ class MaloqConfig(BaseModel):
             "muon_adamw_betas": "optimization",
             "muon_adamw_eps": "optimization",
             "gradient_clip_val": "optimization",
+            "gradient_accumulation_steps": "optimization",
             "scheduler_type": "optimization",
             "warmup_steps": "optimization",
             "scheduler_power": "optimization",
@@ -397,6 +433,7 @@ class MaloqConfig(BaseModel):
             "train_loss": "loss",
             "test_loss": "loss",
             "scale_and_shift": "loss",
+            "delta_learning": "loss",
             # checkpoint
             "save_frequency": "checkpointing",
             "restart_backbone": "checkpointing",
@@ -412,6 +449,7 @@ class MaloqConfig(BaseModel):
             "wandb_project": "tracking",
             "wandb_entity": "tracking",
             "wandb_mode": "tracking",
+            "wandb_log_every_n_steps": "tracking",
             "validation_matrix_metrics": "tracking",
             "validation_matrix_metrics_frequency": "tracking",
         }

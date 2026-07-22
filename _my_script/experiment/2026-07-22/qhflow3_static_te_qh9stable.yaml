@@ -1,9 +1,9 @@
-# Headless QHFlow3 clean trunk + native MALOQ coupled-irrep head.
+# Corrected static tensor-expansion head on the headless QHFlow3 trunk.
 dataset:
   dataset_name: QM7
   dbpath: /dataset/seongsu/shared-home/data/QH9_maloq_ase/QH9Stable_random.db
-  output_folder: outputs/qhflow3-maloq-head-equivariant-grid48-qh9-seed44
-  run_name: qhflow3-maloq-head-equivariant-grid48-qh9-seed44
+  output_folder: outputs/qhflow3-static-te-path-offsets-qh9-seed44
+  run_name: qhflow3-static-te-path-offsets-qh9-seed44
   open_shell: false
 
 execution:
@@ -21,8 +21,11 @@ splits:
   distribute_graphs: false
 
 model:
-  model_variant: qhflow3-maloq-head
+  model_variant: qhflow3-static-te-path-offsets
   backbone_type: qhflow3_clean
+  head_type: static_te
+  static_te_init_mode: zero
+  static_te_init_std: 1.0
   l_embedding_dim: 128
   hidden_dim: 128
   output_l_embedding_dim: 64

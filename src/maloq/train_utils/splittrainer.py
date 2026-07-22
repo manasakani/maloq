@@ -69,6 +69,9 @@ class SplitTrainer():
             validation_matrix_metrics=False,
             validation_matrix_metrics_frequency=1,
             gradient_clip_val=None,
+            gradient_accumulation_steps=1,
+            wandb_enabled=False,
+            wandb_log_every_n_steps=10,
             min_lr=1e-10):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}", flush=True)
@@ -117,6 +120,20 @@ class SplitTrainer():
         num_train_batches = len(train_loader)
         num_val_batches = len(val_loader)
         self.check_batch_consistency(num_train_batches, num_val_batches, device)
+        gradient_accumulation_steps = int(gradient_accumulation_steps)
+        if gradient_accumulation_steps <= 0:
+            raise ValueError("gradient_accumulation_steps must be positive.")
+        optimizer_steps_per_epoch = self.optimizer_steps_per_epoch(
+            num_train_batches,
+            gradient_accumulation_steps,
+        )
+        if rank == 0:
+            print(
+                "Gradient accumulation: "
+                f"{gradient_accumulation_steps} micro-batches per optimizer step "
+                f"({optimizer_steps_per_epoch} optimizer steps per epoch)",
+                flush=True,
+            )
 
         include_edges = False
         if edge_target_name:
@@ -146,8 +163,20 @@ class SplitTrainer():
             train_loss_edge = 0.0
             train_loss_total = 0.0
             torch.cuda.reset_peak_memory_stats()
+            optimizer.zero_grad()
+            accumulated_step_losses = None
             for batch_idx, batch in enumerate(train_loader):
-
+                accumulation_window_start = (
+                    batch_idx // gradient_accumulation_steps
+                ) * gradient_accumulation_steps
+                accumulation_window_size = min(
+                    gradient_accumulation_steps,
+                    num_train_batches - accumulation_window_start,
+                )
+                is_optimizer_step = (
+                    (batch_idx + 1) % gradient_accumulation_steps == 0
+                    or batch_idx + 1 == num_train_batches
+                )
 
                 # -- Forward --
                 batch = batch.to(device)
@@ -159,6 +188,9 @@ class SplitTrainer():
 
                 if loss_target_string in ['fock_matrix', 'density_matrix']:
                     node_output, edge_output = self.head(backbone_out, batch)
+                    node_output, edge_output = self.apply_delta_baseline(
+                        node_output, edge_output, batch
+                    )
                     # torch.cuda.synchronize()
                     head_end = time.perf_counter()
 
@@ -215,20 +247,44 @@ class SplitTrainer():
                 # -- Backwards --
                 # torch.cuda.synchronize()
                 backward_start = time.perf_counter()
-                loss.backward()
+                (loss / accumulation_window_size).backward()
                 # torch.cuda.synchronize()
                 backward_end = time.perf_counter()
 
-                # === Manual gradient reduction! ===
+                if wandb_enabled:
+                    step_node_loss = (
+                        loss_node.detach()
+                        if loss_target_string in ['fock_matrix', 'density_matrix']
+                        else loss.detach()
+                    )
+                    step_edge_loss = (
+                        loss_edge.detach()
+                        if loss_target_string in ['fock_matrix', 'density_matrix']
+                        else loss.detach().new_zeros(())
+                    )
+                    batch_step_losses = torch.stack(
+                        [loss.detach(), step_node_loss, step_edge_loss]
+                    ).to(dtype=torch.float64)
+                    if accumulated_step_losses is None:
+                        accumulated_step_losses = batch_step_losses
+                    else:
+                        accumulated_step_losses += batch_step_losses
+
+                if not is_optimizer_step:
+                    continue
+
+                # Reduce once per accumulation window. Reducing after every
+                # micro-batch would repeatedly reduce gradients accumulated
+                # by earlier micro-batches.
                 if dist.is_initialized():
                     world_size = dist.get_world_size()
-                    
+
                     if train_backbone:
                         for param in self.backbone.parameters():
                             if param.grad is not None:
                                 dist.all_reduce(param.grad, op=dist.ReduceOp.SUM)
-                                param.grad /= world_size  # Average the gradients across domains
-                                
+                                param.grad /= world_size
+
                     if train_head:
                         for param in self.head.parameters():
                             if param.grad is not None:
@@ -249,8 +305,50 @@ class SplitTrainer():
                 optimizer.step()
                 optimizer.zero_grad()
 
-                if not hasattr(scheduler, 'patience'):  # Cosine scheduler
+                if (
+                    not step_every_epoch
+                    and not hasattr(scheduler, 'patience')
+                ):
                     scheduler.step()
+
+                optimizer_step_in_epoch = (
+                    batch_idx // gradient_accumulation_steps + 1
+                )
+                optimizer_step = (
+                    epoch * optimizer_steps_per_epoch + optimizer_step_in_epoch
+                )
+                if (
+                    wandb_enabled
+                    and accumulated_step_losses is not None
+                    and self._should_log_wandb_step(
+                        optimizer_step,
+                        optimizer_step_in_epoch - 1,
+                        optimizer_steps_per_epoch,
+                        wandb_log_every_n_steps,
+                    )
+                ):
+                    step_losses = (
+                        accumulated_step_losses / accumulation_window_size
+                    )
+                    if dist.is_initialized():
+                        dist.all_reduce(step_losses, op=dist.ReduceOp.SUM)
+                        step_losses /= dist.get_world_size()
+                    if rank == 0 and self.wandb_run is not None:
+                        step_metrics = {
+                            "optimizer_step": optimizer_step,
+                            "epoch": epoch + 1,
+                            "micro_batch_in_epoch": batch_idx + 1,
+                            "optimizer_step_in_epoch": optimizer_step_in_epoch,
+                            "train_step/total_loss": step_losses[0].item(),
+                            "train_step/node_loss": step_losses[1].item(),
+                            "optimizer/learning_rate": optimizer.param_groups[0]['lr'],
+                        }
+                        if include_edges:
+                            step_metrics["train_step/edge_loss"] = (
+                                step_losses[2].item()
+                            )
+                        self.wandb_run.log(step_metrics, step=optimizer_step)
+                accumulated_step_losses = None
 
                 # print(f"Rank {rank}: Time per forward pass: ", head_end - backbone_start, flush=True)
                 # print(f"Rank {rank}: Time for backward pass: ", backward_end - backward_start, flush=True)
@@ -302,6 +400,9 @@ class SplitTrainer():
                     # -- Loss --
                     if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
                         node_output, edge_output = self.head(backbone_out, batch)
+                        node_output, edge_output = self.apply_delta_baseline(
+                            node_output, edge_output, batch
+                        )
 
                         if self.open_shell:
                             this_node_target = [getattr(batch, node_target_name+'_alpha'), getattr(batch, node_target_name+'_beta')]
@@ -462,7 +563,9 @@ class SplitTrainer():
                     print("Current learning rate: ", current_lr)
 
             if rank == 0 and self.wandb_run is not None:
+                optimizer_step = (epoch + 1) * optimizer_steps_per_epoch
                 metrics = {
+                    "optimizer_step": optimizer_step,
                     "epoch": epoch + 1,
                     "train/node_loss": track_loss_node[-1],
                     "validation/node_loss": val_loss_node / num_val_batches,
@@ -490,7 +593,7 @@ class SplitTrainer():
                     metrics["system/gpu_peak_memory_mb"] = (
                         torch.cuda.max_memory_allocated() / (1024 * 1024)
                     )
-                self.wandb_run.log(metrics, step=epoch + 1)
+                self.wandb_run.log(metrics, step=optimizer_step)
 
             # save state
             if rank == 0:
@@ -618,6 +721,9 @@ class SplitTrainer():
 
                     start_head = time.perf_counter()
                     node_output, edge_output = self.head(backbone_out, batch)
+                    node_output, edge_output = self.apply_delta_baseline(
+                        node_output, edge_output, batch
+                    )
                     end_head = time.perf_counter()
                     if rank == 0:
                         print(f"Fock head time: {end_head - start_head:.4f}s", flush=True)
@@ -1037,6 +1143,9 @@ class SplitTrainer():
 
                     start_head = time.perf_counter()
                     node_output, edge_output = self.head(backbone_out, batch)
+                    node_output, edge_output = self.apply_delta_baseline(
+                        node_output, edge_output, batch
+                    )
                     end_head = time.perf_counter()
                     
                     if rank == 0:
@@ -1264,6 +1373,16 @@ class SplitTrainer():
 
 
     # -- Helper functions for training and evaluation --
+    @staticmethod
+    def optimizer_steps_per_epoch(num_train_batches, gradient_accumulation_steps):
+        if num_train_batches < 0:
+            raise ValueError("num_train_batches cannot be negative.")
+        if gradient_accumulation_steps <= 0:
+            raise ValueError("gradient_accumulation_steps must be positive.")
+        return (
+            num_train_batches + gradient_accumulation_steps - 1
+        ) // gradient_accumulation_steps
+
     def check_batch_consistency(self, num_train_batches, num_val_batches, device):
 
         if dist.is_available() and dist.is_initialized():
@@ -1283,6 +1402,50 @@ class SplitTrainer():
             if not all(val_batches_list[0] == vb for vb in val_batches_list):
                 print("Mismatch in number of validation batches across ranks!", flush=True)
                 raise ValueError("Mismatch in number of validation batches across ranks!", flush=True)
+
+    @staticmethod
+    def _should_log_wandb_step(
+        optimizer_step,
+        batch_idx,
+        num_train_batches,
+        log_every_n_steps,
+    ):
+        """Log fixed-step metrics, leaving an epoch-final step for its summary."""
+        return (
+            optimizer_step % log_every_n_steps == 0
+            and batch_idx + 1 != num_train_batches
+        )
+
+    @staticmethod
+    def apply_delta_baseline(node_output, edge_output, batch):
+        """Convert a predicted matrix residual into final coupled labels."""
+        node_base = getattr(batch, "delta_node_base", None)
+        edge_base = getattr(batch, "delta_edge_base", None)
+        if node_base is None and edge_base is None:
+            return node_output, edge_output
+        if node_base is None or edge_base is None:
+            raise ValueError(
+                "Delta learning requires both delta_node_base and delta_edge_base."
+            )
+        if isinstance(node_output, (tuple, list)) or isinstance(
+            edge_output, (tuple, list)
+        ):
+            raise ValueError("Delta learning currently supports closed shell only.")
+        if node_output.ndim == node_base.ndim + 1:
+            node_base = node_base.unsqueeze(0)
+        if edge_output.ndim == edge_base.ndim + 1:
+            edge_base = edge_base.unsqueeze(0)
+        if node_output.shape != node_base.shape:
+            raise ValueError(
+                "Node delta/base shape mismatch: "
+                f"{tuple(node_output.shape)} != {tuple(node_base.shape)}"
+            )
+        if edge_output.shape != edge_base.shape:
+            raise ValueError(
+                "Edge delta/base shape mismatch: "
+                f"{tuple(edge_output.shape)} != {tuple(edge_base.shape)}"
+            )
+        return node_output + node_base, edge_output + edge_base
 
     def compute_fock_loss(self, node_output, edge_output, 
                                 this_node_target, this_edge_target, 

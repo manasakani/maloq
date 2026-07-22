@@ -19,6 +19,24 @@ from torch.utils.data.distributed import DistributedSampler
 from mpi4py import MPI
 import re
 
+
+def _qm7_matrix_target(row, loss_target_string):
+    """Select the explicit matrix label stored in an ASE/QM7-style row."""
+    property_name = (
+        "density_matrix" if loss_target_string == "density_matrix" else "hamiltonian"
+    )
+    if property_name not in row:
+        available = sorted(
+            key for key in row if not key.startswith("_")
+        )
+        raise KeyError(
+            f"QM7-style row does not contain {property_name!r} for "
+            f"loss_target={loss_target_string!r}; available properties: {available}"
+        )
+    value = row[property_name]
+    return value.numpy() if hasattr(value, "numpy") else np.asarray(value)
+
+
 def get_loader(database, 
                 start_idx, 
                 end_idx, 
@@ -34,7 +52,9 @@ def get_loader(database,
                 distribute_graphs=False,
                 tiling_dims=None,
                 partition_type='linear',
-                train_or_eval='train'):
+                train_or_eval='train',
+                delta_learning=False,
+                load_delta_auxiliary_matrix=False):
     """
     Make dataloader with the given indices of the mocules in the input database
     Currently set up for three datasets: QM7, nablaDFT, omol. Need to modify for others.
@@ -42,6 +62,19 @@ def get_loader(database,
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     num_molecules_to_process = end_idx - start_idx
+    if delta_learning and loss_target_string not in {
+        "fock_matrix",
+        "density_matrix",
+    }:
+        raise ValueError(
+            "delta_learning requires a Hamiltonian or density matrix target"
+        )
+    if delta_learning and dataset_name != "QM7":
+        raise ValueError("delta_learning currently requires the QM7-style ASE loader")
+    if delta_learning and distribute_graphs:
+        raise ValueError("delta_learning is not implemented for distributed graphs")
+    if delta_learning and is_open_shell:
+        raise ValueError("delta_learning is currently implemented for closed shell only")
     dist.barrier()
 
     if dataset_name == "QM7":
@@ -73,9 +106,49 @@ def get_loader(database,
         charges = [0 for i in range(start_idx, end_idx)]
         spins = [1 for i in range(start_idx, end_idx)]
 
-        hamiltonians = [row['hamiltonian'].numpy() for row in local_data]
+        hamiltonians = [
+            _qm7_matrix_target(row, loss_target_string) for row in local_data
+        ]
         hamiltonians = [utils_orca_out.sort_by_m(h, orbital_basis, z) for h, z in zip(hamiltonians, atomic_numbers)] # QM7 comes in zxy coordinates from ORCA, so need to rotate
         overlaps = [row['overlap'].numpy() for row in local_data] # we don't rotate the overlap
+        initial_density_matrices = None
+        initial_hamiltonians = None
+        if delta_learning:
+            initial_target_property = (
+                "initial_density_matrix"
+                if loss_target_string == "density_matrix"
+                else "initial_hamiltonian"
+            )
+            initial_target_matrices = [
+                utils_orca_out.sort_by_m(
+                    row[initial_target_property].numpy(), orbital_basis, z
+                )
+                for row, z in zip(local_data, atomic_numbers)
+            ]
+            if loss_target_string == "density_matrix":
+                initial_density_matrices = initial_target_matrices
+            else:
+                initial_hamiltonians = initial_target_matrices
+
+            # QHFlow3 conditions on both D0 and H0. MALOQ/MALOQ-NTE only
+            # require the matching delta baseline, so skip the other dense
+            # matrix for those lanes.
+            if load_delta_auxiliary_matrix:
+                auxiliary_property = (
+                    "initial_hamiltonian"
+                    if loss_target_string == "density_matrix"
+                    else "initial_density_matrix"
+                )
+                auxiliary_matrices = [
+                    utils_orca_out.sort_by_m(
+                        row[auxiliary_property].numpy(), orbital_basis, z
+                    )
+                    for row, z in zip(local_data, atomic_numbers)
+                ]
+                if loss_target_string == "density_matrix":
+                    initial_hamiltonians = auxiliary_matrices
+                else:
+                    initial_density_matrices = auxiliary_matrices
 
     elif dataset_name == "nablaDFT":
         orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
@@ -234,7 +307,14 @@ def get_loader(database,
                 all_spins_list = comm.allgather(b_spins)
 
                 global_energy = np.array([item for sublist in all_energies_list for item in sublist])
-                global_forces = np.array([item for sublist in all_forces_list for item in sublist])
+                global_forces = np.concatenate(
+                    [
+                        np.asarray(item)
+                        for sublist in all_forces_list
+                        for item in sublist
+                    ],
+                    axis=0,
+                )
                 global_charges = np.array([item for sublist in all_charges_list for item in sublist])
                 global_spins = np.array([item for sublist in all_spins_list for item in sublist])
 
@@ -261,7 +341,10 @@ def get_loader(database,
                     node_padding_mask=graph_targets.node_unpadding_mask_list,
                     atomic_numbers=torch.tensor(batch_atomic_numbers, dtype=torch.long).cpu(),
                     energies=torch.tensor(global_energy[atom_mol_id], dtype=dtype), 
-                    forces=torch.tensor(global_forces[atom_mol_id], dtype=dtype),  
+                    forces=torch.tensor(
+                        global_forces[graph_targets.domain.local_node_indices],
+                        dtype=dtype,
+                    ),
                     num_atoms_in_molecule=len(graph_targets.atomic_numbers_list),                                   
                     atom_mol_id=atom_mol_id,
                     fock_target_object=graph_targets,
@@ -324,7 +407,9 @@ def get_loader(database,
                     (b_energy, b_forces, b_charges, b_spins, b_overlaps) = data_pack[0]
 
                     global_energy = np.array(b_energy)
-                    global_forces = np.array(b_forces)
+                    global_forces = np.concatenate(
+                        [np.asarray(item) for item in b_forces], axis=0
+                    )
                     global_charges = np.array(b_charges)
                     global_spins = np.array(b_spins)
                     global_overlaps = np.array(b_overlaps)
@@ -355,7 +440,10 @@ def get_loader(database,
                         node_padding_mask=graph_targets.node_unpadding_mask_list  if train_or_eval!='infer' else None,
                         atomic_numbers=torch.tensor(batch_atomic_numbers, dtype=torch.long).cpu(),
                         energies=torch.tensor(global_energy[atom_mol_id], dtype=dtype), 
-                        forces=torch.tensor(global_forces[atom_mol_id], dtype=dtype),  
+                        forces=torch.tensor(
+                            global_forces[graph_targets.domain.local_node_indices],
+                            dtype=dtype,
+                        ),
                         num_atoms_in_molecule=len(graph_targets.atomic_numbers_list),                                   
                         atom_mol_id=atom_mol_id,
                         fock_target_object=graph_targets,
@@ -377,6 +465,12 @@ def get_loader(database,
                                                             scale_shift_data=scale_shift_data,
                                                             periodic_boxes=periodic_boxes if periodic_dataset else None,
                                                             tiling_dims=tiling_dims)
+        delta_node_base_list = None
+        delta_edge_base_list = None
+        if delta_learning:
+            delta_node_base_list, delta_edge_base_list = (
+                graph_targets.make_additional_targets(initial_target_matrices)
+            )
 
         # Add the molecules into the dataloader
         for i in range(num_molecules_to_process):
@@ -401,6 +495,22 @@ def get_loader(database,
                             fock_target_object=graph_targets,
                             fock_target_id=i,
                             overlap_matrix=overlaps[i] if make_fock_targets else None,
+                            initial_density_matrix=(
+                                initial_density_matrices[i]
+                                if initial_density_matrices is not None else None
+                            ),
+                            initial_hamiltonian=(
+                                initial_hamiltonians[i]
+                                if initial_hamiltonians is not None else None
+                            ),
+                            delta_node_base=(
+                                delta_node_base_list[i][0]
+                                if delta_learning else None
+                            ),
+                            delta_edge_base=(
+                                delta_edge_base_list[i][0]
+                                if delta_learning else None
+                            ),
                             charge=charges[i],
                             spin_multiplicity=spins[i],
                         )

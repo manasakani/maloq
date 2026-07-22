@@ -3,6 +3,7 @@
 import os
 import time
 import random
+import math
 import numpy as np
 import torch
 import json
@@ -16,7 +17,9 @@ from ..dataset_utils import get_loader, get_scale_shift
 from ..dataset_utils.ASEDataset import distribute_data, ASEDataset, ASEAtomsData
 from ..dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 from ..helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, HELM_Force_Head, HELM_Energy_Head
+from ..helm.muon_fock_head import MuonFockIrrepsHead
 from ..helm.qhflow3_clean import QHFlow3MaloqBackbone
+from ..helm.static_te_head import StaticTensorExpansionHead
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -30,6 +33,7 @@ class TrainingWorkflow:
         "output_folder": "outputs/run",
         "seed": 42,
         "backbone_type": "esen",
+        "head_type": "maloq",
         "open_shell": False,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "wigner_backend": "torch",
@@ -45,6 +49,13 @@ class TrainingWorkflow:
         "residual_update_scale_log_range": 0.0,
         "qhflow3_max_radius": 12.0,
         "qhflow3_radius_embed_dim": 32,
+        "qhflow3_grid_resolution": 48,
+        "qhflow3_grid_ffn_chunk_size": 512,
+        "static_te_init_mode": "zero",
+        "static_te_init_std": 1.0,
+        "static_te_gate_degrees": (),
+        "static_te_gate_activation": "none",
+        "static_te_gate_init": 1.0,
         "distribute_graphs": False,
         "partition_type": None,
         "tiling_dims": None,
@@ -66,6 +77,7 @@ class TrainingWorkflow:
         "muon_adamw_betas": (0.9, 0.95),
         "muon_adamw_eps": 1e-10,
         "gradient_clip_val": None,
+        "gradient_accumulation_steps": 1,
         "warmup_steps": 1000,
         "scheduler_power": 1.0,
         "min_lr_ratio": 0.0,
@@ -75,6 +87,7 @@ class TrainingWorkflow:
         "wandb_project": "maloq",
         "wandb_entity": None,
         "wandb_mode": "online",
+        "wandb_log_every_n_steps": 10,
         "validation_matrix_metrics": False,
         "validation_matrix_metrics_frequency": 1,
     }
@@ -172,12 +185,18 @@ class TrainingWorkflow:
         random.seed(seed)
         torch.set_default_dtype(self.config['dtype'])
 
-        # SLURM / Distributed setup
-        self.rank = int(os.environ.get('SLURM_PROCID', 0))
-        self.world_size = int(os.environ.get('SLURM_NTASKS', 1))
+        # torchrun, Open MPI, and SLURM distributed setup.
+        self.rank, self.world_size, self.local_rank = (
+            utils_compute.distributed_context()
+        )
 
         compute_start = time.perf_counter()
-        self.device = utils_compute.setup_env(self.rank, self.world_size, backend=self.config['dist_backend'])
+        self.device = utils_compute.setup_env(
+            self.rank,
+            self.world_size,
+            backend=self.config['dist_backend'],
+            local_rank=self.local_rank,
+        )
         compute_end = time.perf_counter()
         
         if self.rank == 0:
@@ -185,6 +204,20 @@ class TrainingWorkflow:
             if not os.path.exists(self.config['output_folder']):
                 os.makedirs(self.config['output_folder'])
         dist.barrier()
+
+        if self.config.get('distribute_graphs', False):
+            from mpi4py import MPI
+
+            mpi_rank = MPI.COMM_WORLD.Get_rank()
+            mpi_world_size = MPI.COMM_WORLD.Get_size()
+            if (mpi_rank, mpi_world_size) != (self.rank, self.world_size):
+                raise RuntimeError(
+                    'Distributed-graph training requires matching MPI and '
+                    'torch.distributed ranks. Launch it with mpirun rather '
+                    'than torchrun. '
+                    f'MPI={mpi_rank}/{mpi_world_size}, '
+                    f'torch={self.rank}/{self.world_size}.'
+                )
 
     def check_input_config(self):
         """Validates the configuration for incompatible settings, and writes config to output folder."""
@@ -218,6 +251,52 @@ class TrainingWorkflow:
             )
         if self.config['backbone_type'] not in {'esen', 'qhflow3_clean'}:
             raise ValueError("backbone_type must be 'esen' or 'qhflow3_clean'.")
+        if self.config['head_type'] not in {'maloq', 'maloq_muon', 'static_te'}:
+            raise ValueError(
+                "head_type must be 'maloq', 'maloq_muon', or 'static_te'."
+            )
+        if self.config['head_type'] == 'maloq_muon' and self.config['reduce_edge']:
+            raise ValueError("maloq_muon currently requires reduce_edge=False.")
+        if self.config['head_type'] == 'static_te':
+            if self.config['open_shell']:
+                raise ValueError("static_te currently supports closed-shell data only.")
+            if self.config['reduce_edge']:
+                raise ValueError("static_te currently requires reduce_edge=False.")
+            if self.config['static_te_init_mode'] not in {'zero', 'normal'}:
+                raise ValueError("static_te_init_mode must be 'zero' or 'normal'.")
+            if float(self.config['static_te_init_std']) <= 0.0:
+                raise ValueError("static_te_init_std must be positive.")
+            gate_degrees = tuple(
+                int(degree) for degree in self.config['static_te_gate_degrees']
+            )
+            if len(set(gate_degrees)) != len(gate_degrees):
+                raise ValueError("static_te_gate_degrees must not contain duplicates.")
+            if any(degree < 0 for degree in gate_degrees):
+                raise ValueError("static_te_gate_degrees must be non-negative.")
+            gate_activation = self.config['static_te_gate_activation']
+            if gate_activation not in {'none', 'residual_tanh', 'sigmoid'}:
+                raise ValueError(
+                    "static_te_gate_activation must be 'none', "
+                    "'residual_tanh', or 'sigmoid'."
+                )
+            if gate_degrees and gate_activation == 'none':
+                raise ValueError(
+                    "static_te_gate_degrees requires an active gate."
+                )
+            if not gate_degrees and gate_activation != 'none':
+                raise ValueError(
+                    "An active static_te gate requires static_te_gate_degrees."
+                )
+            gate_init = float(self.config['static_te_gate_init'])
+            if gate_activation == 'residual_tanh' and not 0.0 < gate_init < 2.0:
+                raise ValueError(
+                    "residual_tanh static_te_gate_init must be between 0 and 2."
+                )
+            if gate_activation == 'sigmoid' and not 0.0 < gate_init < 1.0:
+                raise ValueError(
+                    "sigmoid static_te_gate_init must be between 0 and 1."
+                )
+            self.config['static_te_gate_degrees'] = gate_degrees
         if (
             self.config['backbone_type'] == 'qhflow3_clean'
             and self.config['output_l_embedding_dim'] is None
@@ -225,9 +304,37 @@ class TrainingWorkflow:
             raise ValueError(
                 "qhflow3_clean requires output_l_embedding_dim for its bottle width."
             )
+        if int(self.config['qhflow3_grid_resolution']) <= 0:
+            raise ValueError("qhflow3_grid_resolution must be positive.")
+        qhflow3_grid_chunk = self.config['qhflow3_grid_ffn_chunk_size']
+        if qhflow3_grid_chunk is not None and int(qhflow3_grid_chunk) <= 0:
+            raise ValueError("qhflow3_grid_ffn_chunk_size must be positive.")
         gradient_clip_val = self.config['gradient_clip_val']
         if gradient_clip_val is not None and float(gradient_clip_val) <= 0.0:
             raise ValueError("gradient_clip_val must be positive when specified.")
+        gradient_accumulation_steps = int(
+            self.config['gradient_accumulation_steps']
+        )
+        if gradient_accumulation_steps <= 0:
+            raise ValueError("gradient_accumulation_steps must be positive.")
+        self.config['gradient_accumulation_steps'] = gradient_accumulation_steps
+        if self.config.get('delta_learning', False):
+            if self.config['loss_target'] not in {
+                'fock_matrix', 'density_matrix'
+            }:
+                raise ValueError(
+                    "delta_learning requires a Hamiltonian or density matrix target."
+                )
+            if self.config['dataset_name'] != 'QM7':
+                raise ValueError(
+                    "delta_learning requires the QM7-style ASE data loader."
+                )
+            if self.config['open_shell']:
+                raise ValueError("delta_learning currently supports closed shell only.")
+            if self.config['distribute_graphs']:
+                raise ValueError(
+                    "delta_learning is not implemented for distributed graphs."
+                )
 
         if 'matrix' in self.config['loss_target']:
             self.config['include_edges'] = True
@@ -290,6 +397,15 @@ class TrainingWorkflow:
         if self.config['distribute_graphs'] and 'matrix' not in self.config['loss_target']:
             raise ValueError("Distributed graph training is currently only implemented for matrix-valued learning targets (e.g. fock_matrix).")
 
+        if (
+            self.config['distribute_graphs']
+            and self.config['backbone_type'] == 'qhflow3_clean'
+        ):
+            raise ValueError(
+                "QHFlow3 currently supports multi-GPU data-parallel training, "
+                "but not distributed-graph training."
+            )
+
         if self.config['validation_matrix_metrics']:
             if self.config['loss_target'] not in ['fock_matrix', 'density_matrix']:
                 raise ValueError(
@@ -301,6 +417,8 @@ class TrainingWorkflow:
                 )
         if self.config['validation_matrix_metrics_frequency'] < 1:
             raise ValueError("validation_matrix_metrics_frequency must be at least 1.")
+        if self.config['wandb_log_every_n_steps'] < 1:
+            raise ValueError("wandb_log_every_n_steps must be at least 1.")
 
         # if hidden_dim is not provided, set it to l_embedding_dim:
         if 'hidden_dim' not in self.config:
@@ -546,13 +664,19 @@ class TrainingWorkflow:
                     distribute_graphs=c['distribute_graphs'],
                     tiling_dims=c['tiling_dims'],
                     partition_type=c['partition_type'],
-                    train_or_eval=c['train_or_eval']
+                    train_or_eval=c['train_or_eval'],
+                    delta_learning=c.get('delta_learning', False),
+                    load_delta_auxiliary_matrix=(
+                        c['backbone_type'] == 'qhflow3_clean'
+                    ),
                 )
 
                 dist.barrier()
                 for i in range(self.world_size):
                     if self.rank == i:
-                        for batch in train_loader:
+                        first_batch = next(iter(train_loader), None)
+                        if first_batch is not None:
+                            batch = first_batch
                             if not c['open_shell']:
                                 num_atoms = batch['node_y'].shape[1] if c['distribute_graphs'] else batch['node_y'].shape[0]
                                 num_edges = batch['y'].shape[1] if c['distribute_graphs'] else batch['y'].shape[0]
@@ -560,7 +684,7 @@ class TrainingWorkflow:
                                 num_atoms = batch['node_y_alpha'].shape[1] if c['distribute_graphs'] else batch['node_y_alpha'].shape[0]
                                 num_edges = batch['y_alpha'].shape[1] if c['distribute_graphs'] else batch['y_alpha'].shape[0]
                             
-                            print(f"Rank {self.rank}: Train batch - Num atoms: {num_atoms}, Num edges: {num_edges}", flush=True)
+                            print(f"Rank {self.rank}: First train batch - Num atoms: {num_atoms}, Num edges: {num_edges}", flush=True)
                     dist.barrier()
             
             if val_database is None or len(val_database) == 0:
@@ -581,7 +705,11 @@ class TrainingWorkflow:
                     distribute_graphs=c['distribute_graphs'],
                     tiling_dims=c['tiling_dims'],
                     partition_type=c['partition_type'],
-                    train_or_eval=c['train_or_eval']
+                    train_or_eval=c['train_or_eval'],
+                    delta_learning=c.get('delta_learning', False),
+                    load_delta_auxiliary_matrix=(
+                        c['backbone_type'] == 'qhflow3_clean'
+                    ),
                 )
             return train_loader, val_loader, required_irreps, basis_trans, orb_basis, ls_list
             
@@ -606,7 +734,11 @@ class TrainingWorkflow:
                 distribute_graphs=c['distribute_graphs'],
                 tiling_dims=c['tiling_dims'],
                 partition_type=c['partition_type'],
-                train_or_eval=c['train_or_eval']
+                train_or_eval=c['train_or_eval'],
+                delta_learning=c.get('delta_learning', False),
+                load_delta_auxiliary_matrix=(
+                    c['backbone_type'] == 'qhflow3_clean'
+                ),
             )
         
         # inference mode:
@@ -627,17 +759,32 @@ class TrainingWorkflow:
                 distribute_graphs=c['distribute_graphs'],
                 tiling_dims=c['tiling_dims'],
                 partition_type=c['partition_type'],
-                train_or_eval=c['train_or_eval']
+                train_or_eval=c['train_or_eval'],
+                delta_learning=c.get('delta_learning', False),
+                load_delta_auxiliary_matrix=(
+                    c['backbone_type'] == 'qhflow3_clean'
+                ),
             )
         
         return None, test_loader, required_irreps, basis_trans, orb_basis, ls_list
         
+    @staticmethod
+    def _collect_muon_parameters(backbone, head):
+        """Route every trainable matrix through Muon, matching MuonAdamW."""
+        return [
+            parameter
+            for module in (backbone, head)
+            for parameter in module.parameters()
+            if parameter.ndim >= 2 and parameter.requires_grad
+        ]
+
     def build_model(self, required_irreps, orb_basis, ls_list):
         """Initializes backbone, head, optimizer, and scheduler."""
         c = self.config
         
         # 1. Backbone
         if c['backbone_type'] == 'qhflow3_clean':
+            delta_learning = c.get('delta_learning', False)
             backbone = QHFlow3MaloqBackbone(
                 sh_lmax=required_irreps.lmax,
                 hidden_size=c['l_embedding_dim'],
@@ -653,9 +800,20 @@ class TrainingWorkflow:
                 escn_edge_channels=c['hidden_dim'],
                 escn_num_distance_basis=c['num_distance_basis'],
                 esen_max_radius=c['rcut_gaussian'],
-                default_hamiltonian_input='zero',
+                grid_resolution=c['qhflow3_grid_resolution'],
+                grid_ffn_chunk_size=c['qhflow3_grid_ffn_chunk_size'],
+                basis=(
+                    'def2-svp-nabla'
+                    if c['dataset_name'] == 'nablaDFT'
+                    else 'def2-svp'
+                ),
+                delta_learning=delta_learning,
+                delta_target=c['loss_target'],
+                default_hamiltonian_input=(
+                    'init_ham' if delta_learning else 'zero'
+                ),
                 use_block_S=True,
-                use_block_H=False,
+                use_block_H=delta_learning,
             ).to(self.device)
         else:
             backbone = eSEN_Backbone(
@@ -695,13 +853,38 @@ class TrainingWorkflow:
         )
         
         if c['loss_target'] == 'fock_matrix' or c['loss_target'] == 'density_matrix':
-            head = Fock_Irreps_Head(
-                irreps_in=irreps_in, irreps_out=required_irreps,
-                lmax=required_irreps.lmax, sphere_channels=head_channels,
-                reduce_edge=c['reduce_edge'], open_shell=c['open_shell'],
-                ls_list=ls_list, reduce_node=c['reduce_node'],
-                reduce_node_intra=c['reduce_node_intra'], orbital_basis=orb_basis
-            )
+            if c['head_type'] == 'static_te':
+                head = StaticTensorExpansionHead(
+                    irreps_out=required_irreps,
+                    lmax=required_irreps.lmax,
+                    sphere_channels=head_channels,
+                    reduce_edge=c['reduce_edge'],
+                    open_shell=c['open_shell'],
+                    ls_list=ls_list,
+                    reduce_node=c['reduce_node'],
+                    reduce_node_intra=c['reduce_node_intra'],
+                    init_mode=c['static_te_init_mode'],
+                    init_std=c['static_te_init_std'],
+                    gate_degrees=tuple(c['static_te_gate_degrees']),
+                    gate_activation=c['static_te_gate_activation'],
+                    gate_init=c['static_te_gate_init'],
+                )
+            elif c['head_type'] == 'maloq_muon':
+                head = MuonFockIrrepsHead(
+                    irreps_in=irreps_in, irreps_out=required_irreps,
+                    lmax=required_irreps.lmax, sphere_channels=head_channels,
+                    reduce_edge=c['reduce_edge'], open_shell=c['open_shell'],
+                    ls_list=ls_list, reduce_node=c['reduce_node'],
+                    reduce_node_intra=c['reduce_node_intra'], orbital_basis=orb_basis
+                )
+            else:
+                head = Fock_Irreps_Head(
+                    irreps_in=irreps_in, irreps_out=required_irreps,
+                    lmax=required_irreps.lmax, sphere_channels=head_channels,
+                    reduce_edge=c['reduce_edge'], open_shell=c['open_shell'],
+                    ls_list=ls_list, reduce_node=c['reduce_node'],
+                    reduce_node_intra=c['reduce_node_intra'], orbital_basis=orb_basis
+                )
         elif c['loss_target'] == "forces":
             head = HELM_Force_Head(backbone)
             
@@ -710,11 +893,28 @@ class TrainingWorkflow:
         
         head = head.to(self.device)
 
+        # Loader construction can consume RNG state differently on each rank.
+        # Manual data-parallel gradient averaging therefore needs an explicit
+        # rank-0 model broadcast, just as DDP performs during construction.
+        if self.world_size > 1:
+            with torch.no_grad():
+                for module in (backbone, head):
+                    tensors = list(module.parameters()) + list(module.buffers())
+                    for tensor in tensors:
+                        if tensor.numel() == 0:
+                            continue
+                        synchronized = tensor.detach().contiguous()
+                        dist.broadcast(synchronized, src=0)
+                        tensor.copy_(synchronized)
+            dist.barrier()
+
         if self.rank == 0:
             is_qhflow3 = c['backbone_type'] == 'qhflow3_clean'
             model_summary = {
                 'model_variant': c.get('model_variant', 'maloq-baseline'),
                 'backbone_type': c['backbone_type'],
+                'head_type': c['head_type'],
+                'muon_routing': 'all_trainable_ndim_ge_2',
                 'seed': int(c['seed']),
                 'backbone_parameters': sum(p.numel() for p in backbone.parameters()),
                 'head_parameters': sum(p.numel() for p in head.parameters()),
@@ -743,11 +943,39 @@ class TrainingWorkflow:
                 'residual_update_scale_mode': (
                     'none' if is_qhflow3 else c['residual_update_scale_mode']
                 ),
+                'delta_learning': bool(c.get('delta_learning', False)),
+                'prediction_contract': (
+                    (
+                        'final_density=initial_density+predicted_delta'
+                        if c['loss_target'] == 'density_matrix'
+                        else 'final_hamiltonian=initial_hamiltonian+predicted_delta'
+                    )
+                    if c.get('delta_learning', False)
+                    else 'absolute_target'
+                ),
             }
             if is_qhflow3:
                 model_summary.update(
-                    qhflow3_h_input='zero',
-                    qhflow3_overlap_input='native_qm7_e3nn_blocks',
+                    qhflow3_primary_matrix_input=(
+                        (
+                            'initial_density_matrix'
+                            if c['loss_target'] == 'density_matrix'
+                            else 'initial_hamiltonian'
+                        )
+                        if c.get('delta_learning', False) else 'zero'
+                    ),
+                    qhflow3_auxiliary_matrix_input=(
+                        (
+                            'initial_hamiltonian'
+                            if c['loss_target'] == 'density_matrix'
+                            else 'initial_density_matrix'
+                        )
+                        if c.get('delta_learning', False) else None
+                    ),
+                    qhflow3_basis=backbone.basis,
+                    qhflow3_overlap_input='native_loader_atom_diagonal_blocks',
+                    qhflow3_grid_resolution=int(c['qhflow3_grid_resolution']),
+                    qhflow3_grid_ffn_chunk_size=c['qhflow3_grid_ffn_chunk_size'],
                 )
             summary_path = Path(c['output_folder']) / 'model_summary.json'
             summary_path.write_text(json.dumps(model_summary, indent=2) + '\n')
@@ -795,25 +1023,10 @@ class TrainingWorkflow:
                 normalize_grads=c['soap_normalize_grads'],
             )
         elif optimizer_type == 'muon':
-            # Muon is designed for hidden matrix parameters. Keep the output
-            # head, embeddings, normalization gains, and scalar/vector
-            # backbone parameters on AdamW.
-            muon_params = []
-            muon_param_ids = set()
-            for module in backbone.modules():
-                module_is_auxiliary = (
-                    isinstance(module, torch.nn.Embedding)
-                    or 'norm' in type(module).__name__.lower()
-                )
-                for parameter in module.parameters(recurse=False):
-                    if (
-                        parameter.ndim >= 2
-                        and parameter.requires_grad
-                        and not module_is_auxiliary
-                        and id(parameter) not in muon_param_ids
-                    ):
-                        muon_params.append(parameter)
-                        muon_param_ids.add(id(parameter))
+            # One fixed rule mirrors ml-dft's MuonAdamW: every trainable
+            # matrix, including head and gate matrices, goes through Muon.
+            muon_params = self._collect_muon_parameters(backbone, head)
+            muon_param_ids = {id(parameter) for parameter in muon_params}
             auxiliary_params = [p for p in params if id(p) not in muon_param_ids]
             if not muon_params:
                 raise ValueError(
@@ -868,17 +1081,23 @@ class TrainingWorkflow:
     def _get_scheduler(self, optimizer, train_loader):
         """Initializes scheduler based on training loader length."""
         c = self.config
+        optimizer_steps_per_epoch = math.ceil(
+            len(train_loader) / c['gradient_accumulation_steps']
+        )
+        scheduler_steps_per_epoch = (
+            1 if c.get('step_every_epoch', False) else optimizer_steps_per_epoch
+        )
         if c['scheduler_type'] == 'plateau':
             return torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, mode='min', factor=0.5, patience=c['patience'], threshold=c['threshold']
             )
         elif c['scheduler_type'] == 'cosine':
-            t_max = c['num_epochs'] * len(train_loader)
+            t_max = c['num_epochs'] * scheduler_steps_per_epoch
             if self.rank == 0: 
                 print(f"T_max for scheduler: {t_max}")
             return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max, eta_min=c['eta_min'])
         elif c['scheduler_type'] == 'warmup_polynomial':
-            max_steps = max(1, c['num_epochs'] * len(train_loader))
+            max_steps = max(1, c['num_epochs'] * scheduler_steps_per_epoch)
             warmup_steps = int(c['warmup_steps'])
             power = float(c['scheduler_power'])
             min_lr_ratio = float(c['min_lr_ratio'])
@@ -935,7 +1154,35 @@ class TrainingWorkflow:
         try:
             # HELM's data and training pipeline currently supports these datasets:
             if self.config['dataset_name'] == 'QM7':
+                target_property = (
+                    'density_matrix'
+                    if self.config['loss_target'] == 'density_matrix'
+                    else 'hamiltonian'
+                )
+                load_properties = [
+                    'energy',
+                    'forces',
+                    target_property,
+                    'overlap',
+                ]
+                if self.config.get('delta_learning', False):
+                    initial_target_property = (
+                        'initial_density_matrix'
+                        if target_property == 'density_matrix'
+                        else 'initial_hamiltonian'
+                    )
+                    load_properties.append(initial_target_property)
+                    if self.config['backbone_type'] == 'qhflow3_clean':
+                        auxiliary_property = (
+                            'initial_hamiltonian'
+                            if target_property == 'density_matrix'
+                            else 'initial_density_matrix'
+                        )
+                        load_properties.append(auxiliary_property)
+                # ASEAtomsData's property setter reads DB metadata through the
+                # open connection, so apply the selection after construction.
                 database = ASEAtomsData(self.config['dbpath'])
+                database.load_properties = load_properties
                 if self.config['shuffle']:
                     print("Shuffling QM7 dataset for training...")
                     indices = list(range(len(database)))
@@ -987,6 +1234,13 @@ class TrainingWorkflow:
                     validation_matrix_metrics=self.config.get('validation_matrix_metrics', False),
                     validation_matrix_metrics_frequency=self.config.get('validation_matrix_metrics_frequency', 1),
                     gradient_clip_val=self.config.get('gradient_clip_val'),
+                    gradient_accumulation_steps=self.config.get(
+                        'gradient_accumulation_steps', 1
+                    ),
+                    wandb_enabled=self.config.get('use_wandb', False),
+                    wandb_log_every_n_steps=self.config.get(
+                        'wandb_log_every_n_steps', 10
+                    ),
                 )
             elif self.config['train_or_eval'] == "eval":
                 trainer.evaluate(

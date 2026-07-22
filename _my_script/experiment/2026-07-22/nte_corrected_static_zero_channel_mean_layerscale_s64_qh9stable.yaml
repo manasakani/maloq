@@ -1,9 +1,11 @@
-# Headless QHFlow3 clean trunk + native MALOQ coupled-irrep head.
+# QH9 B3LYP5 density-delta adaptation of the audited ml-dft NTE recipe.
+# "zero_channel_mean" means zero coefficient initialization plus the explicit
+# 1/C channel-mean contraction in StaticTensorExpansionHead.
 dataset:
   dataset_name: QM7
-  dbpath: /dataset/seongsu/shared-home/data/QH9_maloq_ase/QH9Stable_random.db
-  output_folder: outputs/qhflow3-maloq-head-equivariant-grid48-qh9-seed44
-  run_name: qhflow3-maloq-head-equivariant-grid48-qh9-seed44
+  dbpath: /dataset/seongsu/shared-home/data/QH9_maloq_ase/QH9StableMatrices_random.db
+  output_folder: outputs/qh9-nte-static-layerscale-s64-seed42
+  run_name: qh9_b3lyp5_maloq0713_nte_corrected_static_zero_channel_mean_layerscale_s64_muon_full_seed42
   open_shell: false
 
 execution:
@@ -21,8 +23,15 @@ splits:
   distribute_graphs: false
 
 model:
-  model_variant: qhflow3-maloq-head
-  backbone_type: qhflow3_clean
+  model_variant: nte-corrected-static-zero-channel-mean-layerscale-s64
+  backbone_type: esen
+  head_type: static_te
+  static_te_init_mode: zero
+  static_te_init_std: 1.0
+  static_te_gate_degrees: []
+  static_te_gate_activation: none
+  static_te_gate_init: 1.0
+  wigner_backend: torch
   l_embedding_dim: 128
   hidden_dim: 128
   output_l_embedding_dim: 64
@@ -31,13 +40,18 @@ model:
   num_edge_layers: 2
   rcut_orbitals: 7.5
   rcut_gaussian: 15.0
-  qhflow3_max_radius: 12.0
-  qhflow3_radius_embed_dim: 32
-  qhflow3_grid_resolution: 48
-  qhflow3_grid_ffn_chunk_size: 512
+  gaussian_width: 1.0
   reduce_edge: false
   reduce_node: true
   reduce_node_intra: true
+  gate_act_type: sigmoid
+  mlp_type: grid
+  message_passing_schedule: node_then_edge
+  use_edge_envelope: true
+  use_edge_scalar_modulation: true
+  residual_update_scale_mode: bounded_degree
+  residual_update_scale_init: 0.015625
+  residual_update_scale_log_range: 4.1588830833596715
 
 optimization:
   num_epochs: 80
@@ -51,18 +65,19 @@ optimization:
   muon_adamw_lr: 0.0005
   muon_adamw_betas: [0.9, 0.95]
   muon_adamw_eps: 1.0e-10
+  gradient_clip_val: 1.0
   scheduler_type: warmup_polynomial
   warmup_steps: 1000
   scheduler_power: 1.0
   min_lr_ratio: 0.0
-  gradient_clip_val: 1.0
   step_every_epoch: false
 
 loss:
-  loss_target: fock_matrix
+  loss_target: density_matrix
   train_loss: rmse_mse_padded_loss
   test_loss: l1_unpadded_loss
   scale_and_shift: false
+  delta_learning: true
 
 checkpointing:
   save_frequency: 1
@@ -74,11 +89,12 @@ checkpointing:
 
 runtime:
   dtype: float32
-  seed: 44
+  seed: 42
 
 tracking:
-  use_wandb: false
+  use_wandb: true
   wandb_project: maloq-qh9
+  wandb_entity: kaist-korea
   wandb_mode: online
   wandb_log_every_n_steps: 10
   validation_matrix_metrics: true

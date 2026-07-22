@@ -40,12 +40,48 @@ def register_dist_cleanup():
     atexit.register(cleanup_process_group, False)
     _DIST_CLEANUP_REGISTERED = True
 
-def setup_env(rank, world_size, backend='nccl'):
+def distributed_context(env=None):
+    """Return global rank, world size, and local rank for common launchers."""
+    env = os.environ if env is None else env
+    if 'RANK' in env or 'WORLD_SIZE' in env:
+        if 'RANK' not in env or 'WORLD_SIZE' not in env:
+            raise ValueError('RANK and WORLD_SIZE must be set together.')
+        rank = int(env['RANK'])
+        world_size = int(env['WORLD_SIZE'])
+        local_rank = int(env.get('LOCAL_RANK', 0))
+    elif 'OMPI_COMM_WORLD_RANK' in env:
+        rank = int(env['OMPI_COMM_WORLD_RANK'])
+        world_size = int(env['OMPI_COMM_WORLD_SIZE'])
+        local_rank = int(env.get('OMPI_COMM_WORLD_LOCAL_RANK', 0))
+    else:
+        rank = int(env.get('SLURM_PROCID', 0))
+        world_size = int(env.get('SLURM_NTASKS', 1))
+        local_rank = int(env.get('SLURM_LOCALID', 0))
+
+    if world_size < 1:
+        raise ValueError(f'WORLD_SIZE must be positive; got {world_size}.')
+    if not 0 <= rank < world_size:
+        raise ValueError(
+            f'Rank must be in [0, {world_size}); got rank={rank}.'
+        )
+    if local_rank < 0:
+        raise ValueError(f'LOCAL_RANK must be non-negative; got {local_rank}.')
+    return rank, world_size, local_rank
+
+
+def setup_env(rank, world_size, backend='nccl', local_rank=0):
 
     use_cuda = torch.cuda.is_available()
     if use_cuda:
-        # !! make sure visibility is restricted to "gpu 0" in .sh file !!
-        gpu_id = 0
+        visible_device_count = torch.cuda.device_count()
+        # A scheduler may expose one GPU per process while reporting a nonzero
+        # node-local rank. In that case the only valid process-local index is 0.
+        gpu_id = 0 if visible_device_count == 1 else int(local_rank)
+        if not 0 <= gpu_id < visible_device_count:
+            raise ValueError(
+                f'Local rank {local_rank} cannot select one of '
+                f'{visible_device_count} visible CUDA devices.'
+            )
         torch.cuda.set_device(gpu_id)
         device = torch.device('cuda:' + str(gpu_id))
     else:
@@ -54,11 +90,17 @@ def setup_env(rank, world_size, backend='nccl'):
     # Single-process local runs should not require MASTER_ADDR/MASTER_PORT.
     if world_size <= 1:
         if not dist.is_initialized():
+            master_addr = os.environ.get('MASTER_ADDR', '127.0.0.1')
+            master_port = int(os.environ.get('MASTER_PORT', '29500'))
+            if not 1 <= master_port <= 65535:
+                raise ValueError(
+                    f"MASTER_PORT must be between 1 and 65535; got {master_port}"
+                )
             init_kwargs = {
                 'backend': backend,
                 'rank': 0,
                 'world_size': 1,
-                'init_method': 'tcp://127.0.0.1:29500',
+                'init_method': f'tcp://{master_addr}:{master_port}',
             }
             if use_cuda:
                 init_kwargs['device_id'] = device

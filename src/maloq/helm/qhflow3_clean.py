@@ -34,6 +34,7 @@ from e3nn import o3
 from e3nn.o3 import Irreps, Linear
 from torch.profiler import record_function
 
+from ..fock_utils import basis_sets
 from ..qhflow3_vendor.embedding import (
     ChgSpinEmbedding,
     EdgeDegreeEmbedding,
@@ -1372,6 +1373,20 @@ class QHFlow3ESCNBackboneHam(nn.Module):
 
         _, node_feats_H, node_feats_H_init, node_feats_S = ham_features
 
+        matrix_features = {
+            "node_feats_H": node_feats_H,
+            "node_feats_H_init": node_feats_H_init if self.use_block_H else None,
+            "node_feats_S": node_feats_S if self.use_block_S else None,
+        }
+        for feature_name, feature in matrix_features.items():
+            if feature is None:
+                continue
+            if feature.shape[0] != num_nodes:
+                raise ValueError(
+                    f"{feature_name} must contain one row per atom; got "
+                    f"{feature.shape[0]} rows for {num_nodes} atoms."
+                )
+
         csd_mixed_emb = self.csd_embedding(
             charge=data_dict["charge"],
             spin=data_dict["spin"],
@@ -1392,10 +1407,19 @@ class QHFlow3ESCNBackboneHam(nn.Module):
             "node_offset": 0,
         }
         if gp_utils.initialized():
-            graph_dict = self._init_gp_partitions(graph_dict, data_dict["atomic_numbers_full"])
+            graph_dict = self._init_gp_partitions(
+                graph_dict, data_dict["atomic_numbers_full"]
+            )
             node_partition = graph_dict["node_partition"]
-            data_dict["atomic_numbers"] = data_dict["atomic_numbers_full"][node_partition]
+            data_dict["atomic_numbers"] = data_dict["atomic_numbers_full"][
+                node_partition
+            ]
             data_dict["batch"] = data_dict["batch_full"][node_partition]
+            node_feats_H = node_feats_H.index_select(0, node_partition)
+            if self.use_block_H:
+                node_feats_H_init = node_feats_H_init.index_select(0, node_partition)
+            if self.use_block_S:
+                node_feats_S = node_feats_S.index_select(0, node_partition)
         else:
             graph_dict["edge_distance_vec_full"] = graph_dict["edge_distance_vec"]
             graph_dict["edge_distance_full"] = graph_dict["edge_distance"]
@@ -1445,15 +1469,24 @@ class QHFlow3ESCNBackboneHam(nn.Module):
             time_message = get_time_embedding(data_dict["t"], self.sphere_channels)[data_dict["batch"]]
             x_message[:, 0, :] = x_message[:, 0, :] + time_message
 
+        # ParamContraction emits one feature row per atom. ``batch`` contains
+        # graph IDs and is only valid for graph-level conditions such as time.
         matrix_l_len = node_feats_H.shape[1]
-        matrix_mix_list = [x_message_original[:,0,:], node_feats_H[data_dict["batch"]][:,0,:]]
-        x_message[:, 0:matrix_l_len, :] = x_message[:, 0:matrix_l_len, :] + node_feats_H[data_dict["batch"]][:,0:matrix_l_len,:]
+        matrix_mix_list = [x_message_original[:, 0, :], node_feats_H[:, 0, :]]
+        x_message[:, 0:matrix_l_len, :] = (
+            x_message[:, 0:matrix_l_len, :] + node_feats_H[:, 0:matrix_l_len, :]
+        )
         if self.use_block_H:
-            matrix_mix_list.append(node_feats_H_init[data_dict["batch"]][:,0,:])
-            x_message[:, 0:matrix_l_len, :] = x_message[:, 0:matrix_l_len, :] + node_feats_H_init[data_dict["batch"]][:,0:matrix_l_len,:]
+            matrix_mix_list.append(node_feats_H_init[:, 0, :])
+            x_message[:, 0:matrix_l_len, :] = (
+                x_message[:, 0:matrix_l_len, :]
+                + node_feats_H_init[:, 0:matrix_l_len, :]
+            )
         if self.use_block_S:
-            matrix_mix_list.append(node_feats_S[data_dict["batch"]][:,0,:])
-            x_message[:, 0:matrix_l_len, :] = x_message[:, 0:matrix_l_len, :] + node_feats_S[data_dict["batch"]][:,0:matrix_l_len,:]
+            matrix_mix_list.append(node_feats_S[:, 0, :])
+            x_message[:, 0:matrix_l_len, :] = (
+                x_message[:, 0:matrix_l_len, :] + node_feats_S[:, 0:matrix_l_len, :]
+            )
         if self.use_time_embedding:
             matrix_mix_list.append(time_message)
 
@@ -1922,7 +1955,10 @@ class QHFlow3CleanFeatures(nn.Module):
         self.escn_num_distance_basis = escn_num_distance_basis
 
         if self.basis_elements is not None:
-            raise ValueError("The SC26 QHFlow3 port supports the fixed QH9 basis only.")
+            raise ValueError(
+                "The SC26 QHFlow3 port selects its fixed element set from "
+                "basis; basis_elements overrides are not supported."
+            )
         if basis == "def2-svp":
             self.output_irrep = o3.Irreps("3x0e + 2x1e + 1x2e")
             self.output_matrix_dim = 14
@@ -2229,19 +2265,19 @@ class QHFlow3CleanFeatures(nn.Module):
 
     def _process_through_main_layers(self, data: Any) -> tuple[torch.Tensor, torch.Tensor]:
         node_attr_r = None
-        num_graphs = data["node_feats_H"].shape[0]
-        node_feats_h = data["node_feats_H"].reshape(num_graphs, -1, self.hidden_size)
+        num_nodes = data["node_feats_H"].shape[0]
+        node_feats_h = data["node_feats_H"].reshape(num_nodes, -1, self.hidden_size)
         node_feats_h = self._apply_node_condition(data, node_feats_h)
         if self.use_block_H:
             node_feats_h_init = data["node_feats_H_init"].reshape(
-                num_graphs,
+                num_nodes,
                 -1,
                 self.hidden_size,
             )
         else:
             node_feats_h_init = None
         if self.use_block_S:
-            node_feats_s = data["node_feats_S"].reshape(num_graphs, -1, self.hidden_size)
+            node_feats_s = data["node_feats_S"].reshape(num_nodes, -1, self.hidden_size)
         else:
             node_feats_s = None
 
@@ -2298,84 +2334,159 @@ def _flat_to_esen_embeddings(
     return embeddings
 
 
-class QHFlow3MaloqBackbone(QHFlow3CleanFeatures):
-    """Headless QHFlow3 trunk bridged to MALOQ's original QM7 loader.
+def _orbital_masks_for_basis(
+    basis: str,
+) -> tuple[dict[int, torch.Tensor], int]:
+    """Map each element's compact AO order into QHFlow3's padded AO grid."""
+    orbital_bases = {
+        "def2-svp": basis_sets.orbital_basis_def2_svp_QM7,
+        "def2-svp-nabla": basis_sets.orbital_basis_def2_svp_nabla,
+    }
+    try:
+        orbital_basis = orbital_bases[basis]
+    except KeyError as exc:
+        raise ValueError(
+            f"The MALOQ QHFlow3 bridge does not define AO masks for {basis!r}."
+        ) from exc
 
-    The QH9Stable database does not contain a non-target initial Hamiltonian,
-    so the static supervised lane deliberately feeds a zero Hamiltonian state.
-    The real e3nn-ordered overlap blocks remain inputs. This prevents target
-    leakage while keeping the clean QHFlow3 geometry/overlap trunk intact.
+    max_shell_counts = {
+        degree: max(shells.count(degree) for shells in orbital_basis.values())
+        for degree in range(max(max(shells) for shells in orbital_basis.values()) + 1)
+    }
+    degree_starts: dict[int, int] = {}
+    matrix_dim = 0
+    for degree, shell_count in max_shell_counts.items():
+        degree_starts[degree] = matrix_dim
+        matrix_dim += shell_count * (2 * degree + 1)
+
+    masks: dict[int, torch.Tensor] = {}
+    for atomic_number, shells in orbital_basis.items():
+        shell_offsets = {degree: 0 for degree in max_shell_counts}
+        indices: list[int] = []
+        for degree in shells:
+            width = 2 * degree + 1
+            start = degree_starts[degree] + shell_offsets[degree] * width
+            indices.extend(range(start, start + width))
+            shell_offsets[degree] += 1
+        masks[int(atomic_number)] = torch.tensor(indices, dtype=torch.long)
+    return masks, matrix_dim
+
+
+class QHFlow3MaloqBackbone(QHFlow3CleanFeatures):
+    """Headless QHFlow3 trunk bridged to MALOQ's native matrix loaders.
+
+    Absolute-target runs use zero matrix features plus the real overlap.
+    Delta-learning runs condition the trunk on the source initial density,
+    initial Hamiltonian, and overlap. The primary matrix matches the target
+    type and the other initial matrix is the auxiliary block input.
     """
 
-    _ORBITAL_MASKS = {
-        1: torch.tensor([0, 1, 3, 4, 5], dtype=torch.long),
-        6: torch.arange(14, dtype=torch.long),
-        7: torch.arange(14, dtype=torch.long),
-        8: torch.arange(14, dtype=torch.long),
-        9: torch.arange(14, dtype=torch.long),
-    }
-
     def __init__(self, **kwargs: Any) -> None:
-        kwargs.setdefault("basis", "def2-svp")
-        kwargs.setdefault("default_hamiltonian_input", "zero")
-        kwargs.setdefault("use_block_S", True)
-        kwargs.setdefault("use_block_H", False)
-        super().__init__(**kwargs)
-
-    @classmethod
-    def _overlap_blocks(cls, batch: Any) -> torch.Tensor:
-        overlaps = getattr(batch, "overlap_matrix", None)
-        if overlaps is None:
+        grid_ffn_chunk_size = kwargs.pop("grid_ffn_chunk_size", 512)
+        delta_learning = bool(kwargs.pop("delta_learning", False))
+        delta_target = kwargs.pop("delta_target", "density_matrix")
+        if delta_target not in {"fock_matrix", "density_matrix"}:
             raise ValueError(
-                "QHFlow3 requires overlap_matrix from the native QM7 loader."
+                "delta_target must be 'fock_matrix' or 'density_matrix'."
             )
-        if not isinstance(overlaps, (list, tuple)):
-            overlaps = [overlaps]
+        kwargs.setdefault("basis", "def2-svp")
+        kwargs.setdefault(
+            "default_hamiltonian_input",
+            "init_ham" if delta_learning else "zero",
+        )
+        kwargs.setdefault("init_diag_attr", "diagonal_aux_matrix")
+        kwargs.setdefault("use_block_S", True)
+        kwargs.setdefault("use_block_H", delta_learning)
+        # The lmax=4 default 10x11 grid leaves visible SO(3) aliasing in the
+        # pair GridAtomwise path.  A 48x48 grid keeps the unmodified QHFlow3
+        # nonlinearity while bringing both node and pair covariance below the
+        # float32 1e-4 regression tolerance for general 3D rotations.
+        kwargs.setdefault("grid_resolution", 48)
+        super().__init__(**kwargs)
+        self._orbital_masks, bridge_matrix_dim = _orbital_masks_for_basis(
+            self.basis
+        )
+        if bridge_matrix_dim != self.output_matrix_dim:
+            raise RuntimeError(
+                f"QHFlow3 {self.basis} AO mask dimension {bridge_matrix_dim} "
+                f"does not match its contraction dimension {self.output_matrix_dim}."
+            )
+        self.delta_learning = delta_learning
+        self.delta_target = delta_target
+        self.grid_ffn_chunk_size = (
+            None if grid_ffn_chunk_size is None else int(grid_ffn_chunk_size)
+        )
+        if self.grid_ffn_chunk_size is not None:
+            if self.grid_ffn_chunk_size <= 0:
+                raise ValueError("grid_ffn_chunk_size must be positive.")
+            for module in self.modules():
+                if isinstance(module, GridAtomwise):
+                    module.grid_ffn_chunk_size = self.grid_ffn_chunk_size
+
+    def _matrix_blocks(
+        self,
+        batch: Any,
+        attribute: str,
+        matrix_label: str,
+    ) -> torch.Tensor:
+        matrices = getattr(batch, attribute, None)
+        if matrices is None:
+            raise ValueError(
+                f"QHFlow3 requires {attribute} from the native matrix loader."
+            )
+        if not isinstance(matrices, (list, tuple)):
+            matrices = [matrices]
         if not hasattr(batch, "ptr"):
             raise ValueError("QHFlow3 requires PyG batch pointers.")
 
         ptr = batch.ptr.detach().cpu().tolist()
-        if len(overlaps) != len(ptr) - 1:
+        if len(matrices) != len(ptr) - 1:
             raise ValueError(
-                f"Expected {len(ptr) - 1} overlap matrices, got {len(overlaps)}."
+                f"Expected {len(ptr) - 1} {matrix_label} matrices, "
+                f"got {len(matrices)}."
             )
 
         all_blocks = []
-        for graph_index, overlap in enumerate(overlaps):
+        for graph_index, matrix in enumerate(matrices):
             atoms = batch.atomic_numbers[ptr[graph_index] : ptr[graph_index + 1]]
             atoms_cpu = [int(value) for value in atoms.detach().cpu().tolist()]
             masks = []
             for atomic_number in atoms_cpu:
-                if atomic_number not in cls._ORBITAL_MASKS:
+                if atomic_number not in self._orbital_masks:
                     raise ValueError(
-                        "QHFlow3 QH9Stable supports H/C/N/O/F only; got "
+                        f"QHFlow3 basis {self.basis!r} does not support "
                         f"Z={atomic_number}."
                     )
-                masks.append(cls._ORBITAL_MASKS[atomic_number])
+                masks.append(self._orbital_masks[atomic_number])
 
             sizes = [int(mask.numel()) for mask in masks]
             offsets = np.cumsum([0, *sizes]).tolist()
-            overlap_tensor = torch.as_tensor(
-                overlap,
+            matrix_tensor = torch.as_tensor(
+                matrix,
                 device=batch.pos.device,
                 dtype=batch.pos.dtype,
             )
             expected = offsets[-1]
-            if tuple(overlap_tensor.shape) != (expected, expected):
+            if tuple(matrix_tensor.shape) != (expected, expected):
                 raise ValueError(
-                    f"Overlap shape {tuple(overlap_tensor.shape)} does not match "
-                    f"the {expected} QH9 def2-SVP orbitals."
+                    f"{matrix_label} shape {tuple(matrix_tensor.shape)} does not match "
+                    f"the {expected} {self.basis} orbitals."
                 )
 
-            blocks = overlap_tensor.new_zeros(len(atoms_cpu), 14, 14)
+            blocks = matrix_tensor.new_zeros(
+                len(atoms_cpu), self.output_matrix_dim, self.output_matrix_dim
+            )
             for atom_index, mask_cpu in enumerate(masks):
-                mask = mask_cpu.to(device=overlap_tensor.device)
+                mask = mask_cpu.to(device=matrix_tensor.device)
                 start, stop = offsets[atom_index], offsets[atom_index + 1]
-                blocks[atom_index][mask[:, None], mask[None, :]] = overlap_tensor[
+                blocks[atom_index][mask[:, None], mask[None, :]] = matrix_tensor[
                     start:stop, start:stop
                 ]
             all_blocks.append(blocks)
         return torch.cat(all_blocks, dim=0)
+
+    def _overlap_blocks(self, batch: Any) -> torch.Tensor:
+        return self._matrix_blocks(batch, "overlap_matrix", "overlap")
 
     @staticmethod
     def _validate_full_pair_graph(batch: Any) -> None:
@@ -2387,7 +2498,7 @@ class QHFlow3MaloqBackbone(QHFlow3CleanFeatures):
             expected = num_nodes * (num_nodes - 1)
             if edge_count != expected:
                 raise ValueError(
-                    "QHFlow3 needs the fully connected directed QH9 graph; "
+                    "QHFlow3 needs a fully connected directed molecular graph; "
                     f"graph {graph_index} has {edge_count} edges, expected {expected}. "
                     "Increase rcut_orbitals for this dataset."
                 )
@@ -2399,9 +2510,29 @@ class QHFlow3MaloqBackbone(QHFlow3CleanFeatures):
         batch.atoms = batch.atomic_numbers
         batch.edge_index_full = batch.edge_index
         batch.diagonal_overlap = self._overlap_blocks(batch)
+        initial_density_blocks = None
+        if self.delta_learning:
+            initial_density_blocks = self._matrix_blocks(
+                batch,
+                "initial_density_matrix",
+                "initial density",
+            )
+            initial_hamiltonian_blocks = self._matrix_blocks(
+                batch,
+                "initial_hamiltonian",
+                "initial Hamiltonian",
+            )
+            if self.delta_target == "density_matrix":
+                primary_matrix_blocks = initial_density_blocks
+                batch.diagonal_aux_matrix = initial_hamiltonian_blocks
+            else:
+                primary_matrix_blocks = initial_hamiltonian_blocks
+                batch.diagonal_aux_matrix = initial_density_blocks
+        else:
+            primary_matrix_blocks = None
 
         try:
-            output = super().forward(batch, H=None)
+            output = super().forward(batch, H=primary_matrix_blocks)
             return {
                 "node_embeddings": _flat_to_esen_embeddings(
                     output.node_feats,

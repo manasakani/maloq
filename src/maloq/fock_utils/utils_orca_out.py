@@ -409,59 +409,72 @@ def sort_by_m(hamiltonian, orbital_basis, atomic_numbers, direction="orca_to_e3n
     ...
     """
 
-    num_cols = hamiltonian.shape[0]
+    if direction in {"orca_to_e3nn", "e3nn_to_orca"}:
+        m_to_m_conversion = {
+            0: [0],
+            1: [2, 0, 1],
+            2: [4, 2, 0, 1, 3],
+            3: [6, 4, 2, 0, 1, 3, 5],
+            4: [8, 6, 4, 2, 0, 1, 3, 5, 7],
+        }
+    elif direction in {"e3nn_to_pyscf", "pyscf_to_e3nn"}:
+        m_to_m_conversion = {
+            0: [0],
+            1: [2, 0, 1],
+            2: [0, 1, 2, 3, 4],
+            3: [0, 1, 2, 3, 4, 5, 6],
+            4: [0, 1, 2, 3, 4, 5, 6, 7, 8],
+        }
+    else:
+        raise ValueError(f"Unsupported orbital ordering direction: {direction}")
 
-    if direction == "orca_to_e3nn" or direction == "e3nn_to_orca":
-        m_to_m_conversion = {0: [0], 1: [2, 0, 1], 2: [4, 2, 0, 1, 3], 3: [6, 4, 2, 0, 1, 3, 5], 4: [8, 6, 4, 2, 0, 1, 3, 5, 7]}
-    if direction == "e3nn_to_pyscf" or direction == "pyscf_to_e3nn":
-        m_to_m_conversion = {0: [0], 1: [2, 0, 1], 2: [0, 1, 2, 3, 4], 3: [0, 1, 2, 3, 4, 5, 6], 4: [0, 1, 2, 3, 4, 5, 6, 7, 8]}
+    reflection = {
+        0: [1],
+        1: [1, 1, 1],
+        2: [1, 1, 1, 1, 1],
+        3: [-1, 1, 1, 1, 1, 1, -1],
+        4: [-1, -1, 1, 1, 1, 1, 1, -1, -1],
+    }
+    full_orb_list = np.hstack(
+        [orbital_basis[int(atomic_number)] for atomic_number in atomic_numbers]
+    )
 
-    reflection = {0: [1], 1: [1, 1, 1], 2: [1, 1, 1, 1, 1], 3: [-1, 1, 1, 1, 1, 1, -1], 4: [-1, -1, 1, 1, 1, 1, 1, -1, -1]} # reflection for each l
-
-    permutation = np.arange(0, num_cols)
-    full_orb_list = np.hstack([orbital_basis[atomic_numbers[i]] for i in range(len(atomic_numbers))])
-    permuted_hamiltonian = hamiltonian.copy()
-
-    # Create permutation list, one block at a time
+    # Each original block operation is a signed permutation. Build its global
+    # indexing form once and apply T @ H @ T.T without a Python/BLAS loop over
+    # every shell. QH9 invokes this for hundreds of thousands of matrices.
+    source_indices = []
+    signs = []
     block_start = 0
-    for l in full_orb_list:
+    forward = direction in {"orca_to_e3nn", "e3nn_to_pyscf"}
+    for orbital_l in full_orb_list:
+        orbital_l = int(orbital_l) % 10
+        orbital_perm = np.asarray(m_to_m_conversion[orbital_l], dtype=np.int64)
+        orbital_signs = np.asarray(reflection[orbital_l], dtype=np.int8)
+        if not forward:
+            inverse_perm = np.argsort(orbital_perm)
+            orbital_signs = orbital_signs[inverse_perm]
+            orbital_perm = inverse_perm
+        source_indices.extend((block_start + orbital_perm).tolist())
+        signs.extend(orbital_signs.tolist())
+        block_start += 2 * orbital_l + 1
 
-        l = l % 10 # convention for diffuse functions, if needed
+    if (
+        hamiltonian.ndim != 2
+        or hamiltonian.shape[0] != hamiltonian.shape[1]
+        or block_start != hamiltonian.shape[0]
+    ):
+        raise ValueError(
+            "Orbital basis does not match square matrix shape: "
+            f"basis_size={block_start}, matrix_shape={hamiltonian.shape}"
+        )
 
-        numel = 2*l + 1
-        block_end = block_start + numel
-
-        orbital_perm = m_to_m_conversion[l]
-        refl = reflection[l]
-
-        P = np.zeros((numel, numel))
-        for i, j in enumerate(orbital_perm):
-            P[i, j] = 1
-
-        R = np.diag(refl)
-
-        if direction == "orca_to_e3nn" or direction == "e3nn_to_pyscf":
-            block = permuted_hamiltonian[block_start:block_end, :]
-            block = R @ P @ block
-            permuted_hamiltonian[block_start:block_end, :] = block
-            block = permuted_hamiltonian[:, block_start:block_end]
-            block = block @ (R @ P).T
-            permuted_hamiltonian[:, block_start:block_end] = block
-            block_start += numel
-        elif direction == "e3nn_to_orca" or direction == "pyscf_to_e3nn":
-            block = permuted_hamiltonian[block_start:block_end, :]
-            block = P.T @ R @ block
-            permuted_hamiltonian[block_start:block_end, :] = block
-            block = permuted_hamiltonian[:, block_start:block_end]
-            block = block @ (P.T @ R).T
-            permuted_hamiltonian[:, block_start:block_end] = block
-            block_start += numel
-        else:
-            raise NotImplementedError(f"Direction {direction} not implemented")
-
-
-    # permuted_hamiltonian = hamiltonian[permutation, :]
-    # permuted_hamiltonian = permuted_hamiltonian[:, permutation]
+    source_indices = np.asarray(source_indices, dtype=np.int64)
+    signs = np.asarray(signs, dtype=np.int8)
+    permuted_hamiltonian = np.asarray(hamiltonian)[
+        np.ix_(source_indices, source_indices)
+    ].copy()
+    permuted_hamiltonian *= signs[:, None]
+    permuted_hamiltonian *= signs[None, :]
     return permuted_hamiltonian
 
 def sort_by_l(hamiltonian, orbital_basis, atomic_numbers):

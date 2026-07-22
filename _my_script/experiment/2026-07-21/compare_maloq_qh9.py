@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Run a matched QH9Stable comparison of MALOQ baseline and maloq-qh9."""
+"""Run a matched QH9Stable comparison of MALOQ, MALOQ-NTE, and QHFlow3."""
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
+import shutil
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_ROOT = PROJECT_ROOT / "src"
@@ -35,9 +36,14 @@ EXPECTED_METADATA = {
     "overlap_storage_convention": "maloq_e3nn_def2svp",
 }
 CONFIGS = {
-    "baseline": EXPERIMENT_ROOT / "maloq_baseline_qh9stable.yaml",
-    "maloq-qh9": EXPERIMENT_ROOT / "maloq_qh9stable.yaml",
+    "maloq": EXPERIMENT_ROOT / "maloq_baseline_qh9stable.yaml",
+    "maloq-nte": EXPERIMENT_ROOT / "maloq_qh9stable.yaml",
     "qhflow3": EXPERIMENT_ROOT / "qhflow3_maloq_head_qh9stable.yaml",
+}
+MODEL_NAMES = {
+    "maloq": "MALOQ",
+    "maloq-nte": "MALOQ-NTE",
+    "qhflow3": "QHFlow3",
 }
 REFERENCE_RUN = (
     "qh9_b3lyp5_maloq0713_nte_qhflow3_parity_"
@@ -49,8 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--variant",
-        choices=("baseline", "maloq-qh9", "qhflow3", "both", "all"),
-        default="both",
+        choices=("maloq", "maloq-nte", "qhflow3", "all"),
+        default="all",
+        help="Train one named model, or all three sequentially for comparison.",
     )
     parser.add_argument(
         "--smoke",
@@ -61,6 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--full-size-smoke",
         action="store_true",
         help="With --smoke, retain the production channel dimensions.",
+    )
+    parser.add_argument(
+        "--keep-smoke-output",
+        action="store_true",
+        help="Keep successful smoke artifacts instead of deleting them.",
     )
     parser.add_argument("--dbpath", type=Path, default=None)
     parser.add_argument("--gpu", default="0")
@@ -153,7 +165,7 @@ def run_variant(
             l_embedding_dim=16,
             hidden_dim=16,
             num_distance_basis=16,
-            output_l_embedding_dim=8 if variant != "baseline" else None,
+            output_l_embedding_dim=8 if variant != "maloq" else None,
         )
 
     started = time.perf_counter()
@@ -169,6 +181,7 @@ def run_variant(
             removed_smoke_checkpoint_bytes += checkpoint.stat().st_size
             checkpoint.unlink()
     return {
+        "model_name": MODEL_NAMES[variant],
         "variant": variant,
         "output_dir": str(output_dir),
         "elapsed_seconds": elapsed,
@@ -194,7 +207,9 @@ def main() -> None:
     os.environ["MASTER_PORT"] = str(args.master_port)
 
     counts = SMOKE_COUNTS if args.smoke else OFFICIAL_COUNTS
-    dbpath = (args.dbpath or (DEFAULT_SMOKE_DB if args.smoke else DEFAULT_FULL_DB)).resolve()
+    dbpath = (
+        args.dbpath or (DEFAULT_SMOKE_DB if args.smoke else DEFAULT_FULL_DB)
+    ).resolve()
     if not dbpath.is_file():
         raise SystemExit(
             f"Converted QH9Stable database not found: {dbpath}. Run "
@@ -209,8 +224,11 @@ def main() -> None:
         run_scope = "smoke"
     else:
         run_scope = "full"
-    default_name = f"maloq-qh9-{run_scope}-{timestamp}"
-    output_root = (args.output_root or (PROJECT_ROOT / "outputs" / default_name)).resolve()
+    selection = "three-model-comparison" if args.variant == "all" else args.variant
+    default_name = f"qh9stable-{selection}-{run_scope}-seed44-{timestamp}"
+    output_root = (
+        args.output_root or (PROJECT_ROOT / "outputs" / default_name)
+    ).resolve()
     outputs_root = (PROJECT_ROOT / "outputs").resolve()
     if output_root != outputs_root and outputs_root not in output_root.parents:
         raise SystemExit(f"--output-root must be below {outputs_root}.")
@@ -218,10 +236,8 @@ def main() -> None:
         raise SystemExit(f"Output directory already exists: {output_root}")
     output_root.mkdir(parents=True)
 
-    if args.variant == "both":
-        variants = ("baseline", "maloq-qh9")
-    elif args.variant == "all":
-        variants = ("baseline", "maloq-qh9", "qhflow3")
+    if args.variant == "all":
+        variants = ("maloq", "maloq-nte", "qhflow3")
     else:
         variants = (args.variant,)
     results = [
@@ -254,21 +270,51 @@ def main() -> None:
         "results": results,
     }
     by_variant = {result["variant"]: result for result in results}
-    if "baseline" in by_variant:
-        baseline = by_variant["baseline"]["losses"]
-        summary["relative_to_baseline"] = {
+    if "maloq" in by_variant:
+        maloq_losses = by_variant["maloq"]["losses"]
+        summary["loss_ratio_to_maloq"] = {
             variant: {
-                key: result["losses"][key] / baseline[key]
-                for key in baseline
-                if baseline[key] != 0.0
+                key: result["losses"][key] / maloq_losses[key]
+                for key in maloq_losses
+                if maloq_losses[key] != 0.0
             }
             for variant, result in by_variant.items()
-            if variant != "baseline"
+            if variant != "maloq"
         }
     summary_path = output_root / "comparison.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+    comparison_csv_path = output_root / "comparison.csv"
+    columns = (
+        "model_name",
+        "variant",
+        "trainable_parameters",
+        "elapsed_seconds",
+        "train_node_loss",
+        "train_edge_loss",
+        "validation_node_loss",
+        "validation_edge_loss",
+        "output_dir",
+    )
+    with comparison_csv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        for result in results:
+            writer.writerow(
+                {
+                    "model_name": result["model_name"],
+                    "variant": result["variant"],
+                    "trainable_parameters": result["model"]["trainable_parameters"],
+                    "elapsed_seconds": result["elapsed_seconds"],
+                    **result["losses"],
+                    "output_dir": result["output_dir"],
+                }
+            )
     print(json.dumps(summary, indent=2), flush=True)
     print(f"Comparison summary: {summary_path}", flush=True)
+    print(f"Comparison table: {comparison_csv_path}", flush=True)
+    if args.smoke and not args.keep_smoke_output:
+        shutil.rmtree(output_root)
+        print(f"Successful smoke output discarded: {output_root}", flush=True)
 
 
 if __name__ == "__main__":
