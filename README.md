@@ -16,7 +16,7 @@
 ---
 
 ## 📊 Supported Datasets
-The model is pre-configured to work with three molecular Hamiltonian matrix datasets. Ensure you download the datasets and update the `dbpath` in the respective config files. In addition, it's possible to set up your own materials dataset, using the `cp2k_material' option. This option is not yet documented, and there are a lot of small details to iron out in the data generation process. If you're interested in doing this, please contact mkaniselvan@ethz.ch.
+The model is pre-configured to work with three molecular Hamiltonian matrix datasets. Ensure you download the datasets and update the `dbpath` in the respective config files. In addition, it's possible to set up your own materials dataset, using the `cp2k_material' option. This option is not yet documented, and there are a lot of small details to iron out in the data generation process. We are in the process of documenting how to generate materials Hamiltonian data to train models that can generalize to large-scale material structures. 
 
 | Dataset | Type | Download Link | Config File | Description |
 | :--- | :--- | :--- | :--- | :--- |
