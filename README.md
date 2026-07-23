@@ -47,7 +47,7 @@ If you use **MALOQ** in your research or find the framework helpful, please incl
 }
 ```
 
-### Initial implementation for electronic structure learning (HELM)
+### Core adapted architecture for electronic structure learning (HELM)
 ```bibtex
 @misc{helm,
   title     = {Learning from the electronic structure of molecules across the periodic table},
