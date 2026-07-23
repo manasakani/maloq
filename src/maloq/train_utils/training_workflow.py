@@ -326,31 +326,7 @@ class TrainingWorkflow:
             
         else:
 
-            if self.config['dataset_name'] == 'omol_electronic_structures':
-                # print(f"Rank {self.rank}: Loading data from single file {db_source}")
-                # dist.barrier()
-
-                # We must ensure we have a valid Dataset object here
-                # Eg: omol single DB file
-                if isinstance(db_source, str):
-                    print(f"Rank {self.rank}: Initializing ASEDataset from {db_source}")
-                    db_obj = ASEDataset(
-                        db_source, dtype=c['dtype'], open_shell=c['open_shell']
-                    )
-                else:
-                    db_obj = db_source
-                
-                # --- SINGLE DB FILE MODE ---
-                # 1. Calculate split indices
-                tr_start, tr_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_train'], c['distribute_graphs'])
-                val_start, val_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_val'], c['distribute_graphs'])
-                test_start, test_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_test'], c['distribute_graphs'])
-
-                # 2. Offset validation and test to ensure unique molecules
-                val_start += c['num_train']; val_end += c['num_train']
-                test_start += (c['num_train'] + c['num_val']); test_end += (c['num_train'] + c['num_val'])
-            
-            elif self.config['dataset_name'] == 'omol_csh_58k':
+            if self.config['dataset_name'] == 'omol_csh_58k':
 
                 db_file = db_sources[0]
                 print(f"Rank {self.rank}: Initializing local slice of OMol_CSH_58k from {db_file}")
@@ -382,7 +358,25 @@ class TrainingWorkflow:
                 test_start, test_end = val_end, val_end + num_local_test
 
             else:
-                print("Unknown dataset type for single file mode. Please check the configuration.")
+
+                # Eg: omol single DB file
+                if isinstance(db_source, str):
+                    print(f"Rank {self.rank}: Initializing ASEDataset from {db_source}")
+                    db_obj = ASEDataset(
+                        db_source, dtype=c['dtype'], open_shell=c['open_shell']
+                    )
+                else:
+                    db_obj = db_source
+                
+                # --- SINGLE DB FILE MODE ---
+                # 1. Calculate split indices
+                tr_start, tr_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_train'], c['distribute_graphs'])
+                val_start, val_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_val'], c['distribute_graphs'])
+                test_start, test_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_test'], c['distribute_graphs'])
+
+                # 2. Offset validation and test to ensure unique molecules
+                val_start += c['num_train']; val_end += c['num_train']
+                test_start += (c['num_train'] + c['num_val']); test_end += (c['num_train'] + c['num_val'])
 
             # 3. Get Scale/Shift
             train_database = db_obj

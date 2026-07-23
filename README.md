@@ -28,13 +28,13 @@ The model is pre-configured to work with three molecular Hamiltonian matrix data
 
 ## 👥 Code contributors
 
-* **(MALOQ)** – Manasa Kaniselvan, Denghui Lu, Alexander Maeder, Alexandros Nikolaos Ziogas
+* **(MALOQ)** – Manasa Kaniselvan, Denghui Lu, Alexander Maeder, Alexandros Nikolaos Ziogas, Mathieu Luisier
 * **(HELM)** – Manasa Kaniselvan and Daniel Levine
 ---
 
 ## 📜 Citation
 
-If you use **MALOQ** in your research or find the framework helpful, please cite the following papers:
+If you use **MALOQ** in your research or find the framework helpful, please include the following two citations:
 
 ### Data processing acceleration and distribution (MALOQ)
 ```bibtex

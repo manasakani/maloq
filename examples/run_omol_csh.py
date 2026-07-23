@@ -23,11 +23,11 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    "num_train": 28900,
+    "num_train": 100,
     "num_val": 32,
     "num_test": 32,
     "batch_size": 1,                 # 1 for eval, usually 10 for train
-    "distribute_graphs": True,       # Distribute graphs and perform communication in the forward pass (ongoing)
+    "distribute_graphs": False,       # Distribute graphs and perform communication in the forward pass (ongoing)
     "partition_type": 'linear-edgewise',       # 'linear', 'low_nn', 'metis', 'worstcase'
     "dist_backend": 'nccl',              # 'gloo' for CPU, 'nccl' for GPU (if distributed training is implemented)
 

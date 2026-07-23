@@ -24,7 +24,7 @@ config = {
     "num_train": 500,
     "num_val": 500,
     "num_test": 4500,
-    "shuffle": True,
+    "shuffle": False,
     "batch_size": 5,          # 1 for eval, 10 for train (set to 1 for water script)
     "distribute_graphs": False,       # Distribute graphs and perform communication in the forward pass (ongoing implementation, not finished)
     
