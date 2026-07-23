@@ -125,39 +125,38 @@ def get_loader(database,
         orbital_basis = {int(k): v for k, v in orbital_basis.items()}
         periodic_dataset = False
 
-        # 2. Extract atomic numbers and positions for local slice [start_idx, end_idx)
-        atomic_numbers = [
-            database[i]['z'].numpy() if isinstance(database[i]['z'], torch.Tensor) else database[i]['z'] 
-            for i in range(start_idx, end_idx)
-        ]
-        positions = [
-            database[i]['pos'].numpy() if isinstance(database[i]['pos'], torch.Tensor) else database[i]['pos'] 
-            for i in range(start_idx, end_idx)
-        ]
-
-        # 3. Energy and forces are not included in CSH 58k -> set dummy place-holders
-        energy = [0 for _ in range(start_idx, end_idx)]
-        forces = [0 for _ in range(start_idx, end_idx)]
-
-        # 4. Extract scalar charge and spin
-        charges = [
-            database[i]['charge'].item() if isinstance(database[i]['charge'], torch.Tensor) else database[i]['charge'] 
-            for i in range(start_idx, end_idx)
-        ]
-        spins = [
-            database[i]['spin'].item() if isinstance(database[i]['spin'], torch.Tensor) else database[i]['spin'] 
-            for i in range(start_idx, end_idx)
-        ]
-
-        # 5. Extract target Fock/Hamiltonian matrices
+        # Initialize lists
+        atomic_numbers = []
+        positions = []
+        energy = []
+        forces = []
+        charges = []
+        spins = []
         hamiltonians = []
         overlaps = []
+
+        # 2. Extract everything in a SINGLE loop to avoid redundant HDF5/sorting calls
         for i in range(start_idx, end_idx):
             item = database[i]
             
-            # Extract target matrix
+            z = item['z']
+            atomic_numbers.append(z.numpy() if isinstance(z, torch.Tensor) else z)
+
+            pos = item['pos']
+            positions.append(pos.numpy() if isinstance(pos, torch.Tensor) else pos)
+            
+            charge = item['charge']
+            charges.append(charge.item() if isinstance(charge, torch.Tensor) else charge)
+            
+            spin = item['spin']
+            spins.append(spin.item() if isinstance(spin, torch.Tensor) else spin)
+            
             h = item['fock']
             hamiltonians.append(h.numpy() if isinstance(h, torch.Tensor) else h)
+            
+            # Dummy placeholders
+            energy.append(0)
+            forces.append(0)
             overlaps.append(0)
 
     # 'database' is a folder in this case
