@@ -1,13 +1,13 @@
 #!/bin/bash -l
-#SBATCH --job-name=train
+#SBATCH --job-name=train_omol
 #SBATCH --account=lp16
-#SBATCH --time=00:30:00
+#SBATCH --time=05:30:00
 #SBATCH --nodes=8
 #SBATCH --ntasks-per-node=4
 #SBATCH --gres=gpu:4
 #   SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=64
-#SBATCH --partition=debug
+#SBATCH --partition=normal
 #SBATCH --hint=nomultithread
 #SBATCH --exclusive
 #SBATCH --output=slurm_output/output_%j.txt
@@ -60,10 +60,9 @@ source /users/mkanisel/miniconda3/bin/activate helm_env
 
 # Profile: nsys profile -o my_profile_report --trace=cuda,nvtx python run_nablaDFT.py
 
-# --> Dataset creation
+# --> Dataset creation for omol electronic structures
 # python make_omol_database_raw.py -f /capstor/scratch/cscs/mkanisel/omol_electrolytes_unsolvated -o omol_electrolytes_10k.db --start_idx 0 --end_idx 10000 --job_id 0
 
 # --> Training/Eval
-
 srun --cpu-bind=socket bash -c 'export MPICH_GPU_SUPPORT_ENABLED=1; export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID;
-python run_cp2k_pbc.py'
+python run_omol_csh.py'

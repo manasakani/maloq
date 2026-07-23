@@ -20,9 +20,8 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    # "num_train": 12081,
-    "num_train": 100,
-    "num_val": 64,
+    "num_train": 12081,
+    "num_val": 1,
     "num_test": 1,
     "batch_size": 10,                # if distributing graphs, this is the number of molecules per distributed graph
     "distribute_graphs": False,      # Distribute graphs and perform communication in the forward pass (ongoing)
@@ -47,7 +46,7 @@ config = {
     "step_every_epoch": False,       # Cosine usually steps per iteration
     
     # Loss & Checkpointing
-    "loss_target": 'energies',
+    "loss_target": 'fock_matrix',
     "train_loss_fxn": loss.rmse_mse_padded_loss,
     "test_loss_fxn": loss.l1_unpadded_loss,
     "save_frequency": 10,
@@ -63,7 +62,7 @@ config = {
 
     # Model Architecture
     "wigner_backend": "triton",  # "triton" for fused Triton kernel (requires GPU + triton)
-    "basis_transform_backend": "torch", # "cuda" or "triton" for optimized basis transformations
+    "basis_transform_backend": "torch", # "triton" for optimized basis transformations
     "l_embedding_dim": 128,
     "num_distance_basis": 128,
     "num_mp_layers": 3,
