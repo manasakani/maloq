@@ -22,6 +22,7 @@ test_loss: l1_unpadded_loss
 scale_and_shift: true
 
 wigner_backend: triton
+basis_transform_backend: triton
 dtype: float32
 num_epochs: 10
 lr_init: 0.0001

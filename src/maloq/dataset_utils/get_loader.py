@@ -102,7 +102,7 @@ def get_loader(database,
             charges.append(0)
             spins.append(1)
 
-    elif dataset_name == "omol":
+    elif dataset_name == "omol_electronic_structures":
         orbital_basis = basis_sets.def2_tzvpd
         orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
         orbital_basis = {int(k): v for k, v in orbital_basis.items()}
@@ -117,6 +117,48 @@ def get_loader(database,
 
         hamiltonians = [database[i][loss_target_string] for i in range(start_idx, end_idx)]
         overlaps = [0 for i in range(start_idx, end_idx)] # dummy overlaps for now!!!
+    
+    elif dataset_name == "omol_csh_58k":
+
+        # 1. Define orbital basis (def2-TZVPD mapped by atomic numbers)
+        orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
+        orbital_basis = {int(k): v for k, v in orbital_basis.items()}
+        periodic_dataset = False
+
+        # 2. Extract atomic numbers and positions for local slice [start_idx, end_idx)
+        atomic_numbers = [
+            database[i]['z'].numpy() if isinstance(database[i]['z'], torch.Tensor) else database[i]['z'] 
+            for i in range(start_idx, end_idx)
+        ]
+        positions = [
+            database[i]['pos'].numpy() if isinstance(database[i]['pos'], torch.Tensor) else database[i]['pos'] 
+            for i in range(start_idx, end_idx)
+        ]
+
+        # 3. Energy and forces are not included in CSH 58k -> set dummy place-holders
+        energy = [0 for _ in range(start_idx, end_idx)]
+        forces = [0 for _ in range(start_idx, end_idx)]
+
+        # 4. Extract scalar charge and spin
+        charges = [
+            database[i]['charge'].item() if isinstance(database[i]['charge'], torch.Tensor) else database[i]['charge'] 
+            for i in range(start_idx, end_idx)
+        ]
+        spins = [
+            database[i]['spin'].item() if isinstance(database[i]['spin'], torch.Tensor) else database[i]['spin'] 
+            for i in range(start_idx, end_idx)
+        ]
+
+        # 5. Extract target Fock/Hamiltonian matrices
+        hamiltonians = []
+        overlaps = []
+        for i in range(start_idx, end_idx):
+            item = database[i]
+            
+            # Extract target matrix
+            h = item['fock']
+            hamiltonians.append(h.numpy() if isinstance(h, torch.Tensor) else h)
+            overlaps.append(0)
 
     # 'database' is a folder in this case
     elif dataset_name == "cp2k_material":

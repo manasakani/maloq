@@ -14,6 +14,7 @@ from . import loss, utils_compute, splittrainer
 from ..dataset_utils import get_loader, get_scale_shift
 from ..dataset_utils.ASEDataset import distribute_data, ASEDataset, ASEAtomsData
 from ..dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
+from ..dataset_utils.omol_csh_58k_dataset_utils import OMol_CSH_58k_Database
 from ..helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, HELM_Force_Head, HELM_Energy_Head
 
 class TrainingWorkflow:
@@ -324,28 +325,64 @@ class TrainingWorkflow:
                 scale_shift_data = self._handle_scale_shift(train_database)
             
         else:
-            # print(f"Rank {self.rank}: Loading data from single file {db_source}")
-            # dist.barrier()
 
-            # We must ensure we have a valid Dataset object here
-            # Eg: omol single DB file
-            if isinstance(db_source, str):
-                print(f"Rank {self.rank}: Initializing ASEDataset from {db_source}")
-                db_obj = ASEDataset(
-                    db_source, dtype=c['dtype'], open_shell=c['open_shell']
-                )
-            else:
-                db_obj = db_source
+            if self.config['dataset_name'] == 'omol_electronic_structures':
+                # print(f"Rank {self.rank}: Loading data from single file {db_source}")
+                # dist.barrier()
+
+                # We must ensure we have a valid Dataset object here
+                # Eg: omol single DB file
+                if isinstance(db_source, str):
+                    print(f"Rank {self.rank}: Initializing ASEDataset from {db_source}")
+                    db_obj = ASEDataset(
+                        db_source, dtype=c['dtype'], open_shell=c['open_shell']
+                    )
+                else:
+                    db_obj = db_source
+                
+                # --- SINGLE DB FILE MODE ---
+                # 1. Calculate split indices
+                tr_start, tr_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_train'], c['distribute_graphs'])
+                val_start, val_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_val'], c['distribute_graphs'])
+                test_start, test_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_test'], c['distribute_graphs'])
+
+                # 2. Offset validation and test to ensure unique molecules
+                val_start += c['num_train']; val_end += c['num_train']
+                test_start += (c['num_train'] + c['num_val']); test_end += (c['num_train'] + c['num_val'])
             
-            # --- SINGLE DB FILE MODE ---
-            # 1. Calculate split indices
-            tr_start, tr_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_train'], c['distribute_graphs'])
-            val_start, val_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_val'], c['distribute_graphs'])
-            test_start, test_end, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_test'], c['distribute_graphs'])
+            elif self.config['dataset_name'] == 'omol_csh_58k':
 
-            # 2. Offset validation and test to ensure unique molecules
-            val_start += c['num_train']; val_end += c['num_train']
-            test_start += (c['num_train'] + c['num_val']); test_end += (c['num_train'] + c['num_val'])
+                db_file = db_sources[0]
+                print(f"Rank {self.rank}: Initializing local slice of OMol_CSH_58k from {db_file}")
+
+                # 1. Calculate global split indices for this specific rank
+                tr_start_g, tr_end_g, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_train'], c['distribute_graphs'])
+                val_start_g, val_end_g, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_val'], c['distribute_graphs'])
+                test_start_g, test_end_g, _ = utils_compute.split_indices(self.rank, self.world_size, c['num_test'], c['distribute_graphs'])
+
+                # 2. Offset validation and test to ensure we don't overlap molecules
+                val_start_g += c['num_train']; val_end_g += c['num_train']
+                test_start_g += (c['num_train'] + c['num_val']); test_end_g += (c['num_train'] + c['num_val'])
+
+                # 3. Create a combined list of indices specific to this rank
+                rank_indices = list(range(tr_start_g, tr_end_g)) + \
+                               list(range(val_start_g, val_end_g)) + \
+                               list(range(test_start_g, test_end_g))
+
+                # 4. Initialize dataset ONLY with this rank's assigned indices
+                db_obj = OMol_CSH_58k_Database(db_file, indices=rank_indices)
+
+                # 5. Re-map local starts/ends because db_obj is now a 0-indexed local subset
+                num_local_tr = tr_end_g - tr_start_g
+                num_local_val = val_end_g - val_start_g
+                num_local_test = test_end_g - test_start_g
+
+                tr_start, tr_end = 0, num_local_tr
+                val_start, val_end = tr_end, tr_end + num_local_val
+                test_start, test_end = val_end, val_end + num_local_test
+
+            else:
+                print("Unknown dataset type for single file mode. Please check the configuration.")
 
             # 3. Get Scale/Shift
             train_database = db_obj
@@ -513,8 +550,17 @@ class TrainingWorkflow:
         else:
             for p in head.parameters(): p.requires_grad = False
 
-        if c.get('optimizer_type', 'adam').lower() == 'adamw':
+        if c['optimizer_type'] == 'adamw':
             optimizer = torch.optim.AdamW(params, lr=c['lr_init'], weight_decay=c.get('weight_decay', 0.0))
+        elif c['optimizer_type'] == 'muon':
+            print("Using Hybrid Muon optimizer with separate learning rates for backbone and head.")
+            muon_lr = c.get('muon_lr', 0.02)
+            optimizer = loss.HybridMuon(
+                params, 
+                muon_lr=muon_lr, 
+                adamw_lr=c['lr_init'], 
+                weight_decay=c.get('weight_decay', 0.0)
+            )
         else:
             optimizer = torch.optim.Adam(params, lr=c['lr_init'])
 
@@ -567,10 +613,16 @@ class TrainingWorkflow:
 
             elif self.config['dataset_name'] == 'nablaDFT':
                 database = HamiltonianDatabase(self.config['dbpath'])
-            elif self.config['dataset_name'] == 'omol':
+
+            elif self.config['dataset_name'] == 'omol_csh_58k':
                 database = None
+                
+            elif self.config['dataset_name'] == 'omol_electronic_structures':
+                database = None
+
             elif self.config['dataset_name'] == 'cp2k_material':
                 database = None
+
             else:
                 raise ValueError(f"Unknown dataset name: {self.config['dataset_name']}")
 

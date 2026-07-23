@@ -138,6 +138,115 @@ def adjust_learning_rate(optimizer, epoch, warmup_epochs, initial_lr, final_lr):
             param_group['lr'] = lr
         print(f"Warmup epoch {epoch+1}: setting learning rate to {lr}")
 
+# Optimizer:
+# ----------------------
+@torch.compile
+def zeropower_via_newtonschulz5(G, steps=5):
+    """Newton-Schulz iteration to compute the orthogonalization of G."""
+    assert len(G.shape) == 2
+    a, b, c = (3.4445, -4.7750,  2.0315)
+    X = G.bfloat16()
+    X /= (X.norm() + 1e-7)
+    
+    # Transpose handling for tall matrices
+    if G.size(0) > G.size(1):
+        X = X.T
+        
+    for _ in range(steps):
+        A = X @ X.T
+        B = b * A + c * A @ A
+        X = a * X + B @ X
+        
+    if G.size(0) > G.size(1):
+        X = X.T
+    return X.to(G.dtype)
+
+class Muon(torch.optim.Optimizer):
+    """Standalone Muon optimizer for 2D+ tensors."""
+    def __init__(self, params, lr=0.02, momentum=0.95, weight_decay=0.0):
+        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = closure() if closure is not None else None
+        for group in self.param_groups:
+            lr, momentum, weight_decay = group['lr'], group['momentum'], group['weight_decay']
+            
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                g = p.grad
+                assert g.ndim >= 2, "Muon only supports 2D+ parameters."
+                
+                state = self.state[p]
+                if len(state) == 0:
+                    state['momentum_buffer'] = torch.zeros_like(g)
+                
+                # Momentum update
+                buf = state['momentum_buffer']
+                buf.mul_(momentum).add_(g)
+                
+                # Reshape to 2D (e.g., if handling convolutions or 3D tensor products)
+                original_shape = buf.shape
+                g_2d = buf.view(buf.size(0), -1) if buf.ndim > 2 else buf
+                    
+                # Orthogonalize via Newton-Schulz
+                g_ortho = zeropower_via_newtonschulz5(g_2d, steps=5)
+                
+                # Scale by aspect ratio to balance training across layers
+                g_ortho *= max(1, g_2d.size(0) / g_2d.size(1)) ** 0.5
+                g_update = g_ortho.view(original_shape)
+                
+                # Apply weight decay multiplicatively
+                if weight_decay != 0:
+                    p.mul_(1 - lr * weight_decay)
+                
+                # Update weights
+                p.add_(g_update, alpha=-lr)
+                
+        return loss
+        
+class HybridMuon(torch.optim.Optimizer):
+    """
+    A unified optimizer that routes 2D+ tensors to Muon and 1D tensors to AdamW.
+    """
+    def __init__(self, params, muon_lr=0.02, adamw_lr=3e-4, weight_decay=0.01):
+        params = list(params)
+        # Initialize base Optimizer with dummy defaults so type checks pass
+        super().__init__(params, defaults={'lr': adamw_lr, 'weight_decay': weight_decay})
+        
+        # Split parameters based on rank
+        muon_params = [p for p in params if p.ndim >= 2]
+        adamw_params = [p for p in params if p.ndim < 2]
+        
+        self.opt_muon = Muon(muon_params, lr=muon_lr, weight_decay=weight_decay)
+        self.opt_adamw = torch.optim.AdamW(adamw_params, lr=adamw_lr, weight_decay=weight_decay)
+        
+        # Schedulers (like CosineAnnealing) iterate over this list, directly
+        # modifying the underlying dictionaries.
+        self.param_groups = self.opt_muon.param_groups + self.opt_adamw.param_groups
+
+    def step(self, closure=None):
+        loss = closure() if closure is not None else None
+        self.opt_muon.step()
+        self.opt_adamw.step()
+        return loss
+
+    def zero_grad(self, set_to_none=True):
+        self.opt_muon.zero_grad(set_to_none=set_to_none)
+        self.opt_adamw.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        return {
+            'muon_state': self.opt_muon.state_dict(),
+            'adamw_state': self.opt_adamw.state_dict(),
+        }
+
+    def load_state_dict(self, state_dict):
+        self.opt_muon.load_state_dict(state_dict['muon_state'])
+        self.opt_adamw.load_state_dict(state_dict['adamw_state'])
+        
 # Scheduler:
 # ----------------------
 

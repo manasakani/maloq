@@ -9,9 +9,11 @@ from maloq.train_utils import loss, training_workflow
 # ---------------------------------------------------------
 config = {
     # Dataset Paths & Naming
-    "dataset_name": 'omol',
-    "dbpath": "/capstor/store/cscs/pasc/c33/manasa/omol_raw_datasets/omol_elytes_unsolvated_raw/",
-    "output_folder": 'outputs_omol_elytes',
+    "dataset_name": 'omol_csh_58k',
+    # "dataset_name": 'omol_electronic_structures',
+    # "dbpath": "/capstor/store/cscs/pasc/c33/manasa/omol_raw_datasets/omol_elytes_unsolvated_raw/",
+    "dbpath": "/capstor/store/cscs/pasc/c33/manasa/omol_datasets/omol_csh_58k/train.h5",
+    "output_folder": 'outputs_omol_csh_58k',
     "run_name": 'omol',
     "open_shell": False,
     
@@ -21,10 +23,10 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    "num_train": 15000, #28900,
+    "num_train": 28900,
     "num_val": 32,
-    "num_test": 1,
-    "batch_size": 10,                 # 1 for eval, usually 10 for train
+    "num_test": 32,
+    "batch_size": 1,                 # 1 for eval, usually 10 for train
     "distribute_graphs": True,       # Distribute graphs and perform communication in the forward pass (ongoing)
     "partition_type": 'linear-edgewise',       # 'linear', 'low_nn', 'metis', 'worstcase'
     "dist_backend": 'nccl',              # 'gloo' for CPU, 'nccl' for GPU (if distributed training is implemented)
@@ -35,12 +37,12 @@ config = {
     "reduce_node_intra": True,      # Enforce 0 odd degrees for intra-orbital
     
     # Training Hyperparameters
-    "num_epochs": 200,
+    "num_epochs": 2000,
     "dtype": torch.float32,          # 32 here for cupy kernel
     "lr_init": 1e-3,
-    "optimizer_type": "adam",        # standard Adam
+    "optimizer_type": "muon",        # standard Adam
     "weight_decay": 0.0,
-    "scheduler_type": 'cosine',      # 'plateau' or 'cosine'
+    "scheduler_type": 'plateau',      # 'plateau' or 'cosine'
     "eta_min": 1e-8,                 # For cosine scheduler
     "patience": 500,                 # For plateau scheduler (if swapped)
     "threshold": 1e-8,
@@ -50,7 +52,7 @@ config = {
     "loss_target": 'fock_matrix',
     "train_loss_fxn": loss.rmse_mse_padded_loss,
     "test_loss_fxn": loss.l1_unpadded_loss,
-    "save_frequency": 20,
+    "save_frequency": 5,
     "restart_backbone": False,       # Restart options
     "restart_head": False,
     "restart_optimizer": False,      

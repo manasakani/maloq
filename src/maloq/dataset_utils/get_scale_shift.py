@@ -25,7 +25,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
 
     num_molecules = len(database)
 
-    molecular_database = True if dataset_name in ["QM7", "nablaDFT", "omol"] else False
+    molecular_database = True if dataset_name in ["QM7", "nablaDFT", "omol", "omol_csh_58k", "omol_electronic_structures"] else False
 
     # 1. Get the indices of the scalar components in every target
     # -----------------------------------------------------------
@@ -33,7 +33,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
         orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
     elif dataset_name == "nablaDFT":
         orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
-    elif dataset_name == "omol":
+    elif dataset_name in ["omol", "omol_csh_58k", "omol_electronic_structures"]:
         orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.def2_tzvpd[element] for element in basis_sets.def2_tzvpd.keys()}
     elif dataset_name == "cp2k_material":
         orbital_basis = {utils_orca_out.periodic_table[element]: basis_sets.orbital_basis_def2_svp_cp2k[element] for element in basis_sets.orbital_basis_def2_svp_cp2k.keys()}
@@ -54,6 +54,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
     time_start = time.perf_counter()
 
     if molecular_database:
+        periodic_dataset = False
         for i in range(num_molecules):
             if dataset_name == "QM7":
                 energy = mol['energy']
@@ -61,20 +62,22 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
                 hamiltonian = mol['hamiltonian'].numpy()
                 atomic_numbers = mol['_atomic_numbers'].numpy()
                 positions=mol['_positions'].numpy()
-                orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
 
             elif dataset_name == "nablaDFT":
                 atomic_numbers, positions, energy, forces, hamiltonian, overlap, coeff_matrix, moses_id, conformation_id = database[i]
-                orbital_basis = basis_sets.orbital_basis_def2_svp_nabla
 
-            elif dataset_name == "omol":
+            elif dataset_name == "omol_electronic_structures":
                 atomic_numbers = mol.atomic_numbers
                 if open_shell:
                     node_labels = [mol.node_y_alpha, mol.node_y_beta]
                 else:
                     node_labels = mol.node_y
                 energies = mol.energies
-                # forces = mol.forces
+
+            elif dataset_name == "omol_csh_58k":
+                atomic_numbers = [mol['z'].numpy() for mol in database]
+                positions = [mol['pos'].numpy() for mol in database]
+                hamiltonians = [mol['fock'].numpy() for mol in database]
     
     # materials databases with one folder per structure
     else:
@@ -131,6 +134,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
             print("Unknown database!")
 
     # Set up the graph targets:
+    print(f"Setting up graph targets for {len(atomic_numbers)} molecules...", flush=True)
     graph_targets = fock_targets_batched.Fock_Targets(atomic_numbers, positions, rcut, orbital_basis, hamiltonians, 
                                                         dtype=dtype, 
                                                         dataset_name=dataset_name,
@@ -158,7 +162,7 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
 
     # 3. Compute the scale and shift for each atomic number and irrep degree
     for atom_ind, atomic_number in enumerate(atomic_numbers):
-
+        print(f"Processing atom {atom_ind+1}/{len(atomic_numbers)} with atomic number {atomic_number.item()}...", flush=True)
         atomic_number = int(atomic_number.item())
 
         if open_shell:
@@ -296,8 +300,10 @@ def get_scale_shift(database, dataset_name, rcut=5.0, dtype=torch.float32, reduc
                 "element_scalar_stds": element_scalar_stds,    # dict[int -> list[float]]
                 "scalar_irrep_indices": scalar_indices         # list[int]
             }
-            torch.save(scale_shift_data, "./fock_utils/"+filename)
-            print("Saved scale_shift_data to ./fock_utils/"+filename, flush=True)
+            directory = os.path.join(os.path.dirname(__file__), "../fock_utils")
+            torch.save(scale_shift_data, os.path.join(directory, filename))
+            print("Saved scale_shift_data to maloq/fock_utils/"+filename, flush=True)
+
     return scale_shift_data
 
 
