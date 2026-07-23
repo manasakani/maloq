@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from types import MethodType
 
 import numpy as np
@@ -7,6 +8,83 @@ import torch
 
 from maloq.fock_utils.fock_targets_batched import Fock_Targets
 from maloq.fock_utils.utils_orca_out import sort_by_m
+
+
+def test_nabladft_loader_leaves_qhflow3_optional_initial_matrices_absent(
+    monkeypatch,
+):
+    get_loader_module = importlib.import_module("maloq.dataset_utils.get_loader")
+
+    class FakeFockTargets:
+        def __init__(
+            self,
+            atomic_numbers,
+            positions,
+            _rcut,
+            orbital_basis,
+            _hamiltonians,
+            **_kwargs,
+        ):
+            self.atomic_positions_list = positions
+            self.atomic_numbers_list = atomic_numbers
+            self.neighbour_list_list = [
+                np.asarray([[0, 1], [1, 0]], dtype=np.int64)
+            ]
+            self.edge_dist_list = [torch.zeros(2, 4)]
+            self.edge_labels_list = [torch.zeros(1, 2, 1)]
+            self.node_labels_list = [torch.zeros(1, 2, 1)]
+            self.edge_unpadding_mask_list = [
+                torch.ones(1, 2, 1, dtype=torch.bool)
+            ]
+            self.node_unpadding_mask_list = [
+                torch.ones(1, 2, 1, dtype=torch.bool)
+            ]
+            self.orbital_basis = orbital_basis
+            self.ls_list = torch.zeros(1, dtype=torch.long)
+            self.req_output_irreps = "1x0e"
+            self.basis_transformation = object()
+            self.orbital_starts = torch.zeros(1, dtype=torch.long)
+
+    monkeypatch.setattr(get_loader_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(get_loader_module.dist, "get_world_size", lambda: 1)
+    monkeypatch.setattr(get_loader_module.dist, "barrier", lambda: None)
+    monkeypatch.setattr(
+        get_loader_module.fock_targets_batched,
+        "Fock_Targets",
+        FakeFockTargets,
+    )
+
+    atomic_numbers = np.asarray([1, 1])
+    positions = np.asarray([[0.0, 0.0, 0.0], [0.8, 0.0, 0.0]])
+    matrix = np.eye(10, dtype=np.float32)
+    database = [
+        (
+            atomic_numbers,
+            positions,
+            0.0,
+            np.zeros((2, 3), dtype=np.float32),
+            matrix,
+            matrix,
+            None,
+            0,
+            0,
+        )
+    ]
+
+    loader, *_ = get_loader_module.get_loader(
+        database=database,
+        start_idx=0,
+        end_idx=1,
+        dataset_name="nablaDFT",
+        rcut=8.0,
+        batch_size=1,
+        load_delta_auxiliary_matrix=True,
+    )
+
+    data = loader.dataset[0]
+    assert getattr(data, "initial_density_matrix", None) is None
+    assert getattr(data, "initial_hamiltonian", None) is None
+    np.testing.assert_array_equal(data.overlap_matrix, matrix)
 
 
 def _reference_sort_by_m(

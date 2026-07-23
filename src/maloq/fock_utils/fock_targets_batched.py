@@ -80,6 +80,10 @@ class Fock_Targets:
         self.partition_type = partition_type if distribute_graphs else "linear"
 
         self.orbital_basis = orbital_basis
+        orbital_basis_signature = tuple(
+            (int(element), tuple(int(l) for l in orbitals))
+            for element, orbitals in sorted(self.orbital_basis.items())
+        )
         self.dtype = dtype
 
         # Create structures and neighbor lists (outer index is the molecule index) - follows the fock matrices owned by each rank
@@ -99,9 +103,15 @@ class Fock_Targets:
         # --> Analyze structure of orbital interactions
         if orbital_template is None or out_js_list is None or req_output_irreps is None or ls_list is None:
             cache_path = "orbital_cache_"+str(dataset_name)+".pkl"
-            if os.path.exists(cache_path) and dataset_name != 'test':  # dataset name is 'test' in test scripts
+            cache_is_valid = False
+            if os.path.exists(cache_path) and dataset_name != 'test':
                 with open(cache_path, "rb") as f:
                     cache = pickle.load(f)
+                cache_is_valid = (
+                    cache.get("orbital_basis_signature")
+                    == orbital_basis_signature
+                )
+            if cache_is_valid:  # dataset name is 'test' in test scripts
                 self.req_output_irreps = cache["req_output_irreps"]
                 self.out_js_list = cache["out_js_list"]
                 self.orbital_starts = cache["orbital_starts"]
@@ -131,6 +141,7 @@ class Fock_Targets:
                 self.ls_list = self.ls_list % 10         # for OMOL: tensor([0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 0, 1, 2]
 
                 cache = {
+                    "orbital_basis_signature": orbital_basis_signature,
                     "req_output_irreps": self.req_output_irreps,
                     "out_js_list": self.out_js_list,
                     "orbital_starts": self.orbital_starts,
@@ -1166,7 +1177,7 @@ class Fock_Targets:
         NOTE: if an element does not have that scalar value, the corresponding mean is 0.0 and std is 1.0
         """
 
-        scale_nodes = False
+        scale_nodes = True
         shift_nodes = True
  
         # if node_atomic_numbers is None:
@@ -1199,7 +1210,7 @@ class Fock_Targets:
         Undo the scaling and shifting applied to the targets (l=0 values and optionally all irrep degrees).
         """
 
-        scale_nodes = False
+        scale_nodes = True
         shift_nodes = True
 
         new_node_blocks = node_blocks.clone()  # Create a copy to avoid modifying the original list

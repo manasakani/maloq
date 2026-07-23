@@ -139,6 +139,7 @@ def _loss_defaults() -> dict[str, Any]:
         "train_loss": "rmse_mse_padded_loss",
         "test_loss": "l1_unpadded_loss",
         "scale_and_shift": False,
+        "scale_shift_path": None,
         "delta_learning": False,
     }
 
@@ -280,6 +281,7 @@ class LossConfig(BaseModel):
     train_loss: LossName = "rmse_mse_padded_loss"
     test_loss: LossName = "l1_unpadded_loss"
     scale_and_shift: bool = False
+    scale_shift_path: str | None = None
     delta_learning: bool = False
 
 
@@ -433,6 +435,7 @@ class MaloqConfig(BaseModel):
             "train_loss": "loss",
             "test_loss": "loss",
             "scale_and_shift": "loss",
+            "scale_shift_path": "loss",
             "delta_learning": "loss",
             # checkpoint
             "save_frequency": "checkpointing",

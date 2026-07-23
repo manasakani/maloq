@@ -19,11 +19,25 @@ from ase.io import read
 from . import schnetpack_properties as structure
 
 class ASEDataset(Dataset):
-    def __init__(self, db_path, dtype=torch.float32, open_shell=False, start_idx=0, end_idx=None):
+    def __init__(
+        self,
+        db_path,
+        dtype=torch.float32,
+        open_shell=False,
+        start_idx=0,
+        end_idx=None,
+        matrix_target="fock_matrix",
+    ):
 
         self.db_path = db_path
         self.open_shell = open_shell
         self.dtype = dtype
+        if matrix_target not in {"fock_matrix", "density_matrix"}:
+            raise ValueError(
+                "ASEDataset matrix_target must be 'fock_matrix' or "
+                f"'density_matrix', got {matrix_target!r}"
+            )
+        self.matrix_target = matrix_target
         rank = dist.get_rank() if dist.is_initialized() else 0
 
         # total_count = self.db.count()
@@ -83,7 +97,14 @@ class ASEDataset(Dataset):
         atomic_numbers = atoms.numbers
 
         # Targets
-        fock_matrix = torch.tensor(structure.data['fock_matrix'], dtype=self.dtype)
+        if self.matrix_target not in structure.data:
+            raise KeyError(
+                f"ASE row {structure.id} in {self.db_path} does not contain "
+                f"the requested matrix target {self.matrix_target!r}"
+            )
+        matrix = torch.tensor(
+            structure.data[self.matrix_target], dtype=self.dtype
+        )
         energies = structure.data['total_energy [Eh]']
 
         is_open_shell = structure.data['is_open_shell']
@@ -97,26 +118,30 @@ class ASEDataset(Dataset):
         # Handle individual closed-shell molecules in open-shell training by setting alphafock==betafock:
         if self.open_shell and not is_open_shell:
             print("Adding second spin dimension to closed shell molecule for open shell training")
-            fock_matrix = fock_matrix.repeat(2, 1, 1)
+            matrix = matrix.repeat(2, 1, 1)
 
         # Handle individual open-shell molecules in closed-shell training by taking only alpha:
         elif not self.open_shell and is_open_shell:
             print("Taking only alpha spin dimension from open shell molecule for closed shell training")
-            fock_matrix = fock_matrix[0, :, :]
+            matrix = matrix[0, :, :]
 
         # metadata:
         folder_name = structure.data['folder_name']
 
-        data = Data(
+        data_fields = dict(
             pos=positions,
             atomic_numbers=atomic_numbers,
-            fock_matrix=fock_matrix,
             energies=energies,
             num_atoms_in_molecule=len(atomic_numbers),
             charge=charge,
             spin_multiplicity=int(spin_multiplicity),
             folder_name=folder_name,
+            matrix_storage_convention=structure.data.get(
+                'matrix_storage_convention', 'maloq_e3nn'
+            ),
         )
+        data_fields[self.matrix_target] = matrix
+        data = Data(**data_fields)
         
         return data
 
@@ -180,7 +205,7 @@ def distribute_data(base_folder, world_size, rank, N_global_train, N_global_val)
 
     # extract all the .db file names inside base folder:
     num_db_files = len([f for f in os.listdir(base_folder) if f.endswith('.db')])
-    db_files = [f for f in os.listdir(base_folder) if f.endswith('.db')]
+    db_files = sorted(f for f in os.listdir(base_folder) if f.endswith('.db'))
 
     for i, db_file in enumerate(db_files):
         db_file = os.path.join(base_folder, db_file)

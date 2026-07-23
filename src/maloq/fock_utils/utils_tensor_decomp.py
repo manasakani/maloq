@@ -6,6 +6,12 @@ import torch
 import numpy as np
 import re
 
+
+ORBITAL_TYPE_DICT = {
+    0: 's_', 1: 'p_', 2: 'd_', 3: 'f_', 4: 'g_',
+    10: 'sd_', 11: 'pd_', 12: 'dd_', 13: 'fd_', 14: 'gd_',
+}
+
 # the e3TensorDecomp class is adapted from: https://github.com/Xiaoxun-Gong/DeepH-E3 and modified to account for diffuse functions
 # See LICENSES/MIT-DeepH-E3 for license information.
 
@@ -227,7 +233,7 @@ def make_output_irreps(orbital_basis):
     il_list = [l1, idx_l1, l2, idx_l2] # hopping term from idx_l1's l1 orbital to the idx_l2's l2 orbital on the corresponding atoms in hoppings_list 
     '''
 
-    orbital_type_dict = {0: 's_', 1: 'p_', 2: 'd_', 3: 'f_', 4: 'g_', 10: 'sd_', 11: 'pd_', 12: 'dd_'} # the last are diffuse functions
+    orbital_type_dict = ORBITAL_TYPE_DICT
 
     # add 10 to any diffuse orbitals to distinguish them from core orbitals
     def find_diffuse_start(orbitals):
@@ -326,7 +332,7 @@ def make_output_irreps(orbital_basis):
 
 def process_targets(orbital_basis, targets, ls_list=None, out_js_list=None, full_orb_interaction_list=None): 
 
-    orbital_type_dict = {0: 's_', 1: 'p_', 2: 'd_', 3: 'f_', 4: 'g_', 10: 'sd_', 11: 'pd_', 12: 'dd_'}
+    orbital_type_dict = ORBITAL_TYPE_DICT
     reverse_orbital_type_dict = {v: k for k, v in orbital_type_dict.items()}
 
     orbital_types = [orbital_basis[atom] for atom in orbital_basis.keys()]

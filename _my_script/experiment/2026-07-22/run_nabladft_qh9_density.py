@@ -75,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
             "This is intentionally unavailable with --variant all."
         ),
     )
+    parser.add_argument(
+        "--scale-shift-path",
+        type=Path,
+        default=None,
+        help="Override the configured train-only scale-shift statistics artifact.",
+    )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--full-size-smoke", action="store_true")
     parser.add_argument(
@@ -360,12 +366,15 @@ def prepare_config(
         config["wandb_mode"] = args.wandb_mode
     if args.wandb_log_every_n_steps is not None:
         config["wandb_log_every_n_steps"] = args.wandb_log_every_n_steps
+    if args.scale_shift_path is not None:
+        config["scale_shift_path"] = str(args.scale_shift_path)
     if dataset_name == "nabladft":
         config.update(
             dataset_name="nablaDFT",
             loss_target="fock_matrix",
-            # QHFlow3's pair trunk requires the complete directed graph.
-            rcut_orbitals=100.0 if variant == "qhflow3" else 8.0,
+            # Keep every backbone on the same local matrix objective. The
+            # matrix loader and reconstruction omit blocks beyond this cutoff.
+            rcut_orbitals=8.0,
             rcut_gaussian=16.0,
         )
     elif dataset_name == "qh9-density":
@@ -419,6 +428,8 @@ def run_variant(
     return {
         "dataset": dataset_name,
         "loss_target": config["loss_target"],
+        "scale_and_shift": bool(config["scale_and_shift"]),
+        "scale_shift_path": config.get("scale_shift_path"),
         "delta_learning": bool(config.get("delta_learning", False)),
         "model_name": MODEL_NAMES[variant],
         "variant": variant,
@@ -457,6 +468,8 @@ def write_comparison_csv(path: Path, results: list[dict[str, object]]) -> None:
     columns = (
         "dataset",
         "loss_target",
+        "scale_and_shift",
+        "scale_shift_path",
         "delta_learning",
         "model_name",
         "variant",
@@ -482,6 +495,8 @@ def write_comparison_csv(path: Path, results: list[dict[str, object]]) -> None:
                 {
                     "dataset": result["dataset"],
                     "loss_target": result["loss_target"],
+                    "scale_and_shift": result["scale_and_shift"],
+                    "scale_shift_path": result["scale_shift_path"],
                     "delta_learning": result["delta_learning"],
                     "model_name": result["model_name"],
                     "variant": result["variant"],
@@ -527,6 +542,12 @@ def main() -> None:
         args.model_config = args.model_config.resolve()
         if not args.model_config.is_file():
             raise SystemExit(f"Model config not found: {args.model_config}")
+    if args.scale_shift_path is not None:
+        args.scale_shift_path = args.scale_shift_path.resolve()
+        if not args.scale_shift_path.is_file():
+            raise SystemExit(
+                f"Scale-shift statistics not found: {args.scale_shift_path}"
+            )
     if not 1 <= args.master_port <= 65535:
         raise SystemExit("--master-port must be between 1 and 65535")
 
@@ -647,15 +668,23 @@ def main() -> None:
                     "model_variant",
                     "backbone_type",
                     "head_type",
+                    "l_embedding_dim",
+                    "output_l_embedding_dim",
+                    "num_mp_layers",
+                    "num_edge_layers",
+                    "message_passing_schedule",
                     "optimizer_type",
                     "num_epochs",
                     "batch_size",
                     "gradient_accumulation_steps",
                     "effective_batch_size",
+                    "rcut_orbitals",
                     "distribute_graphs",
                     "partition_type",
                     "seed",
                     "loss_target",
+                    "scale_and_shift",
+                    "scale_shift_path",
                     "dataset_name",
                     "use_wandb",
                     "wandb_project",

@@ -353,7 +353,7 @@ def _qhflow3_equivariance_batch(
     edge_attr = torch.cat(
         [
             displacement.norm(dim=-1, keepdim=True),
-            displacement[:, [2, 0, 1]],
+            displacement,
         ],
         dim=-1,
     )
@@ -370,6 +370,88 @@ def _qhflow3_equivariance_batch(
     batch = Batch.from_data_list([data]).to(device)
     batch.overlap_matrix = [overlap.cpu().numpy()]
     return batch
+
+
+def _qhflow3_sparse_chain_batch(device: torch.device) -> Batch:
+    positions = torch.tensor(
+        [
+            [0.00, 0.00, 0.00],
+            [0.72, -0.18, 0.11],
+            [1.51, 0.24, -0.09],
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
+    atomic_numbers = torch.full((3,), 6, dtype=torch.long, device=device)
+    # Directed 0 <-> 1 <-> 2 chain. The deliberately shuffled order also
+    # verifies that the QHFlow3 bridge restores the loader's edge order.
+    edge_index = torch.tensor(
+        [[1, 2, 1, 0], [2, 1, 0, 1]],
+        dtype=torch.long,
+        device=device,
+    )
+    displacement = positions[edge_index[1]] - positions[edge_index[0]]
+    data = Data(
+        pos=positions,
+        z=atomic_numbers,
+        atomic_numbers=atomic_numbers,
+        edge_index=edge_index,
+        edge_attr=torch.cat(
+            [
+                displacement.norm(dim=-1, keepdim=True),
+                displacement,
+            ],
+            dim=-1,
+        ),
+        num_atoms_in_molecule=torch.tensor([3], device=device),
+        charge=torch.zeros(1, dtype=torch.long, device=device),
+        spin_multiplicity=torch.ones(1, dtype=torch.long, device=device),
+    )
+    batch = Batch.from_data_list([data]).to(device)
+    atom_block = torch.eye(14, dtype=torch.float32)
+    batch.overlap_matrix = [torch.block_diag(*([atom_block] * 3)).numpy()]
+    return batch
+
+
+def test_qhflow3_accepts_local_sparse_directed_pair_graph():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(44)
+    model = (
+        QHFlow3MaloqBackbone(
+            sh_lmax=2,
+            hidden_size=8,
+            bottle_hidden_size=4,
+            num_gnn_layers=1,
+            num_ham_gnn_layers=1,
+            max_radius=12.0,
+            radius_embed_dim=8,
+            escn_edge_channels=8,
+            escn_num_distance_basis=8,
+            esen_max_radius=15.0,
+            basis="def2-svp",
+            grid_resolution=12,
+            grid_ffn_chunk_size=None,
+        )
+        .to(device)
+        .train()
+    )
+    batch = _qhflow3_sparse_chain_batch(device)
+    original_edge_index = batch.edge_index.clone()
+
+    output = model(batch)
+
+    assert output["node_embeddings"].shape[0] == 3
+    assert output["edge_embeddings"].shape[0] == 4
+    assert all(torch.isfinite(embedding).all() for embedding in output.values())
+    torch.testing.assert_close(batch.edge_index, original_edge_index)
+
+    sum(embedding.square().mean() for embedding in output.values()).backward()
+    assert any(parameter.grad is not None for parameter in model.parameters())
+    assert all(
+        torch.isfinite(parameter.grad).all()
+        for parameter in model.parameters()
+        if parameter.grad is not None
+    )
 
 
 def test_qhflow3_matrix_conditioning_is_atom_aligned():
@@ -501,12 +583,19 @@ def test_qhflow3_grid48_backbone_is_equivariant_for_general_rotation(
         overlap_blocks.append(raw @ raw.T / matrix_dim + 0.25 * torch.eye(matrix_dim))
     overlap = torch.block_diag(*overlap_blocks)
 
-    rotation = o3.angles_to_matrix(
+    cartesian_rotation = o3.angles_to_matrix(
         torch.tensor(0.37),
         torch.tensor(1.11),
         torch.tensor(-0.62),
     )
-    basis_rotation = basis_irreps.D_from_matrix(rotation)
+    # Positions are stored in physical xyz coordinates, while MALOQ matrix
+    # irreps and eSEN spherical features use the internal (y, z, x) axes.
+    xyz_to_yzx = torch.tensor(
+        [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]],
+        dtype=cartesian_rotation.dtype,
+    )
+    internal_rotation = xyz_to_yzx @ cartesian_rotation @ xyz_to_yzx.T
+    basis_rotation = basis_irreps.D_from_matrix(internal_rotation)
     rotated_overlap = torch.block_diag(
         *(basis_rotation @ block @ basis_rotation.T for block in overlap_blocks)
     )
@@ -517,7 +606,7 @@ def test_qhflow3_grid48_backbone_is_equivariant_for_general_rotation(
         )
         observed = model(
             _qhflow3_equivariance_batch(
-                positions @ rotation.T,
+                positions @ cartesian_rotation.T,
                 rotated_overlap,
                 device,
                 atomic_number,
@@ -527,7 +616,9 @@ def test_qhflow3_grid48_backbone_is_equivariant_for_general_rotation(
     for embedding_name in ("node_embeddings", "edge_embeddings"):
         for degree in range(5):
             component_slice = slice(degree**2, (degree + 1) ** 2)
-            degree_rotation = o3.Irrep(degree, 1).D_from_matrix(rotation).to(device)
+            degree_rotation = (
+                o3.Irrep(degree, 1).D_from_matrix(internal_rotation).to(device)
+            )
             expected = torch.einsum(
                 "ij,njc->nic",
                 degree_rotation,

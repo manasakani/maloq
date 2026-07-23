@@ -1,9 +1,10 @@
-# NablaDFT QHFlow3-clean trunk with the corrected MUON-compatible MALOQ head.
+# MALOQ-NTE with output width and edge depth matched to native MALOQ.
+# This lane intentionally keeps the native flattened MALOQ prediction head.
 dataset:
   dataset_name: nablaDFT
   dbpath: /dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
-  output_folder: outputs/nabladft-qhflow3-clean-muon-head-seed44
-  run_name: nabladft-qhflow3-clean-muon-head-seed44
+  output_folder: outputs/nabladft-maloq-nte-do128-le3-native-head-seed44
+  run_name: nabladft-maloq-nte-do128-le3-native-head-seed44
   open_shell: false
 
 execution:
@@ -21,26 +22,30 @@ splits:
   distribute_graphs: false
 
 model:
-  model_variant: qhflow3-clean-muon-head-nabladft
-  backbone_type: qhflow3_clean
-  head_type: maloq_muon
+  model_variant: maloq-nte-do128-le3-native-head-nabladft
+  backbone_type: esen
+  head_type: maloq
+  wigner_backend: torch
   l_embedding_dim: 128
   hidden_dim: 128
-  output_l_embedding_dim: 64
+  output_l_embedding_dim: 128
   num_distance_basis: 512
   num_mp_layers: 3
-  num_edge_layers: 2
-  # Local matrix objective shared with the MALOQ baselines. Off-cutoff blocks
-  # are absent from the graph and remain zero in reconstructed matrices.
+  num_edge_layers: 3
   rcut_orbitals: 8.0
   rcut_gaussian: 16.0
-  qhflow3_max_radius: 12.0
-  qhflow3_radius_embed_dim: 32
-  qhflow3_grid_resolution: 48
-  qhflow3_grid_ffn_chunk_size: 512
+  gaussian_width: 1.0
   reduce_edge: false
   reduce_node: true
   reduce_node_intra: true
+  gate_act_type: sigmoid
+  mlp_type: grid
+  message_passing_schedule: node_then_edge
+  use_edge_envelope: true
+  use_edge_scalar_modulation: true
+  residual_update_scale_mode: bounded_degree
+  residual_update_scale_init: 0.015625
+  residual_update_scale_log_range: 4.1588830833596715
 
 optimization:
   num_epochs: 20

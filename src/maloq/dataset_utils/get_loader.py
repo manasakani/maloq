@@ -37,6 +37,41 @@ def _qm7_matrix_target(row, loss_target_string):
     return value.numpy() if hasattr(value, "numpy") else np.asarray(value)
 
 
+def _omol_matrix_target(row, loss_target_string, orbital_basis):
+    """Load one OMol matrix target and normalize its stored AO convention."""
+    value = row[loss_target_string]
+    matrix = value.numpy() if hasattr(value, "numpy") else np.asarray(value)
+    convention = row.get('matrix_storage_convention', 'maloq_e3nn')
+    if convention == 'maloq_e3nn':
+        return matrix
+    if convention != 'orca_real_spherical':
+        raise ValueError(
+            f"Unsupported OMol matrix storage convention {convention!r}"
+        )
+
+    atomic_numbers = row['atomic_numbers']
+    if hasattr(atomic_numbers, 'numpy'):
+        atomic_numbers = atomic_numbers.numpy()
+    if matrix.ndim == 2:
+        return utils_orca_out.sort_by_m(
+            matrix, orbital_basis, atomic_numbers
+        )
+    if matrix.ndim == 3 and matrix.shape[0] == 2:
+        return np.stack(
+            [
+                utils_orca_out.sort_by_m(
+                    spin_matrix, orbital_basis, atomic_numbers
+                )
+                for spin_matrix in matrix
+            ],
+            axis=0,
+        )
+    raise ValueError(
+        "OMol matrix must have shape [nao, nao] or [2, nao, nao], "
+        f"got {matrix.shape}"
+    )
+
+
 def get_loader(database, 
                 start_idx, 
                 end_idx, 
@@ -77,6 +112,13 @@ def get_loader(database,
         raise ValueError("delta_learning is currently implemented for closed shell only")
     dist.barrier()
 
+    # These dense conditioning matrices are optional and are currently loaded
+    # only by the QM7 delta-learning path. Keep them explicitly absent for
+    # NablaDFT, OMol, and CP2K instead of leaving branch-local variables
+    # undefined when QHFlow3 asks the shared Data builder for its inputs.
+    initial_density_matrices = None
+    initial_hamiltonians = None
+
     if dataset_name == "QM7":
 
         orbital_basis = basis_sets.orbital_basis_def2_svp_QM7
@@ -111,8 +153,6 @@ def get_loader(database,
         ]
         hamiltonians = [utils_orca_out.sort_by_m(h, orbital_basis, z) for h, z in zip(hamiltonians, atomic_numbers)] # QM7 comes in zxy coordinates from ORCA, so need to rotate
         overlaps = [row['overlap'].numpy() for row in local_data] # we don't rotate the overlap
-        initial_density_matrices = None
-        initial_hamiltonians = None
         if delta_learning:
             initial_target_property = (
                 "initial_density_matrix"
@@ -187,7 +227,10 @@ def get_loader(database,
         charges = [database[i]['charge'] for i in range(start_idx, end_idx)]
         spins = [database[i]['spin_multiplicity'] for i in range(start_idx, end_idx)]
 
-        hamiltonians = [database[i][loss_target_string] for i in range(start_idx, end_idx)]
+        hamiltonians = [
+            _omol_matrix_target(database[i], loss_target_string, orbital_basis)
+            for i in range(start_idx, end_idx)
+        ]
         overlaps = [0 for i in range(start_idx, end_idx)] # dummy overlaps for now!!!
 
     # 'database' is a folder in this case

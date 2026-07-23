@@ -438,6 +438,51 @@ class TrainingWorkflow:
         dataset_name = self.config['dataset_name']
 
         if self.config['loss_target'] in ['fock_matrix', 'density_matrix']:
+            configured_path = self.config.get('scale_shift_path')
+            if configured_path:
+                target_path = Path(configured_path).expanduser()
+                if not target_path.is_absolute():
+                    target_path = PROJECT_ROOT / target_path
+                target_path = target_path.resolve()
+                if not target_path.is_file():
+                    raise FileNotFoundError(
+                        "Configured scale-shift artifact does not exist: "
+                        f"{target_path}"
+                    )
+                print(
+                    "[Loading configured scale/shift factors from "
+                    f"{target_path}]",
+                    flush=True,
+                )
+                data = torch.load(
+                    target_path,
+                    map_location='cpu',
+                    weights_only=False,
+                )
+                provenance = data.get('provenance', {})
+                expected = {
+                    'dataset_name': dataset_name,
+                    'loss_target': self.config['loss_target'],
+                    'rcut_orbitals': self.config['rcut_orbitals'],
+                }
+                mismatches = {
+                    key: (provenance.get(key), value)
+                    for key, value in expected.items()
+                    if provenance.get(key) != value
+                }
+                if mismatches:
+                    details = ", ".join(
+                        f"{key}={actual!r} (expected {expected_value!r})"
+                        for key, (actual, expected_value) in mismatches.items()
+                    )
+                    raise ValueError(
+                        "Scale-shift provenance mismatch: " + details
+                    )
+                return {
+                    "element_scalar_means": data["element_scalar_means"],
+                    "element_scalar_stds": data["element_scalar_stds"],
+                    "scalar_irrep_indices": data["scalar_irrep_indices"],
+                }
 
             if self.config['open_shell']:
                 filename = f"element_scale_shifts_osh_{dataset_name}.pt"
@@ -571,13 +616,30 @@ class TrainingWorkflow:
                 print(f"Rank {self.rank}: Loading data from folder {db_source}", flush=True)
 
                 # --- 1. Distribute Data across ranks ---
-                train_data_dict, val_data_dict = distribute_data(
-                    base_folder=db_source,
-                    world_size=self.world_size,
-                    rank=self.rank,
-                    N_global_train=c['num_train'],
-                    N_global_val=c['num_val']
-                )
+                val_db_source = c.get('dbpath_val')
+                if val_db_source is not None:
+                    train_data_dict, _ = distribute_data(
+                        base_folder=db_source,
+                        world_size=self.world_size,
+                        rank=self.rank,
+                        N_global_train=c['num_train'],
+                        N_global_val=0,
+                    )
+                    _, val_data_dict = distribute_data(
+                        base_folder=val_db_source,
+                        world_size=self.world_size,
+                        rank=self.rank,
+                        N_global_train=0,
+                        N_global_val=c['num_val'],
+                    )
+                else:
+                    train_data_dict, val_data_dict = distribute_data(
+                        base_folder=db_source,
+                        world_size=self.world_size,
+                        rank=self.rank,
+                        N_global_train=c['num_train'],
+                        N_global_val=c['num_val'],
+                    )
 
                 # --- 2. Load Training Segments ---
                 train_datasets = []
@@ -587,7 +649,8 @@ class TrainingWorkflow:
                         dtype=c['dtype'],
                         open_shell=c['open_shell'],
                         start_idx=entry['start_idx'], 
-                        end_idx=entry['end_idx']     
+                        end_idx=entry['end_idx'],
+                        matrix_target=c['loss_target'],
                     )
                     train_datasets.append(ds)
                 train_database = ConcatDataset(train_datasets) if train_datasets else None
@@ -600,7 +663,8 @@ class TrainingWorkflow:
                         dtype=c['dtype'],
                         open_shell=c['open_shell'],
                         start_idx=entry['start_idx'],
-                        end_idx=entry['end_idx']
+                        end_idx=entry['end_idx'],
+                        matrix_target=c['loss_target'],
                     )
                     val_datasets.append(ds)
                 val_database = ConcatDataset(val_datasets) if val_datasets else None
@@ -622,7 +686,10 @@ class TrainingWorkflow:
             if isinstance(db_source, str):
                 print(f"Rank {self.rank}: Initializing ASEDataset from {db_source}")
                 db_obj = ASEDataset(
-                    db_source, dtype=c['dtype'], open_shell=c['open_shell']
+                    db_source,
+                    dtype=c['dtype'],
+                    open_shell=c['open_shell'],
+                    matrix_target=c['loss_target'],
                 )
             else:
                 db_obj = db_source

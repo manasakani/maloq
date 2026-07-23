@@ -2081,7 +2081,14 @@ class QHFlow3CleanFeatures(nn.Module):
 
         batch["atomic_numbers"] = batch.atoms
         batch["edge_index"] = edge_index
-        batch["edge_distance_vec"] = batch.pos[edge_index[0]] - batch.pos[edge_index[1]]
+        edge_distance_vec_xyz = (
+            batch.pos[edge_index[0]] - batch.pos[edge_index[1]]
+        )
+        # MALOQ's matrix/AO convention represents Cartesian vectors as
+        # (y, z, x). Match eSEN_Backbone's edge_dist[:, [2, 3, 1]]
+        # conversion so geometry and matrix irreps transform under the same
+        # SO(3) representation.
+        batch["edge_distance_vec"] = edge_distance_vec_xyz[:, [1, 2, 0]]
         batch["edge_distance"] = batch["edge_distance_vec"].norm(dim=-1)
         batch["full_edge_index"] = edge_index
         batch["full_edge_distance_vec"] = batch["edge_distance_vec"]
@@ -2378,7 +2385,9 @@ class QHFlow3MaloqBackbone(QHFlow3CleanFeatures):
     Absolute-target runs use zero matrix features plus the real overlap.
     Delta-learning runs condition the trunk on the source initial density,
     initial Hamiltonian, and overlap. The primary matrix matches the target
-    type and the other initial matrix is the auxiliary block input.
+    type and the other initial matrix is the auxiliary block input. Pair
+    features follow the loader's local directed graph, so matrix blocks not
+    emitted by that graph are omitted exactly as they are for MALOQ backbones.
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -2489,22 +2498,37 @@ class QHFlow3MaloqBackbone(QHFlow3CleanFeatures):
         return self._matrix_blocks(batch, "overlap_matrix", "overlap")
 
     @staticmethod
-    def _validate_full_pair_graph(batch: Any) -> None:
-        ptr = batch.ptr.detach().cpu().tolist()
-        edge_graph = batch.batch.index_select(0, batch.edge_index[0])
-        for graph_index, (start, stop) in enumerate(zip(ptr[:-1], ptr[1:])):
-            num_nodes = stop - start
-            edge_count = int((edge_graph == graph_index).sum().item())
-            expected = num_nodes * (num_nodes - 1)
-            if edge_count != expected:
-                raise ValueError(
-                    "QHFlow3 needs a fully connected directed molecular graph; "
-                    f"graph {graph_index} has {edge_count} edges, expected {expected}. "
-                    "Increase rcut_orbitals for this dataset."
-                )
+    def _validate_local_pair_graph(batch: Any) -> None:
+        edge_index = batch.edge_index
+        if edge_index.ndim != 2 or edge_index.shape[0] != 2:
+            raise ValueError("QHFlow3 edge_index must have shape (2, E).")
+        if edge_index.shape[1] == 0:
+            raise ValueError("QHFlow3 requires at least one local directed pair.")
+
+        num_nodes = int(batch.atomic_numbers.shape[0])
+        if (
+            int(edge_index.min().item()) < 0
+            or int(edge_index.max().item()) >= num_nodes
+        ):
+            raise ValueError("QHFlow3 edge_index contains an out-of-range atom index.")
+
+        source, target = edge_index
+        if bool((source == target).any().item()):
+            raise ValueError("QHFlow3 local pair graph must not contain self edges.")
+        source_graph = batch.batch.index_select(0, source)
+        target_graph = batch.batch.index_select(0, target)
+        if not bool((source_graph == target_graph).all().item()):
+            raise ValueError("QHFlow3 local pair edges must stay within each molecule.")
+
+        edge_hash = source * num_nodes + target
+        if int(torch.unique(edge_hash).numel()) != int(edge_hash.numel()):
+            raise ValueError(
+                "QHFlow3 local pair graph contains duplicate directed edges."
+            )
+        _transpose_indices_from_edge_index(edge_index, num_nodes=num_nodes)
 
     def forward(self, batch: Any) -> dict[str, torch.Tensor]:
-        self._validate_full_pair_graph(batch)
+        self._validate_local_pair_graph(batch)
         original_atomic_numbers = batch.atomic_numbers
         original_edge_index = batch.edge_index
         batch.atoms = batch.atomic_numbers
