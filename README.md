@@ -65,7 +65,7 @@ If you use **MALOQ** in your research or find the framework helpful, please incl
 
 ## 🚀 Applications
 
-MALOQ seamlessly bridges atomistic structures with downstream physical solvers. When used for materials, it enables Quantum Transport (QT) solvers to operate directly on atomistic descriptions of semiconductor devices, e.g. transistors and memory cells, bridging materials science with Technology Computer Aided Design (TCAD).
+MALOQ seamlessly bridges atomistic structures with downstream physical solvers. When used for materials, it enables Quantum Transport (QT) solvers to operate directly on atomistic descriptions of semiconductor devices, e.g. transistors and memory cells, bringing computational materials science to Technology Computer Aided Design (TCAD).
 
 <p align="center">
   <img src="/images/applications.png" alt="Applications enabled by MALOQ" />
