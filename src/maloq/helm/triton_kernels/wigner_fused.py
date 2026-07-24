@@ -287,9 +287,14 @@ def wigner_fused_kernel_32(
     y = tl.minimum(tl.maximum(edge_y / norm, -1.0), 1.0)
     z = tl.minimum(tl.maximum(edge_z / norm, -1.0), 1.0)
 
-    alpha = -libdevice.atan2(x, z)
-    beta = -libdevice.acos(y)
-    gamma = -tl.rand(seed, pid) * 6.283185307179586
+    physical_alpha = libdevice.atan2(x, z)
+    physical_beta = libdevice.acos(y)
+    physical_gamma = tl.rand(seed, pid) * 6.283185307179586
+
+    # Match the 16x16 kernel and torch convention: (-gamma, -beta, -alpha).
+    alpha = -physical_gamma
+    beta = -physical_beta
+    gamma = -physical_alpha
 
     offs = tl.arange(0, BS)
 
