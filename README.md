@@ -18,11 +18,11 @@
 ## 📊 Supported Datasets
 The model is pre-configured to work with three molecular Hamiltonian matrix datasets. Ensure you download the datasets and update the `dbpath` in the respective config files. In addition, it's possible to set up your own materials dataset, using the `cp2k_material' option. This option is not yet documented, and there are a lot of small details to iron out in the data generation process. We are in the process of documenting how to generate materials Hamiltonian data to train models that can generalize to large-scale material structures. 
 
-| Dataset | Type | Download Link | Config File | Description |
+| Dataset | Type | Download Link | Config File (in /examples) | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | **MD17/QM7** | Small Molecules | [Website](https://quantum-machine.org/datasets/) | `run_QM7.py` | Water and other small molecules. |
 | **nablaDFT** | DFT Benchmarks | [GitHub](https://github.com/AIRI-Institute/nablaDFT) | `run_nablaDFT.py` | Druglike molecules (30-50 atoms) with heavy atoms. |
-| **OMol_CSH_58k** | Large Molecules | [Link](https://huggingface.co/facebook/OMol25/blob/main/DATASET.md) | `run_omol_csh.py` | Large molecules (10-150 atoms). |
+| **OMol_CSH_58k** | Large Molecules | [HF](https://huggingface.co/facebook/OMol25/blob/main/DATASET.md) | `run_omol_csh.py` | Large molecules (10-150 atoms). |
 
 ---
 
