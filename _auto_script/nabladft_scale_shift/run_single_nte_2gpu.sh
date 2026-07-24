@@ -7,6 +7,32 @@ set -euo pipefail
 : "${DEFAULT_MASTER_PORT:?Wrapper must set DEFAULT_MASTER_PORT}"
 : "${SCALE_SHIFT_ENABLED:?Wrapper must set SCALE_SHIFT_ENABLED}"
 
+MODEL_VARIANT=${MODEL_VARIANT:-maloq-nte}
+MODEL_HEAD_TYPE=${MODEL_HEAD_TYPE:-}
+COMPACT_NAMES=${COMPACT_NAMES:-0}
+
+case "${MODEL_VARIANT}" in
+  maloq | maloq-nte | qhflow3) ;;
+  *)
+    echo "MODEL_VARIANT must be maloq, maloq-nte, or qhflow3." >&2
+    exit 2
+    ;;
+esac
+case "${MODEL_HEAD_TYPE}" in
+  "" | maloq | maloq_muon | static_te) ;;
+  *)
+    echo "MODEL_HEAD_TYPE must be empty, maloq, maloq_muon, or static_te." >&2
+    exit 2
+    ;;
+esac
+case "${COMPACT_NAMES}" in
+  0 | 1) ;;
+  *)
+    echo "COMPACT_NAMES must be 0 or 1." >&2
+    exit 2
+    ;;
+esac
+
 if [[ $# -lt 1 || $# -gt 2 ]]; then
   echo "Usage: $0 {prepare|validate|smoke|full} [GPU0,GPU1]" >&2
   exit 2
@@ -17,14 +43,13 @@ GPU_PAIR=${2:-${GPUS:-${DEFAULT_GPUS}}}
 MASTER_PORT=${MASTER_PORT:-${DEFAULT_MASTER_PORT}}
 EXPECTED_HOST=${EXPECTED_HOST:-}
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-PROJECT_ROOT=${SC26_PROJECT_ROOT:-$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)}
-ENV_ROOT=${SC26_ENV_ROOT:-/dataset/seongsu/shared-home/conda/envs/proj-dft-baselines-maloq-sc26}
+PROJECT_ROOT=/dataset/seongsu/shared-home/workspace/project
+ENV_ROOT=/dataset/seongsu/shared-home/conda/envs/proj-dft-baselines-maloq-sc26
 PY=${ENV_ROOT}/bin/python
 MPIRUN=${ENV_ROOT}/bin/mpirun
 RUNNER=${PROJECT_ROOT}/_my_script/experiment/2026-07-22/run_nabladft_qh9_density.py
 PREPROCESSOR=${PROJECT_ROOT}/_auto_script/nabladft_scale_shift/process_nabladft_scale_shift.py
-NABLA_DB=${NABLA_DB:-/dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db}
+NABLA_DB=/dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
 SCALE_SHIFT_STATS=${PROJECT_ROOT}/outputs/scale-shift-statistics/nabladft-train12081-fock-l0-mean-std-rcut8-float32.pt
 
 IFS=',' read -r -a GPU_INDICES <<< "${GPU_PAIR}"
@@ -102,15 +127,25 @@ SCALE_SHIFT_ARGS=()
 if [[ "${SCALE_SHIFT_ENABLED}" == "1" && -f "${SCALE_SHIFT_STATS}" ]]; then
   SCALE_SHIFT_ARGS=(--scale-shift-path "${SCALE_SHIFT_STATS}")
 fi
+HEAD_TYPE_ARGS=()
+if [[ -n "${MODEL_HEAD_TYPE}" ]]; then
+  HEAD_TYPE_ARGS=(--head-type "${MODEL_HEAD_TYPE}")
+fi
+RUN_NAME_ARGS=()
+if [[ "${COMPACT_NAMES}" == "1" ]]; then
+  RUN_NAME_ARGS=(--run-name "${EXPERIMENT_NAME}")
+fi
 
 case "${SCOPE}" in
   validate)
     "${PY}" "${RUNNER}" \
       --dataset nabladft \
-      --variant maloq-nte \
+      --variant "${MODEL_VARIANT}" \
       --dbpath "${NABLA_DB}" \
       --model-config "${MODEL_CONFIG}" \
       "${SCALE_SHIFT_ARGS[@]}" \
+      "${HEAD_TYPE_ARGS[@]}" \
+      "${RUN_NAME_ARGS[@]}" \
       --optimizer-type muon \
       --batch-size 5 \
       --gradient-accumulation-steps 2 \
@@ -175,8 +210,16 @@ for gpu in "${GPU_INDICES[@]}"; do
   fi
 done
 
-RUN_ID=$(date +%Y%m%d-%H%M%S)
-GROUP_ROOT=${PROJECT_ROOT}/outputs/${EXPERIMENT_NAME}-2gpu-eb20-mb5-ga2-${SCOPE_SLUG}-seed44-${RUN_ID}
+if [[ "${COMPACT_NAMES}" == "1" ]]; then
+  if [[ "${SCOPE}" == "smoke" ]]; then
+    GROUP_ROOT=${PROJECT_ROOT}/outputs/${EXPERIMENT_NAME}-smoke
+  else
+    GROUP_ROOT=${PROJECT_ROOT}/outputs/${EXPERIMENT_NAME}
+  fi
+else
+  RUN_ID=$(date +%Y%m%d-%H%M%S)
+  GROUP_ROOT=${PROJECT_ROOT}/outputs/${EXPERIMENT_NAME}-2gpu-eb20-mb5-ga2-${SCOPE_SLUG}-seed44-${RUN_ID}
+fi
 OUTPUT_DIR=${GROUP_ROOT}/run
 LOG_FILE=${GROUP_ROOT}/run.log
 if [[ -e "${GROUP_ROOT}" ]]; then
@@ -188,10 +231,11 @@ MANIFEST_STATS=none
 if [[ "${SCALE_SHIFT_ENABLED}" == "1" ]]; then
   MANIFEST_STATS=${SCALE_SHIFT_STATS}
 fi
-printf 'experiment\tgpus\tmicro_batch\tworld_size\taccumulation\teffective_batch\tconfig\tscale_shift_stats\n' \
+printf 'experiment\tvariant\thead_type\tgpus\tmicro_batch\tworld_size\taccumulation\teffective_batch\tconfig\tscale_shift_stats\n' \
   > "${GROUP_ROOT}/launch_manifest.tsv"
-printf '%s\t%s\t5\t2\t2\t20\t%s\t%s\n' \
-  "${EXPERIMENT_NAME}" "${GPU_PAIR}" "${MODEL_CONFIG}" \
+printf '%s\t%s\t%s\t%s\t5\t2\t2\t20\t%s\t%s\n' \
+  "${EXPERIMENT_NAME}" "${MODEL_VARIANT}" "${MODEL_HEAD_TYPE:-config}" \
+  "${GPU_PAIR}" "${MODEL_CONFIG}" \
   "${MANIFEST_STATS}" >> "${GROUP_ROOT}/launch_manifest.tsv"
 printf 'source_commit\t%s\n' "$(git rev-parse HEAD)" \
   > "${GROUP_ROOT}/source_revision.tsv"
@@ -212,10 +256,12 @@ env \
   "${MPIRUN}" -np 2 --bind-to none \
   "${PY}" "${RUNNER}" \
     --dataset nabladft \
-    --variant maloq-nte \
+    --variant "${MODEL_VARIANT}" \
     --dbpath "${NABLA_DB}" \
     --model-config "${MODEL_CONFIG}" \
     "${SCALE_SHIFT_ARGS[@]}" \
+    "${HEAD_TYPE_ARGS[@]}" \
+    "${RUN_NAME_ARGS[@]}" \
     --optimizer-type muon \
     --batch-size 5 \
     --gradient-accumulation-steps 2 \
@@ -238,10 +284,15 @@ fi
 printf 'status\texit_code\ncomplete\t0\n' > "${GROUP_ROOT}/status.tsv"
 
 if [[ "${SCOPE}" == "smoke" ]]; then
-  case "${GROUP_ROOT}" in
-    "${PROJECT_ROOT}"/outputs/"${EXPERIMENT_NAME}"-2gpu-eb20-mb5-ga2-full-size-smoke-e1-seed44-*) ;;
-    *) echo "Refusing to remove unexpected smoke path: ${GROUP_ROOT}" >&2; exit 1 ;;
-  esac
+  if [[ "${COMPACT_NAMES}" == "1" ]]; then
+    [[ "${GROUP_ROOT}" == "${PROJECT_ROOT}/outputs/${EXPERIMENT_NAME}-smoke" ]] ||
+      { echo "Refusing to remove unexpected smoke path: ${GROUP_ROOT}" >&2; exit 1; }
+  else
+    case "${GROUP_ROOT}" in
+      "${PROJECT_ROOT}"/outputs/"${EXPERIMENT_NAME}"-2gpu-eb20-mb5-ga2-full-size-smoke-e1-seed44-*) ;;
+      *) echo "Refusing to remove unexpected smoke path: ${GROUP_ROOT}" >&2; exit 1 ;;
+    esac
+  fi
   rm -rf -- "${GROUP_ROOT}"
   echo "Smoke passed; temporary output removed: ${GROUP_ROOT}"
 else

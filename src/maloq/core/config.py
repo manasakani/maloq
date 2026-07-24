@@ -87,10 +87,13 @@ def _model_defaults() -> dict[str, Any]:
         "residual_update_scale_mode": "none",
         "residual_update_scale_init": 1.0,
         "residual_update_scale_log_range": 0.0,
+        "esen_grid_resolution": None,
+        "nte_input_conditioning": "none",
         "qhflow3_max_radius": 12.0,
         "qhflow3_radius_embed_dim": 32,
         "qhflow3_grid_resolution": 48,
         "qhflow3_grid_ffn_chunk_size": 512,
+        "qhflow3_use_overlap": True,
         "static_te_init_mode": "zero",
         "static_te_init_std": 1.0,
         "static_te_gate_degrees": (),
@@ -165,6 +168,11 @@ def _tracking_defaults() -> dict[str, Any]:
         "wandb_project": "maloq",
         "wandb_entity": None,
         "wandb_mode": "online",
+        "wandb_run_name": None,
+        "wandb_group": None,
+        "wandb_job_type": None,
+        "wandb_tags": (),
+        "experiment_version": 1,
         "wandb_log_every_n_steps": 10,
         "validation_matrix_metrics": False,
         "validation_matrix_metrics_frequency": 1,
@@ -229,10 +237,13 @@ class ModelConfig(BaseModel):
     residual_update_scale_mode: Literal["none", "bounded_degree"] = "none"
     residual_update_scale_init: float = 1.0
     residual_update_scale_log_range: float = 0.0
+    esen_grid_resolution: int | None = Field(default=None, gt=0)
+    nte_input_conditioning: Literal["none", "overlap", "qhflow3_exact"] = "none"
     qhflow3_max_radius: float = 12.0
     qhflow3_radius_embed_dim: int = 32
     qhflow3_grid_resolution: int = 48
     qhflow3_grid_ffn_chunk_size: int | None = 512
+    qhflow3_use_overlap: bool = True
     static_te_init_mode: Literal["zero", "normal"] = "zero"
     static_te_init_std: float = Field(default=1.0, gt=0.0)
     static_te_gate_degrees: tuple[int, ...] = ()
@@ -310,6 +321,11 @@ class TrackingConfig(BaseModel):
     wandb_project: str = "maloq"
     wandb_entity: str | None = None
     wandb_mode: Literal["online", "offline"] = "online"
+    wandb_run_name: str | None = None
+    wandb_group: str | None = None
+    wandb_job_type: str | None = None
+    wandb_tags: tuple[str, ...] = ()
+    experiment_version: int = Field(default=1, ge=1)
     wandb_log_every_n_steps: int = 10
     validation_matrix_metrics: bool = False
     validation_matrix_metrics_frequency: int = 1
@@ -391,10 +407,13 @@ class MaloqConfig(BaseModel):
             "residual_update_scale_mode": "model",
             "residual_update_scale_init": "model",
             "residual_update_scale_log_range": "model",
+            "esen_grid_resolution": "model",
+            "nte_input_conditioning": "model",
             "qhflow3_max_radius": "model",
             "qhflow3_radius_embed_dim": "model",
             "qhflow3_grid_resolution": "model",
             "qhflow3_grid_ffn_chunk_size": "model",
+            "qhflow3_use_overlap": "model",
             "static_te_init_mode": "model",
             "static_te_init_std": "model",
             "static_te_gate_degrees": "model",
@@ -452,6 +471,11 @@ class MaloqConfig(BaseModel):
             "wandb_project": "tracking",
             "wandb_entity": "tracking",
             "wandb_mode": "tracking",
+            "wandb_run_name": "tracking",
+            "wandb_group": "tracking",
+            "wandb_job_type": "tracking",
+            "wandb_tags": "tracking",
+            "experiment_version": "tracking",
             "wandb_log_every_n_steps": "tracking",
             "validation_matrix_metrics": "tracking",
             "validation_matrix_metrics_frequency": "tracking",

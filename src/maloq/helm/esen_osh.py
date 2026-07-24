@@ -51,6 +51,7 @@ from .nn.radial import EnvelopedBesselBasis, GaussianSmearing
 from .nn.so2_layers import SO2_Convolution
 from .nn.so3_layers import SO3_Linear
 from .nn.activation import GateActivation
+from .nte_conditioning import NTEMatrixConditioning
 
 from .common.irreps_utils import get_reduced_to_all_indices, get_parity_multiplier, get_product_irreps, get_subspace_remix_permutation
 
@@ -93,6 +94,10 @@ class eSEN_Backbone(nn.Module):
         residual_update_scale_mode: str = "none",
         residual_update_scale_init: float = 1.0,
         residual_update_scale_log_range: float = 0.0,
+        input_conditioning: str = "none",
+        conditioning_basis: str = "def2-svp",
+        conditioning_delta_learning: bool = False,
+        conditioning_delta_target: str = "fock_matrix",
     ):
         super().__init__()
 
@@ -113,6 +118,27 @@ class eSEN_Backbone(nn.Module):
         self.residual_update_scale_init = float(residual_update_scale_init)
         self.residual_update_scale_log_range = float(
             residual_update_scale_log_range
+        )
+        if input_conditioning not in {
+            "none",
+            "overlap",
+            "qhflow3_exact",
+        }:
+            raise ValueError(
+                "input_conditioning must be 'none', 'overlap', or "
+                f"'qhflow3_exact', got {input_conditioning!r}."
+            )
+        self.input_conditioning = input_conditioning
+        self.input_conditioner = (
+            None
+            if input_conditioning == "none"
+            else NTEMatrixConditioning(
+                mode=input_conditioning,
+                basis=conditioning_basis,
+                hidden_size=sphere_channels,
+                delta_learning=conditioning_delta_learning,
+                delta_target=conditioning_delta_target,
+            )
         )
 
         if not include_edges:
@@ -507,6 +533,18 @@ class eSEN_Backbone(nn.Module):
         # Concatenate along the last dimension
         combined_emb = torch.cat([element_emb, charge_emb, spin_emb], dim=-1) # [num_atoms, 3 * sphere_channels]
         final_emb = self.scalar_node_embedding(combined_emb)                  # [num_atoms, sphere_channels]
+        if self.input_conditioner is not None:
+            if distributed_graph_training:
+                raise ValueError(
+                    "NTE matrix input conditioning does not support "
+                    "distributed graph training."
+                )
+            final_emb = self.input_conditioner(
+                batch,
+                atom_embedding=element_emb,
+                base_scalar=final_emb,
+                molecule_indices=molecule_indices,
+            )
         x_message_node[:, 0, :] = final_emb
 
         if self.include_edges:

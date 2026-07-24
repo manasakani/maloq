@@ -157,6 +157,24 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("online", "offline"),
         default=None,
     )
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help="Override the compact experiment ID stored in run provenance.",
+    )
+    parser.add_argument(
+        "--wandb-run-name",
+        default=None,
+        help="Override the human-readable W&B display name.",
+    )
+    parser.add_argument("--wandb-group", default=None)
+    parser.add_argument("--wandb-job-type", default=None)
+    parser.add_argument(
+        "--wandb-tag",
+        action="append",
+        default=[],
+        help="Add a W&B tag. Repeat the option to add multiple tags.",
+    )
     parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument(
         "--flat-output",
@@ -314,6 +332,114 @@ def last_losses(output_dir: Path) -> dict[str, float]:
     }
 
 
+def nabladft_tracking_identity(
+    variant: str,
+    config: dict,
+    *,
+    smoke: bool,
+) -> dict[str, object]:
+    """Build compact, sortable experiment and W&B identities."""
+    ablation_slugs = []
+    ablation_labels = []
+    ablation_tags = []
+    if variant == "maloq":
+        model_slug = "maloq"
+        model_label = "MALOQ"
+        group = "nabla-maloq-ss"
+    elif variant == "maloq-nte":
+        output_channels = int(
+            config.get("output_l_embedding_dim") or config["l_embedding_dim"]
+        )
+        edge_layers = int(
+            config.get("num_edge_layers") or config["num_mp_layers"]
+        )
+        model_slug = f"nte{output_channels}e{edge_layers}"
+        model_label = f"NTE-{output_channels}/{edge_layers}"
+        group = f"nabla-{model_slug}-head-ss"
+        esen_grid_resolution = config.get("esen_grid_resolution")
+        if esen_grid_resolution is not None:
+            esen_grid_resolution = int(esen_grid_resolution)
+            ablation_slugs.append(f"g{esen_grid_resolution}")
+            ablation_labels.append(f"Grid{esen_grid_resolution}")
+            ablation_tags.extend(
+                (
+                    f"grid:{esen_grid_resolution}x{esen_grid_resolution}",
+                    "ablation:esen-grid",
+                )
+            )
+        input_conditioning = config.get("nte_input_conditioning", "none")
+        if input_conditioning == "overlap":
+            ablation_slugs.append("scond")
+            ablation_labels.append("Scond")
+            ablation_tags.extend(
+                (
+                    "conditioning:overlap",
+                    "ablation:nte-input-conditioning",
+                )
+            )
+        elif input_conditioning == "qhflow3_exact":
+            ablation_slugs.append("qcond")
+            ablation_labels.append("QHFcond")
+            ablation_tags.extend(
+                (
+                    "conditioning:qhflow3-exact",
+                    "ablation:nte-input-conditioning",
+                )
+            )
+    elif variant == "qhflow3":
+        model_slug = "qhf3"
+        model_label = "QHFlow3"
+        group = "nabla-qhflow3-ss"
+        if not bool(config.get("qhflow3_use_overlap", True)):
+            ablation_slugs.append("ov0")
+            ablation_labels.append("OV0")
+            ablation_tags.extend(
+                (
+                    "overlap:off",
+                    "ablation:overlap",
+                )
+            )
+    else:  # pragma: no cover - protected by argparse choices
+        raise ValueError(f"Unsupported NablaDFT variant: {variant}")
+
+    head_type = config["head_type"]
+    head_names = {
+        "maloq": ("native", "Native"),
+        "maloq_muon": ("muon", "Muon"),
+        "static_te": ("staticte", "StaticTE"),
+    }
+    head_slug, head_label = head_names[head_type]
+    scale_shift = int(bool(config["scale_and_shift"]))
+    version = int(config.get("experiment_version", 1))
+    scope = "smoke" if smoke else "full"
+    ablation_slug = "".join(f"-{value}" for value in ablation_slugs)
+    ablation_label = "".join(f" | {value}" for value in ablation_labels)
+    experiment_id = (
+        f"nabla-{model_slug}-{head_slug}-ss{scale_shift}"
+        f"{ablation_slug}-v{version}"
+    )
+    return {
+        "experiment_id": experiment_id,
+        "display_name": (
+            f"NablaDFT | {model_label} | {head_label} | "
+            f"SS{scale_shift}{ablation_label} | V{version}"
+        ),
+        "group": group,
+        "job_type": scope,
+        "tags": (
+            "dataset:nabladft",
+            f"model:{model_slug}",
+            f"head:{head_slug}",
+            f"scale-shift:{'on' if scale_shift else 'off'}",
+            f"scope:{scope}",
+            f"seed:{int(config['seed'])}",
+            f"version:v{version}",
+            *ablation_tags,
+            "sc26-seongsu",
+        ),
+    }
+
+
 def prepare_config(
     dataset_name: str,
     variant: str,
@@ -390,6 +516,42 @@ def prepare_config(
             delta_learning=args.delta_learning,
         )
 
+    if dataset_name == "nabladft":
+        tracking = nabladft_tracking_identity(
+            variant,
+            config,
+            smoke=args.smoke,
+        )
+        config.update(
+            run_name=args.run_name or tracking["experiment_id"],
+            wandb_run_name=args.wandb_run_name or tracking["display_name"],
+            wandb_group=args.wandb_group or tracking["group"],
+            wandb_job_type=args.wandb_job_type or tracking["job_type"],
+            wandb_tags=tuple(
+                dict.fromkeys(
+                    (
+                        *config.get("wandb_tags", ()),
+                        *tracking["tags"],
+                        *args.wandb_tag,
+                    )
+                )
+            ),
+        )
+    else:
+        config["run_name"] = (
+            args.run_name or f"{output_dir.parent.name}-{output_dir.name}"
+        )
+        if args.wandb_run_name is not None:
+            config["wandb_run_name"] = args.wandb_run_name
+        if args.wandb_group is not None:
+            config["wandb_group"] = args.wandb_group
+        if args.wandb_job_type is not None:
+            config["wandb_job_type"] = args.wandb_job_type
+        if args.wandb_tag:
+            config["wandb_tags"] = tuple(
+                dict.fromkeys((*config.get("wandb_tags", ()), *args.wandb_tag))
+            )
+
     if args.smoke and not args.full_size_smoke:
         config.update(
             l_embedding_dim=16,
@@ -449,6 +611,10 @@ def run_variant(
             "mode": config["wandb_mode"],
             "log_every_n_steps": config["wandb_log_every_n_steps"],
             "run_name": config["run_name"],
+            "display_name": config.get("wandb_run_name"),
+            "group": config.get("wandb_group"),
+            "job_type": config.get("wandb_job_type"),
+            "tags": list(config.get("wandb_tags", ())),
         },
         "output_dir": str(output_dir),
         "elapsed_seconds": elapsed,
@@ -673,6 +839,9 @@ def main() -> None:
                     "num_mp_layers",
                     "num_edge_layers",
                     "message_passing_schedule",
+                    "esen_grid_resolution",
+                    "nte_input_conditioning",
+                    "qhflow3_use_overlap",
                     "optimizer_type",
                     "num_epochs",
                     "batch_size",
@@ -690,6 +859,11 @@ def main() -> None:
                     "wandb_project",
                     "wandb_entity",
                     "wandb_mode",
+                    "wandb_run_name",
+                    "wandb_group",
+                    "wandb_job_type",
+                    "wandb_tags",
+                    "experiment_version",
                     "wandb_log_every_n_steps",
                     "run_name",
                 )

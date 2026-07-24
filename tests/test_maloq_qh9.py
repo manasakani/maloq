@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import math
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +22,9 @@ from maloq.helm.qhflow3_clean import (
     QHFlow3MaloqBackbone,
     _orbital_masks_for_basis,
 )
+from maloq.helm.nte_conditioning import NTEMatrixConditioning
 from maloq.train_utils.splittrainer import SplitTrainer
+from maloq.train_utils.training_workflow import TrainingWorkflow
 
 
 def _load_comparison_module():
@@ -30,6 +33,21 @@ def _load_comparison_module():
         / "_my_script/experiment/2026-07-21/compare_maloq_qh9.py"
     )
     spec = importlib.util.spec_from_file_location("compare_maloq_qh9", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_nabladft_runner_module():
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "_my_script/experiment/2026-07-22/run_nabladft_qh9_density.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "run_nabladft_qh9_density",
+        script,
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -157,10 +175,74 @@ def test_wandb_tracking_defaults_to_ten_optimizer_steps():
     workflow = MaloqConfig().to_workflow_config()
 
     assert workflow["wandb_log_every_n_steps"] == 10
+    assert workflow["wandb_run_name"] is None
+    assert workflow["wandb_group"] is None
+    assert workflow["wandb_job_type"] is None
+    assert workflow["wandb_tags"] == ()
+    assert workflow["experiment_version"] == 1
     assert SplitTrainer._should_log_wandb_step(10, 9, 11, 10)
     assert not SplitTrainer._should_log_wandb_step(9, 8, 11, 10)
     # The epoch summary owns the final step so W&B never receives that step twice.
     assert not SplitTrainer._should_log_wandb_step(10, 9, 10, 10)
+
+
+def test_nabladft_tracking_identity_is_compact_and_grouped():
+    module = _load_nabladft_runner_module()
+    identity = module.nabladft_tracking_identity(
+        "maloq-nte",
+        {
+            "head_type": "maloq_muon",
+            "scale_and_shift": True,
+            "output_l_embedding_dim": 128,
+            "l_embedding_dim": 128,
+            "num_edge_layers": 3,
+            "num_mp_layers": 3,
+            "seed": 44,
+            "experiment_version": 1,
+        },
+        smoke=False,
+    )
+
+    assert identity["experiment_id"] == "nabla-nte128e3-muon-ss1-v1"
+    assert (
+        identity["display_name"]
+        == "NablaDFT | NTE-128/3 | Muon | SS1 | V1"
+    )
+    assert identity["group"] == "nabla-nte128e3-head-ss"
+    assert identity["job_type"] == "full"
+    assert "scale-shift:on" in identity["tags"]
+    assert "version:v1" in identity["tags"]
+
+
+def test_wandb_tracking_forwards_display_metadata(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_init(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(name=kwargs["name"])
+
+    monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(init=fake_init))
+    workflow = object.__new__(TrainingWorkflow)
+    workflow.rank = 0
+    workflow.config = {
+        "use_wandb": True,
+        "wandb_project": "maloq-nablaDFT",
+        "wandb_entity": "kaist-korea",
+        "wandb_mode": "online",
+        "wandb_run_name": "NablaDFT | QHFlow3 | Muon | SS0 | V2",
+        "wandb_group": "nabla-qhflow3-ss",
+        "wandb_job_type": "full",
+        "wandb_tags": ("dataset:nabladft", "scale-shift:off"),
+        "run_name": "nabla-qhf3-muon-ss0-v2",
+        "output_folder": str(tmp_path),
+    }
+
+    run = workflow.setup_tracking()
+
+    assert run.name == "NablaDFT | QHFlow3 | Muon | SS0 | V2"
+    assert captured["group"] == "nabla-qhflow3-ss"
+    assert captured["job_type"] == "full"
+    assert captured["tags"] == ["dataset:nabladft", "scale-shift:off"]
 
 
 def test_gradient_accumulation_config_and_optimizer_step_count():
@@ -336,6 +418,94 @@ def test_qhflow3_config_selects_headless_native_bridge():
     assert workflow["output_l_embedding_dim"] == 64
     assert workflow["qhflow3_grid_resolution"] == 48
     assert workflow["qhflow3_grid_ffn_chunk_size"] == 512
+    assert workflow["qhflow3_use_overlap"] is True
+    assert workflow["esen_grid_resolution"] is None
+    assert workflow["nte_input_conditioning"] == "none"
+
+
+def test_structural_ablation_config_toggles_round_trip():
+    qhflow3 = MaloqConfig(
+        model={
+            "backbone_type": "qhflow3_clean",
+            "qhflow3_use_overlap": False,
+        }
+    ).to_workflow_config()
+    nte = MaloqConfig(
+        model={
+            "backbone_type": "esen",
+            "esen_grid_resolution": 48,
+            "nte_input_conditioning": "overlap",
+        }
+    ).to_workflow_config()
+
+    assert qhflow3["qhflow3_use_overlap"] is False
+    assert nte["esen_grid_resolution"] == 48
+    assert nte["nte_input_conditioning"] == "overlap"
+
+
+def test_nabladft_tracking_names_structural_ablations():
+    module = _load_nabladft_runner_module()
+    common = {
+        "head_type": "maloq_muon",
+        "scale_and_shift": False,
+        "l_embedding_dim": 128,
+        "output_l_embedding_dim": 64,
+        "num_mp_layers": 3,
+        "num_edge_layers": 2,
+        "seed": 44,
+    }
+
+    qhflow3 = module.nabladft_tracking_identity(
+        "qhflow3",
+        {
+            **common,
+            "experiment_version": 2,
+            "qhflow3_use_overlap": False,
+        },
+        smoke=False,
+    )
+    nte = module.nabladft_tracking_identity(
+        "maloq-nte",
+        {
+            **common,
+            "experiment_version": 1,
+            "esen_grid_resolution": 48,
+        },
+        smoke=False,
+    )
+
+    assert qhflow3["experiment_id"] == "nabla-qhf3-muon-ss0-ov0-v2"
+    assert qhflow3["display_name"].endswith("SS0 | OV0 | V2")
+    assert "overlap:off" in qhflow3["tags"]
+    assert nte["experiment_id"] == "nabla-nte64e2-muon-ss0-g48-v1"
+    assert nte["display_name"].endswith("SS0 | Grid48 | V1")
+    assert "grid:48x48" in nte["tags"]
+
+    scond = module.nabladft_tracking_identity(
+        "maloq-nte",
+        {
+            **common,
+            "experiment_version": 1,
+            "nte_input_conditioning": "overlap",
+        },
+        smoke=False,
+    )
+    qcond = module.nabladft_tracking_identity(
+        "maloq-nte",
+        {
+            **common,
+            "experiment_version": 1,
+            "nte_input_conditioning": "qhflow3_exact",
+        },
+        smoke=False,
+    )
+
+    assert scond["experiment_id"] == "nabla-nte64e2-muon-ss0-scond-v1"
+    assert scond["display_name"].endswith("SS0 | Scond | V1")
+    assert "conditioning:overlap" in scond["tags"]
+    assert qcond["experiment_id"] == "nabla-nte64e2-muon-ss0-qcond-v1"
+    assert qcond["display_name"].endswith("SS0 | QHFcond | V1")
+    assert "conditioning:qhflow3-exact" in qcond["tags"]
 
 
 def _qhflow3_equivariance_batch(
@@ -413,6 +583,70 @@ def _qhflow3_sparse_chain_batch(device: torch.device) -> Batch:
     return batch
 
 
+@pytest.mark.parametrize("mode", ("overlap", "qhflow3_exact"))
+def test_nte_matrix_conditioning_is_atom_aligned_and_invariant(mode):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(44)
+    conditioner = (
+        NTEMatrixConditioning(
+            mode=mode,
+            basis="def2-svp",
+            hidden_size=8,
+        )
+        .to(device)
+        .eval()
+    )
+    positions = torch.tensor(
+        [[0.13, -0.21, 0.08], [0.74, 0.35, -0.42]],
+        dtype=torch.float32,
+    )
+    generator = torch.Generator().manual_seed(145)
+    blocks = []
+    for _ in range(2):
+        raw = torch.randn(14, 14, generator=generator)
+        blocks.append(raw @ raw.T / 14 + 0.25 * torch.eye(14))
+    overlap = torch.block_diag(*blocks)
+    atom_embedding = torch.randn(2, 8, generator=generator).to(device)
+    base_scalar = torch.randn(2, 8, generator=generator).to(device)
+    molecule_indices = torch.zeros(2, dtype=torch.long, device=device)
+
+    def conditioned(matrix):
+        batch = _qhflow3_equivariance_batch(
+            positions,
+            matrix,
+            device,
+            atomic_number=6,
+        )
+        return conditioner(
+            batch,
+            atom_embedding=atom_embedding,
+            base_scalar=base_scalar,
+            molecule_indices=molecule_indices,
+        )
+
+    with torch.no_grad():
+        reference = conditioned(overlap)
+        changed_blocks = [blocks[0], 1.5 * blocks[1]]
+        changed = conditioned(torch.block_diag(*changed_blocks))
+
+        rotation = o3.angles_to_matrix(
+            torch.tensor(0.37),
+            torch.tensor(1.11),
+            torch.tensor(-0.62),
+        )
+        basis_rotation = Irreps("3x0e + 2x1e + 1x2e").D_from_matrix(rotation)
+        rotated = conditioned(
+            torch.block_diag(
+                *(basis_rotation @ block @ basis_rotation.T for block in blocks)
+            )
+        )
+
+    torch.testing.assert_close(changed[0], reference[0])
+    assert torch.max(torch.abs(changed[1] - reference[1])).item() > 1.0e-5
+    torch.testing.assert_close(rotated, reference, atol=2.0e-5, rtol=2.0e-5)
+    assert torch.isfinite(reference).all()
+
+
 def test_qhflow3_accepts_local_sparse_directed_pair_graph():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(44)
@@ -452,6 +686,39 @@ def test_qhflow3_accepts_local_sparse_directed_pair_graph():
         for parameter in model.parameters()
         if parameter.grad is not None
     )
+
+
+def test_qhflow3_no_overlap_path_does_not_read_overlap_matrix():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.manual_seed(44)
+    model = (
+        QHFlow3MaloqBackbone(
+            sh_lmax=2,
+            hidden_size=8,
+            bottle_hidden_size=4,
+            num_gnn_layers=1,
+            num_ham_gnn_layers=1,
+            max_radius=12.0,
+            radius_embed_dim=8,
+            escn_edge_channels=8,
+            escn_num_distance_basis=8,
+            esen_max_radius=15.0,
+            basis="def2-svp",
+            grid_resolution=12,
+            grid_ffn_chunk_size=None,
+            use_block_S=False,
+        )
+        .to(device)
+        .eval()
+    )
+    batch = _qhflow3_sparse_chain_batch(device)
+    batch.overlap_matrix = None
+
+    with torch.no_grad():
+        output = model(batch)
+
+    assert model.use_block_S is False
+    assert all(torch.isfinite(embedding).all() for embedding in output.values())
 
 
 def test_qhflow3_matrix_conditioning_is_atom_aligned():

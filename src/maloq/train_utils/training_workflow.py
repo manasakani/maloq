@@ -47,10 +47,13 @@ class TrainingWorkflow:
         "residual_update_scale_mode": "none",
         "residual_update_scale_init": 1.0,
         "residual_update_scale_log_range": 0.0,
+        "esen_grid_resolution": None,
+        "nte_input_conditioning": "none",
         "qhflow3_max_radius": 12.0,
         "qhflow3_radius_embed_dim": 32,
         "qhflow3_grid_resolution": 48,
         "qhflow3_grid_ffn_chunk_size": 512,
+        "qhflow3_use_overlap": True,
         "static_te_init_mode": "zero",
         "static_te_init_std": 1.0,
         "static_te_gate_degrees": (),
@@ -87,6 +90,11 @@ class TrainingWorkflow:
         "wandb_project": "maloq",
         "wandb_entity": None,
         "wandb_mode": "online",
+        "wandb_run_name": None,
+        "wandb_group": None,
+        "wandb_job_type": None,
+        "wandb_tags": (),
+        "experiment_version": 1,
         "wandb_log_every_n_steps": 10,
         "validation_matrix_metrics": False,
         "validation_matrix_metrics_frequency": 1,
@@ -159,7 +167,10 @@ class TrainingWorkflow:
         run = wandb.init(
             project=self.config['wandb_project'],
             entity=self.config.get('wandb_entity'),
-            name=self.config['run_name'],
+            name=self.config.get('wandb_run_name') or self.config['run_name'],
+            group=self.config.get('wandb_group'),
+            job_type=self.config.get('wandb_job_type'),
+            tags=list(self.config.get('wandb_tags') or ()),
             dir=self.config['output_folder'],
             config=wandb_config,
             mode=self.config.get('wandb_mode', 'online'),
@@ -248,6 +259,32 @@ class TrainingWorkflow:
             raise ValueError(
                 "residual_update_scale_mode must be 'none' or "
                 "'bounded_degree'."
+            )
+        if (
+            self.config['esen_grid_resolution'] is not None
+            and int(self.config['esen_grid_resolution']) <= 0
+        ):
+            raise ValueError("esen_grid_resolution must be positive or None.")
+        if self.config['nte_input_conditioning'] not in {
+            'none', 'overlap', 'qhflow3_exact'
+        }:
+            raise ValueError(
+                "nte_input_conditioning must be 'none', 'overlap', or "
+                "'qhflow3_exact'."
+            )
+        if (
+            self.config['nte_input_conditioning'] != 'none'
+            and self.config['backbone_type'] != 'esen'
+        ):
+            raise ValueError(
+                "nte_input_conditioning is available only for the eSEN backbone."
+            )
+        if (
+            self.config['nte_input_conditioning'] != 'none'
+            and self.config['distribute_graphs']
+        ):
+            raise ValueError(
+                "NTE matrix input conditioning requires distribute_graphs=False."
             )
         if self.config['backbone_type'] not in {'esen', 'qhflow3_clean'}:
             raise ValueError("backbone_type must be 'esen' or 'qhflow3_clean'.")
@@ -419,6 +456,11 @@ class TrainingWorkflow:
             raise ValueError("validation_matrix_metrics_frequency must be at least 1.")
         if self.config['wandb_log_every_n_steps'] < 1:
             raise ValueError("wandb_log_every_n_steps must be at least 1.")
+        if not all(
+            isinstance(tag, str) and tag.strip()
+            for tag in self.config.get('wandb_tags', ())
+        ):
+            raise ValueError("wandb_tags must contain only non-empty strings.")
 
         # if hidden_dim is not provided, set it to l_embedding_dim:
         if 'hidden_dim' not in self.config:
@@ -735,6 +777,7 @@ class TrainingWorkflow:
                     delta_learning=c.get('delta_learning', False),
                     load_delta_auxiliary_matrix=(
                         c['backbone_type'] == 'qhflow3_clean'
+                        or c['nte_input_conditioning'] == 'qhflow3_exact'
                     ),
                 )
 
@@ -776,6 +819,7 @@ class TrainingWorkflow:
                     delta_learning=c.get('delta_learning', False),
                     load_delta_auxiliary_matrix=(
                         c['backbone_type'] == 'qhflow3_clean'
+                        or c['nte_input_conditioning'] == 'qhflow3_exact'
                     ),
                 )
             return train_loader, val_loader, required_irreps, basis_trans, orb_basis, ls_list
@@ -805,6 +849,7 @@ class TrainingWorkflow:
                 delta_learning=c.get('delta_learning', False),
                 load_delta_auxiliary_matrix=(
                     c['backbone_type'] == 'qhflow3_clean'
+                    or c['nte_input_conditioning'] == 'qhflow3_exact'
                 ),
             )
         
@@ -830,6 +875,7 @@ class TrainingWorkflow:
                 delta_learning=c.get('delta_learning', False),
                 load_delta_auxiliary_matrix=(
                     c['backbone_type'] == 'qhflow3_clean'
+                    or c['nte_input_conditioning'] == 'qhflow3_exact'
                 ),
             )
         
@@ -850,8 +896,8 @@ class TrainingWorkflow:
         c = self.config
         
         # 1. Backbone
+        delta_learning = c.get('delta_learning', False)
         if c['backbone_type'] == 'qhflow3_clean':
-            delta_learning = c.get('delta_learning', False)
             backbone = QHFlow3MaloqBackbone(
                 sh_lmax=required_irreps.lmax,
                 hidden_size=c['l_embedding_dim'],
@@ -879,7 +925,7 @@ class TrainingWorkflow:
                 default_hamiltonian_input=(
                     'init_ham' if delta_learning else 'zero'
                 ),
-                use_block_S=True,
+                use_block_S=c['qhflow3_use_overlap'],
                 use_block_H=delta_learning,
             ).to(self.device)
         else:
@@ -887,6 +933,7 @@ class TrainingWorkflow:
                 required_irreps, sphere_channels=c['l_embedding_dim'],
                 hidden_channels=c['hidden_dim'], lmax=required_irreps.lmax,
                 mmax=required_irreps.lmax, cutoff=c['rcut_gaussian'],
+                grid_resolution=c['esen_grid_resolution'],
                 edge_channels=c['l_embedding_dim'], num_layers=c['num_mp_layers'],
                 act_type='gate', mlp_type=c['mlp_type'],
                 gate_act_type=c['gate_act_type'],
@@ -904,6 +951,14 @@ class TrainingWorkflow:
                 residual_update_scale_mode=c['residual_update_scale_mode'],
                 residual_update_scale_init=c['residual_update_scale_init'],
                 residual_update_scale_log_range=c['residual_update_scale_log_range'],
+                input_conditioning=c['nte_input_conditioning'],
+                conditioning_basis=(
+                    'def2-svp-nabla'
+                    if c['dataset_name'] == 'nablaDFT'
+                    else 'def2-svp'
+                ),
+                conditioning_delta_learning=delta_learning,
+                conditioning_delta_target=c['loss_target'],
             ).to(self.device)
 
         # 2. Head
@@ -1010,6 +1065,12 @@ class TrainingWorkflow:
                 'residual_update_scale_mode': (
                     'none' if is_qhflow3 else c['residual_update_scale_mode']
                 ),
+                'esen_grid_resolution': (
+                    None if is_qhflow3 else c['esen_grid_resolution']
+                ),
+                'nte_input_conditioning': (
+                    None if is_qhflow3 else c['nte_input_conditioning']
+                ),
                 'delta_learning': bool(c.get('delta_learning', False)),
                 'prediction_contract': (
                     (
@@ -1040,7 +1101,11 @@ class TrainingWorkflow:
                         if c.get('delta_learning', False) else None
                     ),
                     qhflow3_basis=backbone.basis,
-                    qhflow3_overlap_input='native_loader_atom_diagonal_blocks',
+                    qhflow3_overlap_input=(
+                        'native_loader_atom_diagonal_blocks'
+                        if c['qhflow3_use_overlap']
+                        else 'disabled'
+                    ),
                     qhflow3_grid_resolution=int(c['qhflow3_grid_resolution']),
                     qhflow3_grid_ffn_chunk_size=c['qhflow3_grid_ffn_chunk_size'],
                 )

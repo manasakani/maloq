@@ -16,11 +16,36 @@ These rules apply to the canonical SC26-seongsu project at
 ## Experiment hygiene
 
 - Give every dated experiment directory a short `README.md` stating the purpose, exact command, dataset/split, GPU selection, environment, output path, and status.
-- Keep configs and launchers with the corresponding dated experiment. Put model checkpoints, logs, metrics, W&B files, and other run artifacts under `outputs/<run-name>/`; put datasets outside the repository and reference them by path.
+- Keep configs and launchers with the corresponding dated experiment. Put model checkpoints, logs, metrics, W&B files, and other run artifacts under the absolute base `/dataset/seongsu/shared-home/workspace/project/outputs/<run-name>/`; put datasets outside the repository and reference them by absolute path.
 - Use explicit, collision-resistant output directory names. Never reuse a checkpoint directory for a materially different configuration.
-- Do not create new root-level `outputs_*` directories. Relative model-output paths are normalized below the project-root `outputs/` directory by `TrainingWorkflow`.
+- Do not create new root-level `outputs_*` directories. Store new model-output paths below the absolute project output base rather than relying on `TrainingWorkflow` to normalize a relative path.
 - Start with a tiny smoke run and verify one train and validation step before a full QH9 run.
 - Do not start a long-running or multi-GPU training job unless the user explicitly asks to launch it.
+
+## Experiment launcher contract
+
+- New runnable experiment launchers use `#!/usr/bin/env bash` followed by
+  `set -euo pipefail`, remain executable, and pass `bash -n`.
+- Prefer the common scope interface `prepare`, `validate`, `smoke`, and `full`
+  when those phases apply. `validate` must not train, and a successful smoke
+  should remove its temporary artifacts while a failed smoke retains evidence.
+- Accept the GPU selection as an explicit argument or environment override.
+  Validate the requested GPU indices and refuse to overlap a materially busy
+  GPU unless the user explicitly changes the guard.
+- Store the canonical project, config, environment, dataset, and output-base
+  locations as absolute paths. For this repository the project prefix is
+  `/dataset/seongsu/shared-home/workspace/project`; do not depend on the
+  caller's current directory, a PATH alias, a symlink, or script-relative
+  directory discovery.
+- Write exact experiment commands in READMEs with the launcher's absolute
+  path. Do not require `cd` followed by a relative launcher path.
+- Keep host pinning optional through `EXPECTED_HOST`. Do not bake a particular
+  GPU server into a generally reusable launcher.
+- Historical command sheets that contain several copy/paste blocks are not
+  launchers and must not be executed as a single script.
+- After adding or changing a launcher, run `bash -n` and invoke the launcher's
+  absolute path in `validate` mode when available. A full or multi-GPU run
+  still requires explicit user authorization.
 
 ## QH9 safety and correctness
 

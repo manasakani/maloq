@@ -3,8 +3,8 @@
 dataset:
   dataset_name: nablaDFT
   dbpath: /dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
-  output_folder: outputs/nabladft-qhflow3-local-muon-head-seed44
-  run_name: nabladft-qhflow3-local-muon-head-seed44
+  output_folder: /dataset/seongsu/shared-home/workspace/project/outputs/nabla-qhf3-muon-ss0-v2
+  run_name: nabla-qhf3-muon-ss0-v2
   open_shell: false
 
 execution:
@@ -86,6 +86,11 @@ tracking:
   wandb_project: maloq-nablaDFT
   wandb_entity: kaist-korea
   wandb_mode: online
+  wandb_run_name: "NablaDFT | QHFlow3 | Muon | SS0 | V2"
+  wandb_group: nabla-qhflow3-ss
+  wandb_job_type: full
+  wandb_tags: [dataset:nabladft, model:qhf3, head:muon, scale-shift:off, seed:44, version:v2, sc26-seongsu]
+  experiment_version: 2
   wandb_log_every_n_steps: 10
   validation_matrix_metrics: true
   validation_matrix_metrics_frequency: 1

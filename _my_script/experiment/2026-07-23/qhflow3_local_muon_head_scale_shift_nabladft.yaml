@@ -1,9 +1,10 @@
-# Native interleaved MALOQ backbone with the corrected MUON-compatible head.
+# NablaDFT QHFlow3-clean trunk with the corrected Muon-compatible MALOQ head
+# and train-only l=0 node-label standardization.
 dataset:
   dataset_name: nablaDFT
   dbpath: /dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
-  output_folder: /dataset/seongsu/shared-home/workspace/project/outputs/nabla-maloq-muon-ss0-v1
-  run_name: nabla-maloq-muon-ss0-v1
+  output_folder: /dataset/seongsu/shared-home/workspace/project/outputs/nabla-qhf3-muon-ss1-v1
+  run_name: nabla-qhf3-muon-ss1-v1
   open_shell: false
 
 execution:
@@ -21,30 +22,26 @@ splits:
   distribute_graphs: false
 
 model:
-  model_variant: maloq-muon-head-nabladft
-  backbone_type: esen
+  model_variant: qhflow3-local-muon-head-scale-shift-nabladft
+  backbone_type: qhflow3_clean
   head_type: maloq_muon
-  wigner_backend: torch
   l_embedding_dim: 128
   hidden_dim: 128
-  output_l_embedding_dim: null
+  output_l_embedding_dim: 64
   num_distance_basis: 512
   num_mp_layers: 3
-  num_edge_layers: 3
+  num_edge_layers: 2
+  # Use exactly the same local directed matrix-pair graph as MALOQ. Both
+  # predictions and labels outside this graph remain zero on reconstruction.
   rcut_orbitals: 8.0
   rcut_gaussian: 16.0
-  gaussian_width: 1.0
+  qhflow3_max_radius: 12.0
+  qhflow3_radius_embed_dim: 32
+  qhflow3_grid_resolution: 48
+  qhflow3_grid_ffn_chunk_size: 512
   reduce_edge: false
   reduce_node: true
   reduce_node_intra: true
-  gate_act_type: tanh
-  mlp_type: spectral
-  message_passing_schedule: interleaved
-  use_edge_envelope: false
-  use_edge_scalar_modulation: false
-  residual_update_scale_mode: none
-  residual_update_scale_init: 1.0
-  residual_update_scale_log_range: 0.0
 
 optimization:
   num_epochs: 20
@@ -70,7 +67,8 @@ loss:
   loss_target: fock_matrix
   train_loss: rmse_mse_padded_loss
   test_loss: l1_unpadded_loss
-  scale_and_shift: false
+  scale_and_shift: true
+  scale_shift_path: /dataset/seongsu/shared-home/workspace/project/outputs/scale-shift-statistics/nabladft-train12081-fock-l0-mean-std-rcut8-float32.pt
 
 checkpointing:
   save_frequency: 1
@@ -89,10 +87,10 @@ tracking:
   wandb_project: maloq-nablaDFT
   wandb_entity: kaist-korea
   wandb_mode: online
-  wandb_run_name: "NablaDFT | MALOQ | Muon | SS0 | V1"
-  wandb_group: nabla-maloq-ss
+  wandb_run_name: "NablaDFT | QHFlow3 | Muon | SS1 | V1"
+  wandb_group: nabla-qhflow3-ss
   wandb_job_type: full
-  wandb_tags: [dataset:nabladft, model:maloq, head:muon, scale-shift:off, seed:44, version:v1, sc26-seongsu]
+  wandb_tags: [dataset:nabladft, model:qhf3, head:muon, scale-shift:on, seed:44, version:v1, sc26-seongsu]
   experiment_version: 1
   wandb_log_every_n_steps: 10
   validation_matrix_metrics: true

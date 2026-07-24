@@ -1,9 +1,9 @@
-# Native interleaved MALOQ backbone with the corrected MUON-compatible head.
+# Scale-shift counterpart of the 2026-07-22 MALOQ Muon-head NablaDFT run.
 dataset:
   dataset_name: nablaDFT
   dbpath: /dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
-  output_folder: /dataset/seongsu/shared-home/workspace/project/outputs/nabla-maloq-muon-ss0-v1
-  run_name: nabla-maloq-muon-ss0-v1
+  output_folder: /dataset/seongsu/shared-home/workspace/project/outputs/nabla-maloq-muon-ss1-v1
+  run_name: nabla-maloq-muon-ss1-v1
   open_shell: false
 
 execution:
@@ -21,7 +21,7 @@ splits:
   distribute_graphs: false
 
 model:
-  model_variant: maloq-muon-head-nabladft
+  model_variant: maloq-muon-head-scale-shift-nabladft
   backbone_type: esen
   head_type: maloq_muon
   wigner_backend: torch
@@ -70,7 +70,8 @@ loss:
   loss_target: fock_matrix
   train_loss: rmse_mse_padded_loss
   test_loss: l1_unpadded_loss
-  scale_and_shift: false
+  scale_and_shift: true
+  scale_shift_path: /dataset/seongsu/shared-home/workspace/project/outputs/scale-shift-statistics/nabladft-train12081-fock-l0-mean-std-rcut8-float32.pt
 
 checkpointing:
   save_frequency: 1
@@ -89,10 +90,10 @@ tracking:
   wandb_project: maloq-nablaDFT
   wandb_entity: kaist-korea
   wandb_mode: online
-  wandb_run_name: "NablaDFT | MALOQ | Muon | SS0 | V1"
+  wandb_run_name: "NablaDFT | MALOQ | Muon | SS1 | V1"
   wandb_group: nabla-maloq-ss
   wandb_job_type: full
-  wandb_tags: [dataset:nabladft, model:maloq, head:muon, scale-shift:off, seed:44, version:v1, sc26-seongsu]
+  wandb_tags: [dataset:nabladft, model:maloq, head:muon, scale-shift:on, seed:44, version:v1, sc26-seongsu]
   experiment_version: 1
   wandb_log_every_n_steps: 10
   validation_matrix_metrics: true

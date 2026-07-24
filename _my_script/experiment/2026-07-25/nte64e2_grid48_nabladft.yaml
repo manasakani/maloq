@@ -1,9 +1,10 @@
-# Native interleaved MALOQ backbone with the corrected MUON-compatible head.
+# MALOQ-NTE 64/2 grid-resolution ablation.
+# Matches maloq_nte_muon_head_nabladft.yaml except for a 48x48 SO(3) grid.
 dataset:
   dataset_name: nablaDFT
   dbpath: /dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
-  output_folder: /dataset/seongsu/shared-home/workspace/project/outputs/nabla-maloq-muon-ss0-v1
-  run_name: nabla-maloq-muon-ss0-v1
+  output_folder: /dataset/seongsu/shared-home/workspace/project/outputs/nabla-nte64e2-muon-ss0-g48-v1
+  run_name: nabla-nte64e2-muon-ss0-g48-v1
   open_shell: false
 
 execution:
@@ -21,30 +22,31 @@ splits:
   distribute_graphs: false
 
 model:
-  model_variant: maloq-muon-head-nabladft
+  model_variant: maloq-nte-64e2-grid48-muon-head-nabladft
   backbone_type: esen
   head_type: maloq_muon
   wigner_backend: torch
   l_embedding_dim: 128
   hidden_dim: 128
-  output_l_embedding_dim: null
+  output_l_embedding_dim: 64
   num_distance_basis: 512
   num_mp_layers: 3
-  num_edge_layers: 3
+  num_edge_layers: 2
   rcut_orbitals: 8.0
   rcut_gaussian: 16.0
   gaussian_width: 1.0
   reduce_edge: false
   reduce_node: true
   reduce_node_intra: true
-  gate_act_type: tanh
-  mlp_type: spectral
-  message_passing_schedule: interleaved
-  use_edge_envelope: false
-  use_edge_scalar_modulation: false
-  residual_update_scale_mode: none
-  residual_update_scale_init: 1.0
-  residual_update_scale_log_range: 0.0
+  gate_act_type: sigmoid
+  mlp_type: grid
+  message_passing_schedule: node_then_edge
+  use_edge_envelope: true
+  use_edge_scalar_modulation: true
+  residual_update_scale_mode: bounded_degree
+  residual_update_scale_init: 0.015625
+  residual_update_scale_log_range: 4.1588830833596715
+  esen_grid_resolution: 48
 
 optimization:
   num_epochs: 20
@@ -89,10 +91,10 @@ tracking:
   wandb_project: maloq-nablaDFT
   wandb_entity: kaist-korea
   wandb_mode: online
-  wandb_run_name: "NablaDFT | MALOQ | Muon | SS0 | V1"
-  wandb_group: nabla-maloq-ss
+  wandb_run_name: "NablaDFT | NTE-64/2 | Muon | SS0 | Grid48 | V1"
+  wandb_group: nabla-nte64e2-head-ss
   wandb_job_type: full
-  wandb_tags: [dataset:nabladft, model:maloq, head:muon, scale-shift:off, seed:44, version:v1, sc26-seongsu]
+  wandb_tags: [dataset:nabladft, model:nte64e2, head:muon, scale-shift:off, grid:48x48, ablation:esen-grid, baseline:loaiifgp, seed:44, version:v1, sc26-seongsu]
   experiment_version: 1
   wandb_log_every_n_steps: 10
   validation_matrix_metrics: true

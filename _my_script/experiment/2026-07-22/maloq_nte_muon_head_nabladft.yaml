@@ -2,8 +2,8 @@
 dataset:
   dataset_name: nablaDFT
   dbpath: /dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
-  output_folder: outputs/nabladft-maloq-nte-muon-head-seed44
-  run_name: nabladft-maloq-nte-muon-head-seed44
+  output_folder: /dataset/seongsu/shared-home/workspace/project/outputs/nabla-nte64e2-muon-ss0-v1
+  run_name: nabla-nte64e2-muon-ss0-v1
   open_shell: false
 
 execution:
@@ -89,6 +89,11 @@ tracking:
   wandb_project: maloq-nablaDFT
   wandb_entity: kaist-korea
   wandb_mode: online
+  wandb_run_name: "NablaDFT | NTE-64/2 | Muon | SS0 | V1"
+  wandb_group: nabla-nte64e2-head-ss
+  wandb_job_type: full
+  wandb_tags: [dataset:nabladft, model:nte64e2, head:muon, scale-shift:off, seed:44, version:v1, sc26-seongsu]
+  experiment_version: 1
   wandb_log_every_n_steps: 10
   validation_matrix_metrics: true
   validation_matrix_metrics_frequency: 1

@@ -2382,12 +2382,13 @@ def _orbital_masks_for_basis(
 class QHFlow3MaloqBackbone(QHFlow3CleanFeatures):
     """Headless QHFlow3 trunk bridged to MALOQ's native matrix loaders.
 
-    Absolute-target runs use zero matrix features plus the real overlap.
-    Delta-learning runs condition the trunk on the source initial density,
-    initial Hamiltonian, and overlap. The primary matrix matches the target
-    type and the other initial matrix is the auxiliary block input. Pair
-    features follow the loader's local directed graph, so matrix blocks not
-    emitted by that graph are omitted exactly as they are for MALOQ backbones.
+    Absolute-target runs use zero matrix features and optionally the real
+    overlap. Delta-learning runs condition the trunk on the source initial
+    density, initial Hamiltonian, and optionally the overlap. The primary
+    matrix matches the target type and the other initial matrix is the
+    auxiliary block input. Pair features follow the loader's local directed
+    graph, so matrix blocks not emitted by that graph are omitted exactly as
+    they are for MALOQ backbones.
     """
 
     def __init__(self, **kwargs: Any) -> None:
@@ -2533,7 +2534,8 @@ class QHFlow3MaloqBackbone(QHFlow3CleanFeatures):
         original_edge_index = batch.edge_index
         batch.atoms = batch.atomic_numbers
         batch.edge_index_full = batch.edge_index
-        batch.diagonal_overlap = self._overlap_blocks(batch)
+        if self.use_block_S:
+            batch.diagonal_overlap = self._overlap_blocks(batch)
         initial_density_blocks = None
         if self.delta_learning:
             initial_density_blocks = self._matrix_blocks(
