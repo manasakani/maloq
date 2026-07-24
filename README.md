@@ -43,7 +43,8 @@ If you use **MALOQ** in your research or find the framework helpful, please incl
   author = {Kaniselvan, Manasa and Maeder, Alexander and Lu, Denghui and Ziogas, Alexandros Nikolaos and Luisier, Mathieu},
   year   = {2026},
   doi    = {10.48550/arXiv.2606.28911},
-  url    = {https://arxiv.org/abs/2606.28911}
+  url    = {https://arxiv.org/abs/2606.28911},
+  primaryClass = {cs.LG}
 }
 ```
 
@@ -59,3 +60,13 @@ If you use **MALOQ** in your research or find the framework helpful, please incl
   primaryClass = {physics.chem-ph}
 }
 ```
+
+---
+
+## 🚀 Applications
+
+MALOQ seamlessly bridges atomistic structures with downstream physical solvers. When used for materials, it enables Quantum Transport (QT) solvers to operate directly on atomistic descriptions of semiconductor devices, e.g. transistors and memory cells, bridging materials science with Technology Computer Aided Design (TCAD).
+
+<p align="center">
+  <img src="applications.png" alt="Applications enabled by MALOQ" />
+</p>
