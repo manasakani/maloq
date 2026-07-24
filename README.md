@@ -52,7 +52,7 @@ If you use **MALOQ** in your research or find the framework helpful, please incl
 @misc{helm,
   title     = {Learning from the electronic structure of molecules across the periodic table},
   author    = {Kaniselvan, Manasa and Miller, Benjamin Kurt and Gao, Meng and Nam, Juno and Levine, Daniel S.},
-  publisher = {arXiv},
+  publisher = {International Conference on Learning Representations (ICLR)},
   year      = {2025},
   doi       = {10.48550/ARXIV.2510.00224},
   url       = {[https://arxiv.org/abs/2510.00224](https://arxiv.org/abs/2510.00224)},
