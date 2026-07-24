@@ -16,17 +16,17 @@ config = {
     "open_shell": False,
     
     # Execution Mode
-    "train_or_eval": "train",         # Change to "eval" for testing
-    "train_backbone": True,          # Set to False to freeze the backbone
-    "train_head": True,              # Set to False to freeze the head
+    "train_or_eval": "train",       
+    "train_backbone": True,       
+    "train_head": True,            
     
     # Data Splitting
     "num_train": 500,
     "num_val": 500,
     "num_test": 4500,
     "shuffle": False,
-    "batch_size": 5,          # 1 for eval, 10 for train (set to 1 for water script)
-    "distribute_graphs": False,       # Distribute graphs and perform communication in the forward pass (ongoing implementation, not finished)
+    "batch_size": 5,        
+    "distribute_graphs": False,   
     
     # Symmetry Reductions
     "reduce_edge": True,
@@ -39,11 +39,11 @@ config = {
     "lr_init": 1e-4,
     "optimizer_type": "adamw",
     "weight_decay": 1e-4,
-    "scheduler_type": 'plateau', # 'plateau' or 'cosine'
+    "scheduler_type": 'plateau',
     "patience": 100,
     "threshold": 1e-5,
     "eta_min": 1e-8,
-    "step_every_epoch": True,   # Scheduler steps every epoch for Water
+    "step_every_epoch": True,  
     
     # Loss & Checkpointing
     "loss_target": 'fock_matrix',
@@ -55,19 +55,19 @@ config = {
     "restart_optimizer": False,
     "backbone_checkpoint": 'backbone.pt',
     "head_checkpoint": 'head.pt',
-    "scale_and_shift": False,   # Set to True to enable scaling
+    "scale_and_shift": False,  
 
     # Evals
     "compute_total_energy": False,
 
     # Model Architecture
-    "wigner_backend": "torch",  # "triton" for fused Triton kernel (requires GPU + triton)
-    "basis_transform_backend": "torch", # "cuda" or "triton" for optimized basis transformations
+    "wigner_backend": "torch",  
+    "basis_transform_backend": "torch", 
     "l_embedding_dim": 128,
     "num_distance_basis": 128,
     "num_mp_layers": 3,
     "rcut_orbitals": 6.0,
-    "rcut_gaussian": 12.0,    # rcut_orbitals * 2
+    "rcut_gaussian": 12.0,   
     "gaussian_width": 1.0,
 }
 

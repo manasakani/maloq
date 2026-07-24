@@ -16,7 +16,7 @@ config = {
     "open_shell": False,
     
     # Execution Mode
-    "train_or_eval": "train",         # Set to "train" to start learning
+    "train_or_eval": "train",        
     "train_backbone": True,
     "train_head": True,
     
@@ -25,52 +25,52 @@ config = {
     "num_val": 1, 
     "num_test": 1,
     "shuffle": True,
-    "batch_size": 1,                 # 1 for eval, usually 10 for train
-    "distribute_graphs": True,         # Distribute graphs and perform communication in the forward pass (ongoing)
-    "partition_type": 'linear-edgewise',       # 'linear-atomwise', 'low_nn', 'metis', 'worstcase'
+    "batch_size": 1,                 
+    "distribute_graphs": True,        
+    "partition_type": 'linear-edgewise',       
     
     # Symmetry Reductions 
-    "reduce_edge": False,            # Unused!
-    "reduce_node": True,             # Enforce inter-orbital interactions equal
-    "reduce_node_intra": True,       # Enforce 0 odd degrees for intra-orbital
+    "reduce_edge": False,            
+    "reduce_node": True,             
+    "reduce_node_intra": True,      
     
     # Training Hyperparameters
     "num_epochs": 400,
-    "dtype": torch.float32,          # 32 here for cupy kernel
+    "dtype": torch.float32,         
     "lr_init": 1e-6,
-    "optimizer_type": "adamw",        # standard Adam
+    "optimizer_type": "adamw",     
     "weight_decay": 0.0,
-    "scheduler_type": 'cosine',      # 'plateau' or 'cosine'
-    "eta_min": 1e-8,                 # For cosine scheduler
-    "patience": 50,                 # For plateau scheduler (if swapped)
+    "scheduler_type": 'cosine',    
+    "eta_min": 1e-8,               
+    "patience": 50,               
     "threshold": 1e-8,
-    "step_every_epoch": False,       # Cosine usually steps per iteration
-    "compute_uncoupled_loss": False,  # Compute loss on uncoupled predictions (if True, also requires "scale_and_shift"=True)
+    "step_every_epoch": False,      
+    "compute_uncoupled_loss": False, 
     
     # Loss & Checkpointing
     "loss_target": 'fock_matrix',
     "train_loss_fxn": loss.rmse_mse_padded_loss,
     "test_loss_fxn": loss.l1_unpadded_loss,
     "save_frequency": 10,
-    "restart_backbone": True,       # Restart options
+    "restart_backbone": True,      
     "restart_head": True,
     "restart_optimizer": False,      
     "backbone_checkpoint": 'backbone.pt',
     "head_checkpoint": 'head.pt',
-    "scale_and_shift": True,         # Scale & shift the node labels
+    "scale_and_shift": True,        
 
     # Evals
     "compute_total_energy": False,
 
     # Model Architecture
-    "wigner_backend": "triton",  # "triton" for fused Triton kernel (requires GPU + triton)
+    "wigner_backend": "triton",  
     "l_embedding_dim": 128,
     "hidden_dim": 128,
     "num_distance_basis": 128,
     "num_mp_layers": 3,
     "message_type": "source-target-message",
     "rcut_orbitals": 5.0, 
-    "rcut_gaussian": 12.0,           # 2 * rcut_orbitals
+    "rcut_gaussian": 12.0,          
     "gaussian_width": 1.0,
 }
 
