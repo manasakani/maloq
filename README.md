@@ -55,7 +55,7 @@ If you use **MALOQ** in your research or find the framework helpful, please incl
   publisher = {International Conference on Learning Representations (ICLR)},
   year      = {2025},
   doi       = {10.48550/ARXIV.2510.00224},
-  url       = {[https://arxiv.org/abs/2510.00224](https://arxiv.org/abs/2510.00224)},
+  url       = {https://arxiv.org/abs/2510.00224},
   primaryClass = {physics.chem-ph}
 }
 ```
