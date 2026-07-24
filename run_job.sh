@@ -65,4 +65,4 @@ source /users/mkanisel/miniconda3/bin/activate helm_env
 
 # --> Training/Eval
 srun --cpu-bind=socket bash -c 'export MPICH_GPU_SUPPORT_ENABLED=1; export CUDA_VISIBLE_DEVICES=$SLURM_LOCALID;
-python run_omol_csh.py'
+python ./examples/run_omol_csh.py'
