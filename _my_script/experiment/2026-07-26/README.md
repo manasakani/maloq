@@ -360,3 +360,34 @@ steps. The durable queue manifest is `queue_nte64_edge1_direct.yaml`.
 The config validation, 46 QH9 tests, three fixed-resume tests, and a full-model
 two-GPU 20-train/20-validation smoke passed; successful smoke artifacts were
 removed.
+
+
+## QHFlow3 output-projection Muon ablation
+
+`QHF3-ProjMuon` starts from QHFlow3 reference `80sa5m4j` and changes only the
+two final `128 -> 64` node/edge projections (`81,920` parameters). The original
+e3nn projection stores each weight as a flat vector and therefore sends it to
+AdamW under shape-based Muon routing. This ablation stores the same paths as
+`[degree, output, input]`, making them Muon-visible.
+
+The new projection still invokes the original external-weight e3nn operation.
+With the same seed, its mapped initial weights, forward output, input gradient,
+and parameter gradient are bitwise identical to the reference before optimizer
+step 1. The shared `MuonFockIrrepsHead`, all preceding QHFlow3 layers, OV0
+conditioning, NTE 10x11 grid, data rows/order, and loss remain unchanged.
+
+Commands:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/09_nabladft_qhflow3_projection_muon_2gpu.sh validate
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/09_nabladft_qhflow3_projection_muon_2gpu.sh smoke 6,7
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/09_nabladft_qhflow3_projection_muon_2gpu.sh full 6,7
+```
+
+The durable queue manifest is `queue_qhflow3_projection_muon.yaml`. The full
+run uses 20 epochs, two data-parallel GPUs, micro-batch 5 per rank, gradient
+accumulation 2, effective batch 20, RAW Fock targets, seed 44, no graph
+distribution, W&B logging every 10 optimizer steps in
+`kaist-korea/maloq-nablaDFT`, and the compact display name
+`NablaDFT | QHFlow3 | MatrixMuon+ProjMuon+AuxAdamW | RAW | OV0 |
+NTEGrid10x11 | V3`.

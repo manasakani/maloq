@@ -95,6 +95,62 @@ def construct_o3irrps_base(dim: int, order: int) -> str:
     return "+".join(f"{dim}x{l}e" for l in range(order + 1))
 
 
+class MuonVisibleIrrepLinear(nn.Module):
+    """An e3nn Linear with the same math and a Muon-visible weight layout.
+
+    ``e3nn.o3.Linear`` stores all path weights in one flat parameter, so the
+    shape-based Muon router treats an otherwise matrix-valued projection as an
+    AdamW auxiliary parameter. This wrapper keeps e3nn's compiled operation
+    unchanged but stores the paths as ``[path, output, input]``. Flattening the
+    transposed view reconstructs e3nn's original weight order exactly.
+
+    Initialization consumes the same random values in the same order as the
+    corresponding internally weighted e3nn Linear. Before the optimizer takes
+    a step, mapped weights, outputs, input gradients, and weight gradients are
+    therefore identical.
+    """
+
+    def __init__(self, irreps_in: Irreps | str, irreps_out: Irreps | str) -> None:
+        super().__init__()
+        self.linear = Linear(
+            irreps_in,
+            irreps_out,
+            internal_weights=False,
+            shared_weights=True,
+            biases=False,
+        )
+        path_shapes = [
+            instruction.path_shape
+            for instruction in self.linear.instructions
+            if instruction.i_in >= 0
+        ]
+        if not path_shapes:
+            raise ValueError("Muon-visible irrep projection needs a weighted path.")
+        if len(set(path_shapes)) != 1:
+            raise ValueError(
+                "Muon-visible irrep projection requires one common matrix shape "
+                f"across paths, got {path_shapes}."
+            )
+        input_channels, output_channels = path_shapes[0]
+        path_major_weight = torch.randn(
+            len(path_shapes),
+            input_channels,
+            output_channels,
+        )
+        self.weight = nn.Parameter(
+            path_major_weight.transpose(1, 2).contiguous()
+        )
+        if self.weight.numel() != self.linear.weight_numel:
+            raise RuntimeError(
+                "Muon-visible weight size does not match the e3nn Linear "
+                f"contract: {self.weight.numel()} != {self.linear.weight_numel}."
+            )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        flat_weight = self.weight.transpose(1, 2).reshape(-1)
+        return self.linear(features, flat_weight)
+
+
 def get_time_embedding(
     timesteps: torch.Tensor,
     embedding_dim: int,
@@ -1835,6 +1891,7 @@ class QHFlow3CleanFeatures(nn.Module):
         grid_resolution: int | None = None,
         init_diag_attr: str = "diagonal_init_dm",
         default_hamiltonian_input: str = "init_ham",
+        muonize_output_projection: bool = False,
         module_dtype: str | None = "float32",
         time_condition_dim: int | None = None,
         matrix_condition_dim: int | None = None,
@@ -1866,6 +1923,7 @@ class QHFlow3CleanFeatures(nn.Module):
             grid_resolution=grid_resolution,
             init_diag_attr=init_diag_attr,
             default_hamiltonian_input=default_hamiltonian_input,
+            muonize_output_projection=muonize_output_projection,
             module_dtype=module_dtype,
         )
 
@@ -1926,6 +1984,7 @@ class QHFlow3CleanFeatures(nn.Module):
         grid_resolution: int | None = None,
         init_diag_attr: str = "diagonal_init_ham",
         default_hamiltonian_input: str = "init_ham",
+        muonize_output_projection: bool = False,
         module_dtype: str | None = "float32",
     ) -> None:
         if default_hamiltonian_input not in {"init_ham", "zero"}:
@@ -1953,6 +2012,7 @@ class QHFlow3CleanFeatures(nn.Module):
         self.grid_resolution = grid_resolution
         self.escn_edge_channels = escn_edge_channels
         self.escn_num_distance_basis = escn_num_distance_basis
+        self.muonize_output_projection = bool(muonize_output_projection)
 
         if self.basis_elements is not None:
             raise ValueError(
@@ -2017,8 +2077,19 @@ class QHFlow3CleanFeatures(nn.Module):
             num_distance_basis=self.escn_num_distance_basis,
             grid_resolution=self.grid_resolution,
         )
-        self.output_ii = Linear(self.hidden_irrep, self.expand_bottle_irrep)
-        self.output_ij = Linear(self.hidden_irrep, self.expand_bottle_irrep)
+        output_projection_type = (
+            MuonVisibleIrrepLinear
+            if self.muonize_output_projection
+            else Linear
+        )
+        self.output_ii = output_projection_type(
+            self.hidden_irrep,
+            self.expand_bottle_irrep,
+        )
+        self.output_ij = output_projection_type(
+            self.hidden_irrep,
+            self.expand_bottle_irrep,
+        )
 
         self._device_initialized = False
 

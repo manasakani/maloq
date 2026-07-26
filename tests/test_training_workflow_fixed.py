@@ -114,6 +114,7 @@ def test_fixed_resume_restores_optimizer_scheduler_and_epoch(tmp_path: Path):
     workflow.config = {
         **checkpoint_config,
         "direct_edgewise_layers": (),
+        "qhflow3_muonize_output_projection": False,
     }
     workflow.world_size = 1
     workflow.rank = 0

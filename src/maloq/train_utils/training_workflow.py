@@ -62,6 +62,7 @@ class TrainingWorkflow:
         "qhflow3_grid_resolution": 48,
         "qhflow3_grid_ffn_chunk_size": 512,
         "qhflow3_use_overlap": True,
+        "qhflow3_muonize_output_projection": False,
         "static_te_init_mode": "zero",
         "static_te_init_std": 1.0,
         "static_te_gate_degrees": (),
@@ -358,6 +359,21 @@ class TrainingWorkflow:
         }:
             raise ValueError(
                 "muon_output_projection_policy must be 'shape_muon' or 'adamw'."
+            )
+        if (
+            self.config['qhflow3_muonize_output_projection']
+            and self.config['backbone_type'] != 'qhflow3_clean'
+        ):
+            raise ValueError(
+                "qhflow3_muonize_output_projection requires "
+                "backbone_type='qhflow3_clean'."
+            )
+        if (
+            self.config['qhflow3_muonize_output_projection']
+            and self.config['optimizer_type'] != 'muon'
+        ):
+            raise ValueError(
+                "qhflow3_muonize_output_projection requires optimizer_type='muon'."
             )
         if (
             self.config['esen_grid_resolution'] is not None
@@ -1112,6 +1128,9 @@ class TrainingWorkflow:
                 ),
                 use_block_S=c['qhflow3_use_overlap'],
                 use_block_H=delta_learning,
+                muonize_output_projection=(
+                    c['qhflow3_muonize_output_projection']
+                ),
             ).to(self.device)
         else:
             backbone = eSEN_Backbone(
@@ -1387,6 +1406,9 @@ class TrainingWorkflow:
                         else int(c['qhflow3_grid_resolution'])
                     ),
                     qhflow3_grid_ffn_chunk_size=c['qhflow3_grid_ffn_chunk_size'],
+                    qhflow3_output_projection_optimizer=(
+                        'muon' if c['qhflow3_muonize_output_projection'] else 'adamw'
+                    ),
                 )
             summary_path = Path(c['output_folder']) / 'model_summary.json'
             summary_path.write_text(json.dumps(model_summary, indent=2) + '\n')

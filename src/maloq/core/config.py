@@ -102,6 +102,7 @@ def _model_defaults() -> dict[str, Any]:
         "qhflow3_grid_resolution": 48,
         "qhflow3_grid_ffn_chunk_size": 512,
         "qhflow3_use_overlap": True,
+        "qhflow3_muonize_output_projection": False,
         "static_te_init_mode": "zero",
         "static_te_init_std": 1.0,
         "static_te_gate_degrees": (),
@@ -286,6 +287,7 @@ class ModelConfig(BaseModel):
     qhflow3_grid_resolution: int | None = 48
     qhflow3_grid_ffn_chunk_size: int | None = 512
     qhflow3_use_overlap: bool = True
+    qhflow3_muonize_output_projection: bool = False
     static_te_init_mode: Literal["zero", "normal"] = "zero"
     static_te_init_std: float = Field(default=1.0, gt=0.0)
     static_te_gate_degrees: tuple[int, ...] = ()
@@ -466,6 +468,7 @@ class MaloqConfig(BaseModel):
             "qhflow3_grid_resolution": "model",
             "qhflow3_grid_ffn_chunk_size": "model",
             "qhflow3_use_overlap": "model",
+            "qhflow3_muonize_output_projection": "model",
             "static_te_init_mode": "model",
             "static_te_init_std": "model",
             "static_te_gate_degrees": "model",

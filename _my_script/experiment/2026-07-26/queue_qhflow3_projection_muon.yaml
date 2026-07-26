@@ -1,0 +1,13 @@
+jobs:
+  - id: nabla-qhf3-ov0-ntegrid-projmuon-v3-20260726a
+    description: QHFlow3 OV0 NTE-grid output-projection Muon ablation versus 80sa5m4j
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/09_nabladft_qhflow3_projection_muon_2gpu.sh
+    args:
+      - full
+      - "{gpus}"
+    gpu_count: 2
+    allowed_hosts:
+      - any
+    priority: 15
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/qhflow3_ov0_ntegrid_projection_muon_nabladft.yaml
