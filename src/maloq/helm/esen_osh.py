@@ -100,6 +100,7 @@ class eSEN_Backbone(nn.Module):
         edge_atom_norm_type: str | None = None,
         edge_post_residual_norm_type: str | None = None,
         edge_atomwise_output_mode: str = "residual_scaled",
+        edge_norm1_position: str = "post_edgewise",
         input_conditioning: str = "none",
         conditioning_basis: str = "def2-svp",
         conditioning_delta_learning: bool = False,
@@ -157,6 +158,12 @@ class eSEN_Backbone(nn.Module):
                 f"got {edge_atomwise_output_mode!r}."
             )
         self.edge_atomwise_output_mode = edge_atomwise_output_mode
+        if edge_norm1_position not in {"post_edgewise", "pre_node"}:
+            raise ValueError(
+                "edge_norm1_position must be 'post_edgewise' or 'pre_node', "
+                f"got {edge_norm1_position!r}."
+            )
+        self.edge_norm1_position = edge_norm1_position
         self.repeat_system_embedding_each_node_block = bool(
             repeat_system_embedding_each_node_block
         )
@@ -408,6 +415,7 @@ class eSEN_Backbone(nn.Module):
                     atom_norm_type=self.edge_atom_norm_type,
                     post_residual_norm_type=self.edge_post_residual_norm_type,
                     atomwise_output_mode=self.edge_atomwise_output_mode,
+                    edge_norm1_position=self.edge_norm1_position,
                     **block_kwargs,
                 )
                 self.edge_blocks.append(edge_block)

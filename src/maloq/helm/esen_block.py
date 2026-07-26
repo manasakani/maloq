@@ -446,6 +446,7 @@ class eSEN_Block(torch.nn.Module):
         atom_norm_type: str | None = None,
         post_residual_norm_type: str | None = None,
         atomwise_output_mode: str = "residual_scaled",
+        edge_norm1_position: str = "post_edgewise",
     ) -> None:
         super().__init__()
         self.sphere_channels = sphere_channels
@@ -458,6 +459,12 @@ class eSEN_Block(torch.nn.Module):
                 f"got {atomwise_output_mode!r}."
             )
         self.atomwise_output_mode = atomwise_output_mode
+        if edge_norm1_position not in {"post_edgewise", "pre_node"}:
+            raise ValueError(
+                "edge_norm1_position must be 'post_edgewise' or 'pre_node', "
+                f"got {edge_norm1_position!r}."
+            )
+        self.edge_norm1_position = edge_norm1_position
 
         self.norm_1 = get_normalization_layer(
             norm_type, lmax=self.lmax, num_channels=sphere_channels
@@ -581,10 +588,18 @@ class eSEN_Block(torch.nn.Module):
             
         else:
             x_res = x_message_edge
+            edgewise_node = x_message_node
+            edge_norm1_position = getattr(
+                self,
+                "edge_norm1_position",
+                "post_edgewise",
+            )
+            if edge_norm1_position == "pre_node":
+                edgewise_node = self.norm_1(edgewise_node)
 
             torch.cuda.nvtx.range_push("Edgewise") # <--- START
             x_message_edge = self.edge_wise(
-                x_message_node,
+                edgewise_node,
                 x_message_edge,
                 x_edge,
                 edge_distance,
@@ -595,7 +610,8 @@ class eSEN_Block(torch.nn.Module):
                 partition
             )
             torch.cuda.nvtx.range_pop() # <--- END
-            x_message_edge = self.norm_1(x_message_edge) 
+            if edge_norm1_position == "post_edgewise":
+                x_message_edge = self.norm_1(x_message_edge)
 
             x_message_edge = self.edge_update_scale(x_message_edge) + x_res
             x_res = x_message_edge 
@@ -606,7 +622,11 @@ class eSEN_Block(torch.nn.Module):
             x_message_edge = self.atom_wise(x_message_edge)
             torch.cuda.nvtx.range_pop() # <--- END
 
-            if self.atomwise_output_mode == "direct":
+            if getattr(
+                self,
+                "atomwise_output_mode",
+                "residual_scaled",
+            ) == "direct":
                 return self.post_residual_norm(x_message_edge)
             x_message_edge = self.atom_update_scale(x_message_edge) + x_res
             return self.post_residual_norm(x_message_edge)

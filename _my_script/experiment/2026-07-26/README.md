@@ -278,10 +278,35 @@ MAE over epochs 16–20.
 | EdgePostRMS | `uh1mdkgv` | 6.8514e-5 | 1.0064e-4 |
 | EdgeSplitNorm | `gu0eanf4` | 7.3127e-5 | 1.0286e-4 |
 | EdgeDegreeNorm | `1xt6c4xb` | 7.3935e-5 | 1.0601e-4 |
+| EdgeAtomDirect | `6w6yjvzc` | 7.8412e-5 | 1.1432e-4 |
 
 Independent branch topology alone (`NTEParallel`) and carrying the old edge
 state in the message (`STMessage`) do not explain the gap. Post-residual RMS
 normalization gives a real but partial improvement. The complete QHFlow3 pair
 operation (`QHFPair`) is the only tested change whose tail is tied with
-QHFlow3, so `EdgeAtomDirect` next isolates its missing atomwise residual and
-bounded update scale as one original layer-output operation.
+QHFlow3. `EdgeAtomDirect` shows that removing the final atomwise residual and
+bounded update scale alone is harmful. The next `EdgePreNodeNorm` experiment
+isolates QHFlow3's earlier `node norm -> edgewise` ordering while preserving
+both recurrent NTE residuals.
+
+
+## NTE edge pre-node normalization ablation
+
+`EdgePreNodeNorm` moves each recurrent EdgeBlock's first RMS normalization from
+after edgewise message construction to the final node state before edgewise.
+This matches the original QHFlow3 pair-block ordering at exactly one operation
+boundary. It keeps NTE's recurrent edge state, first and second residuals,
+bounded degree LayerScale, atomwise output rule, normalization types, node
+stack, data order, and optimizer unchanged.
+
+Commands:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/07_nabladft_nte64_edge_pre_node_norm_2gpu.sh validate
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/07_nabladft_nte64_edge_pre_node_norm_2gpu.sh smoke 4,5
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/07_nabladft_nte64_edge_pre_node_norm_2gpu.sh full 4,5
+```
+
+The durable queue manifest is `queue_nte64_edge_pre_node_norm.yaml`; the full
+run uses the same 20-epoch, two-GPU, effective-batch-20, seed-44, RAW-target,
+W&B-every-10-steps contract as the preceding pair-operation ablations.

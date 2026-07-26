@@ -93,6 +93,7 @@ def _model_defaults() -> dict[str, Any]:
         "edge_atom_norm_type": None,
         "edge_post_residual_norm_type": None,
         "edge_atomwise_output_mode": "residual_scaled",
+        "edge_norm1_position": "post_edgewise",
         "esen_grid_resolution": None,
         "nte_input_conditioning": "none",
         "qhflow3_max_radius": 12.0,
@@ -272,6 +273,10 @@ class ModelConfig(BaseModel):
         "residual_scaled",
         "direct",
     ] = "residual_scaled"
+    edge_norm1_position: Literal[
+        "post_edgewise",
+        "pre_node",
+    ] = "post_edgewise"
     esen_grid_resolution: int | None = Field(default=None, gt=0)
     nte_input_conditioning: Literal["none", "overlap", "qhflow3_exact"] = "none"
     qhflow3_max_radius: float = 12.0
@@ -450,6 +455,7 @@ class MaloqConfig(BaseModel):
             "edge_atom_norm_type": "model",
             "edge_post_residual_norm_type": "model",
             "edge_atomwise_output_mode": "model",
+            "edge_norm1_position": "model",
             "esen_grid_resolution": "model",
             "nte_input_conditioning": "model",
             "qhflow3_max_radius": "model",

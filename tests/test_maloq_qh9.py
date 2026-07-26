@@ -178,6 +178,7 @@ def test_nte_layer_structure_ablation_options_are_explicit():
             "edge_atom_norm_type": "layer_norm_sh",
             "edge_post_residual_norm_type": "rms_norm_sh",
             "edge_atomwise_output_mode": "direct",
+            "edge_norm1_position": "pre_node",
         },
         optimization={"muon_output_projection_policy": "adamw"},
     ).to_workflow_config()
@@ -188,6 +189,7 @@ def test_nte_layer_structure_ablation_options_are_explicit():
     assert workflow["edge_atom_norm_type"] == "layer_norm_sh"
     assert workflow["edge_post_residual_norm_type"] == "rms_norm_sh"
     assert workflow["edge_atomwise_output_mode"] == "direct"
+    assert workflow["edge_norm1_position"] == "pre_node"
     assert workflow["muon_output_projection_policy"] == "adamw"
 
 
@@ -289,6 +291,58 @@ def test_nte_direct_edge_atomwise_output_skips_scale_and_residual():
 
     # edgewise output 3 + incoming residual 7 = 10, then direct atomwise = 20.
     torch.testing.assert_close(output, torch.full_like(edge_state, 20.0))
+
+
+def test_nte_edge_norm1_can_move_before_edgewise_node_input():
+    class AddFive(torch.nn.Module):
+        def forward(self, state):
+            return state + 5.0
+
+    class CaptureEdgewise(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.seen_node = None
+
+        def forward(self, node_state, edge_state, *_args):
+            self.seen_node = node_state.detach().clone()
+            return torch.ones_like(edge_state)
+
+    class ZeroAtomwise(torch.nn.Module):
+        def forward(self, state):
+            return torch.zeros_like(state)
+
+    block = eSEN_Block.__new__(eSEN_Block)
+    torch.nn.Module.__init__(block)
+    block.norm_1 = AddFive()
+    block.norm_2 = torch.nn.Identity()
+    block.post_residual_norm = torch.nn.Identity()
+    block.edge_wise = CaptureEdgewise()
+    block.atom_wise = ZeroAtomwise()
+    block.edge_update_scale = torch.nn.Identity()
+    block.atom_update_scale = torch.nn.Identity()
+    block.atomwise_output_mode = "residual_scaled"
+    block.edge_norm1_position = "pre_node"
+
+    node_state = torch.full((2, 4, 2), 2.0)
+    edge_state = torch.zeros(3, 4, 2)
+    output = block(
+        node_state,
+        edge_state,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "edge",
+        None,
+    )
+
+    torch.testing.assert_close(
+        block.edge_wise.seen_node,
+        torch.full_like(node_state, 7.0),
+    )
+    # The same norm is not applied again to the edgewise result.
+    torch.testing.assert_close(output, torch.ones_like(edge_state))
 
 
 @pytest.mark.parametrize(

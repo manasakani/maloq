@@ -53,6 +53,7 @@ class TrainingWorkflow:
         "edge_atom_norm_type": None,
         "edge_post_residual_norm_type": None,
         "edge_atomwise_output_mode": "residual_scaled",
+        "edge_norm1_position": "post_edgewise",
         "esen_grid_resolution": None,
         "nte_input_conditioning": "none",
         "qhflow3_max_radius": 12.0,
@@ -326,6 +327,13 @@ class TrainingWorkflow:
             raise ValueError(
                 "edge_atomwise_output_mode must be "
                 "'residual_scaled' or 'direct'."
+            )
+        if self.config['edge_norm1_position'] not in {
+            'post_edgewise', 'pre_node'
+        }:
+            raise ValueError(
+                "edge_norm1_position must be "
+                "'post_edgewise' or 'pre_node'."
             )
         if self.config['muon_output_projection_policy'] not in {
             'shape_muon', 'adamw'
@@ -1120,6 +1128,7 @@ class TrainingWorkflow:
                     c['edge_post_residual_norm_type']
                 ),
                 edge_atomwise_output_mode=c['edge_atomwise_output_mode'],
+                edge_norm1_position=c['edge_norm1_position'],
                 input_conditioning=c['nte_input_conditioning'],
                 conditioning_basis=(
                     'def2-svp-nabla'
@@ -1300,6 +1309,9 @@ class TrainingWorkflow:
                 ),
                 'edge_atomwise_output_mode': (
                     None if is_qhflow3 else c['edge_atomwise_output_mode']
+                ),
+                'edge_norm1_position': (
+                    None if is_qhflow3 else c['edge_norm1_position']
                 ),
                 'muon_output_projection_policy': (
                     c['muon_output_projection_policy']
