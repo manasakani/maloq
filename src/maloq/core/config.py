@@ -89,7 +89,10 @@ def _model_defaults() -> dict[str, Any]:
         "residual_update_scale_log_range": 0.0,
         "unscaled_node_layers": (),
         "repeat_system_embedding_each_node_block": False,
+        "node_stack_mode": "nte",
         "edge_stack_mode": "recurrent",
+        "qhflow3_layer_gaussian_width": 2.0,
+        "qhflow3_layer_grid_ffn_chunk_size": 512,
         "edge_atom_norm_type": None,
         "edge_post_residual_norm_type": None,
         "direct_edgewise_layers": (),
@@ -256,11 +259,15 @@ class ModelConfig(BaseModel):
     residual_update_scale_log_range: float = 0.0
     unscaled_node_layers: tuple[int, ...] = ()
     repeat_system_embedding_each_node_block: bool = False
+    node_stack_mode: Literal["nte", "qhflow3_exact"] = "nte"
     edge_stack_mode: Literal[
         "recurrent",
         "nte_parallel",
         "qhflow3_parallel",
+        "qhflow3_exact_parallel",
     ] = "recurrent"
+    qhflow3_layer_gaussian_width: float = Field(default=2.0, gt=0.0)
+    qhflow3_layer_grid_ffn_chunk_size: int | None = Field(default=512, gt=0)
     edge_atom_norm_type: Literal[
         "layer_norm",
         "layer_norm_sh",
@@ -455,7 +462,10 @@ class MaloqConfig(BaseModel):
             "residual_update_scale_log_range": "model",
             "unscaled_node_layers": "model",
             "repeat_system_embedding_each_node_block": "model",
+            "node_stack_mode": "model",
             "edge_stack_mode": "model",
+            "qhflow3_layer_gaussian_width": "model",
+            "qhflow3_layer_grid_ffn_chunk_size": "model",
             "edge_atom_norm_type": "model",
             "edge_post_residual_norm_type": "model",
             "direct_edgewise_layers": "model",

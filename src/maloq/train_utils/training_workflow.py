@@ -49,7 +49,10 @@ class TrainingWorkflow:
         "residual_update_scale_log_range": 0.0,
         "unscaled_node_layers": (),
         "repeat_system_embedding_each_node_block": False,
+        "node_stack_mode": "nte",
         "edge_stack_mode": "recurrent",
+        "qhflow3_layer_gaussian_width": 2.0,
+        "qhflow3_layer_grid_ffn_chunk_size": 512,
         "edge_atom_norm_type": None,
         "edge_post_residual_norm_type": None,
         "direct_edgewise_layers": (),
@@ -294,22 +297,59 @@ class TrainingWorkflow:
                 "repeat_system_embedding_each_node_block requires "
                 "nte_input_conditioning='qhflow3_exact'."
             )
+        if self.config['node_stack_mode'] not in {'nte', 'qhflow3_exact'}:
+            raise ValueError(
+                "node_stack_mode must be 'nte' or 'qhflow3_exact'."
+            )
         if self.config['edge_stack_mode'] not in {
-            'recurrent', 'nte_parallel', 'qhflow3_parallel'
+            'recurrent', 'nte_parallel', 'qhflow3_parallel',
+            'qhflow3_exact_parallel'
         }:
             raise ValueError(
-                "edge_stack_mode must be 'recurrent', 'nte_parallel', or "
-                "'qhflow3_parallel'."
+                "edge_stack_mode must be 'recurrent', 'nte_parallel', "
+                "'qhflow3_parallel', or 'qhflow3_exact_parallel'."
+            )
+        exact_qhflow3_layers = (
+            self.config['node_stack_mode'] == 'qhflow3_exact'
+            or self.config['edge_stack_mode'] == 'qhflow3_exact_parallel'
+        )
+        if exact_qhflow3_layers and self.config['backbone_type'] != 'esen':
+            raise ValueError(
+                "Exact QHFlow3 layer transplants require backbone_type='esen'."
+            )
+        if exact_qhflow3_layers and self.config['mlp_type'] != 'grid':
+            raise ValueError(
+                "Exact QHFlow3 layer transplants require mlp_type='grid'."
+            )
+        if exact_qhflow3_layers and self.config['distribute_graphs']:
+            raise ValueError(
+                "Exact QHFlow3 layer transplants do not support distributed "
+                "graph training."
+            )
+        if float(self.config['qhflow3_layer_gaussian_width']) <= 0.0:
+            raise ValueError("qhflow3_layer_gaussian_width must be positive.")
+        qhflow3_layer_chunk = self.config['qhflow3_layer_grid_ffn_chunk_size']
+        if qhflow3_layer_chunk is not None and int(qhflow3_layer_chunk) <= 0:
+            raise ValueError(
+                "qhflow3_layer_grid_ffn_chunk_size must be positive."
             )
         if (
             self.config['edge_stack_mode'] in {
-                'nte_parallel', 'qhflow3_parallel'
+                'nte_parallel', 'qhflow3_parallel',
+                'qhflow3_exact_parallel'
             }
             and self.config['message_passing_schedule'] != 'node_then_edge'
         ):
             raise ValueError(
                 "Parallel edge stacks require "
                 "message_passing_schedule='node_then_edge'."
+            )
+        if (
+            self.config['node_stack_mode'] == 'qhflow3_exact'
+            and self.config['message_passing_schedule'] != 'node_then_edge'
+        ):
+            raise ValueError(
+                "The exact QHFlow3 node stack requires node_then_edge."
             )
         valid_edge_norm_types = {
             None, 'layer_norm', 'layer_norm_sh', 'rms_norm_sh'
@@ -1159,7 +1199,10 @@ class TrainingWorkflow:
                 repeat_system_embedding_each_node_block=(
                     c['repeat_system_embedding_each_node_block']
                 ),
+                node_stack_mode=c['node_stack_mode'],
                 edge_stack_mode=c['edge_stack_mode'],
+                qhflow3_layer_gaussian_width=c['qhflow3_layer_gaussian_width'],
+                qhflow3_layer_grid_ffn_chunk_size=c['qhflow3_layer_grid_ffn_chunk_size'],
                 edge_atom_norm_type=c['edge_atom_norm_type'],
                 edge_post_residual_norm_type=(
                     c['edge_post_residual_norm_type']
@@ -1332,10 +1375,23 @@ class TrainingWorkflow:
                     if is_qhflow3
                     else bool(c['repeat_system_embedding_each_node_block'])
                 ),
+                'node_stack_mode': (
+                    'qhflow3_exact'
+                    if is_qhflow3
+                    else c['node_stack_mode']
+                ),
                 'edge_stack_mode': (
                     'qhflow3_parallel_sum'
                     if is_qhflow3
                     else c['edge_stack_mode']
+                ),
+                'qhflow3_layer_gaussian_width': (
+                    2.0 if is_qhflow3 else c['qhflow3_layer_gaussian_width']
+                ),
+                'qhflow3_layer_grid_ffn_chunk_size': (
+                    c['qhflow3_grid_ffn_chunk_size']
+                    if is_qhflow3
+                    else c['qhflow3_layer_grid_ffn_chunk_size']
                 ),
                 'edge_atom_norm_type': (
                     None if is_qhflow3 else c['edge_atom_norm_type']

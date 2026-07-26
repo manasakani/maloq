@@ -24,6 +24,8 @@ from maloq.helm.nn.layer_norm import (
 )
 from maloq.helm.qhflow3_clean import (
     GridAtomwise as QHFlow3GridAtomwise,
+    eSCNMD_Block as QHFlow3NodeBlock,
+    eSCNMD_Block_xy2 as QHFlow3PairBlock,
     QHFlow3MaloqBackbone,
     _orbital_masks_for_basis,
 )
@@ -164,6 +166,140 @@ def test_maloq_qh9_config_round_trip_preserves_model_recipe():
     assert workflow["scheduler_type"] == "warmup_polynomial"
     assert workflow["gradient_clip_val"] == 1.0
     assert workflow["seed"] == 44
+
+
+def test_exact_qhflow3_layer_transplant_options_round_trip():
+    workflow = MaloqConfig(
+        model={
+            "mlp_type": "grid",
+            "message_passing_schedule": "node_then_edge",
+            "node_stack_mode": "qhflow3_exact",
+            "edge_stack_mode": "qhflow3_exact_parallel",
+            "qhflow3_layer_gaussian_width": 2.0,
+            "qhflow3_layer_grid_ffn_chunk_size": 256,
+        }
+    ).to_workflow_config()
+
+    assert workflow["node_stack_mode"] == "qhflow3_exact"
+    assert workflow["edge_stack_mode"] == "qhflow3_exact_parallel"
+    assert workflow["qhflow3_layer_gaussian_width"] == 2.0
+    assert workflow["qhflow3_layer_grid_ffn_chunk_size"] == 256
+
+
+def test_exact_qhflow3_layer_transplants_instantiate_original_modules():
+    model = eSEN_Backbone(
+        Irreps("1x0e"),
+        sphere_channels=4,
+        hidden_channels=4,
+        lmax=2,
+        mmax=2,
+        cutoff=8.0,
+        edge_channels=4,
+        num_layers=2,
+        num_edge_layers=2,
+        num_distance_basis=8,
+        mlp_type="grid",
+        message_passing_schedule="node_then_edge",
+        node_stack_mode="qhflow3_exact",
+        edge_stack_mode="qhflow3_exact_parallel",
+        qhflow3_layer_grid_ffn_chunk_size=17,
+    )
+
+    assert all(isinstance(block, QHFlow3NodeBlock) for block in model.node_blocks)
+    assert all(isinstance(block, QHFlow3PairBlock) for block in model.edge_blocks)
+    assert model.qhflow3_pair_norm is not None
+    qhflow3_grid_modules = [
+        module
+        for module in model.modules()
+        if isinstance(module, QHFlow3GridAtomwise)
+    ]
+    assert len(qhflow3_grid_modules) == 4
+    assert all(module.grid_ffn_chunk_size == 17 for module in qhflow3_grid_modules)
+
+
+def test_exact_qhflow3_combined_stack_matches_direct_block_calls_and_backpropagates():
+    torch.manual_seed(44)
+    model = eSEN_Backbone(
+        Irreps("1x0e"),
+        sphere_channels=4,
+        hidden_channels=4,
+        lmax=1,
+        mmax=1,
+        cutoff=8.0,
+        edge_channels=4,
+        num_layers=1,
+        num_edge_layers=1,
+        num_distance_basis=4,
+        mlp_type="grid",
+        message_passing_schedule="node_then_edge",
+        node_stack_mode="qhflow3_exact",
+        edge_stack_mode="qhflow3_exact_parallel",
+        qhflow3_layer_grid_ffn_chunk_size=None,
+    )
+    edge_index = torch.tensor([[0, 1], [1, 0]])
+    edge_vectors = torch.tensor(
+        [[0.8, 0.2, -0.1], [-0.8, -0.2, 0.1]],
+        dtype=torch.float32,
+    )
+    edge_distance = edge_vectors.norm(dim=-1)
+    wigner, wigner_inv = model._get_rotmat_and_wigner(edge_vectors)
+    qhflow3_wigner, qhflow3_wigner_inv = model._to_qhflow3_wigner(
+        wigner, wigner_inv
+    )
+    node_state = torch.randn(2, 4, 4, requires_grad=True)
+    incoming_edge_state = torch.randn(2, 4, 4, requires_grad=True)
+    qhflow3_x_edge = torch.randn(2, 12, requires_grad=True)
+    graph_dict = {
+        "edge_distance": edge_distance,
+        "edge_index": edge_index,
+        "partition": None,
+    }
+
+    expected_node = model.node_blocks[0](
+        node_state,
+        qhflow3_x_edge,
+        edge_distance,
+        edge_index,
+        qhflow3_wigner,
+        qhflow3_wigner_inv,
+        node_offset=0,
+    )
+    expected_edge = model.edge_blocks[0](
+        expected_node,
+        qhflow3_x_edge,
+        edge_distance,
+        edge_index,
+        qhflow3_wigner,
+        qhflow3_wigner_inv,
+        node_offset=0,
+    )
+    actual_node, actual_edge = model._run_message_passing(
+        node_state,
+        incoming_edge_state,
+        qhflow3_x_edge,
+        graph_dict,
+        wigner,
+        wigner_inv,
+        qhflow3_x_edge=qhflow3_x_edge,
+        qhflow3_wigner=qhflow3_wigner,
+        qhflow3_wigner_inv=qhflow3_wigner_inv,
+    )
+
+    torch.testing.assert_close(actual_node, expected_node)
+    torch.testing.assert_close(actual_edge, expected_edge)
+    (actual_node.square().mean() + actual_edge.square().mean()).backward()
+    assert node_state.grad is not None
+    assert qhflow3_x_edge.grad is not None
+    assert incoming_edge_state.grad is None
+
+
+def test_exact_qhflow3_layers_require_grid_mlp():
+    with pytest.raises(ValueError, match="mlp_type='grid'"):
+        eSEN_Backbone(
+            Irreps("1x0e"),
+            node_stack_mode="qhflow3_exact",
+            message_passing_schedule="node_then_edge",
+        )
 
 
 def test_nte_layer_structure_ablation_options_are_explicit():

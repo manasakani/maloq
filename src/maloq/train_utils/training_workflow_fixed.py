@@ -54,6 +54,9 @@ _SIGNATURE_EXCLUDED_KEYS = {
 _SIGNATURE_COMPATIBILITY_DEFAULTS = {
     "direct_edgewise_layers": [],
     "qhflow3_muonize_output_projection": False,
+    "node_stack_mode": "nte",
+    "qhflow3_layer_gaussian_width": 2.0,
+    "qhflow3_layer_grid_ffn_chunk_size": 512,
 }
 
 

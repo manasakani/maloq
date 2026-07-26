@@ -391,3 +391,70 @@ distribution, W&B logging every 10 optimizer steps in
 `kaist-korea/maloq-nablaDFT`, and the compact display name
 `NablaDFT | QHFlow3 | MatrixMuon+ProjMuon+AuxAdamW | RAW | OV0 |
 NTEGrid10x11 | V3`.
+
+
+## Literal QHFlow3 layer-transplant factorial
+
+The earlier `QHFPair` run (`sb9afgms`) reproduced QHFlow3's pair-stack order
+with NTE implementations of SO(2) convolution, gate activation, normalization,
+and grid FFN. It did not instantiate QHFlow3's original layer classes. These
+three V2 runs instead import and instantiate `eSCNMD_Block` and
+`eSCNMD_Block_xy2` directly from `src/maloq/helm/qhflow3_clean.py`.
+
+Together with NTE reference `fao0946w`, they form a node-by-pair 2x2 factorial:
+
+| Variant | Node stack | Pair stack |
+|---|---|---|
+| NTE reference | NTE NodeBlock x3 | recurrent NTE EdgeBlock x2 |
+| `QHFNodeExact` | literal QHFlow3 NodeBlock x3 | recurrent NTE EdgeBlock x2 |
+| `QHFPairExact` | NTE NodeBlock x3 | literal QHFlow3 xy2 x2, independent sum |
+| `QHFBlocksExact` | literal QHFlow3 NodeBlock x3 | literal QHFlow3 xy2 x2, independent sum |
+
+The exact blocks receive QHFlow3's original layer input contract: m-major
+Wigner mapping, Gaussian width 2.0, `distance/source/target` radial-feature
+order, sigmoid gate, default 10x11 SO(3) grid, and a 512-row grid-FFN chunk.
+The NTE QHF conditioner, one shared NTE graph, 128-to-64 SO(3) projections,
+Muon Fock head, target, data rows/order, and optimizer schedule remain fixed.
+`QHFNodeExact` and `QHFBlocksExact` also repeat the learned system scalar in
+each node block, as the original QHFlow3 block does; completed `RepeatSys`
+provides the controlled single-operation comparison for that constituent.
+
+Pre-launch parameter routing confirms that the exact node replacement is
+nearly capacity-neutral: it removes only 30 scalar degree-LayerScale
+parameters and leaves shape-routed Muon parameters unchanged (`28,180,864`).
+The exact pair replacement has `28,463,646` backbone parameters versus
+`28,231,730` for NTE, with `28,410,880` versus `28,180,864` routed to Muon.
+Almost all of that increase is QHFlow3's original second scalar-modulation
+branch (`fc2`), which is functionally dead because its second SO(2)
+convolution uses internal weights; it is retained deliberately so the imported
+pair layer is literal rather than a cleaned reimplementation.
+
+Configs:
+
+- `nte64e2_qcond_qhflow3_exact_node_nabladft.yaml`
+- `nte64e2_qcond_qhflow3_exact_pair_nabladft.yaml`
+- `nte64e2_qcond_qhflow3_exact_blocks_nabladft.yaml`
+
+Commands:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/10_nabladft_nte64_qhflow3_layer_transplant_2gpu.sh validate node
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/10_nabladft_nte64_qhflow3_layer_transplant_2gpu.sh smoke pair 4,5
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/10_nabladft_nte64_qhflow3_layer_transplant_2gpu.sh full blocks 6,7
+```
+
+Every full lane uses 20 epochs, two data-parallel GPUs, micro-batch 5 per rank,
+gradient accumulation 2, effective batch 20, RAW Fock targets, seed 44, no
+distributed graph, and W&B logging every 10 optimizer steps in
+`kaist-korea/maloq-nablaDFT`, group
+`nabla-nte64-qhflow3-layer-transplant-v1`. Full outputs use:
+
+`/dataset/seongsu/shared-home/workspace/project/outputs/nabladft-nte64-qhf*exact-v2-2gpu-eb20-mb5-ga2-full-e20-<timestamp>/`
+
+The durable manifest is `queue_nte64_qhflow3_layer_transplants.yaml`. Status:
+all three configs passed runner validation; 63 related regression tests passed;
+and `QHFNodeExact`, `QHFPairExact`, and `QHFBlocksExact` each passed a
+full-model two-GPU 20-train/20-validation smoke. Successful smoke artifacts
+were removed. A separate general-rotation check measured maximum covariance
+errors of `3.22e-6` for node features and `7.73e-7` for pair features. Full
+queue launch is pending the clean source commit.

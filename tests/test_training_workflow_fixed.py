@@ -115,6 +115,9 @@ def test_fixed_resume_restores_optimizer_scheduler_and_epoch(tmp_path: Path):
         **checkpoint_config,
         "direct_edgewise_layers": (),
         "qhflow3_muonize_output_projection": False,
+        "node_stack_mode": "nte",
+        "qhflow3_layer_gaussian_width": 2.0,
+        "qhflow3_layer_grid_ffn_chunk_size": 512,
     }
     workflow.world_size = 1
     workflow.rank = 0

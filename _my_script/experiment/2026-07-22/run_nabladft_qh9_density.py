@@ -392,6 +392,16 @@ def nabladft_tracking_identity(
                     "ablation:nte-input-conditioning",
                 )
             )
+        node_stack_mode = config.get("node_stack_mode", "nte")
+        if node_stack_mode == "qhflow3_exact":
+            ablation_slugs.append("qhfnodeexact")
+            ablation_labels.append("QHFNodeExact")
+            ablation_tags.extend(
+                (
+                    "node-stack:qhflow3-exact-module",
+                    "ablation:node-layer-transplant",
+                )
+            )
         unscaled_node_layers = tuple(
             int(index) for index in config.get("unscaled_node_layers", ())
         )
@@ -461,6 +471,16 @@ def nabladft_tracking_identity(
                     "ablation:edge-topology",
                 )
             )
+        elif edge_stack_mode == "qhflow3_exact_parallel":
+            ablation_slugs.append("qhfpairexact")
+            ablation_labels.append("QHFPairExact")
+            ablation_tags.extend(
+                (
+                    "edge-stack:qhflow3-exact-parallel",
+                    "pair-block-math:qhflow3-exact-module",
+                    "ablation:pair-layer-transplant",
+                )
+            )
     elif variant == "qhflow3":
         model_slug = "qhf3"
         model_label = "QHFlow3"
@@ -497,7 +517,8 @@ def nabladft_tracking_identity(
         "muon_output_projection_policy", "shape_muon"
     )
     has_layer_structure_ablation = bool(
-        config.get("unscaled_node_layers", ())
+        config.get("node_stack_mode", "nte") != "nte"
+        or config.get("unscaled_node_layers", ())
         or config.get("repeat_system_embedding_each_node_block", False)
         or config.get("direct_edgewise_layers", ())
         or config.get("edge_stack_mode", "recurrent") != "recurrent"
@@ -989,10 +1010,13 @@ def main() -> None:
                     "num_mp_layers",
                     "num_edge_layers",
                     "message_passing_schedule",
+                    "node_stack_mode",
                     "unscaled_node_layers",
                     "repeat_system_embedding_each_node_block",
                     "direct_edgewise_layers",
                     "edge_stack_mode",
+                    "qhflow3_layer_gaussian_width",
+                    "qhflow3_layer_grid_ffn_chunk_size",
                     "esen_grid_resolution",
                     "nte_input_conditioning",
                     "qhflow3_use_overlap",

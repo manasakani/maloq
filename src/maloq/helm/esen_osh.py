@@ -52,6 +52,15 @@ from .nn.so2_layers import SO2_Convolution
 from .nn.so3_layers import SO3_Linear
 from .nn.activation import GateActivation
 from .nte_conditioning import NTEMatrixConditioning
+from .qhflow3_clean import (
+    GridAtomwise as QHFlow3GridAtomwise,
+    eSCNMD_Block as QHFlow3NodeBlock,
+    eSCNMD_Block_xy2 as QHFlow3PairBlock,
+)
+from .qhf_layer.layer_norm import (
+    get_normalization_layer as get_qhflow3_normalization_layer,
+)
+from .qhf_layer.radial import GaussianSmearing as QHFlow3GaussianSmearing
 
 from .common.irreps_utils import get_reduced_to_all_indices, get_parity_multiplier, get_product_irreps, get_subspace_remix_permutation
 
@@ -96,7 +105,10 @@ class eSEN_Backbone(nn.Module):
         residual_update_scale_log_range: float = 0.0,
         unscaled_node_layers: tuple[int, ...] = (),
         repeat_system_embedding_each_node_block: bool = False,
+        node_stack_mode: str = "nte",
         edge_stack_mode: str = "recurrent",
+        qhflow3_layer_gaussian_width: float = 2.0,
+        qhflow3_layer_grid_ffn_chunk_size: int | None = 512,
         edge_atom_norm_type: str | None = None,
         edge_post_residual_norm_type: str | None = None,
         edge_atomwise_output_mode: str = "residual_scaled",
@@ -120,11 +132,21 @@ class eSEN_Backbone(nn.Module):
                 f"'node_then_edge', got {message_passing_schedule!r}."
             )
         self.message_passing_schedule = message_passing_schedule
-        parallel_edge_stack_modes = {"nte_parallel", "qhflow3_parallel"}
+        if node_stack_mode not in {"nte", "qhflow3_exact"}:
+            raise ValueError(
+                "node_stack_mode must be 'nte' or 'qhflow3_exact', "
+                f"got {node_stack_mode!r}."
+            )
+        self.node_stack_mode = node_stack_mode
+        parallel_edge_stack_modes = {
+            "nte_parallel",
+            "qhflow3_parallel",
+            "qhflow3_exact_parallel",
+        }
         if edge_stack_mode not in {"recurrent", *parallel_edge_stack_modes}:
             raise ValueError(
-                "edge_stack_mode must be 'recurrent', 'nte_parallel', or "
-                "'qhflow3_parallel', "
+                "edge_stack_mode must be 'recurrent', 'nte_parallel', "
+                "'qhflow3_parallel', or 'qhflow3_exact_parallel', "
                 f"got {edge_stack_mode!r}."
             )
         if edge_stack_mode in parallel_edge_stack_modes and message_type != "source-target":
@@ -140,6 +162,44 @@ class eSEN_Backbone(nn.Module):
                 "message_passing_schedule='node_then_edge'."
             )
         self.edge_stack_mode = edge_stack_mode
+        self.uses_qhflow3_exact_layers = (
+            node_stack_mode == "qhflow3_exact"
+            or edge_stack_mode == "qhflow3_exact_parallel"
+        )
+        if self.uses_qhflow3_exact_layers and mlp_type != "grid":
+            raise ValueError(
+                "Exact QHFlow3 layer transplants require mlp_type='grid'."
+            )
+        if self.uses_qhflow3_exact_layers and distributed_graph_training:
+            raise ValueError(
+                "Exact QHFlow3 layer transplants do not support distributed "
+                "graph training."
+            )
+        if (
+            node_stack_mode == "qhflow3_exact"
+            and message_passing_schedule != "node_then_edge"
+        ):
+            raise ValueError(
+                "The exact QHFlow3 node stack requires "
+                "message_passing_schedule='node_then_edge'."
+            )
+        self.qhflow3_layer_gaussian_width = float(
+            qhflow3_layer_gaussian_width
+        )
+        if self.qhflow3_layer_gaussian_width <= 0.0:
+            raise ValueError("qhflow3_layer_gaussian_width must be positive.")
+        self.qhflow3_layer_grid_ffn_chunk_size = (
+            None
+            if qhflow3_layer_grid_ffn_chunk_size is None
+            else int(qhflow3_layer_grid_ffn_chunk_size)
+        )
+        if (
+            self.qhflow3_layer_grid_ffn_chunk_size is not None
+            and self.qhflow3_layer_grid_ffn_chunk_size <= 0
+        ):
+            raise ValueError(
+                "qhflow3_layer_grid_ffn_chunk_size must be positive."
+            )
         valid_norm_types = {"layer_norm", "layer_norm_sh", "rms_norm_sh"}
         for option_name, option_value in (
             ("edge_atom_norm_type", edge_atom_norm_type),
@@ -309,6 +369,16 @@ class eSEN_Backbone(nn.Module):
             self.distance_expansion.num_output = self.num_distance_basis
         else:
             raise ValueError("Unknown distance function")
+        self.qhflow3_layer_distance_expansion = (
+            QHFlow3GaussianSmearing(
+                0.0,
+                self.cutoff,
+                self.num_distance_basis,
+                self.qhflow3_layer_gaussian_width,
+            )
+            if self.uses_qhflow3_exact_layers
+            else None
+        )
 
         # equivariant initial embedding
         # self.element_embedding = nn.Embedding(self.max_num_elements, self.edge_channels)
@@ -392,28 +462,23 @@ class eSEN_Backbone(nn.Module):
             node_block_kwargs = dict(block_kwargs)
             if layer_index in self.unscaled_node_layers:
                 node_block_kwargs["residual_update_scale_mode"] = "none"
-            node_block = eSEN_Block(
-                self.sphere_channels,
-                self.hidden_channels,
-                self.lmax,
-                self.mmax,
-                self.mappingReduced,
-                self.SO3_grid,
-                self.edge_channels_list,
-                self.cutoff,
-                self.norm_type,
-                self.act_type,
-                self.mlp_type,
-                message_type,
-                include_edges=self.include_edges,
-                node_or_edge='node',
-                **node_block_kwargs,
-            )
-            self.node_blocks.append(node_block)
-
-        if self.include_edges:
-            for edge_layer_index in range(1, self.num_edge_layers + 1):
-                edge_block = eSEN_Block(
+            if self.node_stack_mode == "qhflow3_exact":
+                node_block = QHFlow3NodeBlock(
+                    self.sphere_channels,
+                    self.hidden_channels,
+                    self.lmax,
+                    self.mmax,
+                    self.mappingReduced,
+                    self.SO3_grid,
+                    self.edge_channels_list,
+                    self.cutoff,
+                    self.norm_type,
+                    self.act_type,
+                    self.mlp_type,
+                    activation_checkpoint_chunk_size=None,
+                )
+            else:
+                node_block = eSEN_Block(
                     self.sphere_channels,
                     self.hidden_channels,
                     self.lmax,
@@ -427,26 +492,81 @@ class eSEN_Backbone(nn.Module):
                     self.mlp_type,
                     message_type,
                     include_edges=self.include_edges,
-                    node_or_edge='edge',
-                    atom_norm_type=self.edge_atom_norm_type,
-                    post_residual_norm_type=self.edge_post_residual_norm_type,
-                    edgewise_output_mode=(
-                        "direct"
-                        if edge_layer_index in self.direct_edgewise_layers
-                        else "residual_scaled"
-                    ),
-                    atomwise_output_mode=self.edge_atomwise_output_mode,
-                    edge_norm1_position=self.edge_norm1_position,
-                    **block_kwargs,
+                    node_or_edge='node',
+                    **node_block_kwargs,
                 )
-                self.edge_blocks.append(edge_block)
+            self.node_blocks.append(node_block)
 
+        if self.include_edges:
+            for edge_layer_index in range(1, self.num_edge_layers + 1):
+                if self.edge_stack_mode == "qhflow3_exact_parallel":
+                    edge_block = QHFlow3PairBlock(
+                        self.sphere_channels,
+                        self.hidden_channels,
+                        self.lmax,
+                        self.mmax,
+                        self.mappingReduced,
+                        self.SO3_grid,
+                        self.edge_channels_list,
+                        self.cutoff,
+                        self.norm_type,
+                        self.act_type,
+                        self.mlp_type,
+                        activation_checkpoint_chunk_size=None,
+                    )
+                else:
+                    edge_block = eSEN_Block(
+                        self.sphere_channels,
+                        self.hidden_channels,
+                        self.lmax,
+                        self.mmax,
+                        self.mappingReduced,
+                        self.SO3_grid,
+                        self.edge_channels_list,
+                        self.cutoff,
+                        self.norm_type,
+                        self.act_type,
+                        self.mlp_type,
+                        message_type,
+                        include_edges=self.include_edges,
+                        node_or_edge='edge',
+                        atom_norm_type=self.edge_atom_norm_type,
+                        post_residual_norm_type=self.edge_post_residual_norm_type,
+                        edgewise_output_mode=(
+                            "direct"
+                            if edge_layer_index in self.direct_edgewise_layers
+                            else "residual_scaled"
+                        ),
+                        atomwise_output_mode=self.edge_atomwise_output_mode,
+                        edge_norm1_position=self.edge_norm1_position,
+                        **block_kwargs,
+                    )
+                self.edge_blocks.append(edge_block)
 
         self.norm = get_normalization_layer(
             self.norm_type,
             lmax=self.lmax,
             num_channels=self.sphere_channels
         )
+        self.qhflow3_pair_norm = (
+            get_qhflow3_normalization_layer(
+                self.norm_type,
+                lmax=self.lmax,
+                num_channels=self.sphere_channels,
+            )
+            if self.edge_stack_mode == "qhflow3_exact_parallel"
+            else None
+        )
+        if self.qhflow3_layer_grid_ffn_chunk_size is not None:
+            exact_layer_blocks = list(self.node_blocks)
+            if self.include_edges:
+                exact_layer_blocks.extend(self.edge_blocks)
+            for block in exact_layer_blocks:
+                for module in block.modules():
+                    if isinstance(module, QHFlow3GridAtomwise):
+                        module.grid_ffn_chunk_size = (
+                            self.qhflow3_layer_grid_ffn_chunk_size
+                        )
         if self.output_sphere_channels == self.sphere_channels:
             self.node_output_projection = nn.Identity()
             self.edge_output_projection = nn.Identity()
@@ -496,6 +616,15 @@ class eSEN_Backbone(nn.Module):
 
         return wigner, wigner_inv
 
+    def _to_qhflow3_wigner(self, wigner, wigner_inv):
+        """Convert l-major Wigner matrices to QHFlow3's m-major contract."""
+        to_m = self.mappingReduced.to_m.to(wigner.dtype)
+        qhflow3_wigner = torch.einsum("mk,nkj->nmj", to_m, wigner)
+        qhflow3_wigner_inv = torch.einsum(
+            "njk,mk->njm", wigner_inv, to_m
+        )
+        return qhflow3_wigner, qhflow3_wigner_inv
+
     def _run_message_passing(
         self,
         x_message_node,
@@ -505,8 +634,31 @@ class eSEN_Backbone(nn.Module):
         wigner,
         wigner_inv,
         system_node_embedding=None,
+        qhflow3_x_edge=None,
+        qhflow3_wigner=None,
+        qhflow3_wigner_inv=None,
     ):
         def update_node(block, node_state, edge_state):
+            if self.node_stack_mode == "qhflow3_exact":
+                if (
+                    qhflow3_x_edge is None
+                    or qhflow3_wigner is None
+                    or qhflow3_wigner_inv is None
+                ):
+                    raise ValueError(
+                        "Exact QHFlow3 node blocks require QHFlow3 edge and "
+                        "Wigner inputs."
+                    )
+                return block(
+                    node_state,
+                    qhflow3_x_edge,
+                    graph_dict["edge_distance"],
+                    graph_dict["edge_index"],
+                    qhflow3_wigner,
+                    qhflow3_wigner_inv,
+                    sys_node_embedding=system_node_embedding,
+                    node_offset=0,
+                )
             return block(
                 node_state,
                 edge_state,
@@ -565,7 +717,34 @@ class eSEN_Backbone(nn.Module):
                 for edge_block in self.edge_blocks
             ]
             x_message_edge = torch.stack(edge_branches, dim=0).sum(dim=0)
-        else:
+        elif self.edge_stack_mode == "qhflow3_exact_parallel":
+            for node_block in self.node_blocks:
+                x_message_node = update_node(
+                    node_block, x_message_node, x_message_edge
+                )
+            if (
+                qhflow3_x_edge is None
+                or qhflow3_wigner is None
+                or qhflow3_wigner_inv is None
+            ):
+                raise ValueError(
+                    "Exact QHFlow3 pair blocks require QHFlow3 edge and "
+                    "Wigner inputs."
+                )
+            pair_branches = [
+                edge_block(
+                    x_message_node,
+                    qhflow3_x_edge,
+                    graph_dict["edge_distance"],
+                    graph_dict["edge_index"],
+                    qhflow3_wigner,
+                    qhflow3_wigner_inv,
+                    node_offset=0,
+                )
+                for edge_block in self.edge_blocks
+            ]
+            x_message_edge = torch.stack(pair_branches, dim=0).sum(dim=0)
+        else:  # NTE primitives arranged in QHFlow3-style parallel branches.
             for node_block in self.node_blocks:
                 x_message_node = update_node(
                     node_block, x_message_node, x_message_edge
@@ -619,6 +798,12 @@ class eSEN_Backbone(nn.Module):
         wigner, wigner_inv = self._get_rotmat_and_wigner(
             graph_dict["edge_distance_vec"]
         )
+        qhflow3_wigner = None
+        qhflow3_wigner_inv = None
+        if self.uses_qhflow3_exact_layers:
+            qhflow3_wigner, qhflow3_wigner_inv = (
+                self._to_qhflow3_wigner(wigner, wigner_inv)
+            )
 
         # --> Rotation test:
         # rotated_edges_to_z_axis = torch.bmm(wigner[:, 1:4, 1:4], graph_dict["edge_distance_vec"].unsqueeze(-1)).squeeze(-1)
@@ -711,6 +896,17 @@ class eSEN_Backbone(nn.Module):
         )
 
         x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) 
+        qhflow3_x_edge = None
+        if self.uses_qhflow3_exact_layers:
+            qhflow3_distance_embedding = (
+                self.qhflow3_layer_distance_expansion(
+                    graph_dict["edge_distance"]
+                )
+            )
+            qhflow3_x_edge = torch.cat(
+                (qhflow3_distance_embedding, source_embedding, target_embedding),
+                dim=1,
+            )
 
         # do edge degree embeddings for both nodes and edges:
         x_message_node = self.edge_degree_embedding( 
@@ -752,6 +948,9 @@ class eSEN_Backbone(nn.Module):
             wigner,
             wigner_inv,
             system_node_embedding=system_node_embedding,
+            qhflow3_x_edge=qhflow3_x_edge,
+            qhflow3_wigner=qhflow3_wigner,
+            qhflow3_wigner_inv=qhflow3_wigner_inv,
         )
 
         # Final layer norm
@@ -759,7 +958,11 @@ class eSEN_Backbone(nn.Module):
         x_message_node = self.node_output_projection(x_message_node)
 
         if self.include_edges:
-            x_message_edge  = self.norm(x_message_edge)
+            if self.qhflow3_pair_norm is None:
+                x_message_edge = self.norm(x_message_edge)
+            else:
+                # QHFlow3 has a pair-stack norm with separate affine weights.
+                x_message_edge = self.qhflow3_pair_norm(x_message_edge)
             x_message_edge = self.edge_output_projection(x_message_edge)
 
         # Return the output
