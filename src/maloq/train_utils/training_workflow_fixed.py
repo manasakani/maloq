@@ -52,6 +52,7 @@ _SIGNATURE_EXCLUDED_KEYS = {
 }
 
 _SIGNATURE_COMPATIBILITY_DEFAULTS = {
+    "direct_atomwise_layers": [],
     "direct_edgewise_layers": [],
     "initial_edge_state_mode": "edge_degree",
     "qhflow3_muonize_output_projection": False,

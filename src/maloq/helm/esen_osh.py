@@ -258,6 +258,7 @@ class eSEN_Backbone(nn.Module):
         edge_atomwise_output_mode: str = "residual_scaled",
         edge_norm1_position: str = "post_edgewise",
         direct_edgewise_layers: tuple[int, ...] = (),
+        direct_atomwise_layers: tuple[int, ...] = (),
         input_conditioning: str = "none",
         conditioning_basis: str = "def2-svp",
         conditioning_delta_learning: bool = False,
@@ -654,6 +655,36 @@ class eSEN_Backbone(nn.Module):
                 "initial_edge_state_mode='zero' is redundant with "
                 "direct_edgewise_layers containing EdgeBlock 1."
             )
+        self.direct_atomwise_layers = tuple(
+            int(index) for index in direct_atomwise_layers
+        )
+        if len(set(self.direct_atomwise_layers)) != len(
+            self.direct_atomwise_layers
+        ):
+            raise ValueError("direct_atomwise_layers must not contain duplicates.")
+        if any(
+            index < 1 or index > self.num_edge_layers
+            for index in self.direct_atomwise_layers
+        ):
+            raise ValueError(
+                "direct_atomwise_layers must contain 1-based indices within "
+                "num_edge_layers."
+            )
+        if self.direct_atomwise_layers and not include_edges:
+            raise ValueError(
+                "direct_atomwise_layers requires include_edges=True."
+            )
+        if (
+            self.direct_atomwise_layers
+            and self.edge_stack_mode in {
+                "qhflow3_parallel",
+                "qhflow3_exact_parallel",
+            }
+        ):
+            raise ValueError(
+                "direct_atomwise_layers requires a native eSEN edge-block "
+                "forward path, not a QHFlow3 pair stack."
+            )
         self.hidden_channels = hidden_channels
         self.norm_type = norm_type
         self.act_type = act_type
@@ -757,7 +788,11 @@ class eSEN_Backbone(nn.Module):
                             if edge_layer_index in self.direct_edgewise_layers
                             else "residual_scaled"
                         ),
-                        atomwise_output_mode=self.edge_atomwise_output_mode,
+                        atomwise_output_mode=(
+                            "direct"
+                            if edge_layer_index in self.direct_atomwise_layers
+                            else self.edge_atomwise_output_mode
+                        ),
                         edge_norm1_position=self.edge_norm1_position,
                         **block_kwargs,
                     )

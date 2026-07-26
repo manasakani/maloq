@@ -708,6 +708,10 @@ def build_backbone(
                 "edge_post_residual_norm_type"
             ],
             direct_edgewise_layers=config["direct_edgewise_layers"],
+            direct_atomwise_layers=config.get(
+                "direct_atomwise_layers",
+                (),
+            ),
             edge_atomwise_output_mode=config["edge_atomwise_output_mode"],
             edge_norm1_position=config["edge_norm1_position"],
             input_conditioning=config["nte_input_conditioning"],

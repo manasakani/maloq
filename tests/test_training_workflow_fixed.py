@@ -113,6 +113,7 @@ def test_fixed_resume_restores_optimizer_scheduler_and_epoch(tmp_path: Path):
     workflow.resume_source = checkpoint_dir
     workflow.config = {
         **checkpoint_config,
+        "direct_atomwise_layers": (),
         "direct_edgewise_layers": (),
         "initial_edge_state_mode": "edge_degree",
         "qhflow3_muonize_output_projection": False,

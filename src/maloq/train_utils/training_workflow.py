@@ -60,6 +60,7 @@ class TrainingWorkflow:
         "edge_atom_norm_type": None,
         "edge_post_residual_norm_type": None,
         "direct_edgewise_layers": (),
+        "direct_atomwise_layers": (),
         "edge_atomwise_output_mode": "residual_scaled",
         "edge_norm1_position": "post_edgewise",
         "esen_grid_resolution": None,
@@ -442,6 +443,44 @@ class TrainingWorkflow:
             raise ValueError(
                 "direct_edgewise_layers must contain 1-based indices within "
                 "num_edge_layers."
+            )
+        if len(set(self.config['direct_atomwise_layers'])) != len(
+            self.config['direct_atomwise_layers']
+        ):
+            raise ValueError("direct_atomwise_layers must not contain duplicates.")
+        if any(
+            index < 1 or index > num_edge_layers
+            for index in self.config['direct_atomwise_layers']
+        ):
+            raise ValueError(
+                "direct_atomwise_layers must contain 1-based indices within "
+                "num_edge_layers."
+            )
+        if (
+            self.config['direct_atomwise_layers']
+            and self.config['backbone_type'] != 'esen'
+        ):
+            raise ValueError(
+                "direct_atomwise_layers requires backbone_type='esen'."
+            )
+        if (
+            self.config['direct_atomwise_layers']
+            and 'matrix' not in self.config['loss_target']
+        ):
+            raise ValueError(
+                "direct_atomwise_layers requires a matrix loss target with "
+                "edge embeddings."
+            )
+        if (
+            self.config['direct_atomwise_layers']
+            and self.config['edge_stack_mode'] in {
+                'qhflow3_parallel',
+                'qhflow3_exact_parallel',
+            }
+        ):
+            raise ValueError(
+                "direct_atomwise_layers requires a native eSEN edge-block "
+                "forward path, not a QHFlow3 pair stack."
             )
         if self.config['initial_edge_state_mode'] == 'zero':
             if self.config['backbone_type'] != 'esen':
@@ -1311,6 +1350,7 @@ class TrainingWorkflow:
                     c['edge_post_residual_norm_type']
                 ),
                 direct_edgewise_layers=c['direct_edgewise_layers'],
+                direct_atomwise_layers=c['direct_atomwise_layers'],
                 edge_atomwise_output_mode=c['edge_atomwise_output_mode'],
                 edge_norm1_position=c['edge_norm1_position'],
                 input_conditioning=c['nte_input_conditioning'],
@@ -1509,6 +1549,9 @@ class TrainingWorkflow:
                 ),
                 'direct_edgewise_layers': (
                     None if is_qhflow3 else list(c['direct_edgewise_layers'])
+                ),
+                'direct_atomwise_layers': (
+                    None if is_qhflow3 else list(c['direct_atomwise_layers'])
                 ),
                 'edge_atomwise_output_mode': (
                     None if is_qhflow3 else c['edge_atomwise_output_mode']

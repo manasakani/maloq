@@ -477,6 +477,27 @@ def nabladft_tracking_identity(
                     "ablation:edgewise-residual",
                 )
             )
+        direct_atomwise_layers = tuple(
+            int(index) for index in config.get("direct_atomwise_layers", ())
+        )
+        if direct_atomwise_layers:
+            layer_value = ",".join(
+                str(index) for index in direct_atomwise_layers
+            )
+            ablation_slugs.append(
+                "edge" + "-".join(
+                    str(index) for index in direct_atomwise_layers
+                ) + "atomdirect"
+            )
+            ablation_labels.append(
+                "Edge" + layer_value + "AtomDirect"
+            )
+            ablation_tags.extend(
+                (
+                    f"atomwise-direct-layers:{layer_value}",
+                    "ablation:edge-atomwise-residual",
+                )
+            )
         edge_stack_mode = config.get("edge_stack_mode", "recurrent")
         if edge_stack_mode == "nte_parallel":
             ablation_slugs.append("ntepair")
@@ -588,6 +609,7 @@ def nabladft_tracking_identity(
         )
         or config.get("edge_norm1_position", "post_edgewise") != "post_edgewise"
         or config.get("direct_edgewise_layers", ())
+        or config.get("direct_atomwise_layers", ())
         or config.get("edge_stack_mode", "recurrent") != "recurrent"
         or config.get("qhflow3_exact_pair_rng_aligned", False)
         or config.get("nte_output_projection_mode", "so3_linear")
@@ -1085,6 +1107,7 @@ def main() -> None:
                     "unscaled_node_layers",
                     "repeat_system_embedding_each_node_block",
                     "direct_edgewise_layers",
+                    "direct_atomwise_layers",
                     "edge_stack_mode",
                     "qhflow3_layer_gaussian_width",
                     "qhflow3_layer_grid_ffn_chunk_size",

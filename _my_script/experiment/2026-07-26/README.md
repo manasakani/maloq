@@ -290,6 +290,7 @@ MAE over epochs 16–20.
 | EdgePre+QHFProj | `isagwhys` | 5.8003e-5 | 8.7699e-5 |
 | EdgePre+Edge1Direct | `u8k66q2a` | 5.6429e-5 | 8.3894e-5 |
 | EdgePre+Edge1+QHFProj | `tq5e9a5p` | 5.5643e-5 | 8.2900e-5 |
+| EdgePre+Edge1+QHFProj+SplitOutNorm | `n7z3h6o0` | 5.3684e-5 | 7.9982e-5 |
 
 Independent branch topology alone (`NTEParallel`) and carrying the old edge
 state in the message (`STMessage`) do not explain the gap. Post-residual RMS
@@ -314,9 +315,11 @@ In contrast, `EdgePre+Edge1Direct` lowers the cited NTE tail by 22.71% and is
 3.75% below the optimizer-fair QHFlow3 tail, although its final epoch remains
 8.18% above QHFlow3. Adding `QHFProj` to that pair-boundary composition lowers
 final MAE by another 1.3940%, but `tq5e9a5p` remains 6.6726% above the
-optimizer-fair QHFlow3 final value. The next final-MAE control therefore
-mirrors QHFlow3's separate node/pair output normalizations; initial-edge
-residual removal remains a lower-priority structural diagnostic.
+optimizer-fair QHFlow3 final value. Separate node/pair output normalizations
+then lower final MAE by another 3.5199%; `n7z3h6o0` is the new best NTE lane
+and remains 2.9179% above QHFlow3. The next final-MAE control isolates
+QHFlow3's direct atomwise return at EdgeBlock 1; initial-edge residual removal
+remains a lower-priority structural diagnostic.
 
 
 ## NTE edge pre-node normalization ablation
@@ -755,7 +758,21 @@ The durable manifest is
 `queue_nte64_edgepre_edge1_qhflow3_projection_split_output_norm.yaml` with
 priority 18 and `allowed_hosts: any`. Runner validation, focused regression
 tests, and a two-GPU full-model 20-train/20-validation smoke passed; successful
-smoke artifacts were removed. This job has not been enqueued.
+smoke artifacts were removed. The full queue job
+`nabla-nte64-qcond-edgepre-edge1-qhfproj-splitnorm-v1-20260727a` completed
+all 20 epochs from clean source commit `cfd7c47` on server 1 GPUs 0 and 1
+with exit code 0. Its retained output is:
+
+`/dataset/seongsu/shared-home/workspace/project/outputs/nabladft-nte64-edgepre-edge1-qhfproj-splitoutnorm-v1-2gpu-eb20-mb5-ga2-full-e20-20260727-005849-331815/`
+
+W&B [`n7z3h6o0`](https://wandb.ai/kaist-korea/maloq-nablaDFT/runs/n7z3h6o0)
+finished with final matrix/node/edge MAE of
+`5.3684045842383014e-5 / 1.9448897111227616e-4 /
+6.472260160257549e-5`. Its epoch 16-20 means are
+`7.998210265337332e-5 / 3.9827224251590593e-4 /
+9.206929769077577e-5`. Final matrix MAE improves 3.5199% over `tq5e9a5p`
+and remains 2.9179% above optimizer-fair QHFlow3 `aeorq52s`. The retained
+training log contains no traceback, OOM, or non-finite error.
 
 
 ## EdgePre initial-edge residual isolation

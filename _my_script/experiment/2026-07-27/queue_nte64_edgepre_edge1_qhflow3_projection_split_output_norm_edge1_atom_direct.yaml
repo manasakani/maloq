@@ -1,0 +1,11 @@
+jobs:
+  - id: nabla-nte64-qcond-edgepre-edge1-qhfproj-splitnorm-edge1atom-v1-20260727a
+    description: Final-MAE control making only EdgeBlock 1 atomwise output direct on the SplitOutNorm base
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [any]
+    priority: 19
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_qcond_edgepre_edge1_qhflow3_irrep_projection_split_output_norm_edge1_atom_direct_nabladft.yaml
