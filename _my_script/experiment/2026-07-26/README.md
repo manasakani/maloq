@@ -199,3 +199,89 @@ Commands:
 The GPU pair is explicit and may be changed. Successful smoke artifacts are
 removed; failed smoke and all full-run artifacts are retained under
 `/dataset/seongsu/shared-home/workspace/project/outputs/`.
+
+
+## NTE recurrent edge-normalization ablations
+
+These three single-factor runs separate the causes of EdgeBlock 2's observed
+scalar bias while keeping the NTE-64/2 QHFcond recurrent topology, node stack,
+bounded degree LayerScale, MatrixMuon+AuxAdamW head, RAW target, seed 44,
+split, scheduler, and effective batch 20 fixed.
+
+| Ablation | Only active change | Hypothesis |
+|---|---|---|
+| `EdgePostRMS` | Apply `rms_norm_sh` after each edge block's final atomwise residual sum | Tests whether the missing block-local post-residual norm permits magnitude accumulation |
+| `EdgeSplitNorm` | Change only edge-block `norm_2` to `layer_norm_sh` | Tests whether scalar `l=0` suppresses the joint `l>0` tensor sector through a shared RMS denominator |
+| `EdgeDegreeNorm` | Change only edge-block `norm_2` to per-degree `layer_norm` | Tests whether imbalance within `l>0`, especially `l=4`, remains after scalar/tensor separation |
+
+The options are edge-only: node-block norms and the final trunk norm remain the
+baseline `rms_norm_sh`. `EdgePostRMS` changes the stored recurrent edge state;
+the other two normalize only the input to the edge atomwise FFN and preserve
+the unnormalized residual identity path.
+
+Commands:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/05_nabladft_nte64_edge_norm_ablation_2gpu.sh validate postrms
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/05_nabladft_nte64_edge_norm_ablation_2gpu.sh validate split
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/05_nabladft_nte64_edge_norm_ablation_2gpu.sh validate degree
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/05_nabladft_nte64_edge_norm_ablation_2gpu.sh smoke postrms 4,5
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/05_nabladft_nte64_edge_norm_ablation_2gpu.sh full postrms 4,5
+```
+
+Every full run uses 20 epochs, two data-parallel GPUs, micro-batch 5 per rank,
+gradient accumulation 2, and W&B logging every 10 optimizer steps in
+`kaist-korea/maloq-nablaDFT`, group
+`nabla-nte64-edge-norm-ablation-v1`. Successful smoke output is removed; failed
+smoke and full outputs remain below `outputs/`. The durable queue manifest is
+`queue_nte64_edge_norm_ablations.yaml`.
+
+
+## NTE direct edge-atomwise output ablation
+
+`EdgeAtomDirect` isolates the final operation inside each recurrent NTE
+EdgeBlock. The baseline returns
+`bounded_degree_scale(atomwise(x)) + residual`; this ablation returns
+`atomwise(x)` directly, matching the original QHFlow3 `xy2` block at that
+stage. It intentionally keeps NTE's recurrent edge topology, raw-node
+edgewise input, first edgewise residual, normalization types, node stack,
+conditioning, optimizer, and data order unchanged.
+
+Commands:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/06_nabladft_nte64_edge_atom_direct_2gpu.sh validate
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/06_nabladft_nte64_edge_atom_direct_2gpu.sh smoke 4,5
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/06_nabladft_nte64_edge_atom_direct_2gpu.sh full 4,5
+```
+
+The full run uses 20 epochs, two data-parallel GPUs, micro-batch 5 per rank,
+gradient accumulation 2, effective batch 20, RAW Fock targets, seed 44, no
+graph distribution, and W&B logging every 10 optimizer steps in
+`kaist-korea/maloq-nablaDFT`. The durable queue manifest is
+`queue_nte64_edge_atom_direct.yaml`.
+
+### Completed structural results
+
+Every row below completed 20 epochs with the same NablaDFT rows, seed,
+optimizer, effective batch, and validation cadence. `Tail-5` is the mean matrix
+MAE over epochs 16–20.
+
+| Variant | W&B | Final matrix MAE | Tail-5 matrix MAE |
+|---|---|---:|---:|
+| QHFlow3 reference | `80sa5m4j` | 5.5018e-5 | 9.2024e-5 |
+| NTE-64/2 QHFcond reference | `fao0946w` | 7.0757e-5 | 1.0854e-4 |
+| QHFPair | `sb9afgms` | 6.0942e-5 | 9.2118e-5 |
+| RepeatSys | `cjea73l0` | 7.2947e-5 | 1.0225e-4 |
+| NTEParallel | `ixli76xw` | 7.3554e-5 | 1.0923e-4 |
+| STMessage | `bcwrm9wc` | 7.4219e-5 | 1.1011e-4 |
+| EdgePostRMS | `uh1mdkgv` | 6.8514e-5 | 1.0064e-4 |
+| EdgeSplitNorm | `gu0eanf4` | 7.3127e-5 | 1.0286e-4 |
+| EdgeDegreeNorm | `1xt6c4xb` | 7.3935e-5 | 1.0601e-4 |
+
+Independent branch topology alone (`NTEParallel`) and carrying the old edge
+state in the message (`STMessage`) do not explain the gap. Post-residual RMS
+normalization gives a real but partial improvement. The complete QHFlow3 pair
+operation (`QHFPair`) is the only tested change whose tail is tied with
+QHFlow3, so `EdgeAtomDirect` next isolates its missing atomwise residual and
+bounded update scale as one original layer-output operation.

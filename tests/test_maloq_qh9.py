@@ -17,6 +17,11 @@ from maloq.dataset_utils.get_loader import _qm7_matrix_target
 from maloq.helm.esen_block import DegreeLayerScale, GridAtomwise, eSEN_Block
 from maloq.helm.esen_osh import eSEN_Backbone
 from maloq.helm.nn.activation import GateActivation
+from maloq.helm.nn.layer_norm import (
+    EquivariantLayerNormArray,
+    EquivariantLayerNormArraySphericalHarmonics,
+    EquivariantRMSNormArraySphericalHarmonicsV2,
+)
 from maloq.helm.qhflow3_clean import (
     GridAtomwise as QHFlow3GridAtomwise,
     QHFlow3MaloqBackbone,
@@ -170,6 +175,9 @@ def test_nte_layer_structure_ablation_options_are_explicit():
             "repeat_system_embedding_each_node_block": True,
             "nte_input_conditioning": "qhflow3_exact",
             "edge_stack_mode": "qhflow3_parallel",
+            "edge_atom_norm_type": "layer_norm_sh",
+            "edge_post_residual_norm_type": "rms_norm_sh",
+            "edge_atomwise_output_mode": "direct",
         },
         optimization={"muon_output_projection_policy": "adamw"},
     ).to_workflow_config()
@@ -177,7 +185,139 @@ def test_nte_layer_structure_ablation_options_are_explicit():
     assert workflow["unscaled_node_layers"] == (2,)
     assert workflow["repeat_system_embedding_each_node_block"] is True
     assert workflow["edge_stack_mode"] == "qhflow3_parallel"
+    assert workflow["edge_atom_norm_type"] == "layer_norm_sh"
+    assert workflow["edge_post_residual_norm_type"] == "rms_norm_sh"
+    assert workflow["edge_atomwise_output_mode"] == "direct"
     assert workflow["muon_output_projection_policy"] == "adamw"
+
+
+def test_nte_edge_only_norm_options_do_not_change_node_blocks():
+    model = eSEN_Backbone(
+        Irreps("1x0e"),
+        sphere_channels=8,
+        hidden_channels=8,
+        lmax=4,
+        mmax=4,
+        cutoff=15.0,
+        edge_channels=8,
+        num_layers=3,
+        num_edge_layers=2,
+        num_distance_basis=16,
+        gate_act_type="sigmoid",
+        mlp_type="grid",
+        message_passing_schedule="node_then_edge",
+        edge_atom_norm_type="layer_norm_sh",
+        edge_post_residual_norm_type="rms_norm_sh",
+    )
+
+    assert all(
+        isinstance(block.norm_2, EquivariantRMSNormArraySphericalHarmonicsV2)
+        for block in model.node_blocks
+    )
+    assert all(
+        isinstance(
+            block.norm_2,
+            EquivariantLayerNormArraySphericalHarmonics,
+        )
+        for block in model.edge_blocks
+    )
+    assert all(
+        isinstance(
+            block.post_residual_norm,
+            EquivariantRMSNormArraySphericalHarmonicsV2,
+        )
+        for block in model.edge_blocks
+    )
+
+
+def test_nte_edge_degree_norm_is_per_degree():
+    model = eSEN_Backbone(
+        Irreps("1x0e"),
+        sphere_channels=4,
+        hidden_channels=4,
+        lmax=2,
+        mmax=2,
+        cutoff=15.0,
+        edge_channels=4,
+        num_layers=1,
+        num_edge_layers=1,
+        num_distance_basis=8,
+        message_passing_schedule="node_then_edge",
+        edge_atom_norm_type="layer_norm",
+    )
+
+    assert isinstance(model.edge_blocks[0].norm_2, EquivariantLayerNormArray)
+    assert isinstance(model.edge_blocks[0].post_residual_norm, torch.nn.Identity)
+
+
+def test_nte_direct_edge_atomwise_output_skips_scale_and_residual():
+    class FixedEdgewise(torch.nn.Module):
+        def forward(self, _node_state, edge_state, *_args):
+            return torch.full_like(edge_state, 3.0)
+
+    class DoubleAtomwise(torch.nn.Module):
+        def forward(self, state):
+            return 2.0 * state
+
+    class FailIfCalled(torch.nn.Module):
+        def forward(self, _state):
+            raise AssertionError("direct atomwise output must skip update scale")
+
+    block = eSEN_Block.__new__(eSEN_Block)
+    torch.nn.Module.__init__(block)
+    block.norm_1 = torch.nn.Identity()
+    block.norm_2 = torch.nn.Identity()
+    block.post_residual_norm = torch.nn.Identity()
+    block.edge_wise = FixedEdgewise()
+    block.atom_wise = DoubleAtomwise()
+    block.edge_update_scale = torch.nn.Identity()
+    block.atom_update_scale = FailIfCalled()
+    block.atomwise_output_mode = "direct"
+
+    edge_state = torch.full((3, 4, 2), 7.0)
+    output = block(
+        torch.zeros(2, 4, 2),
+        edge_state,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "edge",
+        None,
+    )
+
+    # edgewise output 3 + incoming residual 7 = 10, then direct atomwise = 20.
+    torch.testing.assert_close(output, torch.full_like(edge_state, 20.0))
+
+
+@pytest.mark.parametrize(
+    "norm_class",
+    (
+        EquivariantLayerNormArray,
+        EquivariantLayerNormArraySphericalHarmonics,
+        EquivariantRMSNormArraySphericalHarmonicsV2,
+    ),
+)
+def test_edge_norm_variants_are_rotation_equivariant(norm_class):
+    torch.manual_seed(44)
+    lmax = 3
+    channels = 5
+    irreps = o3.Irreps([(1, (degree, 1)) for degree in range(lmax + 1)])
+    rotation = o3.rand_matrix()
+    representation = irreps.D_from_matrix(rotation)
+    features = torch.randn(7, (lmax + 1) ** 2, channels)
+    rotated_features = torch.einsum(
+        "ab,nbc->nac", representation, features
+    )
+    norm = norm_class(lmax=lmax, num_channels=channels)
+
+    expected = torch.einsum(
+        "ab,nbc->nac", representation, norm(features)
+    )
+    actual = norm(rotated_features)
+
+    torch.testing.assert_close(actual, expected, atol=2.0e-5, rtol=2.0e-5)
 
 
 def test_nte_can_unscale_only_node_block_two():

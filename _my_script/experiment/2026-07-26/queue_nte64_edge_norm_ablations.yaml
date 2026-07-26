@@ -1,0 +1,31 @@
+jobs:
+  - id: nabla-nte64-qcond-edge-postrms-v1-20260726a
+    description: Recurrent NTE with edge-block post-atom residual RMS normalization
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/05_nabladft_nte64_edge_norm_ablation_2gpu.sh
+    args: [full, postrms, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [any]
+    priority: 13
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/05_nabladft_nte64_edge_norm_ablation_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_edge_postrms_nabladft.yaml
+  - id: nabla-nte64-qcond-edge-splitnorm-v1-20260726a
+    description: Recurrent NTE with scalar versus tensor split norm before edge atomwise FFN
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/05_nabladft_nte64_edge_norm_ablation_2gpu.sh
+    args: [full, split, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [any]
+    priority: 12
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/05_nabladft_nte64_edge_norm_ablation_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_edge_splitnorm_nabladft.yaml
+  - id: nabla-nte64-qcond-edge-degreenorm-v1-20260726a
+    description: Recurrent NTE with independent per-degree norm before edge atomwise FFN
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/05_nabladft_nte64_edge_norm_ablation_2gpu.sh
+    args: [full, degree, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [any]
+    priority: 11
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/05_nabladft_nte64_edge_norm_ablation_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_edge_degreenorm_nabladft.yaml

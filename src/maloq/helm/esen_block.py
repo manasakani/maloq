@@ -443,19 +443,39 @@ class eSEN_Block(torch.nn.Module):
         residual_update_scale_mode: str = "none",
         residual_update_scale_init: float = 1.0,
         residual_update_scale_log_range: float = 0.0,
+        atom_norm_type: str | None = None,
+        post_residual_norm_type: str | None = None,
+        atomwise_output_mode: str = "residual_scaled",
     ) -> None:
         super().__init__()
         self.sphere_channels = sphere_channels
         self.hidden_channels = hidden_channels
         self.lmax = lmax
         self.mmax = mmax
+        if atomwise_output_mode not in {"residual_scaled", "direct"}:
+            raise ValueError(
+                "atomwise_output_mode must be 'residual_scaled' or 'direct', "
+                f"got {atomwise_output_mode!r}."
+            )
+        self.atomwise_output_mode = atomwise_output_mode
 
         self.norm_1 = get_normalization_layer(
             norm_type, lmax=self.lmax, num_channels=sphere_channels
         )
 
         self.norm_2 = get_normalization_layer(
-            norm_type, lmax=self.lmax, num_channels=sphere_channels 
+            norm_type if atom_norm_type is None else atom_norm_type,
+            lmax=self.lmax,
+            num_channels=sphere_channels,
+        )
+        self.post_residual_norm = (
+            nn.Identity()
+            if post_residual_norm_type is None
+            else get_normalization_layer(
+                post_residual_norm_type,
+                lmax=self.lmax,
+                num_channels=sphere_channels,
+            )
         )
 
         self.edge_wise = Edgewise(
@@ -586,7 +606,10 @@ class eSEN_Block(torch.nn.Module):
             x_message_edge = self.atom_wise(x_message_edge)
             torch.cuda.nvtx.range_pop() # <--- END
 
-            return self.atom_update_scale(x_message_edge) + x_res
+            if self.atomwise_output_mode == "direct":
+                return self.post_residual_norm(x_message_edge)
+            x_message_edge = self.atom_update_scale(x_message_edge) + x_res
+            return self.post_residual_norm(x_message_edge)
 
     def forward_qhflow3_pair(
         self,

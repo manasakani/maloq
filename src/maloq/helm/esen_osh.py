@@ -97,6 +97,9 @@ class eSEN_Backbone(nn.Module):
         unscaled_node_layers: tuple[int, ...] = (),
         repeat_system_embedding_each_node_block: bool = False,
         edge_stack_mode: str = "recurrent",
+        edge_atom_norm_type: str | None = None,
+        edge_post_residual_norm_type: str | None = None,
+        edge_atomwise_output_mode: str = "residual_scaled",
         input_conditioning: str = "none",
         conditioning_basis: str = "def2-svp",
         conditioning_delta_learning: bool = False,
@@ -135,6 +138,25 @@ class eSEN_Backbone(nn.Module):
                 "message_passing_schedule='node_then_edge'."
             )
         self.edge_stack_mode = edge_stack_mode
+        valid_norm_types = {"layer_norm", "layer_norm_sh", "rms_norm_sh"}
+        for option_name, option_value in (
+            ("edge_atom_norm_type", edge_atom_norm_type),
+            ("edge_post_residual_norm_type", edge_post_residual_norm_type),
+        ):
+            if option_value is not None and option_value not in valid_norm_types:
+                raise ValueError(
+                    f"{option_name} must be None or one of "
+                    f"{sorted(valid_norm_types)}, got {option_value!r}."
+                )
+        self.edge_atom_norm_type = edge_atom_norm_type
+        self.edge_post_residual_norm_type = edge_post_residual_norm_type
+        if edge_atomwise_output_mode not in {"residual_scaled", "direct"}:
+            raise ValueError(
+                "edge_atomwise_output_mode must be "
+                "'residual_scaled' or 'direct', "
+                f"got {edge_atomwise_output_mode!r}."
+            )
+        self.edge_atomwise_output_mode = edge_atomwise_output_mode
         self.repeat_system_embedding_each_node_block = bool(
             repeat_system_embedding_each_node_block
         )
@@ -383,6 +405,9 @@ class eSEN_Backbone(nn.Module):
                     message_type,
                     include_edges=self.include_edges,
                     node_or_edge='edge',
+                    atom_norm_type=self.edge_atom_norm_type,
+                    post_residual_norm_type=self.edge_post_residual_norm_type,
+                    atomwise_output_mode=self.edge_atomwise_output_mode,
                     **block_kwargs,
                 )
                 self.edge_blocks.append(edge_block)

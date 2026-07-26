@@ -50,6 +50,9 @@ class TrainingWorkflow:
         "unscaled_node_layers": (),
         "repeat_system_embedding_each_node_block": False,
         "edge_stack_mode": "recurrent",
+        "edge_atom_norm_type": None,
+        "edge_post_residual_norm_type": None,
+        "edge_atomwise_output_mode": "residual_scaled",
         "esen_grid_resolution": None,
         "nte_input_conditioning": "none",
         "qhflow3_max_radius": 12.0,
@@ -304,6 +307,25 @@ class TrainingWorkflow:
             raise ValueError(
                 "Parallel edge stacks require "
                 "message_passing_schedule='node_then_edge'."
+            )
+        valid_edge_norm_types = {
+            None, 'layer_norm', 'layer_norm_sh', 'rms_norm_sh'
+        }
+        for option_name in (
+            'edge_atom_norm_type',
+            'edge_post_residual_norm_type',
+        ):
+            if self.config[option_name] not in valid_edge_norm_types:
+                raise ValueError(
+                    f"{option_name} must be None, 'layer_norm', "
+                    "'layer_norm_sh', or 'rms_norm_sh'."
+                )
+        if self.config['edge_atomwise_output_mode'] not in {
+            'residual_scaled', 'direct'
+        }:
+            raise ValueError(
+                "edge_atomwise_output_mode must be "
+                "'residual_scaled' or 'direct'."
             )
         if self.config['muon_output_projection_policy'] not in {
             'shape_muon', 'adamw'
@@ -1093,6 +1115,11 @@ class TrainingWorkflow:
                     c['repeat_system_embedding_each_node_block']
                 ),
                 edge_stack_mode=c['edge_stack_mode'],
+                edge_atom_norm_type=c['edge_atom_norm_type'],
+                edge_post_residual_norm_type=(
+                    c['edge_post_residual_norm_type']
+                ),
+                edge_atomwise_output_mode=c['edge_atomwise_output_mode'],
                 input_conditioning=c['nte_input_conditioning'],
                 conditioning_basis=(
                     'def2-svp-nabla'
@@ -1262,6 +1289,17 @@ class TrainingWorkflow:
                     'qhflow3_parallel_sum'
                     if is_qhflow3
                     else c['edge_stack_mode']
+                ),
+                'edge_atom_norm_type': (
+                    None if is_qhflow3 else c['edge_atom_norm_type']
+                ),
+                'edge_post_residual_norm_type': (
+                    None
+                    if is_qhflow3
+                    else c['edge_post_residual_norm_type']
+                ),
+                'edge_atomwise_output_mode': (
+                    None if is_qhflow3 else c['edge_atomwise_output_mode']
                 ),
                 'muon_output_projection_policy': (
                     c['muon_output_projection_policy']

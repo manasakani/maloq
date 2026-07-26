@@ -90,6 +90,9 @@ def _model_defaults() -> dict[str, Any]:
         "unscaled_node_layers": (),
         "repeat_system_embedding_each_node_block": False,
         "edge_stack_mode": "recurrent",
+        "edge_atom_norm_type": None,
+        "edge_post_residual_norm_type": None,
+        "edge_atomwise_output_mode": "residual_scaled",
         "esen_grid_resolution": None,
         "nte_input_conditioning": "none",
         "qhflow3_max_radius": 12.0,
@@ -255,6 +258,20 @@ class ModelConfig(BaseModel):
         "nte_parallel",
         "qhflow3_parallel",
     ] = "recurrent"
+    edge_atom_norm_type: Literal[
+        "layer_norm",
+        "layer_norm_sh",
+        "rms_norm_sh",
+    ] | None = None
+    edge_post_residual_norm_type: Literal[
+        "layer_norm",
+        "layer_norm_sh",
+        "rms_norm_sh",
+    ] | None = None
+    edge_atomwise_output_mode: Literal[
+        "residual_scaled",
+        "direct",
+    ] = "residual_scaled"
     esen_grid_resolution: int | None = Field(default=None, gt=0)
     nte_input_conditioning: Literal["none", "overlap", "qhflow3_exact"] = "none"
     qhflow3_max_radius: float = 12.0
@@ -430,6 +447,9 @@ class MaloqConfig(BaseModel):
             "unscaled_node_layers": "model",
             "repeat_system_embedding_each_node_block": "model",
             "edge_stack_mode": "model",
+            "edge_atom_norm_type": "model",
+            "edge_post_residual_norm_type": "model",
+            "edge_atomwise_output_mode": "model",
             "esen_grid_resolution": "model",
             "nte_input_conditioning": "model",
             "qhflow3_max_radius": "model",
