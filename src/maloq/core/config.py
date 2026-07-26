@@ -80,6 +80,7 @@ def _model_defaults() -> dict[str, Any]:
         "gate_act_type": "tanh",
         "mlp_type": "spectral",
         "message_passing_schedule": "interleaved",
+        "initial_edge_state_mode": "edge_degree",
         "num_edge_layers": None,
         "output_l_embedding_dim": None,
         "nte_output_projection_mode": "so3_linear",
@@ -252,6 +253,7 @@ class ModelConfig(BaseModel):
     gate_act_type: Literal["tanh", "sigmoid"] = "tanh"
     mlp_type: Literal["spectral", "grid"] = "spectral"
     message_passing_schedule: Literal["interleaved", "node_then_edge"] = "interleaved"
+    initial_edge_state_mode: Literal["edge_degree", "zero"] = "edge_degree"
     num_edge_layers: int | None = None
     output_l_embedding_dim: int | None = None
     nte_output_projection_mode: Literal[
@@ -460,6 +462,7 @@ class MaloqConfig(BaseModel):
             "gate_act_type": "model",
             "mlp_type": "model",
             "message_passing_schedule": "model",
+            "initial_edge_state_mode": "model",
             "num_edge_layers": "model",
             "output_l_embedding_dim": "model",
             "nte_output_projection_mode": "model",

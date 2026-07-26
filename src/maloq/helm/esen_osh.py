@@ -236,6 +236,7 @@ class eSEN_Backbone(nn.Module):
         distributed_graph_training=False,
         message_type='source-target',
         message_passing_schedule: str = "interleaved",
+        initial_edge_state_mode: str = "edge_degree",
         num_edge_layers: int | None = None,
         output_sphere_channels: int | None = None,
         nte_output_projection_mode: str = "so3_linear",
@@ -274,6 +275,12 @@ class eSEN_Backbone(nn.Module):
                 f"'node_then_edge', got {message_passing_schedule!r}."
             )
         self.message_passing_schedule = message_passing_schedule
+        if initial_edge_state_mode not in {"edge_degree", "zero"}:
+            raise ValueError(
+                "initial_edge_state_mode must be 'edge_degree' or 'zero', "
+                f"got {initial_edge_state_mode!r}."
+            )
+        self.initial_edge_state_mode = initial_edge_state_mode
         if node_stack_mode not in {"nte", "qhflow3_exact"}:
             raise ValueError(
                 "node_stack_mode must be 'nte' or 'qhflow3_exact', "
@@ -312,6 +319,26 @@ class eSEN_Backbone(nn.Module):
                 "Parallel edge branches require "
                 "message_passing_schedule='node_then_edge'."
             )
+        if self.initial_edge_state_mode == "zero":
+            if not include_edges:
+                raise ValueError(
+                    "initial_edge_state_mode='zero' requires include_edges=True."
+                )
+            if message_passing_schedule != "node_then_edge":
+                raise ValueError(
+                    "initial_edge_state_mode='zero' requires "
+                    "message_passing_schedule='node_then_edge'."
+                )
+            if edge_stack_mode != "recurrent":
+                raise ValueError(
+                    "initial_edge_state_mode='zero' requires "
+                    "edge_stack_mode='recurrent'."
+                )
+            if message_type != "source-target":
+                raise ValueError(
+                    "initial_edge_state_mode='zero' requires "
+                    "message_type='source-target'."
+                )
         self.edge_stack_mode = edge_stack_mode
         self.qhflow3_exact_pair_rng_aligned = bool(
             qhflow3_exact_pair_rng_aligned
@@ -599,6 +626,14 @@ class eSEN_Backbone(nn.Module):
                 "direct_edgewise_layers must contain 1-based indices within "
                 "num_edge_layers."
             )
+        if (
+            self.initial_edge_state_mode == "zero"
+            and 1 in self.direct_edgewise_layers
+        ):
+            raise ValueError(
+                "initial_edge_state_mode='zero' is redundant with "
+                "direct_edgewise_layers containing EdgeBlock 1."
+            )
         self.hidden_channels = hidden_channels
         self.norm_type = norm_type
         self.act_type = act_type
@@ -877,6 +912,10 @@ class eSEN_Backbone(nn.Module):
                 x_message_node = update_node(
                     node_block, x_message_node, x_message_edge
                 )
+            if self.initial_edge_state_mode == "zero":
+                # Keep the edge-degree state available to every NodeBlock and
+                # ablate only EdgeBlock 1's incoming residual boundary.
+                x_message_edge = torch.zeros_like(x_message_edge)
             if self.include_edges:
                 for edge_block in self.edge_blocks:
                     x_message_edge = update_edge(

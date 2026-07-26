@@ -53,6 +53,7 @@ _SIGNATURE_EXCLUDED_KEYS = {
 
 _SIGNATURE_COMPATIBILITY_DEFAULTS = {
     "direct_edgewise_layers": [],
+    "initial_edge_state_mode": "edge_degree",
     "qhflow3_muonize_output_projection": False,
     "node_stack_mode": "nte",
     "nte_output_projection_mode": "so3_linear",

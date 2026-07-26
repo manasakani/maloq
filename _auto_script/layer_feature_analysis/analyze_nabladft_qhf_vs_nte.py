@@ -36,30 +36,31 @@ DEFAULT_DB = Path(
 )
 DEFAULT_QHF_CONFIG = (
     PROJECT_ROOT
-    / "_my_script/experiment/2026-07-23/"
-    "qhflow3_local_muon_head_nabladft.yaml"
+    / "_my_script/experiment/2026-07-26/"
+    "qhflow3_ov0_ntegrid_projection_muon_nabladft.yaml"
 )
 DEFAULT_NTE_CONFIG = (
     PROJECT_ROOT
-    / "_my_script/experiment/2026-07-22/"
-    "maloq_nte_muon_head_nabladft.yaml"
+    / "_my_script/experiment/2026-07-25/"
+    "nte64e2_qhflow3_conditioning_nabladft.yaml"
 )
 DEFAULT_QHF_RUN = (
     PROJECT_ROOT
     / "outputs/"
-    "nabladft-qhflow3-local-muon-head-2gpu-eb20-mb5-ga2-full-e20-"
-    "seed44-20260723-170017/qhflow3"
+    "nabla-qhf3-projmuon-ov0-ntegrid-v3/run"
 )
 DEFAULT_NTE_RUN = (
     PROJECT_ROOT
     / "outputs/"
-    "nabladft-maloq-nte-muon-head-2gpu-eb20-mb5-ga2-full-e20-"
-    "seed44-20260722-190356/maloq-nte"
+    "nabla-nte64e2-muon-ss0-qcond-v1/run"
 )
 DEFAULT_OUTPUT = PROJECT_ROOT / "outputs/nabladft-qhf-vs-nte-layer-analysis"
 MODEL_LABELS = {
-    "qhflow3": "NablaDFT | QHFlow3 | Muon | RAW | V2",
-    "nte": "NablaDFT | NTE-64/2 | Muon | RAW | V1",
+    "qhflow3": (
+        "NablaDFT | QHFlow3 | MatrixMuon+ProjMuon+AuxAdamW | RAW | "
+        "OV0 | NTEGrid10x11 | V3"
+    ),
+    "nte": "NablaDFT | NTE-64/2 | Muon | RAW | QHFcond | V1",
 }
 FEATURE_STAGE_ORDER = {
     "nte": {
@@ -392,24 +393,138 @@ class FeatureCollector:
         return degree_rows, channel_rows
 
 
-def validate_inputs(args: argparse.Namespace, models: list[str]) -> None:
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _legacy_checkpoint_paths(run_dir: Path) -> tuple[Path, Path]:
+    return (
+        run_dir / "backbone_state_dic.pt",
+        run_dir / "head_state_dic.pt",
+    )
+
+
+def _load_legacy_state_payload(
+    path: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    import torch
+
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to load legacy checkpoint {path}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"Legacy checkpoint {path} must contain a dictionary payload."
+        )
+    state = payload.get("model_state_dict", payload)
+    if not isinstance(state, dict) or not state:
+        raise RuntimeError(
+            f"Legacy checkpoint {path} has an empty or invalid state dict."
+        )
+    invalid_keys = [key for key in state if not isinstance(key, str)]
+    invalid_values = [
+        key for key, value in state.items() if not isinstance(value, torch.Tensor)
+    ]
+    if invalid_keys or invalid_values:
+        raise RuntimeError(
+            f"Legacy checkpoint {path} has invalid state-dict entries: "
+            f"non_string_keys={len(invalid_keys)}, "
+            f"non_tensor_values={len(invalid_values)}."
+        )
+    return payload, state
+
+
+def validate_checkpoint_bundle(run_dir: Path) -> dict[str, Any]:
+    """Validate a fixed checkpoint generation or the legacy state-dict pair.
+
+    Fixed-workflow runs keep the current and previous epoch in one atomic
+    payload.  ``load_training_checkpoint`` validates the current generation
+    and automatically falls back to ``training_state.prev.pt`` when needed.
+    Older runs remain analyzable through their separate backbone/head files.
+    """
+    from maloq.train_utils.training_workflow_fixed import (
+        checkpoint_candidates,
+        load_training_checkpoint,
+    )
+
+    run_dir = run_dir.expanduser().resolve()
+    fixed_candidates = checkpoint_candidates(run_dir)
+    fixed_present = any(path.is_file() for path in fixed_candidates)
+    fixed_error: str | None = None
+    if fixed_present:
+        try:
+            payload, selected = load_training_checkpoint(run_dir)
+        except RuntimeError as exc:
+            fixed_error = str(exc)
+        else:
+            return {
+                "format": "fixed",
+                "path": str(selected),
+                "epoch": payload["completed_epoch"],
+            }
+
+    backbone_path, head_path = _legacy_checkpoint_paths(run_dir)
+    if backbone_path.is_file() and head_path.is_file():
+        try:
+            _, backbone_state = _load_legacy_state_payload(backbone_path)
+            _, head_state = _load_legacy_state_payload(head_path)
+        except RuntimeError as exc:
+            legacy_error = str(exc)
+        else:
+            result = {
+                "format": "legacy",
+                "backbone_path": str(backbone_path),
+                "head_path": str(head_path),
+                "backbone_keys": len(backbone_state),
+                "head_keys": len(head_state),
+            }
+            if fixed_error is not None:
+                result["fixed_checkpoint_error"] = fixed_error
+            return result
+    else:
+        legacy_error = None
+
+    missing = [
+        str(path)
+        for path in (backbone_path, head_path)
+        if not path.is_file()
+    ]
+    details = (
+        f"\nFixed checkpoint validation failed:\n{fixed_error}"
+        if fixed_error is not None
+        else ""
+    )
+    if legacy_error is not None:
+        details += f"\nLegacy checkpoint validation failed:\n{legacy_error}"
+        raise RuntimeError(
+            f"No usable model checkpoint bundle in {run_dir}." + details
+        )
+    raise FileNotFoundError(
+        f"No usable model checkpoint bundle in {run_dir}. "
+        "Expected a valid training_state.pt/training_state.prev.pt generation "
+        "or both legacy state dictionaries. Missing legacy files:\n"
+        + "\n".join(missing)
+        + details
+    )
+
+
+def validate_inputs(
+    args: argparse.Namespace,
+    models: list[str],
+) -> dict[str, dict[str, Any]]:
     paths = [args.dbpath, args.output_dir.parent]
     if "qhflow3" in models:
-        paths.extend(
-            [
-                args.qhflow3_config,
-                args.qhflow3_run / "backbone_state_dic.pt",
-                args.qhflow3_run / "head_state_dic.pt",
-            ]
-        )
+        paths.extend([args.qhflow3_config, args.qhflow3_run])
     if "nte" in models:
-        paths.extend(
-            [
-                args.nte_config,
-                args.nte_run / "backbone_state_dic.pt",
-                args.nte_run / "head_state_dic.pt",
-            ]
-        )
+        paths.extend([args.nte_config, args.nte_run])
     missing = [str(path) for path in paths if not path.exists()]
     if missing:
         raise FileNotFoundError("Missing analysis inputs:\n" + "\n".join(missing))
@@ -419,6 +534,11 @@ def validate_inputs(args: argparse.Namespace, models: list[str]) -> None:
         raise ValueError("--batch-size must be positive.")
     if not 1 <= args.master_port <= 65535:
         raise ValueError("--master-port must be between 1 and 65535.")
+    run_dirs = {"qhflow3": args.qhflow3_run, "nte": args.nte_run}
+    return {
+        model: validate_checkpoint_bundle(run_dirs[model])
+        for model in models
+    }
 
 
 def source_provenance() -> dict[str, Any]:
@@ -520,6 +640,9 @@ def build_backbone(
             default_hamiltonian_input="zero",
             use_block_S=config["qhflow3_use_overlap"],
             use_block_H=False,
+            muonize_output_projection=config[
+                "qhflow3_muonize_output_projection"
+            ],
         )
     else:
         backbone = eSEN_Backbone(
@@ -537,14 +660,23 @@ def build_backbone(
             gate_act_type=config["gate_act_type"],
             num_distance_basis=config["num_distance_basis"],
             gaussian_width=config["gaussian_width"],
-            include_edges=True,
+            # TrainingWorkflow derives this from the matrix target before model
+            # construction; feature analysis always uses the same edge target.
+            include_edges=config.get("include_edges", True),
             open_shell=config["open_shell"],
             wigner_backend=config["wigner_backend"],
             distributed_graph_training=False,
             message_type=config.get("message_type", "source-target"),
             message_passing_schedule=config["message_passing_schedule"],
+            initial_edge_state_mode=config.get(
+                "initial_edge_state_mode",
+                "edge_degree",
+            ),
             num_edge_layers=config["num_edge_layers"],
             output_sphere_channels=config["output_l_embedding_dim"],
+            nte_output_projection_mode=config[
+                "nte_output_projection_mode"
+            ],
             use_edge_envelope=config["use_edge_envelope"],
             use_edge_scalar_modulation=config["use_edge_scalar_modulation"],
             residual_update_scale_mode=config["residual_update_scale_mode"],
@@ -553,7 +685,27 @@ def build_backbone(
                 "residual_update_scale_log_range"
             ],
             unscaled_node_layers=config["unscaled_node_layers"],
+            repeat_system_embedding_each_node_block=config[
+                "repeat_system_embedding_each_node_block"
+            ],
+            node_stack_mode=config["node_stack_mode"],
             edge_stack_mode=config["edge_stack_mode"],
+            qhflow3_layer_gaussian_width=config[
+                "qhflow3_layer_gaussian_width"
+            ],
+            qhflow3_layer_grid_ffn_chunk_size=config[
+                "qhflow3_layer_grid_ffn_chunk_size"
+            ],
+            qhflow3_exact_pair_rng_aligned=config[
+                "qhflow3_exact_pair_rng_aligned"
+            ],
+            edge_atom_norm_type=config["edge_atom_norm_type"],
+            edge_post_residual_norm_type=config[
+                "edge_post_residual_norm_type"
+            ],
+            direct_edgewise_layers=config["direct_edgewise_layers"],
+            edge_atomwise_output_mode=config["edge_atomwise_output_mode"],
+            edge_norm1_position=config["edge_norm1_position"],
             input_conditioning=config["nte_input_conditioning"],
             conditioning_basis="def2-svp-nabla",
             conditioning_delta_learning=False,
@@ -581,32 +733,105 @@ def build_head(
         irreps_out=required_irreps,
         lmax=required_irreps.lmax,
         sphere_channels=channels,
-        reduce_edge=False,
-        open_shell=False,
+        reduce_edge=config["reduce_edge"],
+        open_shell=config["open_shell"],
         ls_list=ls_list,
-        reduce_node=True,
-        reduce_node_intra=True,
+        reduce_node=config["reduce_node"],
+        reduce_node_intra=config["reduce_node_intra"],
         orbital_basis=orbital_basis,
     ).to(device)
 
 
-def load_checkpoint(module: Any, path: Path) -> dict[str, Any]:
-    import torch
-
-    payload = torch.load(path, map_location="cpu", weights_only=True)
-    state = payload.get("model_state_dict", payload)
+def _strict_load_state(
+    module: Any,
+    state: dict[str, Any],
+    source: Path,
+) -> None:
     incompat = module.load_state_dict(state, strict=True)
     if incompat.missing_keys or incompat.unexpected_keys:
         raise RuntimeError(
-            f"Checkpoint mismatch for {path}: {incompat.missing_keys}, "
+            f"Checkpoint mismatch for {source}: {incompat.missing_keys}, "
             f"{incompat.unexpected_keys}"
         )
+
+
+def load_checkpoint(module: Any, path: Path) -> dict[str, Any]:
+    """Load one legacy state-dict file."""
+    payload, state = _load_legacy_state_payload(path)
+    _strict_load_state(module, state, path)
     return {
         "path": str(path.resolve()),
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "format": "legacy",
+        "sha256": _sha256_file(path),
         "epoch": payload.get("epoch"),
         "keys": len(state),
     }
+
+
+def load_run_checkpoints(
+    backbone: Any,
+    head: Any,
+    run_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Restore a fixed workflow bundle, with legacy pair fallback."""
+    from maloq.train_utils.training_workflow_fixed import (
+        checkpoint_candidates,
+        load_training_checkpoint,
+    )
+
+    run_dir = run_dir.expanduser().resolve()
+    fixed_candidates = checkpoint_candidates(run_dir)
+    fixed_present = any(path.is_file() for path in fixed_candidates)
+    fixed_error: str | None = None
+    if fixed_present:
+        try:
+            payload, selected = load_training_checkpoint(run_dir)
+        except RuntimeError as exc:
+            fixed_error = str(exc)
+        else:
+            backbone_state = payload["backbone_state_dict"]
+            head_state = payload["head_state_dict"]
+            _strict_load_state(backbone, backbone_state, selected)
+            _strict_load_state(head, head_state, selected)
+            common = {
+                "path": str(selected),
+                "format": "fixed",
+                "sha256": _sha256_file(selected),
+                "epoch": payload["completed_epoch"],
+                "schema_version": payload["schema_version"],
+            }
+            return (
+                {
+                    **common,
+                    "component": "backbone",
+                    "keys": len(backbone_state),
+                },
+                {
+                    **common,
+                    "component": "head",
+                    "keys": len(head_state),
+                },
+            )
+
+    backbone_path, head_path = _legacy_checkpoint_paths(run_dir)
+    if backbone_path.is_file() and head_path.is_file():
+        backbone_meta = load_checkpoint(backbone, backbone_path)
+        head_meta = load_checkpoint(head, head_path)
+        if fixed_error is not None:
+            backbone_meta["fixed_checkpoint_error"] = fixed_error
+            head_meta["fixed_checkpoint_error"] = fixed_error
+        return backbone_meta, head_meta
+
+    details = (
+        f"\nFixed checkpoint validation failed:\n{fixed_error}"
+        if fixed_error is not None
+        else ""
+    )
+    raise FileNotFoundError(
+        f"No usable checkpoint bundle in {run_dir}; expected a valid fixed "
+        "training state or both legacy state dictionaries."
+        + details
+    )
 
 
 def _native_output(value: Any) -> Any:
@@ -918,6 +1143,118 @@ def matrix_spectrum(
     return summary, rows
 
 
+def effective_projection_matrices(
+    projection: Any,
+    lmax: int,
+) -> dict[int, Any]:
+    """Return exact output-by-input matrices used for every degree.
+
+    Native ``SO3_Linear`` weights already are the effective matrices.  e3nn
+    projections additionally multiply every instruction by ``path_weight``;
+    this applies both to ordinary ``e3nn.o3.Linear`` and the Muon-visible
+    wrappers used by QHFlow3 and NTE's QHFProj ablation.
+    """
+    import torch
+
+    weight = getattr(projection, "weight", None)
+    if (
+        weight is not None
+        and weight.ndim == 3
+        and int(weight.shape[0]) == lmax + 1
+        and not hasattr(projection, "linear")
+    ):
+        return {degree: weight[degree] for degree in range(lmax + 1)}
+
+    # QHFlow3IrrepLinear owns a MuonVisibleIrrepLinear in ``linear``; a native
+    # QHFlow3 projection is itself the Muon-visible wrapper.
+    wrapper = projection
+    child = getattr(projection, "linear", None)
+    if (
+        child is not None
+        and hasattr(child, "weight")
+        and hasattr(child, "linear")
+        and hasattr(child.linear, "instructions")
+    ):
+        wrapper = child
+
+    external = getattr(wrapper, "linear", None)
+    wrapper_weight = getattr(wrapper, "weight", None)
+    if (
+        external is not None
+        and hasattr(external, "instructions")
+        and wrapper_weight is not None
+        and wrapper_weight.ndim == 3
+    ):
+        matrices: dict[int, Any] = {}
+        path_index = 0
+        for instruction in external.instructions:
+            if instruction.i_in < 0:
+                continue
+            _, ir_in = external.irreps_in[instruction.i_in]
+            _, ir_out = external.irreps_out[instruction.i_out]
+            matrix = wrapper_weight[path_index]
+            path_index += 1
+            if ir_in.l != ir_out.l:
+                continue
+            if ir_in.l in matrices:
+                raise RuntimeError(
+                    "Projection has multiple weighted paths for degree "
+                    f"{ir_in.l}; a single channel-contraction matrix is "
+                    "not well-defined."
+                )
+            matrices[ir_in.l] = matrix * instruction.path_weight
+        if path_index != int(wrapper_weight.shape[0]):
+            raise RuntimeError(
+                "Muon-visible projection path count does not match its weight "
+                f"tensor: {path_index} != {wrapper_weight.shape[0]}."
+            )
+    elif hasattr(projection, "instructions"):
+        matrices = {}
+        for instruction_index, instruction in enumerate(
+            projection.instructions
+        ):
+            if instruction.i_in < 0:
+                continue
+            _, ir_in = projection.irreps_in[instruction.i_in]
+            _, ir_out = projection.irreps_out[instruction.i_out]
+            if ir_in.l != ir_out.l:
+                continue
+            if ir_in.l in matrices:
+                raise RuntimeError(
+                    "Projection has multiple weighted paths for degree "
+                    f"{ir_in.l}; a single channel-contraction matrix is "
+                    "not well-defined."
+                )
+            view = projection.weight_view_for_instruction(instruction_index)
+            matrices[ir_in.l] = view.T * instruction.path_weight
+    elif (
+        weight is not None
+        and weight.ndim == 3
+        and int(weight.shape[0]) == lmax + 1
+    ):
+        matrices = {
+            degree: weight[degree] for degree in range(lmax + 1)
+        }
+    else:
+        raise TypeError(
+            "Unsupported output projection type for contraction analysis: "
+            f"{type(projection).__module__}.{type(projection).__qualname__}."
+        )
+
+    expected_degrees = set(range(lmax + 1))
+    if set(matrices) != expected_degrees:
+        raise RuntimeError(
+            "Could not map every projection degree: "
+            f"expected {sorted(expected_degrees)}, got {sorted(matrices)}."
+        )
+    if not all(
+        isinstance(matrix, torch.Tensor) and matrix.ndim == 2
+        for matrix in matrices.values()
+    ):
+        raise RuntimeError("Every effective projection matrix must be rank 2.")
+    return matrices
+
+
 def collect_contractions(
     model: str,
     backbone: Any,
@@ -928,19 +1265,31 @@ def collect_contractions(
     singular_rows: list[dict[str, Any]] = []
     residual_rows: list[dict[str, Any]] = []
 
+    projections = (
+        (
+            ("node", backbone.node_output_projection),
+            ("edge", backbone.edge_output_projection),
+        )
+        if model == "nte"
+        else (
+            ("node", backbone.output_ii),
+            ("edge", backbone.output_ij),
+        )
+    )
+    for kind, projection in projections:
+        degree_matrices = effective_projection_matrices(projection, lmax)
+        for degree, matrix in sorted(degree_matrices.items()):
+            summary, rows = matrix_spectrum(
+                model,
+                "backbone_128_to_64",
+                kind,
+                degree,
+                matrix,
+            )
+            summaries.append(summary)
+            singular_rows.extend(rows)
+
     if model == "nte":
-        for kind in ("node", "edge"):
-            projection = getattr(backbone, f"{kind}_output_projection")
-            for degree in range(lmax + 1):
-                summary, rows = matrix_spectrum(
-                    model,
-                    "backbone_128_to_64",
-                    kind,
-                    degree,
-                    projection.weight[degree],
-                )
-                summaries.append(summary)
-                singular_rows.extend(rows)
         for kind, blocks in (
             ("node", backbone.node_blocks),
             ("edge", backbone.edge_blocks),
@@ -961,37 +1310,6 @@ def collect_contractions(
                                 "scale": float(scale),
                             }
                         )
-    else:
-        for kind, projection in (
-            ("node", backbone.output_ii),
-            ("edge", backbone.output_ij),
-        ):
-            degree_matrices: dict[int, Any] = {}
-            for instruction_index, instruction in enumerate(projection.instructions):
-                if instruction.i_in < 0:
-                    continue
-                _, ir_in = projection.irreps_in[instruction.i_in]
-                _, ir_out = projection.irreps_out[instruction.i_out]
-                if ir_in.l != ir_out.l:
-                    continue
-                view = projection.weight_view_for_instruction(instruction_index)
-                degree_matrices[ir_in.l] = view.T * instruction.path_weight
-            if set(degree_matrices) != set(range(lmax + 1)):
-                raise RuntimeError(
-                    f"Could not map all QHFlow3 {kind} projection degrees: "
-                    f"{sorted(degree_matrices)}."
-                )
-            for degree, matrix in sorted(degree_matrices.items()):
-                summary, rows = matrix_spectrum(
-                    model,
-                    "backbone_128_to_64",
-                    kind,
-                    degree,
-                    matrix,
-                )
-                summaries.append(summary)
-                singular_rows.extend(rows)
-
     for kind, semantic in (
         ("node", head.node_semantic_layers[0]),
         ("edge", head.edge_semantic_layers[0]),
@@ -1040,8 +1358,11 @@ def run_model(
     started = time.perf_counter()
     backbone = build_backbone(model, config, required_irreps, device)
     head = build_head(config, required_irreps, orbital_basis, ls_list, device)
-    backbone_meta = load_checkpoint(backbone, run_dir / "backbone_state_dic.pt")
-    head_meta = load_checkpoint(head, run_dir / "head_state_dic.pt")
+    backbone_meta, head_meta = load_run_checkpoints(
+        backbone,
+        head,
+        run_dir,
+    )
     backbone.eval()
     head.eval()
     handles = register_feature_hooks(
@@ -1119,7 +1440,6 @@ def plot_features(
         ): row
         for row in degree_rows
     }
-    panels = [(model, kind) for model in models for kind in ("node", "edge")]
     figure, axes = plt.subplots(
         len(models),
         2,
@@ -1600,7 +1920,7 @@ def main() -> None:
         if args.models == "both"
         else [args.models]
     )
-    validate_inputs(args, models)
+    checkpoint_validation = validate_inputs(args, models)
     if args.validate_only:
         print(
             json.dumps(
@@ -1609,6 +1929,7 @@ def main() -> None:
                     "models": models,
                     "num_molecules": args.num_molecules,
                     "output_dir": str(args.output_dir.resolve()),
+                    "checkpoints": checkpoint_validation,
                 },
                 indent=2,
             )
@@ -1623,9 +1944,13 @@ def main() -> None:
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
     os.environ["MASTER_PORT"] = str(args.master_port)
     device = utils_compute.setup_env(0, 1, backend="nccl", local_rank=0)
+    config_paths = {
+        "qhflow3": args.qhflow3_config,
+        "nte": args.nte_config,
+    }
     configs = {
-        "qhflow3": load_config(args.qhflow3_config),
-        "nte": load_config(args.nte_config),
+        model: load_config(config_paths[model])
+        for model in models
     }
     reference_config = configs[models[0]]
     loader, required_irreps, _, orbital_basis, ls_list = make_loader(

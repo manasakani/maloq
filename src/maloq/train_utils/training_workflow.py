@@ -40,6 +40,7 @@ class TrainingWorkflow:
         "gate_act_type": "tanh",
         "mlp_type": "spectral",
         "message_passing_schedule": "interleaved",
+        "initial_edge_state_mode": "edge_degree",
         "num_edge_layers": None,
         "output_l_embedding_dim": None,
         "nte_output_projection_mode": "so3_linear",
@@ -269,6 +270,12 @@ class TrainingWorkflow:
                 "message_passing_schedule must be 'interleaved' or "
                 "'node_then_edge'."
             )
+        if self.config['initial_edge_state_mode'] not in {
+            'edge_degree', 'zero'
+        }:
+            raise ValueError(
+                "initial_edge_state_mode must be 'edge_degree' or 'zero'."
+            )
         if self.config['residual_update_scale_mode'] not in {
             'none', 'bounded_degree'
         }:
@@ -406,6 +413,40 @@ class TrainingWorkflow:
                 "direct_edgewise_layers must contain 1-based indices within "
                 "num_edge_layers."
             )
+        if self.config['initial_edge_state_mode'] == 'zero':
+            if self.config['backbone_type'] != 'esen':
+                raise ValueError(
+                    "initial_edge_state_mode='zero' requires "
+                    "backbone_type='esen'."
+                )
+            if 'matrix' not in self.config['loss_target']:
+                raise ValueError(
+                    "initial_edge_state_mode='zero' requires a matrix "
+                    "loss target with edge embeddings."
+                )
+            if self.config['message_passing_schedule'] != 'node_then_edge':
+                raise ValueError(
+                    "initial_edge_state_mode='zero' requires "
+                    "message_passing_schedule='node_then_edge'."
+                )
+            if self.config['edge_stack_mode'] != 'recurrent':
+                raise ValueError(
+                    "initial_edge_state_mode='zero' requires "
+                    "edge_stack_mode='recurrent'."
+                )
+            if (
+                self.config.get('message_type', 'source-target')
+                != 'source-target'
+            ):
+                raise ValueError(
+                    "initial_edge_state_mode='zero' requires "
+                    "message_type='source-target'."
+                )
+            if 1 in self.config['direct_edgewise_layers']:
+                raise ValueError(
+                    "initial_edge_state_mode='zero' is redundant with "
+                    "direct_edgewise_layers containing EdgeBlock 1."
+                )
         if self.config['edge_atomwise_output_mode'] not in {
             'residual_scaled', 'direct'
         }:
@@ -1214,6 +1255,7 @@ class TrainingWorkflow:
                 distributed_graph_training=c['distribute_graphs'],
                 message_type=c['message_type'],
                 message_passing_schedule=c['message_passing_schedule'],
+                initial_edge_state_mode=c['initial_edge_state_mode'],
                 num_edge_layers=c['num_edge_layers'],
                 output_sphere_channels=c['output_l_embedding_dim'],
                 nte_output_projection_mode=c['nte_output_projection_mode'],
@@ -1391,6 +1433,9 @@ class TrainingWorkflow:
                     'qhflow3_node_then_pair'
                     if is_qhflow3
                     else c['message_passing_schedule']
+                ),
+                'initial_edge_state_mode': (
+                    None if is_qhflow3 else c['initial_edge_state_mode']
                 ),
                 'mlp_type': 'grid' if is_qhflow3 else c['mlp_type'],
                 'gate_act_type': 'sigmoid' if is_qhflow3 else c['gate_act_type'],

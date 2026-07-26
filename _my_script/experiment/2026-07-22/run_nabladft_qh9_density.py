@@ -430,6 +430,32 @@ def nabladft_tracking_identity(
                     "ablation:node-block-system-injection",
                 )
             )
+        edge_norm1_position = config.get(
+            "edge_norm1_position",
+            "post_edgewise",
+        )
+        if edge_norm1_position == "pre_node":
+            ablation_slugs.append("edgepre")
+            ablation_labels.append("EdgePre")
+            ablation_tags.extend(
+                (
+                    "edge-norm1-position:pre-node",
+                    "ablation:edge-norm-ordering",
+                )
+            )
+        initial_edge_state_mode = config.get(
+            "initial_edge_state_mode",
+            "edge_degree",
+        )
+        if initial_edge_state_mode == "zero":
+            ablation_slugs.append("edgezero")
+            ablation_labels.append("InitialEdgeZero")
+            ablation_tags.extend(
+                (
+                    "initial-edge-state:zero",
+                    "ablation:initial-edge-state",
+                )
+            )
         direct_edgewise_layers = tuple(
             int(index) for index in config.get("direct_edgewise_layers", ())
         )
@@ -543,6 +569,11 @@ def nabladft_tracking_identity(
         config.get("node_stack_mode", "nte") != "nte"
         or config.get("unscaled_node_layers", ())
         or config.get("repeat_system_embedding_each_node_block", False)
+        or (
+            config.get("initial_edge_state_mode", "edge_degree")
+            != "edge_degree"
+        )
+        or config.get("edge_norm1_position", "post_edgewise") != "post_edgewise"
         or config.get("direct_edgewise_layers", ())
         or config.get("edge_stack_mode", "recurrent") != "recurrent"
         or config.get("qhflow3_exact_pair_rng_aligned", False)

@@ -285,6 +285,10 @@ MAE over epochs 16–20.
 | QHFNodeExact | `776rtdmw` | 8.6368e-5 | 1.2342e-4 |
 | QHFPairExact | `tc91f0zt` | 6.1507e-5 | 9.6147e-5 |
 | QHFBlocksExact | `46mmzyid` | 5.9114e-5 | 9.4900e-5 |
+| QHFPairExact+RNGAlign | `z5x1gzgj` | 6.1788e-5 | 9.4587e-5 |
+| QHFProj | `hg8og2up` | 6.9750e-5 | 1.0376e-4 |
+| EdgePre+QHFProj | `isagwhys` | 5.8003e-5 | 8.7699e-5 |
+| EdgePre+Edge1Direct | `u8k66q2a` | 5.6429e-5 | 8.3894e-5 |
 
 Independent branch topology alone (`NTEParallel`) and carrying the old edge
 state in the message (`STMessage`) do not explain the gap. Post-residual RMS
@@ -301,7 +305,16 @@ reference, so the latter is the target for subsequent structural controls.
 but is weaker than the approximate `QHFPair`; the exact node replacement alone
 is harmful. The exact node-plus-pair interaction is small at the tail, so the
 next tests keep the original NTE node stack and isolate pair boundaries and
-the final channel-contraction parameterization.
+the final channel-contraction parameterization. The completed contraction
+factorial shows that QHFlow3's contraction parameterization is secondary:
+`QHFProj` improves the cited NTE tail by 4.40%, and improves `EdgePre` by only
+2.61%. `EdgePre+QHFProj` is within 0.62% of the optimizer-fair QHFlow3 tail.
+In contrast, `EdgePre+Edge1Direct` lowers the cited NTE tail by 22.71% and is
+3.75% below the optimizer-fair QHFlow3 tail, although its final epoch remains
+8.18% above QHFlow3. The two useful pair-boundary operations interact
+sub-additively, so the next control separates removal of the initial edge
+residual from bypassing the first edge-update LayerScale rather than matching
+feature scales.
 
 
 ## NTE edge pre-node normalization ablation
@@ -523,7 +536,19 @@ steps. Full outputs are written below
 `/dataset/seongsu/shared-home/workspace/project/outputs/nabladft-nte64-edgepre-edge1direct-2gpu-eb20-mb5-ga2-full-e20-<timestamp>/`.
 The durable manifest is `queue_nte64_edgepre_edge1direct.yaml`. Validation
 and a full-model two-GPU 20-train/20-validation smoke passed; successful smoke
-artifacts were removed. No full job has been started yet.
+artifacts were removed. The full queue job
+`nabla-nte64-qcond-edgepre-edge1direct-v1-20260726a` completed all 20 epochs
+from clean source commit `0c6ae4d` on server 1 GPUs 2 and 3. Its retained
+output is:
+
+`/dataset/seongsu/shared-home/workspace/project/outputs/nabladft-nte64-edgepre-edge1direct-2gpu-eb20-mb5-ga2-full-e20-20260726-211255/`
+
+W&B [`u8k66q2a`](https://wandb.ai/kaist-korea/maloq-nablaDFT/runs/u8k66q2a)
+finished with final matrix/node/edge MAE of `5.6429e-5`, `2.1215e-4`, and
+`6.7722e-5`. Its epoch 16-20 means are `8.3894e-5`, `4.2137e-4`, and
+`9.6427e-5`. The tail matrix MAE is 22.71% below the cited NTE baseline and
+3.75% below the optimizer-fair QHFlow3 reference; the final matrix MAE is
+8.18% above that QHFlow3 reference.
 
 
 ## Literal pair dead-fc2 RNG control
@@ -557,7 +582,20 @@ steps. Outputs use
 The durable manifest is
 `queue_nte64_qhflow3_exact_pair_rng_aligned.yaml`. Validation and a full-model
 two-GPU 20-train/20-validation smoke passed; successful smoke artifacts were
-removed. No full job has been started yet.
+removed. The full queue job
+`nabla-nte64-qcond-qhfpairexact-rngalign-v1-20260726a` completed all 20
+epochs from clean source commit `0c6ae4d` on server 1 GPUs 4 and 5. Its
+retained output is:
+
+`/dataset/seongsu/shared-home/workspace/project/outputs/nabladft-nte64-qhfpairexact-rngalign-v1-2gpu-eb20-mb5-ga2-full-e20-20260726-211306-4117313/`
+
+W&B [`z5x1gzgj`](https://wandb.ai/kaist-korea/maloq-nablaDFT/runs/z5x1gzgj)
+finished with final matrix/node/edge MAE of `6.1788e-5`, `2.3750e-4`, and
+`7.3945e-5`. Its epoch 16-20 means are `9.4587e-5`, `4.2501e-4`, and
+`1.1073e-4`. Aligning only the active-layer RNG stream improves the exact-pair
+tail by 1.62% relative to `tc91f0zt`, while its final matrix MAE is 0.46%
+higher. Constructor RNG is therefore measurable but insufficient to explain
+the QHFlow3 gap.
 
 
 ## NTE QHFlow3 output channel-contraction factorial
@@ -605,4 +643,100 @@ every 10 optimizer steps. Outputs use:
 The durable manifest is
 `queue_nte64_qhflow3_irrep_projection_factorial.yaml`. Both configs passed
 runner validation and a full-model two-GPU 20-train/20-validation smoke;
-successful smoke artifacts were removed. Full training is pending.
+successful smoke artifacts were removed. Both full queue jobs completed all
+20 epochs from clean source commit `0c6ae4d`:
+
+- `nabla-nte64-qcond-qhfproj-v1-20260726a` ran on server 1 GPUs 0 and 1.
+  W&B [`hg8og2up`](https://wandb.ai/kaist-korea/maloq-nablaDFT/runs/hg8og2up)
+  has final matrix/node/edge MAE `6.9750e-5 / 2.3388e-4 / 8.4848e-5` and
+  epoch 16-20 means `1.0376e-4 / 4.2540e-4 / 1.2311e-4`.
+- `nabla-nte64-qcond-edgepre-qhfproj-v1-20260726a` ran on server 2 GPUs 0
+  and 1. W&B
+  [`isagwhys`](https://wandb.ai/kaist-korea/maloq-nablaDFT/runs/isagwhys)
+  has final matrix/node/edge MAE `5.8003e-5 / 2.2042e-4 / 6.9517e-5` and
+  epoch 16-20 means `8.7699e-5 / 4.1944e-4 / 1.0165e-4`.
+
+Relative to the cited NTE baseline, `QHFProj` alone improves tail matrix MAE
+by 4.40%. Its effect within `EdgePre` is 2.61%; the 2x2 interaction is
+`+2.4250e-6` MAE, so the two improvements are sub-additive.
+`EdgePre+QHFProj` is only 0.62% above the optimizer-fair QHFlow3 tail, showing
+that the pair norm boundary explains substantially more of the gap than the
+final channel-contraction class.
+
+
+## Final-MAE EdgePre plus Edge1 plus QHFProj composition
+
+The primary selection metric for the next performance run is epoch-20
+validation matrix MAE; Tail-5 remains a stability diagnostic. The current best
+NTE final value is `EdgePre+Edge1Direct` at `5.6429e-5`, still 8.18% above the
+optimizer-fair QHFlow3 final value `5.2162e-5`. Adding `QHFProj` to `EdgePre`
+improved final MAE from `6.1804e-5` to `5.8003e-5` (6.15%), so the next
+performance candidate adds that single contraction change to the current best
+pair-boundary model.
+
+`EdgePre+Edge1+QHFProj` keeps the completed `u8k66q2a` node stack, pair
+normalization position, EdgeBlock-1 direct boundary, recurrent EdgeBlock-2,
+head, data order, seed, and optimizer schedule. Only the final node/edge
+`128 -> 64` contraction changes from native NTE `SO3_Linear` to the tested
+QHFlow3 irrep-linear parameterization. Global downstream RNG remains aligned
+to the native baseline and the same 81,920 projection parameters remain on
+shape-routed Muon.
+
+Commands:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/15_nabladft_nte64_edgepre_edge1_qhflow3_projection_2gpu.sh validate
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/15_nabladft_nte64_edgepre_edge1_qhflow3_projection_2gpu.sh smoke 0,1
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/15_nabladft_nte64_edgepre_edge1_qhflow3_projection_2gpu.sh full 0,1
+```
+
+The full lane uses NablaDFT rows 12,081/64/0, RAW Fock targets, seed 44, two
+data-parallel GPUs, micro-batch 5 per rank, gradient accumulation 2, effective
+batch 20, no distributed graphs, and W&B logging every 10 optimizer steps in
+`kaist-korea/maloq-nablaDFT`. Outputs use
+`outputs/nabladft-nte64-edgepre-edge1-qhfproj-v1-2gpu-eb20-mb5-ga2-<scope>-<timestamp>-<pid>/`.
+The durable manifest is
+`queue_nte64_edgepre_edge1_qhflow3_projection.yaml`. Runner validation,
+the focused regression suite, and a two-GPU full-model
+20-train/20-validation smoke passed; the successful smoke artifacts were
+removed. Full 20-epoch training remains the next queue action.
+
+
+## EdgePre initial-edge residual isolation
+
+`EdgePre+InitialEdgeZero` is the next single-operation control. It keeps the
+completed `EdgePre` model's pre-node first normalization, recurrent
+EdgeBlocks, bounded per-degree update scales, atomwise residuals, QHF
+conditioning, output projection, parameter initialization, and optimizer
+routing. Immediately before the first recurrent EdgeBlock it replaces only
+the initial edge-degree state `E0` with zero:
+
+```text
+EdgePre:                 u1 = LayerScale(m1) + E0
+EdgePre+InitialEdgeZero: u1 = LayerScale(m1)
+EdgePre+Edge1Direct:     u1 = m1
+```
+
+The first comparison isolates the initial residual; the second isolates
+bypassing the first edge-update LayerScale once that residual is absent. No
+new module or parameter is created, so state-dict keys, global RNG, total
+parameters, and MatrixMuon/AuxAdamW routing remain identical to `EdgePre`.
+
+Commands:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/14_nabladft_nte64_edgepre_initial_edge_zero_2gpu.sh validate
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/14_nabladft_nte64_edgepre_initial_edge_zero_2gpu.sh smoke 0,1
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/14_nabladft_nte64_edgepre_initial_edge_zero_2gpu.sh full 0,1
+```
+
+The full lane uses NablaDFT rows 12,081/64/0, RAW Fock targets, seed 44, two
+data-parallel GPUs, micro-batch 5 per rank, gradient accumulation 2, effective
+batch 20, no distributed graphs, and W&B logging every 10 optimizer steps in
+`kaist-korea/maloq-nablaDFT`. Outputs use
+`outputs/nabladft-nte64-edgepre-init-edge-zero-v1-2gpu-eb20-mb5-ga2-<scope>-<timestamp>-<pid>/`.
+The durable manifest is `queue_nte64_edgepre_initial_edge_zero.yaml`. This
+diagnostic control is prepared behind the final-MAE composition candidate and
+will not be enqueued until that candidate has completed. It also passed runner
+validation and a two-GPU full-model 20-train/20-validation smoke; successful
+smoke artifacts were removed.

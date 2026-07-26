@@ -1,0 +1,11 @@
+jobs:
+  - id: nabla-nte64-qcond-edgepre-init-edge-zero-v1-20260726a
+    description: EdgePre NTE with only the first recurrent initial-edge residual removed
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/14_nabladft_nte64_edgepre_initial_edge_zero_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [any]
+    priority: 16
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/14_nabladft_nte64_edgepre_initial_edge_zero_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_edgepre_initial_edge_zero_nabladft.yaml
