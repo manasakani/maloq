@@ -1,0 +1,11 @@
+jobs:
+  - id: nabla-nte64-qcond-edge1-direct-v1-20260726a
+    description: Recurrent NTE without EdgeBlock 1's incoming-edge residual and bounded update scale
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/08_nabladft_nte64_edge1_direct_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [any]
+    priority: 14
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/08_nabladft_nte64_edge1_direct_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_edge1_direct_nabladft.yaml

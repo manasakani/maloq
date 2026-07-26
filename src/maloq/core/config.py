@@ -92,6 +92,7 @@ def _model_defaults() -> dict[str, Any]:
         "edge_stack_mode": "recurrent",
         "edge_atom_norm_type": None,
         "edge_post_residual_norm_type": None,
+        "direct_edgewise_layers": (),
         "edge_atomwise_output_mode": "residual_scaled",
         "edge_norm1_position": "post_edgewise",
         "esen_grid_resolution": None,
@@ -269,6 +270,7 @@ class ModelConfig(BaseModel):
         "layer_norm_sh",
         "rms_norm_sh",
     ] | None = None
+    direct_edgewise_layers: tuple[int, ...] = ()
     edge_atomwise_output_mode: Literal[
         "residual_scaled",
         "direct",
@@ -454,6 +456,7 @@ class MaloqConfig(BaseModel):
             "edge_stack_mode": "model",
             "edge_atom_norm_type": "model",
             "edge_post_residual_norm_type": "model",
+            "direct_edgewise_layers": "model",
             "edge_atomwise_output_mode": "model",
             "edge_norm1_position": "model",
             "esen_grid_resolution": "model",

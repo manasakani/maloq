@@ -73,12 +73,12 @@ def test_fixed_resume_restores_optimizer_scheduler_and_epoch(tmp_path: Path):
         optimizer.step()
         scheduler.step()
 
-    config = {
+    checkpoint_config = {
         "dataset_name": "test",
         "num_epochs": 10,
         "output_folder": str(tmp_path / "continued"),
     }
-    signature = resume_signature(config, 1)
+    signature = resume_signature(checkpoint_config, 1)
     payload = {
         **_checkpoint_payload(4),
         "backbone_state_dict": backbone.state_dict(),
@@ -111,7 +111,10 @@ def test_fixed_resume_restores_optimizer_scheduler_and_epoch(tmp_path: Path):
     )
     workflow = object.__new__(TrainingWorkflowFixed)
     workflow.resume_source = checkpoint_dir
-    workflow.config = config
+    workflow.config = {
+        **checkpoint_config,
+        "direct_edgewise_layers": (),
+    }
     workflow.world_size = 1
     workflow.rank = 0
     workflow.device = torch.device("cpu")

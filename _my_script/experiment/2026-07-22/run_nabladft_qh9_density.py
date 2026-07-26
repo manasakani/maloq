@@ -420,6 +420,27 @@ def nabladft_tracking_identity(
                     "ablation:node-block-system-injection",
                 )
             )
+        direct_edgewise_layers = tuple(
+            int(index) for index in config.get("direct_edgewise_layers", ())
+        )
+        if direct_edgewise_layers:
+            layer_value = ",".join(
+                str(index) for index in direct_edgewise_layers
+            )
+            ablation_slugs.append(
+                "edge" + "-".join(
+                    str(index) for index in direct_edgewise_layers
+                ) + "direct"
+            )
+            ablation_labels.append(
+                "Edge" + layer_value + "Direct"
+            )
+            ablation_tags.extend(
+                (
+                    f"edgewise-direct-layers:{layer_value}",
+                    "ablation:edgewise-residual",
+                )
+            )
         edge_stack_mode = config.get("edge_stack_mode", "recurrent")
         if edge_stack_mode == "nte_parallel":
             ablation_slugs.append("ntepair")
@@ -478,6 +499,7 @@ def nabladft_tracking_identity(
     has_layer_structure_ablation = bool(
         config.get("unscaled_node_layers", ())
         or config.get("repeat_system_embedding_each_node_block", False)
+        or config.get("direct_edgewise_layers", ())
         or config.get("edge_stack_mode", "recurrent") != "recurrent"
         or projection_policy != "shape_muon"
     )
@@ -969,6 +991,7 @@ def main() -> None:
                     "message_passing_schedule",
                     "unscaled_node_layers",
                     "repeat_system_embedding_each_node_block",
+                    "direct_edgewise_layers",
                     "edge_stack_mode",
                     "esen_grid_resolution",
                     "nte_input_conditioning",

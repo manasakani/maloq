@@ -447,12 +447,19 @@ class eSEN_Block(torch.nn.Module):
         post_residual_norm_type: str | None = None,
         atomwise_output_mode: str = "residual_scaled",
         edge_norm1_position: str = "post_edgewise",
+        edgewise_output_mode: str = "residual_scaled",
     ) -> None:
         super().__init__()
         self.sphere_channels = sphere_channels
         self.hidden_channels = hidden_channels
         self.lmax = lmax
         self.mmax = mmax
+        if edgewise_output_mode not in {"residual_scaled", "direct"}:
+            raise ValueError(
+                "edgewise_output_mode must be 'residual_scaled' or 'direct', "
+                f"got {edgewise_output_mode!r}."
+            )
+        self.edgewise_output_mode = edgewise_output_mode
         if atomwise_output_mode not in {"residual_scaled", "direct"}:
             raise ValueError(
                 "atomwise_output_mode must be 'residual_scaled' or 'direct', "
@@ -613,7 +620,12 @@ class eSEN_Block(torch.nn.Module):
             if edge_norm1_position == "post_edgewise":
                 x_message_edge = self.norm_1(x_message_edge)
 
-            x_message_edge = self.edge_update_scale(x_message_edge) + x_res
+            if getattr(
+                self,
+                "edgewise_output_mode",
+                "residual_scaled",
+            ) == "residual_scaled":
+                x_message_edge = self.edge_update_scale(x_message_edge) + x_res
             x_res = x_message_edge 
 
             x_message_edge = self.norm_2(x_message_edge)

@@ -279,15 +279,21 @@ MAE over epochs 16–20.
 | EdgeSplitNorm | `gu0eanf4` | 7.3127e-5 | 1.0286e-4 |
 | EdgeDegreeNorm | `1xt6c4xb` | 7.3935e-5 | 1.0601e-4 |
 | EdgeAtomDirect | `6w6yjvzc` | 7.8412e-5 | 1.1432e-4 |
+| EdgePreNodeNorm | `3uq7prdf` | 6.1804e-5 | 9.0054e-5 |
 
 Independent branch topology alone (`NTEParallel`) and carrying the old edge
 state in the message (`STMessage`) do not explain the gap. Post-residual RMS
 normalization gives a real but partial improvement. The complete QHFlow3 pair
-operation (`QHFPair`) is the only tested change whose tail is tied with
-QHFlow3. `EdgeAtomDirect` shows that removing the final atomwise residual and
-bounded update scale alone is harmful. The next `EdgePreNodeNorm` experiment
-isolates QHFlow3's earlier `node norm -> edgewise` ordering while preserving
-both recurrent NTE residuals.
+operation (`QHFPair`) ties QHFlow3 on tail matrix MAE. `EdgeAtomDirect` shows
+that removing the final atomwise residual and bounded update scale alone is
+harmful. `EdgePreNodeNorm` is the strongest recurrent single-operation result:
+its epoch 16-20 matrix mean is 2.14% lower than QHFlow3 and 17.03% lower than
+the cited NTE baseline. Its corresponding node and edge means are also 9.37%
+and 0.86% lower than QHFlow3. The final-epoch matrix MAE remains 12.33% above
+QHFlow3, so the robust conclusion is parity over the common late-training
+window rather than superiority from one endpoint. Together with `QHFPair`,
+this isolates QHFlow3's `node norm -> edgewise` boundary as the leading tested
+pair-layer difference.
 
 
 ## NTE edge pre-node normalization ablation
@@ -310,3 +316,47 @@ Commands:
 The durable queue manifest is `queue_nte64_edge_pre_node_norm.yaml`; the full
 run uses the same 20-epoch, two-GPU, effective-batch-20, seed-44, RAW-target,
 W&B-every-10-steps contract as the preceding pair-operation ablations.
+
+The full queue job
+`nabla-nte64-qcond-edge-pre-node-norm-v1-20260726a` completed all 20 epochs
+from clean source commit `8d92906` on server 1 GPUs 0 and 1. Its retained output
+is:
+
+`/dataset/seongsu/shared-home/workspace/project/outputs/nabladft-nte64-edge-pre-node-norm-2gpu-eb20-mb5-ga2-full-e20-20260726-162158/`
+
+W&B [`3uq7prdf`](https://wandb.ai/kaist-korea/maloq-nablaDFT/runs/3uq7prdf)
+finished with final matrix/node/edge MAE of `6.1804e-5`, `2.3096e-4`, and
+`7.4229e-5`. Its epoch 16-20 means are `9.0054e-5`, `4.2162e-4`, and
+`1.0474e-4`, respectively. Queue doctor reported no remaining claim, GPU lock,
+or invalid state after completion.
+
+
+## NTE EdgeBlock-1 direct edgewise output ablation
+
+`Edge1Direct` isolates the initial residual boundary in the recurrent edge
+stack. Only EdgeBlock 1 changes from
+`bounded_degree_scale(edgewise(x)) + initial_edge` to the normalized edgewise
+message itself. EdgeBlock 2 remains `residual_scaled`, so it still adds
+EdgeBlock 1's output and preserves a loss/gradient path through both blocks.
+The baseline post-edgewise `norm_1` position, final atomwise residuals and
+bounded scales, node stack, QHF conditioning, optimizer, split, seed, and data
+order remain unchanged. This is the first-residual counterpart to the
+completed `EdgeAtomDirect` final-residual test.
+
+Commands:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/08_nabladft_nte64_edge1_direct_2gpu.sh validate
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/08_nabladft_nte64_edge1_direct_2gpu.sh smoke 0,1
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/08_nabladft_nte64_edge1_direct_2gpu.sh full 0,1
+```
+
+The full output pattern is
+`/dataset/seongsu/shared-home/workspace/project/outputs/nabladft-nte64-edge1-direct-2gpu-eb20-mb5-ga2-full-e20-<timestamp>/`.
+It uses the project environment, 20 epochs, two data-parallel GPUs,
+micro-batch 5 per rank, gradient accumulation 2, effective batch 20, RAW Fock
+targets, seed 44, no graph distribution, and W&B logging every 10 optimizer
+steps. The durable queue manifest is `queue_nte64_edge1_direct.yaml`.
+The config validation, 46 QH9 tests, three fixed-resume tests, and a full-model
+two-GPU 20-train/20-validation smoke passed; successful smoke artifacts were
+removed.

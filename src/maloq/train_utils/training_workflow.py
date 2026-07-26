@@ -52,6 +52,7 @@ class TrainingWorkflow:
         "edge_stack_mode": "recurrent",
         "edge_atom_norm_type": None,
         "edge_post_residual_norm_type": None,
+        "direct_edgewise_layers": (),
         "edge_atomwise_output_mode": "residual_scaled",
         "edge_norm1_position": "post_edgewise",
         "esen_grid_resolution": None,
@@ -321,6 +322,23 @@ class TrainingWorkflow:
                     f"{option_name} must be None, 'layer_norm', "
                     "'layer_norm_sh', or 'rms_norm_sh'."
                 )
+        if len(set(self.config['direct_edgewise_layers'])) != len(
+            self.config['direct_edgewise_layers']
+        ):
+            raise ValueError("direct_edgewise_layers must not contain duplicates.")
+        num_edge_layers = (
+            int(self.config['num_mp_layers'])
+            if self.config['num_edge_layers'] is None
+            else int(self.config['num_edge_layers'])
+        )
+        if any(
+            index < 1 or index > num_edge_layers
+            for index in self.config['direct_edgewise_layers']
+        ):
+            raise ValueError(
+                "direct_edgewise_layers must contain 1-based indices within "
+                "num_edge_layers."
+            )
         if self.config['edge_atomwise_output_mode'] not in {
             'residual_scaled', 'direct'
         }:
@@ -1127,6 +1145,7 @@ class TrainingWorkflow:
                 edge_post_residual_norm_type=(
                     c['edge_post_residual_norm_type']
                 ),
+                direct_edgewise_layers=c['direct_edgewise_layers'],
                 edge_atomwise_output_mode=c['edge_atomwise_output_mode'],
                 edge_norm1_position=c['edge_norm1_position'],
                 input_conditioning=c['nte_input_conditioning'],
@@ -1306,6 +1325,9 @@ class TrainingWorkflow:
                     None
                     if is_qhflow3
                     else c['edge_post_residual_norm_type']
+                ),
+                'direct_edgewise_layers': (
+                    None if is_qhflow3 else list(c['direct_edgewise_layers'])
                 ),
                 'edge_atomwise_output_mode': (
                     None if is_qhflow3 else c['edge_atomwise_output_mode']

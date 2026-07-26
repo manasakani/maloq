@@ -177,6 +177,7 @@ def test_nte_layer_structure_ablation_options_are_explicit():
             "edge_stack_mode": "qhflow3_parallel",
             "edge_atom_norm_type": "layer_norm_sh",
             "edge_post_residual_norm_type": "rms_norm_sh",
+            "direct_edgewise_layers": [1],
             "edge_atomwise_output_mode": "direct",
             "edge_norm1_position": "pre_node",
         },
@@ -188,6 +189,7 @@ def test_nte_layer_structure_ablation_options_are_explicit():
     assert workflow["edge_stack_mode"] == "qhflow3_parallel"
     assert workflow["edge_atom_norm_type"] == "layer_norm_sh"
     assert workflow["edge_post_residual_norm_type"] == "rms_norm_sh"
+    assert workflow["direct_edgewise_layers"] == (1,)
     assert workflow["edge_atomwise_output_mode"] == "direct"
     assert workflow["edge_norm1_position"] == "pre_node"
     assert workflow["muon_output_projection_policy"] == "adamw"
@@ -291,6 +293,108 @@ def test_nte_direct_edge_atomwise_output_skips_scale_and_residual():
 
     # edgewise output 3 + incoming residual 7 = 10, then direct atomwise = 20.
     torch.testing.assert_close(output, torch.full_like(edge_state, 20.0))
+
+
+def test_nte_direct_edgewise_output_skips_first_scale_and_residual():
+    class FixedEdgewise(torch.nn.Module):
+        def forward(self, _node_state, edge_state, *_args):
+            return torch.full_like(edge_state, 3.0)
+
+    class DoubleAtomwise(torch.nn.Module):
+        def forward(self, state):
+            return 2.0 * state
+
+    class FailIfCalled(torch.nn.Module):
+        def forward(self, _state):
+            raise AssertionError("direct edgewise output must skip update scale")
+
+    block = eSEN_Block.__new__(eSEN_Block)
+    torch.nn.Module.__init__(block)
+    block.norm_1 = torch.nn.Identity()
+    block.norm_2 = torch.nn.Identity()
+    block.post_residual_norm = torch.nn.Identity()
+    block.edge_wise = FixedEdgewise()
+    block.atom_wise = DoubleAtomwise()
+    block.edge_update_scale = FailIfCalled()
+    block.atom_update_scale = torch.nn.Identity()
+    block.edgewise_output_mode = "direct"
+    block.atomwise_output_mode = "residual_scaled"
+
+    edge_state = torch.full((3, 4, 2), 7.0)
+    output = block(
+        torch.zeros(2, 4, 2),
+        edge_state,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "edge",
+        None,
+    )
+
+    # The incoming value 7 is discarded: edgewise 3 -> atomwise 6 + residual 3.
+    torch.testing.assert_close(output, torch.full_like(edge_state, 9.0))
+
+
+def test_nte_edge1_direct_preserves_two_block_gradient_path():
+    model = eSEN_Backbone(
+        Irreps("1x0e"),
+        sphere_channels=2,
+        hidden_channels=2,
+        lmax=1,
+        mmax=1,
+        cutoff=15.0,
+        edge_channels=2,
+        num_layers=1,
+        num_edge_layers=2,
+        num_distance_basis=4,
+        message_passing_schedule="node_then_edge",
+        direct_edgewise_layers=(1,),
+    )
+
+    assert [
+        block.edgewise_output_mode for block in model.edge_blocks
+    ] == ["direct", "residual_scaled"]
+
+    class LearnableEdgewise(torch.nn.Module):
+        def __init__(self, initial_value):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor(initial_value))
+
+        def forward(self, _node_state, edge_state, *_args):
+            return self.weight * torch.ones_like(edge_state)
+
+    for index, block in enumerate(model.edge_blocks, start=1):
+        block.norm_1 = torch.nn.Identity()
+        block.norm_2 = torch.nn.Identity()
+        block.post_residual_norm = torch.nn.Identity()
+        block.edge_wise = LearnableEdgewise(float(index))
+        block.atom_wise = torch.nn.Identity()
+        block.edge_update_scale = torch.nn.Identity()
+        block.atom_update_scale = torch.nn.Identity()
+
+    node_state = torch.zeros(2, 4, 2)
+    edge_state = torch.zeros(3, 4, 2)
+    for block in model.edge_blocks:
+        edge_state = block(
+            node_state,
+            edge_state,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "edge",
+            None,
+        )
+
+    edge_state.sum().backward()
+    for block in model.edge_blocks:
+        gradient = block.edge_wise.weight.grad
+        assert gradient is not None
+        assert torch.isfinite(gradient)
+        assert gradient.abs() > 0
 
 
 def test_nte_edge_norm1_can_move_before_edgewise_node_input():

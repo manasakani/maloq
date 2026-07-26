@@ -101,6 +101,7 @@ class eSEN_Backbone(nn.Module):
         edge_post_residual_norm_type: str | None = None,
         edge_atomwise_output_mode: str = "residual_scaled",
         edge_norm1_position: str = "post_edgewise",
+        direct_edgewise_layers: tuple[int, ...] = (),
         input_conditioning: str = "none",
         conditioning_basis: str = "def2-svp",
         conditioning_delta_learning: bool = False,
@@ -351,6 +352,21 @@ class eSEN_Backbone(nn.Module):
             raise ValueError(
                 "The interleaved schedule requires num_edge_layers == num_layers."
             )
+        self.direct_edgewise_layers = tuple(
+            int(index) for index in direct_edgewise_layers
+        )
+        if len(set(self.direct_edgewise_layers)) != len(
+            self.direct_edgewise_layers
+        ):
+            raise ValueError("direct_edgewise_layers must not contain duplicates.")
+        if any(
+            index < 1 or index > self.num_edge_layers
+            for index in self.direct_edgewise_layers
+        ):
+            raise ValueError(
+                "direct_edgewise_layers must contain 1-based indices within "
+                "num_edge_layers."
+            )
         self.hidden_channels = hidden_channels
         self.norm_type = norm_type
         self.act_type = act_type
@@ -396,7 +412,7 @@ class eSEN_Backbone(nn.Module):
             self.node_blocks.append(node_block)
 
         if self.include_edges:
-            for _ in range(self.num_edge_layers):
+            for edge_layer_index in range(1, self.num_edge_layers + 1):
                 edge_block = eSEN_Block(
                     self.sphere_channels,
                     self.hidden_channels,
@@ -414,6 +430,11 @@ class eSEN_Backbone(nn.Module):
                     node_or_edge='edge',
                     atom_norm_type=self.edge_atom_norm_type,
                     post_residual_norm_type=self.edge_post_residual_norm_type,
+                    edgewise_output_mode=(
+                        "direct"
+                        if edge_layer_index in self.direct_edgewise_layers
+                        else "residual_scaled"
+                    ),
                     atomwise_output_mode=self.edge_atomwise_output_mode,
                     edge_norm1_position=self.edge_norm1_position,
                     **block_kwargs,

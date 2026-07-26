@@ -51,6 +51,10 @@ _SIGNATURE_EXCLUDED_KEYS = {
     "wandb_tags",
 }
 
+_SIGNATURE_COMPATIBILITY_DEFAULTS = {
+    "direct_edgewise_layers": [],
+}
+
 
 def _normalise_signature_value(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float, str)):
@@ -94,6 +98,16 @@ def signature_digest(signature: dict[str, Any]) -> str:
         ensure_ascii=True,
     )
     return hashlib.sha256(serialised.encode("utf-8")).hexdigest()
+
+
+def _migrate_stored_signature_defaults(
+    signature: dict[str, Any],
+) -> dict[str, Any]:
+    """Add behavior-preserving defaults introduced after a checkpoint."""
+    migrated = dict(signature)
+    for key, value in _SIGNATURE_COMPATIBILITY_DEFAULTS.items():
+        migrated.setdefault(key, value)
+    return migrated
 
 
 def _checkpoint_directory(source: Path) -> Path:
@@ -403,6 +417,15 @@ class TrainingWorkflowFixed(legacy.TrainingWorkflow):
         expected_signature = resume_signature(self.config, self.world_size)
         expected_digest = signature_digest(expected_signature)
         stored_digest = state["config_signature_digest"]
+        stored_signature = state.get("config_signature")
+        if isinstance(stored_signature, dict):
+            if signature_digest(stored_signature) != stored_digest:
+                raise ValueError(
+                    "Checkpoint configuration signature is corrupted."
+                )
+            stored_digest = signature_digest(
+                _migrate_stored_signature_defaults(stored_signature)
+            )
         if stored_digest != expected_digest and not self.allow_config_mismatch:
             raise ValueError(
                 "Resume configuration does not match the checkpoint. "
