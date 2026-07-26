@@ -14,7 +14,7 @@ from torch_geometric.data import Batch, Data
 
 from maloq.core.config import MaloqConfig
 from maloq.dataset_utils.get_loader import _qm7_matrix_target
-from maloq.helm.esen_block import DegreeLayerScale, GridAtomwise
+from maloq.helm.esen_block import DegreeLayerScale, GridAtomwise, eSEN_Block
 from maloq.helm.esen_osh import eSEN_Backbone
 from maloq.helm.nn.activation import GateActivation
 from maloq.helm.qhflow3_clean import (
@@ -161,6 +161,203 @@ def test_maloq_qh9_config_round_trip_preserves_model_recipe():
     assert workflow["seed"] == 44
 
 
+def test_nte_layer_structure_ablation_options_are_explicit():
+    workflow = MaloqConfig(
+        model={
+            "message_passing_schedule": "node_then_edge",
+            "num_mp_layers": 3,
+            "unscaled_node_layers": [2],
+            "repeat_system_embedding_each_node_block": True,
+            "nte_input_conditioning": "qhflow3_exact",
+            "edge_stack_mode": "qhflow3_parallel",
+        },
+        optimization={"muon_output_projection_policy": "adamw"},
+    ).to_workflow_config()
+
+    assert workflow["unscaled_node_layers"] == (2,)
+    assert workflow["repeat_system_embedding_each_node_block"] is True
+    assert workflow["edge_stack_mode"] == "qhflow3_parallel"
+    assert workflow["muon_output_projection_policy"] == "adamw"
+
+
+def test_nte_can_unscale_only_node_block_two():
+    model = eSEN_Backbone(
+        Irreps("1x0e"),
+        sphere_channels=8,
+        hidden_channels=8,
+        lmax=4,
+        mmax=4,
+        cutoff=15.0,
+        edge_channels=8,
+        num_layers=3,
+        num_edge_layers=2,
+        num_distance_basis=16,
+        gate_act_type="sigmoid",
+        mlp_type="grid",
+        message_passing_schedule="node_then_edge",
+        residual_update_scale_mode="bounded_degree",
+        residual_update_scale_init=1.0 / 64.0,
+        residual_update_scale_log_range=math.log(64.0),
+        unscaled_node_layers=(2,),
+    )
+
+    assert model.node_blocks[0].edge_update_scale.raw is not None
+    assert model.node_blocks[1].edge_update_scale.raw is None
+    assert model.node_blocks[1].atom_update_scale.raw is None
+    assert model.node_blocks[2].edge_update_scale.raw is not None
+    assert all(
+        block.edge_update_scale.raw is not None for block in model.edge_blocks
+    )
+
+
+def test_nte_repeated_system_embedding_requires_qhflow3_conditioning():
+    with pytest.raises(ValueError, match="qhflow3_exact"):
+        eSEN_Backbone(
+            Irreps("1x0e"),
+            sphere_channels=4,
+            hidden_channels=4,
+            lmax=2,
+            mmax=2,
+            cutoff=15.0,
+            edge_channels=4,
+            num_layers=2,
+            num_edge_layers=2,
+            num_distance_basis=8,
+            message_passing_schedule="node_then_edge",
+            repeat_system_embedding_each_node_block=True,
+        )
+
+    conditioner = NTEMatrixConditioning(
+        mode="qhflow3_exact",
+        basis="def2-svp-nabla",
+        hidden_size=8,
+    )
+    system_embedding = conditioner.system_embedding(
+        3,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    assert system_embedding.shape == (3, 8)
+    assert torch.isfinite(system_embedding).all()
+    torch.testing.assert_close(system_embedding[0], system_embedding[1])
+    torch.testing.assert_close(system_embedding[1], system_embedding[2])
+
+
+def test_nte_node_block_reinjects_system_embedding_after_first_norm():
+    class CaptureEdgewise(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.seen = None
+
+        def forward(self, node_state, *_args):
+            self.seen = node_state.detach().clone()
+            return torch.zeros_like(node_state)
+
+    class ZeroUpdate(torch.nn.Module):
+        def forward(self, state):
+            return torch.zeros_like(state)
+
+    block = eSEN_Block.__new__(eSEN_Block)
+    torch.nn.Module.__init__(block)
+    block.norm_1 = torch.nn.Identity()
+    block.norm_2 = torch.nn.Identity()
+    block.edge_wise = CaptureEdgewise()
+    block.atom_wise = ZeroUpdate()
+    block.edge_update_scale = torch.nn.Identity()
+    block.atom_update_scale = torch.nn.Identity()
+
+    node_state = torch.zeros(2, 4, 3)
+    system_embedding = torch.tensor(
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+    )
+    output = block(
+        node_state,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "node",
+        None,
+        system_embedding,
+    )
+
+    assert block.edge_wise.seen is not None
+    torch.testing.assert_close(
+        block.edge_wise.seen[:, 0, :],
+        system_embedding,
+    )
+    torch.testing.assert_close(
+        block.edge_wise.seen[:, 1:, :],
+        torch.zeros(2, 3, 3),
+    )
+    torch.testing.assert_close(output, node_state)
+
+
+@pytest.mark.parametrize("edge_stack_mode", ("nte_parallel", "qhflow3_parallel"))
+def test_parallel_edge_stacks_require_node_then_edge(edge_stack_mode):
+    with pytest.raises(ValueError, match="node_then_edge"):
+        eSEN_Backbone(
+            Irreps("1x0e"),
+            sphere_channels=4,
+            hidden_channels=4,
+            lmax=2,
+            mmax=2,
+            cutoff=15.0,
+            edge_channels=4,
+            num_layers=2,
+            num_edge_layers=2,
+            num_distance_basis=8,
+            message_passing_schedule="interleaved",
+            edge_stack_mode=edge_stack_mode,
+        )
+
+
+def test_nte_parallel_edge_stack_reuses_initial_state_and_sums_branches():
+    class AddEdge(torch.nn.Module):
+        def __init__(self, amount):
+            super().__init__()
+            self.amount = amount
+            self.seen = []
+
+        def forward(self, node_state, edge_state, *_args, **kwargs):
+            self.seen.append(edge_state.detach().clone())
+            return edge_state + self.amount
+
+    model = eSEN_Backbone.__new__(eSEN_Backbone)
+    torch.nn.Module.__init__(model)
+    model.include_edges = True
+    model.message_passing_schedule = "node_then_edge"
+    model.edge_stack_mode = "nte_parallel"
+    model.node_blocks = torch.nn.ModuleList()
+    edge_1 = AddEdge(1.0)
+    edge_2 = AddEdge(2.0)
+    model.edge_blocks = torch.nn.ModuleList((edge_1, edge_2))
+
+    node_state = torch.zeros(2, 4, 3)
+    initial_edge_state = torch.full((3, 4, 3), 10.0)
+    _, edge_state = model._run_message_passing(
+        node_state,
+        initial_edge_state,
+        None,
+        {
+            "edge_distance": None,
+            "edge_index": None,
+            "partition": None,
+        },
+        None,
+        None,
+    )
+
+    torch.testing.assert_close(edge_1.seen[0], initial_edge_state)
+    torch.testing.assert_close(edge_2.seen[0], initial_edge_state)
+    torch.testing.assert_close(
+        edge_state,
+        torch.full_like(initial_edge_state, 23.0),
+    )
+
+
 def test_delta_learning_config_round_trip_for_hamiltonian_and_density():
     for loss_target in ("fock_matrix", "density_matrix"):
         workflow = MaloqConfig(
@@ -193,6 +390,7 @@ def test_nabladft_tracking_identity_is_compact_and_grouped():
         {
             "head_type": "maloq_muon",
             "scale_and_shift": True,
+            "scale_shift_mode": "standardize",
             "output_l_embedding_dim": 128,
             "l_embedding_dim": 128,
             "num_edge_layers": 3,
@@ -203,15 +401,90 @@ def test_nabladft_tracking_identity_is_compact_and_grouped():
         smoke=False,
     )
 
-    assert identity["experiment_id"] == "nabla-nte128e3-muon-ss1-v1"
+    assert identity["experiment_id"] == "nabla-nte128e3-muon-shift-std-v1"
     assert (
         identity["display_name"]
-        == "NablaDFT | NTE-128/3 | Muon | SS1 | V1"
+        == "NablaDFT | NTE-128/3 | Muon | SHIFT+STD | V1"
     )
     assert identity["group"] == "nabla-nte128e3-head-ss"
     assert identity["job_type"] == "full"
     assert "scale-shift:on" in identity["tags"]
+    assert "normalization:l0-shift-std" in identity["tags"]
     assert "version:v1" in identity["tags"]
+
+
+def test_nabladft_tracking_identity_distinguishes_shift_only():
+    module = _load_nabladft_runner_module()
+    identity = module.nabladft_tracking_identity(
+        "maloq",
+        {
+            "head_type": "maloq_muon",
+            "scale_and_shift": True,
+            "scale_shift_mode": "shift_only",
+            "seed": 44,
+            "experiment_version": 1,
+        },
+        smoke=False,
+    )
+
+    assert identity["experiment_id"] == "nabla-maloq-muon-shift-v1"
+    assert identity["display_name"] == "NablaDFT | MALOQ | Muon | SHIFT | V1"
+    assert "normalization:l0-shift-only" in identity["tags"]
+
+
+def test_nabladft_tracking_identity_names_semantic_global_muon_routing():
+    module = _load_nabladft_runner_module()
+    identity = module.nabladft_tracking_identity(
+        "maloq-nte",
+        {
+            "head_type": "maloq_semantic_global_muon",
+            "scale_and_shift": False,
+            "output_l_embedding_dim": 64,
+            "l_embedding_dim": 128,
+            "num_edge_layers": 2,
+            "num_mp_layers": 3,
+            "seed": 44,
+            "experiment_version": 2,
+        },
+        smoke=False,
+    )
+
+    assert identity["experiment_id"] == (
+        "nabla-nte64e2-matrixmuon-auxadamw-sghead-raw-v2"
+    )
+    assert identity["display_name"] == (
+        "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW+SGHead | RAW | V2"
+    )
+    assert "muon-routing:ndim-ge-2" in identity["tags"]
+    assert "head-routing:semantic-global" in identity["tags"]
+
+
+def test_nabladft_tracking_identity_names_semantic_gate_muon_routing():
+    module = _load_nabladft_runner_module()
+    identity = module.nabladft_tracking_identity(
+        "maloq-nte",
+        {
+            "head_type": "maloq_semantic_global_gate_muon",
+            "scale_and_shift": False,
+            "output_l_embedding_dim": 64,
+            "l_embedding_dim": 128,
+            "num_edge_layers": 2,
+            "num_mp_layers": 3,
+            "seed": 44,
+            "experiment_version": 3,
+        },
+        smoke=False,
+    )
+
+    assert identity["experiment_id"] == (
+        "nabla-nte64e2-matmuon-sghead-gatemuon-raw-v3"
+    )
+    assert identity["display_name"] == (
+        "NablaDFT | NTE-64/2 | MatMuon+SGHead+GateMuon | RAW | V3"
+    )
+    assert "head-routing:semantic-global" in identity["tags"]
+    assert "gate-optimizer:muon" in identity["tags"]
+    assert "gate-routing:semantic-matrix" in identity["tags"]
 
 
 def test_wandb_tracking_forwards_display_metadata(monkeypatch, tmp_path):
@@ -229,17 +502,17 @@ def test_wandb_tracking_forwards_display_metadata(monkeypatch, tmp_path):
         "wandb_project": "maloq-nablaDFT",
         "wandb_entity": "kaist-korea",
         "wandb_mode": "online",
-        "wandb_run_name": "NablaDFT | QHFlow3 | Muon | SS0 | V2",
+        "wandb_run_name": "NablaDFT | QHFlow3 | Muon | RAW | V2",
         "wandb_group": "nabla-qhflow3-ss",
         "wandb_job_type": "full",
         "wandb_tags": ("dataset:nabladft", "scale-shift:off"),
-        "run_name": "nabla-qhf3-muon-ss0-v2",
+        "run_name": "nabla-qhf3-muon-raw-v2",
         "output_folder": str(tmp_path),
     }
 
     run = workflow.setup_tracking()
 
-    assert run.name == "NablaDFT | QHFlow3 | Muon | SS0 | V2"
+    assert run.name == "NablaDFT | QHFlow3 | Muon | RAW | V2"
     assert captured["group"] == "nabla-qhflow3-ss"
     assert captured["job_type"] == "full"
     assert captured["tags"] == ["dataset:nabladft", "scale-shift:off"]
@@ -443,6 +716,36 @@ def test_structural_ablation_config_toggles_round_trip():
     assert nte["nte_input_conditioning"] == "overlap"
 
 
+def test_qhflow3_can_match_nte_default_grid():
+    workflow = MaloqConfig(
+        model={
+            "backbone_type": "qhflow3_clean",
+            "qhflow3_grid_resolution": None,
+        }
+    ).to_workflow_config()
+    model = QHFlow3MaloqBackbone(
+        sh_lmax=4,
+        hidden_size=8,
+        bottle_hidden_size=4,
+        num_gnn_layers=1,
+        num_ham_gnn_layers=1,
+        radius_embed_dim=8,
+        escn_edge_channels=8,
+        escn_num_distance_basis=8,
+        grid_resolution=workflow["qhflow3_grid_resolution"],
+        basis="def2-svp-nabla",
+        use_block_S=False,
+        use_block_H=False,
+        default_hamiltonian_input="zero",
+    )
+
+    grid = model.node_attr_backbone.SO3_grid["lmax_lmax"]
+    assert workflow["qhflow3_grid_resolution"] is None
+    assert model.grid_resolution is None
+    assert grid.lat_resolution == 10
+    assert grid.long_resolution == 11
+
+
 def test_nabladft_tracking_names_structural_ablations():
     module = _load_nabladft_runner_module()
     common = {
@@ -474,11 +777,12 @@ def test_nabladft_tracking_names_structural_ablations():
         smoke=False,
     )
 
-    assert qhflow3["experiment_id"] == "nabla-qhf3-muon-ss0-ov0-v2"
-    assert qhflow3["display_name"].endswith("SS0 | OV0 | V2")
+    assert qhflow3["experiment_id"] == "nabla-qhf3-muon-raw-ov0-v2"
+    assert qhflow3["display_name"].endswith("RAW | OV0 | V2")
+    assert "normalization:none" in qhflow3["tags"]
     assert "overlap:off" in qhflow3["tags"]
-    assert nte["experiment_id"] == "nabla-nte64e2-muon-ss0-g48-v1"
-    assert nte["display_name"].endswith("SS0 | Grid48 | V1")
+    assert nte["experiment_id"] == "nabla-nte64e2-muon-raw-g48-v1"
+    assert nte["display_name"].endswith("RAW | Grid48 | V1")
     assert "grid:48x48" in nte["tags"]
 
     scond = module.nabladft_tracking_identity(
@@ -500,12 +804,71 @@ def test_nabladft_tracking_names_structural_ablations():
         smoke=False,
     )
 
-    assert scond["experiment_id"] == "nabla-nte64e2-muon-ss0-scond-v1"
-    assert scond["display_name"].endswith("SS0 | Scond | V1")
+    assert scond["experiment_id"] == "nabla-nte64e2-muon-raw-scond-v1"
+    assert scond["display_name"].endswith("RAW | Scond | V1")
     assert "conditioning:overlap" in scond["tags"]
-    assert qcond["experiment_id"] == "nabla-nte64e2-muon-ss0-qcond-v1"
-    assert qcond["display_name"].endswith("SS0 | QHFcond | V1")
+    assert qcond["experiment_id"] == "nabla-nte64e2-muon-raw-qcond-v1"
+    assert qcond["display_name"].endswith("RAW | QHFcond | V1")
     assert "conditioning:qhflow3-exact" in qcond["tags"]
+
+    node2 = module.nabladft_tracking_identity(
+        "maloq-nte",
+        {
+            **common,
+            "experiment_version": 1,
+            "nte_input_conditioning": "qhflow3_exact",
+            "unscaled_node_layers": (2,),
+        },
+        smoke=False,
+    )
+    qhfpair = module.nabladft_tracking_identity(
+        "maloq-nte",
+        {
+            **common,
+            "experiment_version": 1,
+            "nte_input_conditioning": "qhflow3_exact",
+            "edge_stack_mode": "qhflow3_parallel",
+        },
+        smoke=False,
+    )
+    nteparallel = module.nabladft_tracking_identity(
+        "maloq-nte",
+        {
+            **common,
+            "experiment_version": 1,
+            "nte_input_conditioning": "qhflow3_exact",
+            "edge_stack_mode": "nte_parallel",
+        },
+        smoke=False,
+    )
+    projadamw = module.nabladft_tracking_identity(
+        "maloq-nte",
+        {
+            **common,
+            "experiment_version": 1,
+            "nte_input_conditioning": "qhflow3_exact",
+            "muon_output_projection_policy": "adamw",
+        },
+        smoke=False,
+    )
+
+    assert node2["experiment_id"].endswith("-qcond-n2nols-v1")
+    assert node2["display_name"].endswith("QHFcond | N2NoLS | V1")
+    assert "unscaled-node-layers:2" in node2["tags"]
+    assert qhfpair["experiment_id"].endswith("-qcond-qhfpair-v1")
+    assert qhfpair["display_name"].endswith("QHFcond | QHFPair | V1")
+    assert "edge-stack:qhflow3-parallel" in qhfpair["tags"]
+    assert nteparallel["experiment_id"].endswith("-qcond-ntepair-v1")
+    assert nteparallel["display_name"].endswith(
+        "QHFcond | NTEParallel | V1"
+    )
+    assert "edge-stack:nte-parallel-residual" in nteparallel["tags"]
+    assert "pair-block-math:nte" in nteparallel["tags"]
+    assert projadamw["experiment_id"].endswith("-qcond-projadamw-v1")
+    assert projadamw["display_name"].endswith(
+        "QHFcond | ProjAdamW | V1"
+    )
+    assert "output-projection-optimizer:adamw" in projadamw["tags"]
 
 
 def _qhflow3_equivariance_batch(

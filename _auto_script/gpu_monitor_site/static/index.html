@@ -97,7 +97,16 @@
             <strong id="summary-memory">—</strong>
             <span id="summary-memory-total">of —</span>
           </div>
-          <div class="summary-meter"><i id="summary-memory-meter"></i></div>
+          <div class="summary-memory-row">
+            <progress
+              id="summary-memory-progress"
+              class="memory-progress"
+              max="100"
+              value="0"
+              aria-label="Fleet GPU memory utilization"
+            ></progress>
+            <strong id="summary-memory-percent">—%</strong>
+          </div>
         </article>
         <article class="summary-card">
           <span class="summary-label">Current draw</span>
@@ -107,6 +116,59 @@
           </div>
           <div class="summary-meta" id="summary-busy">No active jobs detected</div>
         </article>
+      </section>
+
+      <section class="fleet-statistics" aria-labelledby="fleet-statistics-title">
+        <header class="fleet-statistics-header">
+          <div>
+            <p class="eyebrow">WHOLE-FLEET STATISTICS</p>
+            <h2 id="fleet-statistics-title">Current aggregate</h2>
+          </div>
+          <div class="fleet-statistics-actions">
+            <span id="fleet-statistics-caption">Waiting for all reporting GPUs</span>
+            <button
+              class="scope-history-button"
+              id="fleet-history-button"
+              type="button"
+              data-history-scope="fleet"
+              title="Open history aggregated across both servers"
+            >
+              Fleet history
+            </button>
+          </div>
+        </header>
+        <div class="fleet-statistics-grid">
+          <article title="Mean utilization across every currently reporting GPU">
+            <span>Average utilization</span>
+            <strong id="fleet-utilization-average">—%</strong>
+            <small id="fleet-reporting-gpus">— GPUs reporting</small>
+          </article>
+          <article title="Highest current utilization among all reporting GPUs">
+            <span>Peak utilization</span>
+            <strong id="fleet-utilization-peak">—%</strong>
+            <small id="fleet-utilization-peak-gpu">No sample</small>
+          </article>
+          <article title="Total GPU memory used divided by total GPU memory">
+            <span>Fleet memory ratio</span>
+            <strong id="fleet-memory-ratio">—%</strong>
+            <small id="fleet-memory-detail">No sample</small>
+          </article>
+          <article title="Mean temperature across every reporting GPU">
+            <span>Average temperature</span>
+            <strong id="fleet-temperature-average">—°C</strong>
+            <small id="fleet-temperature-peak">Peak —°C</small>
+          </article>
+          <article title="Number of NVIDIA compute processes currently using GPUs">
+            <span>Active processes</span>
+            <strong id="fleet-processes">—</strong>
+            <small>Across both servers</small>
+          </article>
+          <article title="Unique operating-system users owning active GPU processes">
+            <span>Active users</span>
+            <strong id="fleet-users">—</strong>
+            <small id="fleet-user-names">No active user</small>
+          </article>
+        </div>
       </section>
 
       <section class="controls" aria-label="GPU filters">
@@ -154,7 +216,7 @@
       >
         <header class="history-header">
           <div>
-            <p class="eyebrow">PERSISTENT GPU HISTORY</p>
+            <p class="eyebrow" id="history-eyebrow">PERSISTENT GPU HISTORY</p>
             <h2 id="history-title">GPU history</h2>
             <p id="history-subtitle">Loading saved snapshots</p>
           </div>
@@ -192,7 +254,7 @@
         <div class="history-summary" id="history-summary"></div>
         <div class="history-charts" id="history-charts"></div>
 
-        <section class="process-history">
+        <section class="process-history" id="process-history-section">
           <div class="process-history-heading">
             <div>
               <p class="eyebrow">PROCESS ACTIVITY</p>

@@ -56,6 +56,23 @@ def test_muon_maloq_head_preserves_native_forward_exactly() -> None:
         torch.testing.assert_close(semantic_part, native_part)
 
 
+def test_gate_muon_maloq_head_preserves_native_forward_exactly() -> None:
+    kwargs, embeddings, batch = _qh9_head_inputs(channels=4)
+    torch.manual_seed(260722)
+    native = Fock_Irreps_Head(**kwargs)
+    torch.manual_seed(260722)
+    semantic_gate = MuonFockIrrepsHead(**kwargs, muonize_gate=True)
+
+    native_output = native(embeddings, batch)
+    semantic_gate_output = semantic_gate(embeddings, batch)
+    for native_part, semantic_part in zip(
+        native_output,
+        semantic_gate_output,
+        strict=True,
+    ):
+        torch.testing.assert_close(semantic_part, native_part)
+
+
 def test_muon_maloq_head_routes_every_trainable_matrix() -> None:
     kwargs, embeddings, batch = _qh9_head_inputs(channels=4)
     head = MuonFockIrrepsHead(**kwargs)
@@ -112,6 +129,48 @@ def test_muon_maloq_head_config_round_trip() -> None:
     assert "muon_parameter_policy" not in workflow
 
 
+def test_semantic_global_muon_head_config_and_parameter_contract() -> None:
+    workflow = MaloqConfig(
+        model={"head_type": "maloq_semantic_global_muon"},
+        optimization={"optimizer_type": "muon"},
+    ).to_workflow_config()
+    assert workflow["head_type"] == "maloq_semantic_global_muon"
+
+    kwargs, _, _ = _qh9_head_inputs(channels=4)
+    head = MuonFockIrrepsHead(**kwargs)
+    parameters = TrainingWorkflow._collect_semantic_global_muon_parameters(head)
+    assert [tuple(parameter.shape) for parameter in parameters] == [
+        (31, 4),
+        (56, 4),
+    ]
+    assert head.SEMANTIC_MUON_ROUTING == "semantic_global_node_edge"
+
+
+def test_semantic_gate_muon_head_config_and_parameter_contract() -> None:
+    workflow = MaloqConfig(
+        model={"head_type": "maloq_semantic_global_gate_muon"},
+        optimization={"optimizer_type": "muon"},
+    ).to_workflow_config()
+    assert workflow["head_type"] == "maloq_semantic_global_gate_muon"
+
+    kwargs, _, _ = _qh9_head_inputs(channels=4)
+    head = MuonFockIrrepsHead(**kwargs, muonize_gate=True)
+    gate_parameters = TrainingWorkflow._collect_semantic_gate_muon_parameters(
+        head
+    )
+    assert [tuple(parameter.shape) for parameter in gate_parameters] == [
+        (20, 4),
+    ]
+    assert head.SEMANTIC_GATE_ROUTING == "semantic_scalar_gate"
+
+    all_muon_parameters = TrainingWorkflow._collect_muon_parameters(
+        torch.nn.Identity(),
+        head,
+    )
+    all_muon_ids = {id(parameter) for parameter in all_muon_parameters}
+    assert all(id(parameter) in all_muon_ids for parameter in gate_parameters)
+
+
 def test_fixed_muon_routing_includes_every_matrix() -> None:
     backbone = torch.nn.Sequential(
         torch.nn.Embedding(8, 4),
@@ -129,3 +188,19 @@ def test_fixed_muon_routing_includes_every_matrix() -> None:
         (id(parameter) in muon_ids) == (parameter.ndim >= 2)
         for parameter in list(backbone.parameters()) + list(head.parameters())
     )
+
+
+def test_nte_output_projection_parameters_can_be_routed_to_adamw() -> None:
+    backbone = SimpleNamespace(
+        node_output_projection=torch.nn.Linear(8, 4, bias=False),
+        edge_output_projection=torch.nn.Linear(8, 4, bias=False),
+    )
+
+    parameters = TrainingWorkflow._collect_nte_output_projection_parameters(
+        backbone
+    )
+
+    assert [id(parameter) for parameter in parameters] == [
+        id(backbone.node_output_projection.weight),
+        id(backbone.edge_output_projection.weight),
+    ]

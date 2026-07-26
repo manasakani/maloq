@@ -42,6 +42,20 @@ first/last-seen times, and peak GPU memory for processes observed on that GPU in
 the selected range. Long ranges are bounded to 720 chart points while the raw
 one-minute records remain unchanged in SQLite.
 
+Use **Server history** in either server header to aggregate that server's eight
+GPUs, or **Fleet history** beside Current aggregate to combine both servers.
+These views plot mean GPU utilization, aggregate memory ratio, mean
+temperature, and total power, while their range summaries retain peak
+utilization and process activity. Offline cached samples are excluded so they
+are not mistaken for live measurements.
+
+Each **System disk** and **Shared dataset** card also has a **History** button.
+Storage history plots used capacity, utilization percentage, and remaining
+capacity, and reports the net change in the selected range. Local disks use
+their physical filesystem capacity; shared `/dataset` uses the 40 TB decimal
+operating budget for percentage and remaining capacity while retaining the
+larger physical NFS total as source metadata.
+
 ## Open the site
 
 The HTTP server intentionally listens only on server 1 localhost. From a
@@ -65,7 +79,14 @@ Use **Clean view** in the top bar to fit each server's eight GPUs into a compact
 overview. It keeps utilization, memory, temperature, power, state, and active
 process counts visible while hiding the large introduction, history graphs, and
 process details. **Detailed view** restores the full cards. The selected mode is
-remembered in that browser.
+remembered in that browser. Supported browsers use a native View Transition;
+the fallback uses a short fade and the introductory section collapses smoothly.
+
+Every GPU memory bar shows the exact used/total ratio and percentage. The
+**Current aggregate** section summarizes the whole live fleet: mean and peak GPU
+utilization, total memory ratio, mean/peak temperature, active compute-process
+count, and unique active users. These are current five-second samples, not
+historical averages.
 
 Each server panel also shows local system-disk and shared `/dataset` capacity.
 The shared volume refers to the same NFS storage on both servers and is measured

@@ -68,7 +68,7 @@ def gpu_state(gpu: dict[str, object]) -> str:
 
 
 def fleet_summary(servers: list[dict[str, object]]) -> dict[str, object]:
-    summary: dict[str, float | int] = {
+    summary: dict[str, object] = {
         "servers_online": 0,
         "servers_total": len(servers),
         "gpus_total": 0,
@@ -80,21 +80,79 @@ def fleet_summary(servers: list[dict[str, object]]) -> dict[str, object]:
         "memory_total_mib": 0,
         "power_draw_w": 0.0,
     }
+    reporting_gpus = 0
+    utilization_total = 0.0
+    utilization_peak = 0.0
+    utilization_peak_gpu: str | None = None
+    temperature_total = 0.0
+    temperature_count = 0
+    temperature_peak = 0.0
+    process_count = 0
+    active_users: set[str] = set()
     for server in servers:
         gpus = server.get("gpus") or []
         gpu_slots = len(gpus) or 8
-        summary["gpus_total"] += gpu_slots
+        summary["gpus_total"] = int(summary["gpus_total"]) + gpu_slots
         if server.get("online"):
-            summary["servers_online"] += 1
+            summary["servers_online"] = int(summary["servers_online"]) + 1
         else:
-            summary["gpus_offline"] += gpu_slots
+            summary["gpus_offline"] = int(summary["gpus_offline"]) + gpu_slots
             continue
         for gpu in gpus:
+            reporting_gpus += 1
             state = gpu_state(gpu)
-            summary[f"gpus_{state}"] += 1
-            summary["memory_used_mib"] += int(gpu.get("memory_used_mib") or 0)
-            summary["memory_total_mib"] += int(gpu.get("memory_total_mib") or 0)
-            summary["power_draw_w"] += float(gpu.get("power_draw_w") or 0)
+            state_key = f"gpus_{state}"
+            summary[state_key] = int(summary[state_key]) + 1
+            summary["memory_used_mib"] = int(summary["memory_used_mib"]) + int(
+                gpu.get("memory_used_mib") or 0
+            )
+            summary["memory_total_mib"] = int(summary["memory_total_mib"]) + int(
+                gpu.get("memory_total_mib") or 0
+            )
+            summary["power_draw_w"] = float(summary["power_draw_w"]) + float(
+                gpu.get("power_draw_w") or 0
+            )
+            utilization = float(gpu.get("utilization_percent") or 0)
+            utilization_total += utilization
+            if utilization > utilization_peak or utilization_peak_gpu is None:
+                utilization_peak = utilization
+                utilization_peak_gpu = (
+                    f"{server.get('id', 'server')} / GPU {gpu.get('index', '?')}"
+                )
+            if gpu.get("temperature_c") is not None:
+                temperature = float(gpu["temperature_c"])
+                temperature_total += temperature
+                temperature_count += 1
+                temperature_peak = max(temperature_peak, temperature)
+            processes = gpu.get("processes") or []
+            process_count += len(processes)
+            active_users.update(
+                str(process["user"])
+                for process in processes
+                if process.get("user")
+            )
+    memory_total = int(summary["memory_total_mib"])
+    summary.update(
+        {
+            "gpus_reporting": reporting_gpus,
+            "utilization_average_percent": (
+                utilization_total / reporting_gpus if reporting_gpus else 0
+            ),
+            "utilization_peak_percent": utilization_peak,
+            "utilization_peak_gpu": utilization_peak_gpu,
+            "memory_utilization_percent": (
+                int(summary["memory_used_mib"]) / memory_total * 100
+                if memory_total
+                else 0
+            ),
+            "temperature_average_c": (
+                temperature_total / temperature_count if temperature_count else 0
+            ),
+            "temperature_peak_c": temperature_peak,
+            "processes_active": process_count,
+            "active_users": sorted(active_users),
+        }
+    )
     return summary
 
 
@@ -308,6 +366,25 @@ class MonitorState:
             return None
         return self.history_store.gpu_history(server_id, gpu_index, hours)
 
+    def aggregate_history(
+        self,
+        hours: float,
+        server_id: str | None = None,
+    ) -> dict[str, object] | None:
+        if self.history_store is None:
+            return None
+        return self.history_store.aggregate_history(hours, server_id=server_id)
+
+    def storage_history(
+        self,
+        server_id: str,
+        mountpoint: str,
+        hours: float,
+    ) -> dict[str, object] | None:
+        if self.history_store is None:
+            return None
+        return self.history_store.storage_history(server_id, mountpoint, hours)
+
 
 class DashboardHandler(BaseHTTPRequestHandler):
     state: MonitorState
@@ -370,22 +447,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/history":
             query = parse_qs(parsed.query)
+            scope = query.get("scope", ["gpu"])[0]
             server_id = query.get("server_id", [""])[0]
             gpu_text = query.get("gpu_index", [""])[0]
             hours_text = query.get("hours", ["24"])[0]
             valid_servers = {str(config["id"]) for config in SERVER_CONFIGS}
             try:
-                gpu_index = int(gpu_text)
                 hours = float(hours_text)
             except ValueError:
                 self._send_json(
-                    {"error": "gpu_index and hours must be numeric"},
+                    {"error": "hours must be numeric"},
                     status=HTTPStatus.BAD_REQUEST,
                 )
                 return
-            if server_id not in valid_servers or not 0 <= gpu_index < 8:
+            if scope not in {"gpu", "server", "fleet", "storage"}:
                 self._send_json(
-                    {"error": "unknown server_id or GPU index"},
+                    {"error": "scope must be gpu, server, fleet, or storage"},
                     status=HTTPStatus.BAD_REQUEST,
                 )
                 return
@@ -395,7 +472,48 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     status=HTTPStatus.BAD_REQUEST,
                 )
                 return
-            history = self.state.gpu_history(server_id, gpu_index, hours)
+            if scope == "fleet":
+                history = self.state.aggregate_history(hours)
+            elif scope == "server":
+                if server_id not in valid_servers:
+                    self._send_json(
+                        {"error": "unknown server_id"},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                history = self.state.aggregate_history(hours, server_id=server_id)
+            elif scope == "storage":
+                mountpoint = query.get("mountpoint", [""])[0]
+                if server_id not in valid_servers or mountpoint not in {
+                    "/",
+                    "/dataset",
+                }:
+                    self._send_json(
+                        {"error": "unknown server_id or storage mountpoint"},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                history = self.state.storage_history(
+                    server_id,
+                    mountpoint,
+                    hours,
+                )
+            else:
+                try:
+                    gpu_index = int(gpu_text)
+                except ValueError:
+                    self._send_json(
+                        {"error": "gpu_index must be numeric"},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                if server_id not in valid_servers or not 0 <= gpu_index < 8:
+                    self._send_json(
+                        {"error": "unknown server_id or GPU index"},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                history = self.state.gpu_history(server_id, gpu_index, hours)
             if history is None:
                 self._send_json(
                     {"error": "history tracking is unavailable"},

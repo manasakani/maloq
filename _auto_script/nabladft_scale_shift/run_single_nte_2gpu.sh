@@ -10,6 +10,12 @@ set -euo pipefail
 MODEL_VARIANT=${MODEL_VARIANT:-maloq-nte}
 MODEL_HEAD_TYPE=${MODEL_HEAD_TYPE:-}
 COMPACT_NAMES=${COMPACT_NAMES:-0}
+MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE:-5}
+GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-2}
+WORLD_SIZE=2
+EFFECTIVE_BATCH_SIZE=$((10#${MICRO_BATCH_SIZE} * WORLD_SIZE * 10#${GRADIENT_ACCUMULATION_STEPS}))
+WANDB_RUN_NAME_OVERRIDE=${WANDB_RUN_NAME_OVERRIDE:-}
+WANDB_TAGS_CSV=${WANDB_TAGS_CSV:-}
 
 case "${MODEL_VARIANT}" in
   maloq | maloq-nte | qhflow3) ;;
@@ -32,6 +38,13 @@ case "${COMPACT_NAMES}" in
     exit 2
     ;;
 esac
+for value_name in MICRO_BATCH_SIZE GRADIENT_ACCUMULATION_STEPS; do
+  value=${!value_name}
+  if [[ ! "${value}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "${value_name} must be a positive integer." >&2
+    exit 2
+  fi
+done
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
   echo "Usage: $0 {prepare|validate|smoke|full} [GPU0,GPU1]" >&2
@@ -135,6 +148,21 @@ RUN_NAME_ARGS=()
 if [[ "${COMPACT_NAMES}" == "1" ]]; then
   RUN_NAME_ARGS=(--run-name "${EXPERIMENT_NAME}")
 fi
+WANDB_NAME_ARGS=()
+if [[ -n "${WANDB_RUN_NAME_OVERRIDE}" ]]; then
+  WANDB_NAME_ARGS=(--wandb-run-name "${WANDB_RUN_NAME_OVERRIDE}")
+fi
+WANDB_TAG_ARGS=()
+if [[ -n "${WANDB_TAGS_CSV}" ]]; then
+  IFS=',' read -r -a WANDB_TAGS <<< "${WANDB_TAGS_CSV}"
+  for tag in "${WANDB_TAGS[@]}"; do
+    if [[ -z "${tag}" ]]; then
+      echo "WANDB_TAGS_CSV contains an empty tag." >&2
+      exit 2
+    fi
+    WANDB_TAG_ARGS+=(--wandb-tag "${tag}")
+  done
+fi
 
 case "${SCOPE}" in
   validate)
@@ -146,9 +174,11 @@ case "${SCOPE}" in
       "${SCALE_SHIFT_ARGS[@]}" \
       "${HEAD_TYPE_ARGS[@]}" \
       "${RUN_NAME_ARGS[@]}" \
+      "${WANDB_NAME_ARGS[@]}" \
+      "${WANDB_TAG_ARGS[@]}" \
       --optimizer-type muon \
-      --batch-size 5 \
-      --gradient-accumulation-steps 2 \
+      --batch-size "${MICRO_BATCH_SIZE}" \
+      --gradient-accumulation-steps "${GRADIENT_ACCUMULATION_STEPS}" \
       --no-distribute-graphs \
       --gpu "${GPU_PAIR}" \
       --master-port "${MASTER_PORT}" \
@@ -218,7 +248,7 @@ if [[ "${COMPACT_NAMES}" == "1" ]]; then
   fi
 else
   RUN_ID=$(date +%Y%m%d-%H%M%S)
-  GROUP_ROOT=${PROJECT_ROOT}/outputs/${EXPERIMENT_NAME}-2gpu-eb20-mb5-ga2-${SCOPE_SLUG}-seed44-${RUN_ID}
+  GROUP_ROOT=${PROJECT_ROOT}/outputs/${EXPERIMENT_NAME}-2gpu-eb${EFFECTIVE_BATCH_SIZE}-mb${MICRO_BATCH_SIZE}-ga${GRADIENT_ACCUMULATION_STEPS}-${SCOPE_SLUG}-seed44-${RUN_ID}
 fi
 OUTPUT_DIR=${GROUP_ROOT}/run
 LOG_FILE=${GROUP_ROOT}/run.log
@@ -233,12 +263,21 @@ if [[ "${SCALE_SHIFT_ENABLED}" == "1" ]]; then
 fi
 printf 'experiment\tvariant\thead_type\tgpus\tmicro_batch\tworld_size\taccumulation\teffective_batch\tconfig\tscale_shift_stats\n' \
   > "${GROUP_ROOT}/launch_manifest.tsv"
-printf '%s\t%s\t%s\t%s\t5\t2\t2\t20\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
   "${EXPERIMENT_NAME}" "${MODEL_VARIANT}" "${MODEL_HEAD_TYPE:-config}" \
-  "${GPU_PAIR}" "${MODEL_CONFIG}" \
+  "${GPU_PAIR}" "${MICRO_BATCH_SIZE}" "${WORLD_SIZE}" \
+  "${GRADIENT_ACCUMULATION_STEPS}" "${EFFECTIVE_BATCH_SIZE}" "${MODEL_CONFIG}" \
   "${MANIFEST_STATS}" >> "${GROUP_ROOT}/launch_manifest.tsv"
 printf 'source_commit\t%s\n' "$(git rev-parse HEAD)" \
   > "${GROUP_ROOT}/source_revision.tsv"
+git status --short > "${GROUP_ROOT}/source_status.txt"
+git diff --binary -- \
+  src/maloq/core/config.py \
+  src/maloq/fock_utils/fock_targets_batched.py \
+  src/maloq/train_utils/training_workflow.py \
+  > "${GROUP_ROOT}/source_worktree.patch"
+sha256sum "${MODEL_CONFIG}" "${SCALE_SHIFT_STATS}" \
+  > "${GROUP_ROOT}/input_sha256.txt"
 
 set +e
 env \
@@ -262,9 +301,11 @@ env \
     "${SCALE_SHIFT_ARGS[@]}" \
     "${HEAD_TYPE_ARGS[@]}" \
     "${RUN_NAME_ARGS[@]}" \
+    "${WANDB_NAME_ARGS[@]}" \
+    "${WANDB_TAG_ARGS[@]}" \
     --optimizer-type muon \
-    --batch-size 5 \
-    --gradient-accumulation-steps 2 \
+    --batch-size "${MICRO_BATCH_SIZE}" \
+    --gradient-accumulation-steps "${GRADIENT_ACCUMULATION_STEPS}" \
     --no-distribute-graphs \
     --gpu "${GPU_PAIR}" \
     --master-port "${MASTER_PORT}" \

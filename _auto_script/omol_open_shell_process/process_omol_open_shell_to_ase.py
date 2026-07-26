@@ -40,14 +40,14 @@ except ImportError:  # pragma: no cover - exercised on minimal processing hosts
 
 
 DEFAULT_SOURCE_ROOT = Path(
-    "/home1/irteam/data-vol1/data/omol25/open_shell_restore"
+    "/dataset/seongsu/shared-home/datasets/omol25_open_shell_source"
 )
 DEFAULT_MANIFEST = Path(
-    "/home1/irteam/data-vol1/datasets/omol25/manifests/ml_mo_v1/"
-    "strict_transition_metal.jsonl"
+    "/dataset/seongsu/shared-home/datasets/omol25_open_shell_maloq_ase/"
+    "manifests/strict_transition_metal.jsonl"
 )
 DEFAULT_OUTPUT_ROOT = Path(
-    "/home1/irteam/data-vol1/data/omol25/open_shell_maloq_ase"
+    "/dataset/seongsu/shared-home/datasets/omol25_open_shell_maloq_ase"
 )
 VALID_SPLITS = ("train", "val", "test")
 SCHEMA_VERSION = 1

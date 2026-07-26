@@ -72,6 +72,9 @@ class SplitTrainer():
             gradient_accumulation_steps=1,
             wandb_enabled=False,
             wandb_log_every_n_steps=10,
+            start_epoch=0,
+            initial_history=None,
+            checkpoint_callback=None,
             min_lr=1e-10):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}", flush=True)
@@ -127,6 +130,12 @@ class SplitTrainer():
             num_train_batches,
             gradient_accumulation_steps,
         )
+        start_epoch = int(start_epoch)
+        if not 0 <= start_epoch <= num_epochs:
+            raise ValueError(
+                f"start_epoch must be between 0 and num_epochs; got "
+                f"{start_epoch} for {num_epochs} epochs."
+            )
         if rank == 0:
             print(
                 "Gradient accumulation: "
@@ -142,14 +151,64 @@ class SplitTrainer():
 
         initial_lr = optimizer.param_groups[0]['lr']
 
-        track_loss_node = []
-        track_loss_node_val = []
-        track_loss_total = []
+        initial_history = dict(initial_history or {})
+        track_loss_node = list(initial_history.get('node', ()))
+        track_loss_node_val = list(initial_history.get('node_val', ()))
+        track_loss_total = list(initial_history.get('total', ()))
         if include_edges:
-            track_loss_edge = []
-            track_loss_edge_val = []
+            track_loss_edge = list(initial_history.get('edge', ()))
+            track_loss_edge_val = list(initial_history.get('edge_val', ()))
 
-        for epoch in range(num_epochs):
+        last_checkpoint_epoch = None
+
+        def save_epoch_state(epoch):
+            nonlocal last_checkpoint_epoch
+            if last_checkpoint_epoch == epoch:
+                return
+            history = {
+                'node': list(track_loss_node),
+                'node_val': list(track_loss_node_val),
+                'total': list(track_loss_total),
+            }
+            if include_edges:
+                history.update(
+                    edge=list(track_loss_edge),
+                    edge_val=list(track_loss_edge_val),
+                )
+            if checkpoint_callback is not None:
+                checkpoint_callback(
+                    epoch=epoch,
+                    backbone=self.backbone,
+                    head=self.head,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    history=history,
+                    optimizer_steps_per_epoch=optimizer_steps_per_epoch,
+                )
+            elif rank == 0:
+                if include_edges:
+                    self.save_training_state(
+                        epoch, self.backbone, optimizer, track_loss_node,
+                        track_loss_node_val, 'backbone', output_folder,
+                        track_loss_edge, track_loss_edge_val,
+                    )
+                    self.save_training_state(
+                        epoch, self.head, optimizer, track_loss_node,
+                        track_loss_node_val, 'head', output_folder,
+                        track_loss_edge, track_loss_edge_val,
+                    )
+                else:
+                    self.save_training_state(
+                        epoch, self.backbone, optimizer, track_loss_node,
+                        track_loss_node_val, 'backbone', output_folder,
+                    )
+                    self.save_training_state(
+                        epoch, self.head, optimizer, track_loss_node,
+                        track_loss_node_val, 'head', output_folder,
+                    )
+            last_checkpoint_epoch = epoch
+
+        for epoch in range(start_epoch, num_epochs):
 
             epoch_start = time.perf_counter()
 
@@ -596,25 +655,14 @@ class SplitTrainer():
                 self.wandb_run.log(metrics, step=optimizer_step)
 
             # save state
-            if rank == 0:
-                if (epoch + 1) % self.save_frequency == 0:
-                    if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
-                        self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
-                        self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)
-                    else:
-                        self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder)
-                        self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder)
+            if (epoch + 1) % self.save_frequency == 0:
+                save_epoch_state(epoch)
 
             # End condition for Plateau scheduler is based on the learning rate:
             min_lr_reached = torch.tensor(float(current_lr == min_lr), device='cuda')
             if min_lr_reached:
                 print("Reached minimum learning rate, finished training.")
-                if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
-                    self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder, track_loss_edge, track_loss_edge_val)
-                    self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder, track_loss_edge, track_loss_edge_val)
-                else:
-                    self.save_training_state(epoch, self.backbone, optimizer, track_loss_node, track_loss_node_val, 'backbone', output_folder)
-                    self.save_training_state(epoch, self.head, optimizer, track_loss_node, track_loss_node_val, 'head', output_folder)
+                save_epoch_state(epoch)
                 return
 
     # -- Evaluate model --

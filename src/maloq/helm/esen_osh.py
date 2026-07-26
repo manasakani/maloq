@@ -94,6 +94,9 @@ class eSEN_Backbone(nn.Module):
         residual_update_scale_mode: str = "none",
         residual_update_scale_init: float = 1.0,
         residual_update_scale_log_range: float = 0.0,
+        unscaled_node_layers: tuple[int, ...] = (),
+        repeat_system_embedding_each_node_block: bool = False,
+        edge_stack_mode: str = "recurrent",
         input_conditioning: str = "none",
         conditioning_basis: str = "def2-svp",
         conditioning_delta_learning: bool = False,
@@ -112,6 +115,50 @@ class eSEN_Backbone(nn.Module):
                 f"'node_then_edge', got {message_passing_schedule!r}."
             )
         self.message_passing_schedule = message_passing_schedule
+        parallel_edge_stack_modes = {"nte_parallel", "qhflow3_parallel"}
+        if edge_stack_mode not in {"recurrent", *parallel_edge_stack_modes}:
+            raise ValueError(
+                "edge_stack_mode must be 'recurrent', 'nte_parallel', or "
+                "'qhflow3_parallel', "
+                f"got {edge_stack_mode!r}."
+            )
+        if edge_stack_mode in parallel_edge_stack_modes and message_type != "source-target":
+            raise ValueError(
+                "Parallel edge branches require message_type='source-target'."
+            )
+        if (
+            edge_stack_mode in parallel_edge_stack_modes
+            and message_passing_schedule != "node_then_edge"
+        ):
+            raise ValueError(
+                "Parallel edge branches require "
+                "message_passing_schedule='node_then_edge'."
+            )
+        self.edge_stack_mode = edge_stack_mode
+        self.repeat_system_embedding_each_node_block = bool(
+            repeat_system_embedding_each_node_block
+        )
+        if (
+            self.repeat_system_embedding_each_node_block
+            and input_conditioning != "qhflow3_exact"
+        ):
+            raise ValueError(
+                "repeat_system_embedding_each_node_block requires "
+                "input_conditioning='qhflow3_exact'."
+            )
+        self.unscaled_node_layers = tuple(int(index) for index in unscaled_node_layers)
+        if len(set(self.unscaled_node_layers)) != len(self.unscaled_node_layers):
+            raise ValueError("unscaled_node_layers must not contain duplicates.")
+        invalid_unscaled_layers = [
+            index
+            for index in self.unscaled_node_layers
+            if index < 1 or index > num_layers
+        ]
+        if invalid_unscaled_layers:
+            raise ValueError(
+                "unscaled_node_layers uses 1-based node-block indices in "
+                f"[1, {num_layers}], got {invalid_unscaled_layers}."
+            )
         self.use_edge_envelope = bool(use_edge_envelope)
         self.use_edge_scalar_modulation = bool(use_edge_scalar_modulation)
         self.residual_update_scale_mode = residual_update_scale_mode
@@ -296,7 +343,10 @@ class eSEN_Backbone(nn.Module):
             "residual_update_scale_log_range": self.residual_update_scale_log_range,
         }
 
-        for _ in range(self.num_layers):
+        for layer_index in range(1, self.num_layers + 1):
+            node_block_kwargs = dict(block_kwargs)
+            if layer_index in self.unscaled_node_layers:
+                node_block_kwargs["residual_update_scale_mode"] = "none"
             node_block = eSEN_Block(
                 self.sphere_channels,
                 self.hidden_channels,
@@ -312,7 +362,7 @@ class eSEN_Backbone(nn.Module):
                 message_type,
                 include_edges=self.include_edges,
                 node_or_edge='node',
-                **block_kwargs,
+                **node_block_kwargs,
             )
             self.node_blocks.append(node_block)
 
@@ -400,6 +450,7 @@ class eSEN_Backbone(nn.Module):
         graph_dict,
         wigner,
         wigner_inv,
+        system_node_embedding=None,
     ):
         def update_node(block, node_state, edge_state):
             return block(
@@ -412,6 +463,7 @@ class eSEN_Backbone(nn.Module):
                 wigner_inv,
                 node_or_edge='node',
                 partition=graph_dict["partition"],
+                system_node_embedding=system_node_embedding,
             )
 
         def update_edge(block, node_state, edge_state):
@@ -438,7 +490,7 @@ class eSEN_Backbone(nn.Module):
                 x_message_edge = update_edge(
                     edge_block, x_message_node, x_message_edge
                 )
-        else:
+        elif self.edge_stack_mode == "recurrent":
             for node_block in self.node_blocks:
                 x_message_node = update_node(
                     node_block, x_message_node, x_message_edge
@@ -448,6 +500,35 @@ class eSEN_Backbone(nn.Module):
                     x_message_edge = update_edge(
                         edge_block, x_message_node, x_message_edge
                     )
+        elif self.edge_stack_mode == "nte_parallel":
+            for node_block in self.node_blocks:
+                x_message_node = update_node(
+                    node_block, x_message_node, x_message_edge
+                )
+            initial_edge_state = x_message_edge
+            edge_branches = [
+                update_edge(edge_block, x_message_node, initial_edge_state)
+                for edge_block in self.edge_blocks
+            ]
+            x_message_edge = torch.stack(edge_branches, dim=0).sum(dim=0)
+        else:
+            for node_block in self.node_blocks:
+                x_message_node = update_node(
+                    node_block, x_message_node, x_message_edge
+                )
+            pair_branches = [
+                edge_block.forward_qhflow3_pair(
+                    x_message_node,
+                    x_edge,
+                    graph_dict["edge_distance"],
+                    graph_dict["edge_index"],
+                    wigner,
+                    wigner_inv,
+                    graph_dict["partition"],
+                )
+                for edge_block in self.edge_blocks
+            ]
+            x_message_edge = torch.stack(pair_branches, dim=0).sum(dim=0)
         return x_message_node, x_message_edge
 
 
@@ -602,6 +683,13 @@ class eSEN_Backbone(nn.Module):
         ###############################################################
         # Update spherical node embeddings
         ###############################################################
+        system_node_embedding = None
+        if self.repeat_system_embedding_each_node_block:
+            system_node_embedding = self.input_conditioner.system_embedding(
+                x_message_node.shape[0],
+                device=x_message_node.device,
+                dtype=x_message_node.dtype,
+            )
         x_message_node, x_message_edge = self._run_message_passing(
             x_message_node,
             x_message_edge,
@@ -609,6 +697,7 @@ class eSEN_Backbone(nn.Module):
             graph_dict,
             wigner,
             wigner_inv,
+            system_node_embedding=system_node_embedding,
         )
 
         # Final layer norm

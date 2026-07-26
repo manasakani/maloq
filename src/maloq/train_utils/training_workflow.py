@@ -47,6 +47,9 @@ class TrainingWorkflow:
         "residual_update_scale_mode": "none",
         "residual_update_scale_init": 1.0,
         "residual_update_scale_log_range": 0.0,
+        "unscaled_node_layers": (),
+        "repeat_system_embedding_each_node_block": False,
+        "edge_stack_mode": "recurrent",
         "esen_grid_resolution": None,
         "nte_input_conditioning": "none",
         "qhflow3_max_radius": 12.0,
@@ -79,6 +82,7 @@ class TrainingWorkflow:
         "muon_adamw_lr": None,
         "muon_adamw_betas": (0.9, 0.95),
         "muon_adamw_eps": 1e-10,
+        "muon_output_projection_policy": "shape_muon",
         "gradient_clip_val": None,
         "gradient_accumulation_steps": 1,
         "warmup_steps": 1000,
@@ -98,6 +102,7 @@ class TrainingWorkflow:
         "wandb_log_every_n_steps": 10,
         "validation_matrix_metrics": False,
         "validation_matrix_metrics_frequency": 1,
+        "scale_shift_mode": "standardize",
     }
 
     def __init__(self, config):
@@ -260,6 +265,52 @@ class TrainingWorkflow:
                 "residual_update_scale_mode must be 'none' or "
                 "'bounded_degree'."
             )
+        self.config['unscaled_node_layers'] = tuple(
+            int(index) for index in self.config['unscaled_node_layers']
+        )
+        if len(set(self.config['unscaled_node_layers'])) != len(
+            self.config['unscaled_node_layers']
+        ):
+            raise ValueError("unscaled_node_layers must not contain duplicates.")
+        if any(
+            index < 1 or index > int(self.config['num_mp_layers'])
+            for index in self.config['unscaled_node_layers']
+        ):
+            raise ValueError(
+                "unscaled_node_layers must contain 1-based indices within "
+                "num_mp_layers."
+            )
+        if (
+            self.config['repeat_system_embedding_each_node_block']
+            and self.config['nte_input_conditioning'] != 'qhflow3_exact'
+        ):
+            raise ValueError(
+                "repeat_system_embedding_each_node_block requires "
+                "nte_input_conditioning='qhflow3_exact'."
+            )
+        if self.config['edge_stack_mode'] not in {
+            'recurrent', 'nte_parallel', 'qhflow3_parallel'
+        }:
+            raise ValueError(
+                "edge_stack_mode must be 'recurrent', 'nte_parallel', or "
+                "'qhflow3_parallel'."
+            )
+        if (
+            self.config['edge_stack_mode'] in {
+                'nte_parallel', 'qhflow3_parallel'
+            }
+            and self.config['message_passing_schedule'] != 'node_then_edge'
+        ):
+            raise ValueError(
+                "Parallel edge stacks require "
+                "message_passing_schedule='node_then_edge'."
+            )
+        if self.config['muon_output_projection_policy'] not in {
+            'shape_muon', 'adamw'
+        }:
+            raise ValueError(
+                "muon_output_projection_policy must be 'shape_muon' or 'adamw'."
+            )
         if (
             self.config['esen_grid_resolution'] is not None
             and int(self.config['esen_grid_resolution']) <= 0
@@ -288,12 +339,30 @@ class TrainingWorkflow:
             )
         if self.config['backbone_type'] not in {'esen', 'qhflow3_clean'}:
             raise ValueError("backbone_type must be 'esen' or 'qhflow3_clean'.")
-        if self.config['head_type'] not in {'maloq', 'maloq_muon', 'static_te'}:
+        if self.config['head_type'] not in {
+            'maloq',
+            'maloq_muon',
+            'maloq_semantic_global_muon',
+            'maloq_semantic_global_gate_muon',
+            'static_te',
+        }:
             raise ValueError(
-                "head_type must be 'maloq', 'maloq_muon', or 'static_te'."
+                "head_type must be 'maloq', 'maloq_muon', "
+                "'maloq_semantic_global_muon', "
+                "'maloq_semantic_global_gate_muon', or 'static_te'."
             )
-        if self.config['head_type'] == 'maloq_muon' and self.config['reduce_edge']:
-            raise ValueError("maloq_muon currently requires reduce_edge=False.")
+        if (
+            self.config['head_type']
+            in {
+                'maloq_muon',
+                'maloq_semantic_global_muon',
+                'maloq_semantic_global_gate_muon',
+            }
+            and self.config['reduce_edge']
+        ):
+            raise ValueError(
+                "Muon-compatible MALOQ heads currently require reduce_edge=False."
+            )
         if self.config['head_type'] == 'static_te':
             if self.config['open_shell']:
                 raise ValueError("static_te currently supports closed-shell data only.")
@@ -341,7 +410,11 @@ class TrainingWorkflow:
             raise ValueError(
                 "qhflow3_clean requires output_l_embedding_dim for its bottle width."
             )
-        if int(self.config['qhflow3_grid_resolution']) <= 0:
+        qhflow3_grid_resolution = self.config['qhflow3_grid_resolution']
+        if (
+            qhflow3_grid_resolution is not None
+            and int(qhflow3_grid_resolution) <= 0
+        ):
             raise ValueError("qhflow3_grid_resolution must be positive.")
         qhflow3_grid_chunk = self.config['qhflow3_grid_ffn_chunk_size']
         if qhflow3_grid_chunk is not None and int(qhflow3_grid_chunk) <= 0:
@@ -478,6 +551,14 @@ class TrainingWorkflow:
             return None
 
         dataset_name = self.config['dataset_name']
+        scale_shift_mode = self.config.get(
+            'scale_shift_mode',
+            'standardize',
+        )
+        if scale_shift_mode not in {'standardize', 'shift_only'}:
+            raise ValueError(
+                "scale_shift_mode must be 'standardize' or 'shift_only'."
+            )
 
         if self.config['loss_target'] in ['fock_matrix', 'density_matrix']:
             configured_path = self.config.get('scale_shift_path')
@@ -524,6 +605,7 @@ class TrainingWorkflow:
                     "element_scalar_means": data["element_scalar_means"],
                     "element_scalar_stds": data["element_scalar_stds"],
                     "scalar_irrep_indices": data["scalar_irrep_indices"],
+                    "normalization_mode": scale_shift_mode,
                 }
 
             if self.config['open_shell']:
@@ -558,13 +640,15 @@ class TrainingWorkflow:
                     "element_scalar_means_beta": data["element_scalar_means_beta"],   
                     "element_scalar_stds_alpha": data["element_scalar_stds_alpha"],   
                     "element_scalar_stds_beta": data["element_scalar_stds_beta"],    
-                    "scalar_irrep_indices": data["scalar_irrep_indices"]  
+                    "scalar_irrep_indices": data["scalar_irrep_indices"],
+                    "normalization_mode": scale_shift_mode,
                 }
             else:
                 return {
                     "element_scalar_means": data["element_scalar_means"],
                     "element_scalar_stds": data["element_scalar_stds"],
-                    "scalar_irrep_indices": data["scalar_irrep_indices"]
+                    "scalar_irrep_indices": data["scalar_irrep_indices"],
+                    "normalization_mode": scale_shift_mode,
                 }
 
         elif self.config['loss_target'] in ['energies']:
@@ -891,6 +975,59 @@ class TrainingWorkflow:
             if parameter.ndim >= 2 and parameter.requires_grad
         ]
 
+    @staticmethod
+    def _collect_semantic_global_muon_parameters(head):
+        """Return explicitly materialized global node/edge head matrices."""
+        semantic_parameters = getattr(head, "semantic_matrix_parameters", None)
+        if semantic_parameters is None:
+            return []
+        parameters = [
+            parameter
+            for parameter in semantic_parameters()
+            if parameter.requires_grad
+        ]
+        parameter_ids = [id(parameter) for parameter in parameters]
+        if len(parameter_ids) != len(set(parameter_ids)):
+            raise ValueError("Semantic-global Muon parameters must be unique.")
+        if any(parameter.ndim != 2 for parameter in parameters):
+            raise ValueError(
+                "Semantic-global Muon head parameters must be explicit matrices."
+            )
+        return parameters
+
+    @staticmethod
+    def _collect_semantic_gate_muon_parameters(head):
+        """Return the explicitly materialized scalar/gate projection matrices."""
+        gate_parameters = getattr(head, "gate_matrix_parameters", None)
+        if gate_parameters is None:
+            return []
+        parameters = [
+            parameter
+            for parameter in gate_parameters()
+            if parameter.requires_grad
+        ]
+        parameter_ids = [id(parameter) for parameter in parameters]
+        if len(parameter_ids) != len(set(parameter_ids)):
+            raise ValueError("Semantic gate Muon parameters must be unique.")
+        if any(parameter.ndim != 2 for parameter in parameters):
+            raise ValueError(
+                "Semantic gate Muon parameters must be explicit matrices."
+            )
+        return parameters
+
+    @staticmethod
+    def _collect_nte_output_projection_parameters(backbone):
+        """Return eSEN's degree-batched 128→output projection tensors."""
+        parameters = []
+        for module_name in ("node_output_projection", "edge_output_projection"):
+            module = getattr(backbone, module_name, None)
+            if module is None:
+                continue
+            weight = getattr(module, "weight", None)
+            if weight is not None and weight.requires_grad:
+                parameters.append(weight)
+        return parameters
+
     def build_model(self, required_irreps, orb_basis, ls_list):
         """Initializes backbone, head, optimizer, and scheduler."""
         c = self.config
@@ -951,6 +1088,11 @@ class TrainingWorkflow:
                 residual_update_scale_mode=c['residual_update_scale_mode'],
                 residual_update_scale_init=c['residual_update_scale_init'],
                 residual_update_scale_log_range=c['residual_update_scale_log_range'],
+                unscaled_node_layers=c['unscaled_node_layers'],
+                repeat_system_embedding_each_node_block=(
+                    c['repeat_system_embedding_each_node_block']
+                ),
+                edge_stack_mode=c['edge_stack_mode'],
                 input_conditioning=c['nte_input_conditioning'],
                 conditioning_basis=(
                     'def2-svp-nabla'
@@ -991,13 +1133,20 @@ class TrainingWorkflow:
                     gate_activation=c['static_te_gate_activation'],
                     gate_init=c['static_te_gate_init'],
                 )
-            elif c['head_type'] == 'maloq_muon':
+            elif c['head_type'] in {
+                'maloq_muon',
+                'maloq_semantic_global_muon',
+                'maloq_semantic_global_gate_muon',
+            }:
                 head = MuonFockIrrepsHead(
                     irreps_in=irreps_in, irreps_out=required_irreps,
                     lmax=required_irreps.lmax, sphere_channels=head_channels,
                     reduce_edge=c['reduce_edge'], open_shell=c['open_shell'],
                     ls_list=ls_list, reduce_node=c['reduce_node'],
-                    reduce_node_intra=c['reduce_node_intra'], orbital_basis=orb_basis
+                    reduce_node_intra=c['reduce_node_intra'], orbital_basis=orb_basis,
+                    muonize_gate=(
+                        c['head_type'] == 'maloq_semantic_global_gate_muon'
+                    ),
                 )
             else:
                 head = Fock_Irreps_Head(
@@ -1032,11 +1181,47 @@ class TrainingWorkflow:
 
         if self.rank == 0:
             is_qhflow3 = c['backbone_type'] == 'qhflow3_clean'
+            semantic_global_params = (
+                self._collect_semantic_global_muon_parameters(head)
+                if c['head_type'] in {
+                    'maloq_semantic_global_muon',
+                    'maloq_semantic_global_gate_muon',
+                }
+                else []
+            )
+            semantic_gate_params = (
+                self._collect_semantic_gate_muon_parameters(head)
+                if c['head_type'] == 'maloq_semantic_global_gate_muon'
+                else []
+            )
             model_summary = {
                 'model_variant': c.get('model_variant', 'maloq-baseline'),
                 'backbone_type': c['backbone_type'],
                 'head_type': c['head_type'],
-                'muon_routing': 'all_trainable_ndim_ge_2',
+                'muon_routing': (
+                    (
+                        'shape_matrix_muon_plus_semantic_global_head_muon'
+                        '_plus_semantic_gate_muon'
+                    )
+                    if semantic_gate_params
+                    else (
+                        'shape_matrix_muon_plus_semantic_global_head_muon'
+                        if semantic_global_params
+                        else (
+                            'ndim_ge_2_muon_except_output_projection_adamw'
+                            if c['muon_output_projection_policy'] == 'adamw'
+                            else 'all_trainable_ndim_ge_2'
+                        )
+                    )
+                ),
+                'semantic_global_head_parameters': sum(
+                    parameter.numel()
+                    for parameter in semantic_global_params
+                ),
+                'semantic_gate_parameters': sum(
+                    parameter.numel()
+                    for parameter in semantic_gate_params
+                ),
                 'seed': int(c['seed']),
                 'backbone_parameters': sum(p.numel() for p in backbone.parameters()),
                 'head_parameters': sum(p.numel() for p in head.parameters()),
@@ -1064,6 +1249,24 @@ class TrainingWorkflow:
                 'gate_act_type': 'sigmoid' if is_qhflow3 else c['gate_act_type'],
                 'residual_update_scale_mode': (
                     'none' if is_qhflow3 else c['residual_update_scale_mode']
+                ),
+                'unscaled_node_layers': (
+                    None if is_qhflow3 else list(c['unscaled_node_layers'])
+                ),
+                'repeat_system_embedding_each_node_block': (
+                    None
+                    if is_qhflow3
+                    else bool(c['repeat_system_embedding_each_node_block'])
+                ),
+                'edge_stack_mode': (
+                    'qhflow3_parallel_sum'
+                    if is_qhflow3
+                    else c['edge_stack_mode']
+                ),
+                'muon_output_projection_policy': (
+                    c['muon_output_projection_policy']
+                    if c['optimizer_type'] == 'muon'
+                    else None
                 ),
                 'esen_grid_resolution': (
                     None if is_qhflow3 else c['esen_grid_resolution']
@@ -1106,7 +1309,11 @@ class TrainingWorkflow:
                         if c['qhflow3_use_overlap']
                         else 'disabled'
                     ),
-                    qhflow3_grid_resolution=int(c['qhflow3_grid_resolution']),
+                    qhflow3_grid_resolution=(
+                        None
+                        if c['qhflow3_grid_resolution'] is None
+                        else int(c['qhflow3_grid_resolution'])
+                    ),
                     qhflow3_grid_ffn_chunk_size=c['qhflow3_grid_ffn_chunk_size'],
                 )
             summary_path = Path(c['output_folder']) / 'model_summary.json'
@@ -1155,23 +1362,87 @@ class TrainingWorkflow:
                 normalize_grads=c['soap_normalize_grads'],
             )
         elif optimizer_type == 'muon':
-            # One fixed rule mirrors ml-dft's MuonAdamW: every trainable
-            # matrix, including head and gate matrices, goes through Muon.
+            # Ordinary matrices follow ml-dft's shape rule. The explicit
+            # semantic policy separates the node/edge global contraction
+            # matrices into named Muon groups without changing their update.
             muon_params = self._collect_muon_parameters(backbone, head)
-            muon_param_ids = {id(parameter) for parameter in muon_params}
+            output_projection_adamw_params = (
+                self._collect_nte_output_projection_parameters(backbone)
+                if (
+                    c['backbone_type'] == 'esen'
+                    and c['muon_output_projection_policy'] == 'adamw'
+                )
+                else []
+            )
+            output_projection_adamw_ids = {
+                id(parameter) for parameter in output_projection_adamw_params
+            }
+            muon_params = [
+                parameter
+                for parameter in muon_params
+                if id(parameter) not in output_projection_adamw_ids
+            ]
+            semantic_global_params = (
+                self._collect_semantic_global_muon_parameters(head)
+                if c['head_type'] in {
+                    'maloq_semantic_global_muon',
+                    'maloq_semantic_global_gate_muon',
+                }
+                else []
+            )
+            semantic_gate_params = (
+                self._collect_semantic_gate_muon_parameters(head)
+                if c['head_type'] == 'maloq_semantic_global_gate_muon'
+                else []
+            )
+            semantic_global_ids = {
+                id(parameter) for parameter in semantic_global_params
+            }
+            semantic_gate_ids = {
+                id(parameter) for parameter in semantic_gate_params
+            }
+            shape_matrix_params = [
+                parameter
+                for parameter in muon_params
+                if id(parameter) not in semantic_global_ids
+                and id(parameter) not in semantic_gate_ids
+            ]
+            muon_param_ids = {
+                id(parameter)
+                for parameter in (
+                    *shape_matrix_params,
+                    *semantic_global_params,
+                    *semantic_gate_params,
+                )
+            }
             auxiliary_params = [p for p in params if id(p) not in muon_param_ids]
             if not muon_params:
                 raise ValueError(
                     "Muon requires at least one trainable backbone matrix parameter."
                 )
 
-            parameter_groups = [
-                {
-                    'params': muon_params,
+            parameter_groups = []
+            if shape_matrix_params:
+                parameter_groups.append({
+                    'params': shape_matrix_params,
                     'use_muon': True,
                     'lr': c['muon_lr'],
-                }
-            ]
+                    'name': 'shape_matrix_muon',
+                })
+            if semantic_global_params:
+                parameter_groups.append({
+                    'params': semantic_global_params,
+                    'use_muon': True,
+                    'lr': c['muon_lr'],
+                    'name': 'semantic_global_head_muon',
+                })
+            if semantic_gate_params:
+                parameter_groups.append({
+                    'params': semantic_gate_params,
+                    'use_muon': True,
+                    'lr': c['muon_lr'],
+                    'name': 'semantic_gate_muon',
+                })
             if auxiliary_params:
                 auxiliary_lr = (
                     c['lr_init']
@@ -1185,6 +1456,7 @@ class TrainingWorkflow:
                         'lr': auxiliary_lr,
                         'betas': tuple(c['muon_adamw_betas']),
                         'eps': c['muon_adamw_eps'],
+                        'name': 'auxiliary_adamw',
                     }
                 )
             optimizer = optimizers.Muon(
@@ -1200,7 +1472,14 @@ class TrainingWorkflow:
             if self.rank == 0:
                 print(
                     "Muon optimizer: "
-                    f"{sum(p.numel() for p in muon_params):,} matrix parameters, "
+                    f"{sum(p.numel() for p in shape_matrix_params):,} "
+                    "shape-routed matrix parameters, "
+                    f"{sum(p.numel() for p in semantic_global_params):,} "
+                    "semantic-global head parameters, "
+                    f"{sum(p.numel() for p in semantic_gate_params):,} "
+                    "semantic gate parameters, "
+                    f"{sum(p.numel() for p in output_projection_adamw_params):,} "
+                    "output-projection AdamW parameters, "
                     f"{sum(p.numel() for p in auxiliary_params):,} AdamW parameters."
                 )
 

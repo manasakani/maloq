@@ -1177,15 +1177,17 @@ class Fock_Targets:
         NOTE: if an element does not have that scalar value, the corresponding mean is 0.0 and std is 1.0
         """
 
-        scale_nodes = True
-        shift_nodes = True
- 
-        # if node_atomic_numbers is None:
-            # node_atomic_numbers = self.atomic_numbers
-
         means = self.scale_shift_data['element_scalar_means'+spin_string]
         stds = self.scale_shift_data['element_scalar_stds'+spin_string]
         scalar_indices = self.scale_shift_data['scalar_irrep_indices']
+        normalization_mode = self.scale_shift_data.get(
+            'normalization_mode',
+            'standardize',
+        )
+        if normalization_mode not in {'standardize', 'shift_only'}:
+            raise ValueError(
+                "normalization_mode must be 'standardize' or 'shift_only'."
+            )
 
         # check for leading spin dimension (only one spin is passed in)
 
@@ -1197,9 +1199,8 @@ class Fock_Targets:
 
             # Scale and shift the l=0 values in the node block
             for idx_offset, idx in enumerate(scalar_indices):
-                if scale_nodes and shift_nodes:
+                if normalization_mode == 'standardize':
                     node_block[idx] = (node_block[idx] - mean_vals[idx_offset]) / std_vals[idx_offset]
-
                 else:
                     node_block[idx] = node_block[idx] - mean_vals[idx_offset]
 
@@ -1210,14 +1211,19 @@ class Fock_Targets:
         Undo the scaling and shifting applied to the targets (l=0 values and optionally all irrep degrees).
         """
 
-        scale_nodes = True
-        shift_nodes = True
-
         new_node_blocks = node_blocks.clone()  # Create a copy to avoid modifying the original list
 
         means = self.scale_shift_data['element_scalar_means']
         stds = self.scale_shift_data['element_scalar_stds']
         scalar_indices = self.scale_shift_data['scalar_irrep_indices']
+        normalization_mode = self.scale_shift_data.get(
+            'normalization_mode',
+            'standardize',
+        )
+        if normalization_mode not in {'standardize', 'shift_only'}:
+            raise ValueError(
+                "normalization_mode must be 'standardize' or 'shift_only'."
+            )
 
         for i, (node_block, z) in enumerate(zip(node_blocks, atomic_numbers)):
             z = int(z.item()) if isinstance(z, torch.Tensor) else int(z)
@@ -1226,9 +1232,8 @@ class Fock_Targets:
             std_vals = stds[z]
 
             for idx_offset, idx in enumerate(scalar_indices):
-                if scale_nodes and shift_nodes:
+                if normalization_mode == 'standardize':
                     new_node_blocks[i][idx] = node_block[idx] * std_vals[idx_offset] + mean_vals[idx_offset]
-
                 else:
                     new_node_blocks[i][idx] = node_block[idx] + mean_vals[idx_offset]
 

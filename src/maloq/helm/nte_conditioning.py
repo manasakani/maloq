@@ -192,6 +192,28 @@ class NTEMatrixConditioning(nn.Module):
             ),
         )
 
+    def system_embedding(
+        self,
+        num_nodes: int,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Return QHFlow3's zero-charge/spin scalar for per-block injection."""
+        if self.mode != "qhflow3_exact":
+            raise ValueError(
+                "Per-block system embedding requires mode='qhflow3_exact'."
+            )
+        zeros = torch.zeros(num_nodes, device=device, dtype=torch.long)
+        charge_spin = torch.cat(
+            (
+                self.charge_embedding(zeros),
+                self.spin_embedding(zeros),
+            ),
+            dim=-1,
+        )
+        return torch.nn.functional.silu(self.mix_csd(charge_spin)).to(dtype)
+
     def forward(
         self,
         batch: Any,
@@ -243,18 +265,8 @@ class NTEMatrixConditioning(nn.Module):
             torch.cat(mixed_inputs, dim=-1)
         )
 
-        zeros = torch.zeros(
+        return conditioned_scalar + self.system_embedding(
             atom_embedding.shape[0],
             device=atom_embedding.device,
-            dtype=torch.long,
-        )
-        charge_spin = torch.cat(
-            (
-                self.charge_embedding(zeros),
-                self.spin_embedding(zeros),
-            ),
-            dim=-1,
-        )
-        return conditioned_scalar + torch.nn.functional.silu(
-            self.mix_csd(charge_spin)
+            dtype=atom_embedding.dtype,
         )

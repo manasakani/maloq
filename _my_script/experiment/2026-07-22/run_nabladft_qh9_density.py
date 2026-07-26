@@ -134,7 +134,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--head-type",
-        choices=("maloq", "maloq_muon", "static_te"),
+        choices=(
+            "maloq",
+            "maloq_muon",
+            "maloq_semantic_global_muon",
+            "maloq_semantic_global_gate_muon",
+            "static_te",
+        ),
         default=None,
         help="Override the matrix head while keeping the selected backbone.",
     )
@@ -386,6 +392,54 @@ def nabladft_tracking_identity(
                     "ablation:nte-input-conditioning",
                 )
             )
+        unscaled_node_layers = tuple(
+            int(index) for index in config.get("unscaled_node_layers", ())
+        )
+        if unscaled_node_layers:
+            layer_slug = "n" + "-".join(
+                str(index) for index in unscaled_node_layers
+            ) + "nols"
+            layer_label = "N" + ",".join(
+                str(index) for index in unscaled_node_layers
+            ) + "NoLS"
+            ablation_slugs.append(layer_slug)
+            ablation_labels.append(layer_label)
+            ablation_tags.extend(
+                (
+                    "ablation:node-layerscale",
+                    "unscaled-node-layers:"
+                    + ",".join(str(index) for index in unscaled_node_layers),
+                )
+            )
+        if bool(config.get("repeat_system_embedding_each_node_block", False)):
+            ablation_slugs.append("repeatsys")
+            ablation_labels.append("RepeatSys")
+            ablation_tags.extend(
+                (
+                    "node-block-conditioning:repeat-system-embedding",
+                    "ablation:node-block-system-injection",
+                )
+            )
+        edge_stack_mode = config.get("edge_stack_mode", "recurrent")
+        if edge_stack_mode == "nte_parallel":
+            ablation_slugs.append("ntepair")
+            ablation_labels.append("NTEParallel")
+            ablation_tags.extend(
+                (
+                    "edge-stack:nte-parallel-residual",
+                    "pair-block-math:nte",
+                    "ablation:edge-topology",
+                )
+            )
+        elif edge_stack_mode == "qhflow3_parallel":
+            ablation_slugs.append("qhfpair")
+            ablation_labels.append("QHFPair")
+            ablation_tags.extend(
+                (
+                    "edge-stack:qhflow3-parallel",
+                    "ablation:edge-topology",
+                )
+            )
     elif variant == "qhflow3":
         model_slug = "qhf3"
         model_label = "QHFlow3"
@@ -406,23 +460,95 @@ def nabladft_tracking_identity(
     head_names = {
         "maloq": ("native", "Native"),
         "maloq_muon": ("muon", "Muon"),
+        "maloq_semantic_global_muon": (
+            "matrixmuon-auxadamw-sghead",
+            "MatrixMuon+AuxAdamW+SGHead",
+        ),
+        "maloq_semantic_global_gate_muon": (
+            "matmuon-sghead-gatemuon",
+            "MatMuon+SGHead+GateMuon",
+        ),
         "static_te": ("staticte", "StaticTE"),
     }
     head_slug, head_label = head_names[head_type]
-    scale_shift = int(bool(config["scale_and_shift"]))
+    optimizer_tags = ()
+    projection_policy = config.get(
+        "muon_output_projection_policy", "shape_muon"
+    )
+    has_layer_structure_ablation = bool(
+        config.get("unscaled_node_layers", ())
+        or config.get("repeat_system_embedding_each_node_block", False)
+        or config.get("edge_stack_mode", "recurrent") != "recurrent"
+        or projection_policy != "shape_muon"
+    )
+    if head_type == "maloq_muon" and has_layer_structure_ablation:
+        head_slug = "matrixmuon-auxadamw"
+        head_label = "MatrixMuon+AuxAdamW"
+        optimizer_tags = (
+            "optimizer:muon",
+            "muon-routing:ndim-ge-2",
+            "aux-optimizer:adamw",
+        )
+    if projection_policy == "adamw":
+        ablation_slugs.append("projadamw")
+        ablation_labels.append("ProjAdamW")
+        ablation_tags.extend(
+            (
+                "output-projection-optimizer:adamw",
+                "ablation:output-projection-routing",
+            )
+        )
+        head_slug = "matrixmuon-projadamw-auxadamw"
+        head_label = "MatrixMuon+ProjAdamW+AuxAdamW"
+    if head_type in {
+        "maloq_semantic_global_muon",
+        "maloq_semantic_global_gate_muon",
+    }:
+        optimizer_tags = (
+            "optimizer:muon",
+            "muon-routing:ndim-ge-2",
+            "aux-optimizer:adamw",
+            "head-routing:semantic-global",
+        )
+        if head_type == "maloq_semantic_global_gate_muon":
+            optimizer_tags = (
+                *optimizer_tags,
+                "gate-optimizer:muon",
+                "gate-routing:semantic-matrix",
+            )
+    scale_and_shift = bool(config["scale_and_shift"])
+    if not scale_and_shift:
+        normalization_slug = "raw"
+        normalization_label = "RAW"
+        normalization_tag = "normalization:none"
+    else:
+        scale_shift_mode = config.get("scale_shift_mode", "standardize")
+        if scale_shift_mode == "shift_only":
+            normalization_slug = "shift"
+            normalization_label = "SHIFT"
+            normalization_tag = "normalization:l0-shift-only"
+        elif scale_shift_mode == "standardize":
+            normalization_slug = "shift-std"
+            normalization_label = "SHIFT+STD"
+            normalization_tag = "normalization:l0-shift-std"
+        else:
+            raise ValueError(
+                "scale_shift_mode must be 'standardize' or 'shift_only'; "
+                f"got {scale_shift_mode!r}"
+            )
     version = int(config.get("experiment_version", 1))
     scope = "smoke" if smoke else "full"
     ablation_slug = "".join(f"-{value}" for value in ablation_slugs)
     ablation_label = "".join(f" | {value}" for value in ablation_labels)
     experiment_id = (
-        f"nabla-{model_slug}-{head_slug}-ss{scale_shift}"
+        f"nabla-{model_slug}-{head_slug}-{normalization_slug}"
         f"{ablation_slug}-v{version}"
     )
     return {
         "experiment_id": experiment_id,
         "display_name": (
             f"NablaDFT | {model_label} | {head_label} | "
-            f"SS{scale_shift}{ablation_label} | V{version}"
+            f"{normalization_label}{ablation_label} | V{version}"
         ),
         "group": group,
         "job_type": scope,
@@ -430,11 +556,13 @@ def nabladft_tracking_identity(
             "dataset:nabladft",
             f"model:{model_slug}",
             f"head:{head_slug}",
-            f"scale-shift:{'on' if scale_shift else 'off'}",
+            f"scale-shift:{'on' if scale_and_shift else 'off'}",
+            normalization_tag,
             f"scope:{scope}",
             f"seed:{int(config['seed'])}",
             f"version:v{version}",
             *ablation_tags,
+            *optimizer_tags,
             "sc26-seongsu",
         ),
     }
@@ -839,10 +967,14 @@ def main() -> None:
                     "num_mp_layers",
                     "num_edge_layers",
                     "message_passing_schedule",
+                    "unscaled_node_layers",
+                    "repeat_system_embedding_each_node_block",
+                    "edge_stack_mode",
                     "esen_grid_resolution",
                     "nte_input_conditioning",
                     "qhflow3_use_overlap",
                     "optimizer_type",
+                    "muon_output_projection_policy",
                     "num_epochs",
                     "batch_size",
                     "gradient_accumulation_steps",
@@ -869,9 +1001,22 @@ def main() -> None:
                 )
             }
             if config["optimizer_type"] == "muon":
-                run_config[variant]["muon_routing"] = (
-                    "all_trainable_ndim_ge_2"
-                )
+                if config["head_type"] == "maloq_semantic_global_gate_muon":
+                    muon_routing = (
+                        "shape_matrix_muon_plus_semantic_global_head_muon"
+                        "_plus_semantic_gate_muon"
+                    )
+                elif config["head_type"] == "maloq_semantic_global_muon":
+                    muon_routing = (
+                        "shape_matrix_muon_plus_semantic_global_head_muon"
+                    )
+                elif config["muon_output_projection_policy"] == "adamw":
+                    muon_routing = (
+                        "ndim_ge_2_muon_except_output_projection_adamw"
+                    )
+                else:
+                    muon_routing = "all_trainable_ndim_ge_2"
+                run_config[variant]["muon_routing"] = muon_routing
         validation["run_config"] = run_config
         if rank == 0:
             print(json.dumps(validation, indent=2, default=str))

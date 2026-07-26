@@ -12,12 +12,27 @@ const ui = {
   gpusMeter: document.querySelector("#summary-gpus-meter"),
   memory: document.querySelector("#summary-memory"),
   memoryTotal: document.querySelector("#summary-memory-total"),
-  memoryMeter: document.querySelector("#summary-memory-meter"),
+  memoryProgress: document.querySelector("#summary-memory-progress"),
+  memoryPercent: document.querySelector("#summary-memory-percent"),
   power: document.querySelector("#summary-power"),
   busy: document.querySelector("#summary-busy"),
+  fleetHistoryButton: document.querySelector("#fleet-history-button"),
+  fleetStatisticsCaption: document.querySelector("#fleet-statistics-caption"),
+  fleetUtilizationAverage: document.querySelector("#fleet-utilization-average"),
+  fleetReportingGpus: document.querySelector("#fleet-reporting-gpus"),
+  fleetUtilizationPeak: document.querySelector("#fleet-utilization-peak"),
+  fleetUtilizationPeakGpu: document.querySelector("#fleet-utilization-peak-gpu"),
+  fleetMemoryRatio: document.querySelector("#fleet-memory-ratio"),
+  fleetMemoryDetail: document.querySelector("#fleet-memory-detail"),
+  fleetTemperatureAverage: document.querySelector("#fleet-temperature-average"),
+  fleetTemperaturePeak: document.querySelector("#fleet-temperature-peak"),
+  fleetProcesses: document.querySelector("#fleet-processes"),
+  fleetUsers: document.querySelector("#fleet-users"),
+  fleetUserNames: document.querySelector("#fleet-user-names"),
   filterGroup: document.querySelector("#filter-group"),
   footerVersion: document.querySelector("#footer-version"),
   historyModal: document.querySelector("#history-modal"),
+  historyEyebrow: document.querySelector("#history-eyebrow"),
   historyTitle: document.querySelector("#history-title"),
   historySubtitle: document.querySelector("#history-subtitle"),
   historyRange: document.querySelector("#history-range"),
@@ -26,6 +41,7 @@ const ui = {
   historyCharts: document.querySelector("#history-charts"),
   historyProcessCount: document.querySelector("#history-process-count"),
   historyProcessList: document.querySelector("#history-process-list"),
+  processHistorySection: document.querySelector("#process-history-section"),
   historyRefresh: document.querySelector("#history-refresh"),
   toast: document.querySelector("#toast"),
 };
@@ -36,6 +52,7 @@ let toastTimer = null;
 let historySelection = null;
 let historyHours = 24;
 let historyRequestId = 0;
+let viewTransitionTimer = null;
 const openProcessPanels = new Set();
 const viewStorageKey = "sc26-gpu-view";
 let cleanView = false;
@@ -160,6 +177,7 @@ function gpuCard(gpu, serverId) {
           <button
             class="history-button"
             type="button"
+            data-history-scope="gpu"
             data-server-id="${escapeHtml(serverId)}"
             data-gpu-index="${escapeHtml(gpu.index)}"
             data-gpu-name="${escapeHtml(gpu.name)}"
@@ -189,7 +207,15 @@ function gpuCard(gpu, serverId) {
           <span>Memory</span>
           <strong>${formatMemory(gpu.memory_used_mib)} / ${formatMemory(gpu.memory_total_mib)}</strong>
         </div>
-        <div class="bar"><i style="width:${memoryPercent.toFixed(1)}%"></i></div>
+        <div class="memory-progress-row">
+          <progress
+            class="memory-progress gpu-memory-progress"
+            max="100"
+            value="${memoryPercent.toFixed(1)}"
+            aria-label="GPU ${escapeHtml(gpu.index)} memory utilization"
+          ></progress>
+          <strong>${memoryPercent.toFixed(1)}%</strong>
+        </div>
         <div class="metric-row thermal-row">
           <span>Thermal</span>
           <strong>${gpu.temperature_c ?? "—"}°C</strong>
@@ -213,7 +239,7 @@ function gpuCard(gpu, serverId) {
     </article>`;
 }
 
-function storagePanel(storage = []) {
+function storagePanel(storage = [], serverId = "", serverLabel = "") {
   if (!storage.length) {
     return `<div class="storage-unavailable">Storage status unavailable</div>`;
   }
@@ -250,13 +276,33 @@ function storagePanel(storage = []) {
             <div class="storage-volume${policyState}">
               <div class="storage-topline">
                 <span>${escapeHtml(volume.label)} ${badge}</span>
-                <strong>${percentLabel}</strong>
+                <div class="storage-topline-actions">
+                  <strong>${percentLabel}</strong>
+                  <button
+                    class="storage-history-button"
+                    type="button"
+                    data-history-scope="storage"
+                    data-server-id="${escapeHtml(serverId)}"
+                    data-server-label="${escapeHtml(serverLabel)}"
+                    data-mountpoint="${escapeHtml(volume.mountpoint)}"
+                    data-storage-kind="${escapeHtml(volume.kind)}"
+                    data-volume-label="${escapeHtml(volume.label)}"
+                    title="Open persistent storage history"
+                  >
+                    History
+                  </button>
+                </div>
               </div>
               <div class="storage-values">
                 <span>${usedLabel} used</span>
                 ${capacityLine}
               </div>
-              <div class="storage-bar"><i style="width:${meterPercent.toFixed(1)}%"></i></div>
+              <progress
+                class="memory-progress storage-progress"
+                max="100"
+                value="${meterPercent.toFixed(1)}"
+                aria-label="${escapeHtml(volume.label)} utilization"
+              ></progress>
               <small>${escapeHtml(detailLine)}</small>
             </div>`;
         })
@@ -289,10 +335,20 @@ function serverPanel(server, index) {
           <span><strong>${idle}</strong> idle / ${gpus.length} GPUs</span>
           <span>${escapeHtml(server.hostname || "unreachable")}</span>
           <span>${server.latency_ms ?? "—"} ms</span>
+          <button
+            class="scope-history-button"
+            type="button"
+            data-history-scope="server"
+            data-server-id="${escapeHtml(server.id)}"
+            data-server-label="${escapeHtml(server.label || "GPU Server")}"
+            title="Open history aggregated across this server"
+          >
+            Server history
+          </button>
         </div>
       </header>
       ${error}
-      ${storagePanel(server.storage)}
+      ${storagePanel(server.storage, server.id, server.label)}
       <div class="gpu-grid">${cards}</div>
     </article>`;
 }
@@ -306,7 +362,7 @@ function applyFilter() {
   });
 }
 
-function applyViewMode() {
+function syncViewMode() {
   document.body.classList.toggle("clean-view", cleanView);
   ui.viewToggle.setAttribute("aria-pressed", String(cleanView));
   ui.viewToggle.title = cleanView
@@ -315,6 +371,25 @@ function applyViewMode() {
   ui.viewToggle.querySelector("span").textContent = cleanView
     ? "Detailed view"
     : "Clean view";
+}
+
+function applyViewMode({ animate = false } = {}) {
+  if (!animate || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    syncViewMode();
+    return;
+  }
+  if (document.startViewTransition) {
+    document.startViewTransition(syncViewMode);
+    return;
+  }
+  window.clearTimeout(viewTransitionTimer);
+  document.body.classList.add("view-changing");
+  viewTransitionTimer = window.setTimeout(() => {
+    syncViewMode();
+    window.requestAnimationFrame(() => {
+      document.body.classList.remove("view-changing");
+    });
+  }, 120);
 }
 
 function render(payload) {
@@ -327,6 +402,8 @@ function render(payload) {
   const busy = (Number(fleet.gpus_busy) || 0) + (Number(fleet.gpus_warning) || 0);
   const memoryUsed = Number(fleet.memory_used_mib) || 0;
   const memoryTotal = Number(fleet.memory_total_mib) || 0;
+  const memoryPercent = memoryTotal ? clamp((memoryUsed / memoryTotal) * 100) : 0;
+  const activeUsers = Array.isArray(fleet.active_users) ? fleet.active_users : [];
 
   ui.liveState.classList.toggle("online", online === serverTotal && serverTotal > 0);
   ui.liveLabel.textContent =
@@ -339,9 +416,24 @@ function render(payload) {
   ui.gpusMeter.style.width = `${serverTotal ? clamp((totalGpus / (serverTotal * 8)) * 100) : 0}%`;
   ui.memory.textContent = formatMemory(memoryUsed);
   ui.memoryTotal.textContent = `of ${formatMemory(memoryTotal)}`;
-  ui.memoryMeter.style.width = `${memoryTotal ? clamp((memoryUsed / memoryTotal) * 100) : 0}%`;
+  ui.memoryProgress.value = memoryPercent;
+  ui.memoryPercent.textContent = `${memoryPercent.toFixed(1)}%`;
   ui.power.textContent = Math.round(Number(fleet.power_draw_w) || 0).toLocaleString();
   ui.busy.textContent = busy ? `${busy} GPU${busy === 1 ? "" : "s"} carrying work` : "No active jobs detected";
+  ui.fleetStatisticsCaption.textContent = `${Number(fleet.gpus_reporting) || 0} reporting GPUs · live 5-second sample`;
+  ui.fleetUtilizationAverage.textContent = `${(Number(fleet.utilization_average_percent) || 0).toFixed(1)}%`;
+  ui.fleetReportingGpus.textContent = `${Number(fleet.gpus_reporting) || 0} GPUs reporting`;
+  ui.fleetUtilizationPeak.textContent = `${Math.round(Number(fleet.utilization_peak_percent) || 0)}%`;
+  ui.fleetUtilizationPeakGpu.textContent = fleet.utilization_peak_gpu || "No sample";
+  ui.fleetMemoryRatio.textContent = `${memoryPercent.toFixed(1)}%`;
+  ui.fleetMemoryDetail.textContent = `${formatMemory(memoryUsed)} / ${formatMemory(memoryTotal)}`;
+  ui.fleetTemperatureAverage.textContent = `${(Number(fleet.temperature_average_c) || 0).toFixed(1)}°C`;
+  ui.fleetTemperaturePeak.textContent = `Peak ${Math.round(Number(fleet.temperature_peak_c) || 0)}°C`;
+  ui.fleetProcesses.textContent = Number(fleet.processes_active) || 0;
+  ui.fleetUsers.textContent = activeUsers.length;
+  ui.fleetUserNames.textContent = activeUsers.length
+    ? activeUsers.join(", ")
+    : "No active user";
   const tracking = payload.tracking || {};
   ui.footerVersion.textContent = tracking.enabled
     ? `${Number(tracking.sample_count || 0).toLocaleString()} saved snapshots · every ${tracking.sample_interval_seconds || 60}s`
@@ -435,8 +527,35 @@ function historyChart(points, config) {
     </article>`;
 }
 
+function renderProcessHistory(processes = [], emptyScope = "this GPU") {
+  ui.historyProcessCount.textContent = `${processes.length} process record${processes.length === 1 ? "" : "s"}`;
+  ui.historyProcessList.innerHTML = processes.length
+    ? `
+      <div class="history-process-row heading">
+        <span>User / command</span><span>PID</span><span>First seen</span><span>Last seen</span><span>Peak GPU memory</span>
+      </div>
+      ${processes.map((process) => {
+        const location = process.server_id != null
+          ? `${process.server_id} / GPU ${process.gpu_index}`
+          : "";
+        const detail = [process.command || "process", location]
+          .filter(Boolean)
+          .join(" · ");
+        return `
+          <div class="history-process-row">
+            <span><strong>${escapeHtml(process.user || "unknown")}</strong><small>${escapeHtml(detail)}</small></span>
+            <span>${escapeHtml(process.pid)}</span>
+            <span>${formatHistoryTimestamp(process.first_seen_at)}</span>
+            <span>${formatHistoryTimestamp(process.last_seen_at)}</span>
+            <span>${formatMemory(process.peak_memory_used_mib)}</span>
+          </div>`;
+      }).join("")}`
+    : `<div class="history-process-empty">No compute process was recorded across ${escapeHtml(emptyScope)} in the selected range.</div>`;
+}
+
 function renderGpuHistory(payload) {
   const points = payload.points || [];
+  ui.processHistorySection.hidden = false;
   ui.historyState.hidden = true;
   const latest = points.at(-1) || {};
   const utilizationValues = points.map((point) => Number(point.utilization_percent) || 0);
@@ -514,29 +633,166 @@ function renderGpuHistory(payload) {
     },
   ].map((config) => historyChart(points, config)).join("");
 
-  const processes = payload.processes || [];
-  ui.historyProcessCount.textContent = `${processes.length} process record${processes.length === 1 ? "" : "s"}`;
-  ui.historyProcessList.innerHTML = processes.length
-    ? `
-      <div class="history-process-row heading">
-        <span>User / command</span><span>PID</span><span>First seen</span><span>Last seen</span><span>Peak GPU memory</span>
-      </div>
-      ${processes.map((process) => `
-        <div class="history-process-row">
-          <span><strong>${escapeHtml(process.user || "unknown")}</strong><small>${escapeHtml(process.command || "process")}</small></span>
-          <span>${escapeHtml(process.pid)}</span>
-          <span>${formatHistoryTimestamp(process.first_seen_at)}</span>
-          <span>${formatHistoryTimestamp(process.last_seen_at)}</span>
-          <span>${formatMemory(process.peak_memory_used_mib)}</span>
-        </div>`).join("")}`
-    : `<div class="history-process-empty">No compute process was recorded on this GPU in the selected range.</div>`;
+  renderProcessHistory(payload.processes, "this GPU");
 }
 
-async function loadGpuHistory() {
+function renderAggregateHistory(payload) {
+  const points = payload.points || [];
+  ui.processHistorySection.hidden = false;
+  const latest = payload.summary?.latest || points.at(-1) || {};
+  const rangeSummary = payload.summary || {};
+  const scopeLabel = payload.scope === "fleet"
+    ? "the whole fleet"
+    : payload.server_id;
+  ui.historyState.hidden = true;
+  ui.historySubtitle.textContent = payload.raw_point_count
+    ? `${payload.raw_point_count.toLocaleString()} aggregate samples · ${formatHistoryTimestamp(points[0]?.sampled_at)} to ${formatHistoryTimestamp(points.at(-1)?.sampled_at)}${payload.downsampled ? " · chart downsampled" : ""}`
+    : `No aggregate snapshots saved in the selected ${historyHours}-hour range`;
+  ui.historySummary.innerHTML = `
+    <article>
+      <span>Latest average utilization</span>
+      <strong>${(Number(latest.utilization_average_percent) || 0).toFixed(1)}%</strong>
+    </article>
+    <article>
+      <span>Range peak GPU utilization</span>
+      <strong>${Math.round(Number(rangeSummary.peak_utilization_percent) || 0)}%</strong>
+    </article>
+    <article>
+      <span>Latest memory ratio</span>
+      <strong>${(Number(latest.memory_utilization_percent) || 0).toFixed(1)}%</strong>
+    </article>
+    <article>
+      <span>Latest active processes</span>
+      <strong>${Math.round(Number(latest.process_count) || 0)}</strong>
+    </article>`;
+  const powerMaximum = Math.max(
+    1,
+    ...points.map((point) => Number(point.power_limit_w) || 0),
+  );
+  ui.historyCharts.innerHTML = [
+    {
+      title: "Average GPU utilization",
+      field: "utilization_average_percent",
+      className: "utilization-history",
+      transform: (value) => value,
+      minimum: 0,
+      maximum: 100,
+      axis: (value) => `${Math.round(value)}%`,
+      value: (value) => `${value.toFixed(1)}%`,
+    },
+    {
+      title: "Aggregate GPU memory ratio",
+      field: "memory_utilization_percent",
+      className: "memory-history",
+      transform: (value) => value,
+      minimum: 0,
+      maximum: 100,
+      axis: (value) => `${Math.round(value)}%`,
+      value: (value) => `${value.toFixed(1)}%`,
+    },
+    {
+      title: "Average GPU temperature",
+      field: "temperature_average_c",
+      className: "temperature-history",
+      transform: (value) => value,
+      minimum: 20,
+      maximum: Math.max(
+        90,
+        ...points.map((point) => Number(point.temperature_peak_c) || 0),
+      ),
+      axis: (value) => `${Math.round(value)}°`,
+      value: (value) => `${value.toFixed(1)}°C`,
+    },
+    {
+      title: "Total GPU power draw",
+      field: "power_draw_w",
+      className: "power-history",
+      transform: (value) => value,
+      minimum: 0,
+      maximum: powerMaximum,
+      axis: (value) => `${Math.round(value)}W`,
+      value: (value) => `${Math.round(value)} W`,
+    },
+  ].map((config) => historyChart(points, config)).join("");
+  renderProcessHistory(payload.processes, scopeLabel);
+}
+
+function renderStorageHistory(payload) {
+  const points = payload.points || [];
+  const latest = payload.summary?.latest || points.at(-1) || {};
+  const shared = payload.kind === "shared";
+  const scale = shared ? 1_000_000_000_000 : 1024 ** 3;
+  const unit = shared ? "TB" : "GiB";
+  const formatCapacity = (bytes) => shared
+    ? formatDecimalTerabytes(bytes)
+    : formatBytes(bytes);
+  const changeBytes = Number(payload.summary?.change_bytes) || 0;
+  const changePrefix = changeBytes > 0 ? "+" : changeBytes < 0 ? "−" : "";
+  const changeLabel = `${changePrefix}${formatCapacity(Math.abs(changeBytes))}`;
+  const capacityMaximum = shared
+    ? Number(latest.policy_limit_bytes) || 40_000_000_000_000
+    : Number(latest.total_bytes) || 1;
+  ui.processHistorySection.hidden = true;
+  ui.historyState.hidden = true;
+  ui.historySubtitle.textContent = payload.raw_point_count
+    ? `${payload.raw_point_count.toLocaleString()} storage samples · ${formatHistoryTimestamp(points[0]?.sampled_at)} to ${formatHistoryTimestamp(points.at(-1)?.sampled_at)}${payload.downsampled ? " · chart downsampled" : ""}`
+    : `No storage snapshots saved in the selected ${historyHours}-hour range`;
+  ui.historySummary.innerHTML = `
+    <article>
+      <span>Latest used</span>
+      <strong>${formatCapacity(latest.used_bytes)}</strong>
+    </article>
+    <article>
+      <span>${shared ? "40 TB budget remaining" : "Latest available"}</span>
+      <strong>${formatCapacity(latest.effective_remaining_bytes)}</strong>
+    </article>
+    <article>
+      <span>${shared ? "Budget utilization" : "Filesystem utilization"}</span>
+      <strong>${(Number(latest.effective_used_percent) || 0).toFixed(1)}%</strong>
+    </article>
+    <article>
+      <span>Change in selected range</span>
+      <strong>${changeLabel}</strong>
+    </article>`;
+  ui.historyCharts.innerHTML = [
+    {
+      title: shared ? "Shared storage used" : "System disk used",
+      field: "used_bytes",
+      className: "memory-history",
+      transform: (value) => value / scale,
+      minimum: 0,
+      maximum: capacityMaximum / scale,
+      axis: (value) => `${value.toFixed(value >= 10 ? 0 : 1)}${unit}`,
+      value: (value) => `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`,
+    },
+    {
+      title: shared ? "40 TB budget utilization" : "Filesystem utilization",
+      field: "effective_used_percent",
+      className: "utilization-history",
+      transform: (value) => value,
+      minimum: 0,
+      maximum: 100,
+      axis: (value) => `${Math.round(value)}%`,
+      value: (value) => `${value.toFixed(1)}%`,
+    },
+    {
+      title: shared ? "40 TB budget remaining" : "Available capacity",
+      field: "effective_remaining_bytes",
+      className: "temperature-history",
+      transform: (value) => value / scale,
+      minimum: 0,
+      maximum: capacityMaximum / scale,
+      axis: (value) => `${value.toFixed(value >= 10 ? 0 : 1)}${unit}`,
+      value: (value) => `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`,
+    },
+  ].map((config) => historyChart(points, config)).join("");
+}
+
+async function loadHistory() {
   if (!historySelection) return;
   const requestId = ++historyRequestId;
   ui.historyState.hidden = false;
-  ui.historyState.textContent = "Loading saved GPU history…";
+  ui.historyState.textContent = "Loading saved history…";
   ui.historySummary.innerHTML = "";
   ui.historyCharts.innerHTML = "";
   ui.historyProcessList.innerHTML = "";
@@ -544,14 +800,26 @@ async function loadGpuHistory() {
   ui.historyRefresh.disabled = true;
   try {
     const query = new URLSearchParams({
-      server_id: historySelection.serverId,
-      gpu_index: String(historySelection.gpuIndex),
+      scope: historySelection.scope,
       hours: String(historyHours),
     });
+    if (historySelection.serverId) {
+      query.set("server_id", historySelection.serverId);
+    }
+    if (historySelection.scope === "gpu") {
+      query.set("gpu_index", String(historySelection.gpuIndex));
+    }
+    if (historySelection.scope === "storage") {
+      query.set("mountpoint", historySelection.mountpoint);
+    }
     const response = await fetch(`/api/history?${query}`, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-    if (requestId === historyRequestId) renderGpuHistory(payload);
+    if (requestId === historyRequestId) {
+      if (payload.scope === "gpu") renderGpuHistory(payload);
+      else if (payload.scope === "storage") renderStorageHistory(payload);
+      else renderAggregateHistory(payload);
+    }
   } catch (error) {
     if (requestId === historyRequestId) {
       ui.historyState.hidden = false;
@@ -562,21 +830,45 @@ async function loadGpuHistory() {
   }
 }
 
-function openGpuHistory(button) {
+function openHistory(button) {
+  const scope = button.dataset.historyScope || "gpu";
   historySelection = {
+    scope,
     serverId: button.dataset.serverId,
-    gpuIndex: Number(button.dataset.gpuIndex),
+    gpuIndex: scope === "gpu" ? Number(button.dataset.gpuIndex) : null,
     gpuName: button.dataset.gpuName,
+    serverLabel: button.dataset.serverLabel,
+    mountpoint: button.dataset.mountpoint,
+    storageKind: button.dataset.storageKind,
+    volumeLabel: button.dataset.volumeLabel,
   };
   historyHours = 24;
   ui.historyRange.querySelectorAll("button[data-hours]").forEach((candidate) => {
     candidate.classList.toggle("active", candidate.dataset.hours === "24");
   });
-  ui.historyTitle.textContent = `${historySelection.serverId} · GPU ${historySelection.gpuIndex}`;
-  ui.historySubtitle.textContent = historySelection.gpuName;
+  if (scope === "fleet") {
+    ui.historyEyebrow.textContent = "PERSISTENT AGGREGATE HISTORY";
+    ui.historyTitle.textContent = "Whole-fleet history";
+    ui.historySubtitle.textContent = "Aggregate across both GPU servers";
+  } else if (scope === "server") {
+    ui.historyEyebrow.textContent = "PERSISTENT AGGREGATE HISTORY";
+    ui.historyTitle.textContent = `${historySelection.serverLabel} history`;
+    ui.historySubtitle.textContent = `Aggregate across 8 GPUs on ${historySelection.serverId}`;
+  } else if (scope === "storage") {
+    ui.historyEyebrow.textContent = "PERSISTENT STORAGE HISTORY";
+    ui.historyTitle.textContent = `${historySelection.serverLabel} · ${historySelection.volumeLabel}`;
+    ui.historySubtitle.textContent = historySelection.storageKind === "shared"
+      ? `${historySelection.mountpoint} · shared NFS · 40 TB operating limit`
+      : `${historySelection.mountpoint} · local filesystem`;
+    ui.processHistorySection.hidden = true;
+  } else {
+    ui.historyEyebrow.textContent = "PERSISTENT GPU HISTORY";
+    ui.historyTitle.textContent = `${historySelection.serverId} · GPU ${historySelection.gpuIndex}`;
+    ui.historySubtitle.textContent = historySelection.gpuName;
+  }
   ui.historyModal.hidden = false;
   document.body.classList.add("modal-open");
-  loadGpuHistory();
+  loadHistory();
 }
 
 function closeGpuHistory() {
@@ -614,8 +906,13 @@ async function manualRefresh() {
 
 ui.refreshButton.addEventListener("click", manualRefresh);
 ui.servers.addEventListener("click", (event) => {
-  const button = event.target.closest("button.history-button");
-  if (button) openGpuHistory(button);
+  const button = event.target.closest(
+    "button.history-button, button.scope-history-button, button.storage-history-button",
+  );
+  if (button) openHistory(button);
+});
+ui.fleetHistoryButton.addEventListener("click", () => {
+  openHistory(ui.fleetHistoryButton);
 });
 ui.historyRange.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-hours]");
@@ -624,9 +921,9 @@ ui.historyRange.addEventListener("click", (event) => {
   ui.historyRange.querySelectorAll("button[data-hours]").forEach((candidate) => {
     candidate.classList.toggle("active", candidate === button);
   });
-  loadGpuHistory();
+  loadHistory();
 });
-ui.historyRefresh.addEventListener("click", loadGpuHistory);
+ui.historyRefresh.addEventListener("click", loadHistory);
 ui.historyModal.addEventListener("click", (event) => {
   if (event.target.closest("[data-history-close]")) closeGpuHistory();
 });
@@ -640,7 +937,7 @@ ui.viewToggle.addEventListener("click", () => {
   } catch (_error) {
     // The mode still works when browser storage is unavailable.
   }
-  applyViewMode();
+  applyViewMode({ animate: true });
 });
 ui.filterGroup.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-filter]");

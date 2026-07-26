@@ -140,7 +140,7 @@ class Edgewise(torch.nn.Module):
         wigner,
         wigner_inv,
         node_or_edge,
-        partition
+        partition,
     ):
         if node_or_edge == 'node':
             
@@ -515,13 +515,27 @@ class eSEN_Block(torch.nn.Module):
         wigner,
         wigner_inv,
         node_or_edge,
-        partition
+        partition,
+        system_node_embedding=None,
     ):
 
         if node_or_edge == 'node':
             x_res = x_message_node
 
             x_message_node = self.norm_1(x_message_node)
+            if system_node_embedding is not None:
+                if tuple(system_node_embedding.shape) != (
+                    x_message_node.shape[0],
+                    x_message_node.shape[2],
+                ):
+                    raise ValueError(
+                        "system_node_embedding must have shape "
+                        f"{(x_message_node.shape[0], x_message_node.shape[2])}, "
+                        f"got {tuple(system_node_embedding.shape)}."
+                    )
+                x_message_node[:, 0, :] = (
+                    x_message_node[:, 0, :] + system_node_embedding
+                )
 
             x_message_node = self.edge_wise(
                 x_message_node,
@@ -573,3 +587,37 @@ class eSEN_Block(torch.nn.Module):
             torch.cuda.nvtx.range_pop() # <--- END
 
             return self.atom_update_scale(x_message_edge) + x_res
+
+    def forward_qhflow3_pair(
+        self,
+        x_message_node,
+        x_edge,
+        edge_distance,
+        edge_index,
+        wigner,
+        wigner_inv,
+        partition,
+    ):
+        """Compute one independent QHFlow3-style pair branch.
+
+        Unlike the native recurrent eSEN edge path, this branch normalizes the
+        final node state before constructing pair messages, does not add an
+        incoming edge residual, and returns the atomwise pair update directly.
+        Multiple branches are summed by the backbone before final edge
+        normalization.
+        """
+
+        normalized_node = self.norm_1(x_message_node)
+        pair_message = self.edge_wise(
+            normalized_node,
+            None,
+            x_edge,
+            edge_distance,
+            edge_index,
+            wigner,
+            wigner_inv,
+            "edge",
+            partition,
+        )
+        pair_message = self.norm_2(pair_message)
+        return self.atom_wise(pair_message)

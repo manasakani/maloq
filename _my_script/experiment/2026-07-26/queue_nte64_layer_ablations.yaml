@@ -1,0 +1,45 @@
+jobs:
+  - id: nabla-nte64-qcond-n2nols-v1-20260726a
+    description: NTE-64/2 QHFcond with only NodeBlock 2 LayerScale bypassed
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/02_nabladft_nte64_layer_ablation_2gpu.sh
+    args:
+      - full
+      - node2
+      - "{gpus}"
+    gpu_count: 2
+    allowed_hosts:
+      - server-1
+    priority: 30
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/02_nabladft_nte64_layer_ablation_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_node2_nolayerscale_nabladft.yaml
+
+  - id: nabla-nte64-qcond-qhfpair-v1-20260726a
+    description: NTE-64/2 QHFcond with independent QHFlow3-style pair branches
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/02_nabladft_nte64_layer_ablation_2gpu.sh
+    args:
+      - full
+      - qhfpair
+      - "{gpus}"
+    gpu_count: 2
+    allowed_hosts:
+      - server-1
+    priority: 20
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/02_nabladft_nte64_layer_ablation_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_qhflow3_parallel_edge_nabladft.yaml
+
+  - id: nabla-nte64-qcond-projadamw-v1-20260726a
+    description: NTE-64/2 QHFcond with the degree-batched output projection on AdamW
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/02_nabladft_nte64_layer_ablation_2gpu.sh
+    args:
+      - full
+      - projadamw
+      - "{gpus}"
+    gpu_count: 2
+    allowed_hosts:
+      - server-1
+    priority: 10
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/02_nabladft_nte64_layer_ablation_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_projection_adamw_nabladft.yaml

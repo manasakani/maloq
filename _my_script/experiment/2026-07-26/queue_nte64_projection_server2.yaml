@@ -1,0 +1,10 @@
+jobs:
+  - id: nabla-nte64-qcond-projadamw-v1-server2-20260726a
+    description: NTE-64/2 QHFcond with the degree-batched output projection on AdamW
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/02_nabladft_nte64_layer_ablation_2gpu.sh
+    args: [full, projadamw, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-2]
+    priority: 10
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_projection_adamw_nabladft.yaml

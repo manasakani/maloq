@@ -92,7 +92,7 @@ tracking:
   wandb_run_name: "NablaDFT | NTE Scaling | 33M | W128 D3 | V1"
   wandb_group: nabla-nte-muon-scaling
   wandb_job_type: full
-  wandb_tags: [dataset:nabladft, model:maloq-nte, head:muon, scaling-law, params:33m, width:128, depth:3, scale-shift:off, seed:44, version:v1, sc26-seongsu]
+  wandb_tags: [dataset:nabladft, model:maloq-nte, head:muon, scaling-law, params:33m, width:128, depth:3, normalization:none, target:raw, scale-shift:off, seed:44, version:v1, sc26-seongsu]
   experiment_version: 1
   wandb_log_every_n_steps: 10
   validation_matrix_metrics: true

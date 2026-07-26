@@ -382,6 +382,7 @@ class HistoryStore:
             for row in process_rows
         ]
         return {
+            "scope": "gpu",
             "server_id": server_id,
             "gpu_index": gpu_index,
             "hours": hours,
@@ -392,6 +393,240 @@ class HistoryStore:
             "downsampled": len(points) < len(raw_points),
             "points": points,
             "processes": processes,
+        }
+
+    def aggregate_history(
+        self,
+        hours: float,
+        server_id: str | None = None,
+        max_points: int = 720,
+    ) -> dict[str, object]:
+        """Return fleet-wide or one-server aggregate metric history."""
+        range_end = datetime.now(timezone.utc)
+        range_start = range_end - timedelta(hours=hours)
+        server_clause = " AND g.server_id = ?" if server_id is not None else ""
+        parameters: tuple[object, ...] = (
+            (range_start.isoformat(), server_id)
+            if server_id is not None
+            else (range_start.isoformat(),)
+        )
+        process_server_clause = (
+            " AND p.server_id = ?" if server_id is not None else ""
+        )
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT s.sampled_at, COUNT(g.gpu_index),
+                       AVG(g.utilization_percent),
+                       MAX(g.utilization_percent),
+                       SUM(g.memory_used_mib), SUM(g.memory_total_mib),
+                       AVG(g.temperature_c), MAX(g.temperature_c),
+                       SUM(g.power_draw_w), SUM(g.power_limit_w),
+                       SUM(g.process_count)
+                FROM gpu_samples AS g
+                JOIN snapshots AS s ON s.id = g.snapshot_id
+                JOIN server_samples AS ss
+                  ON ss.snapshot_id = g.snapshot_id
+                 AND ss.server_id = g.server_id
+                WHERE s.sampled_at >= ?
+                  AND ss.online = 1 AND ss.cached = 0
+                  {server_clause}
+                GROUP BY g.snapshot_id
+                ORDER BY s.sampled_at ASC
+                """,
+                parameters,
+            ).fetchall()
+            process_rows = connection.execute(
+                f"""
+                SELECT p.server_id, p.gpu_index, p.user, p.pid,
+                       COALESCE(p.command, p.process_name),
+                       MIN(s.sampled_at), MAX(s.sampled_at),
+                       MAX(p.memory_used_mib), COUNT(*)
+                FROM process_samples AS p
+                JOIN snapshots AS s ON s.id = p.snapshot_id
+                JOIN server_samples AS ss
+                  ON ss.snapshot_id = p.snapshot_id
+                 AND ss.server_id = p.server_id
+                WHERE s.sampled_at >= ?
+                  AND ss.online = 1 AND ss.cached = 0
+                  {process_server_clause}
+                GROUP BY p.server_id, p.gpu_index, p.user, p.pid,
+                         COALESCE(p.command, p.process_name)
+                ORDER BY MAX(s.sampled_at) DESC
+                LIMIT 100
+                """,
+                parameters,
+            ).fetchall()
+
+        raw_points: list[dict[str, object]] = []
+        for row in rows:
+            memory_total = float(row[5] or 0)
+            memory_used = float(row[4] or 0)
+            raw_points.append(
+                {
+                    "sampled_at": row[0],
+                    "reporting_gpus": row[1],
+                    "utilization_average_percent": row[2],
+                    "utilization_peak_percent": row[3],
+                    "memory_used_mib": row[4],
+                    "memory_total_mib": row[5],
+                    "memory_utilization_percent": (
+                        memory_used / memory_total * 100 if memory_total else 0
+                    ),
+                    "temperature_average_c": row[6],
+                    "temperature_peak_c": row[7],
+                    "power_draw_w": row[8],
+                    "power_limit_w": row[9],
+                    "process_count": row[10],
+                }
+            )
+        points = self._downsample_aggregate(raw_points, max_points)
+        latest = raw_points[-1] if raw_points else {}
+        range_summary = {
+            "latest": latest,
+            "peak_utilization_percent": max(
+                (
+                    float(point.get("utilization_peak_percent") or 0)
+                    for point in raw_points
+                ),
+                default=0,
+            ),
+            "peak_memory_utilization_percent": max(
+                (
+                    float(point.get("memory_utilization_percent") or 0)
+                    for point in raw_points
+                ),
+                default=0,
+            ),
+            "peak_temperature_c": max(
+                (
+                    float(point.get("temperature_peak_c") or 0)
+                    for point in raw_points
+                ),
+                default=0,
+            ),
+            "peak_power_draw_w": max(
+                (float(point.get("power_draw_w") or 0) for point in raw_points),
+                default=0,
+            ),
+            "max_process_count": max(
+                (int(point.get("process_count") or 0) for point in raw_points),
+                default=0,
+            ),
+        }
+        processes = [
+            {
+                "server_id": row[0],
+                "gpu_index": row[1],
+                "user": row[2],
+                "pid": row[3],
+                "command": row[4],
+                "first_seen_at": row[5],
+                "last_seen_at": row[6],
+                "peak_memory_used_mib": row[7],
+                "sample_count": row[8],
+            }
+            for row in process_rows
+        ]
+        return {
+            "scope": "server" if server_id is not None else "fleet",
+            "server_id": server_id,
+            "hours": hours,
+            "range_start": range_start.isoformat(),
+            "range_end": range_end.isoformat(),
+            "raw_point_count": len(raw_points),
+            "point_count": len(points),
+            "downsampled": len(points) < len(raw_points),
+            "points": points,
+            "summary": range_summary,
+            "processes": processes,
+        }
+
+    def storage_history(
+        self,
+        server_id: str,
+        mountpoint: str,
+        hours: float,
+        max_points: int = 720,
+    ) -> dict[str, object]:
+        """Return bounded capacity history for one server mount."""
+        range_end = datetime.now(timezone.utc)
+        range_start = range_end - timedelta(hours=hours)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT s.sampled_at, st.kind, st.filesystem_type,
+                       st.total_bytes, st.used_bytes, st.available_bytes,
+                       st.used_percent, st.policy_limit_bytes,
+                       st.policy_remaining_bytes, st.policy_used_percent,
+                       st.policy_exceeded
+                FROM storage_samples AS st
+                JOIN snapshots AS s ON s.id = st.snapshot_id
+                JOIN server_samples AS ss
+                  ON ss.snapshot_id = st.snapshot_id
+                 AND ss.server_id = st.server_id
+                WHERE st.server_id = ? AND st.mountpoint = ?
+                  AND s.sampled_at >= ?
+                  AND ss.online = 1 AND ss.cached = 0
+                ORDER BY s.sampled_at ASC
+                """,
+                (server_id, mountpoint, range_start.isoformat()),
+            ).fetchall()
+        raw_points: list[dict[str, object]] = []
+        for row in rows:
+            has_policy = row[7] is not None
+            raw_points.append(
+                {
+                    "sampled_at": row[0],
+                    "kind": row[1],
+                    "filesystem_type": row[2],
+                    "total_bytes": row[3],
+                    "used_bytes": row[4],
+                    "available_bytes": row[5],
+                    "used_percent": row[6],
+                    "policy_limit_bytes": row[7],
+                    "policy_remaining_bytes": row[8],
+                    "policy_used_percent": row[9],
+                    "policy_exceeded": bool(row[10]) if row[10] is not None else None,
+                    "effective_remaining_bytes": row[8] if has_policy else row[5],
+                    "effective_used_percent": row[9] if has_policy else row[6],
+                }
+            )
+        points = self._downsample_storage(raw_points, max_points)
+        latest = raw_points[-1] if raw_points else {}
+        first = raw_points[0] if raw_points else {}
+        used_values = [
+            int(point.get("used_bytes") or 0) for point in raw_points
+        ]
+        percent_values = [
+            float(point.get("effective_used_percent") or 0)
+            for point in raw_points
+        ]
+        return {
+            "scope": "storage",
+            "server_id": server_id,
+            "mountpoint": mountpoint,
+            "kind": latest.get("kind"),
+            "hours": hours,
+            "range_start": range_start.isoformat(),
+            "range_end": range_end.isoformat(),
+            "raw_point_count": len(raw_points),
+            "point_count": len(points),
+            "downsampled": len(points) < len(raw_points),
+            "points": points,
+            "summary": {
+                "latest": latest,
+                "change_bytes": (
+                    int(latest.get("used_bytes") or 0)
+                    - int(first.get("used_bytes") or 0)
+                    if raw_points
+                    else 0
+                ),
+                "minimum_used_bytes": min(used_values, default=0),
+                "maximum_used_bytes": max(used_values, default=0),
+                "peak_used_percent": max(percent_values, default=0),
+            },
+            "processes": [],
         }
 
     @staticmethod
@@ -430,3 +665,61 @@ class HistoryStore:
                 point[field] = sum(values) / len(values) if values else None
             sampled.append(point)
         return sampled
+
+    @staticmethod
+    def _downsample_aggregate(
+        points: list[dict[str, object]],
+        max_points: int,
+    ) -> list[dict[str, object]]:
+        if len(points) <= max_points:
+            return points
+        bucket_size = math.ceil(len(points) / max_points)
+        average_fields = (
+            "utilization_average_percent",
+            "memory_used_mib",
+            "memory_total_mib",
+            "memory_utilization_percent",
+            "temperature_average_c",
+            "power_draw_w",
+            "power_limit_w",
+        )
+        peak_fields = (
+            "reporting_gpus",
+            "utilization_peak_percent",
+            "temperature_peak_c",
+            "process_count",
+        )
+        sampled: list[dict[str, object]] = []
+        for offset in range(0, len(points), bucket_size):
+            bucket = points[offset : offset + bucket_size]
+            point: dict[str, object] = {
+                "sampled_at": bucket[-1]["sampled_at"],
+                "samples": len(bucket),
+            }
+            for field in average_fields:
+                values = [
+                    float(candidate[field])
+                    for candidate in bucket
+                    if candidate.get(field) is not None
+                ]
+                point[field] = sum(values) / len(values) if values else None
+            for field in peak_fields:
+                point[field] = max(
+                    (float(candidate.get(field) or 0) for candidate in bucket),
+                    default=0,
+                )
+            sampled.append(point)
+        return sampled
+
+    @staticmethod
+    def _downsample_storage(
+        points: list[dict[str, object]],
+        max_points: int,
+    ) -> list[dict[str, object]]:
+        if len(points) <= max_points:
+            return points
+        bucket_size = math.ceil(len(points) / max_points)
+        return [
+            points[min(offset + bucket_size, len(points)) - 1]
+            for offset in range(0, len(points), bucket_size)
+        ]

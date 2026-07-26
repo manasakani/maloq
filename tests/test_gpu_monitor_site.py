@@ -94,7 +94,7 @@ def test_fleet_summary_separates_idle_busy_and_warning():
                     "utilization_percent": 65,
                     "temperature_c": 56,
                     "power_draw_w": 400,
-                    "processes": [{"pid": 1}],
+                    "processes": [{"pid": 1, "user": "gpuuser"}],
                 },
                 {
                     "memory_used_mib": 0,
@@ -114,6 +114,14 @@ def test_fleet_summary_separates_idle_busy_and_warning():
     assert summary["gpus_busy"] == 1
     assert summary["gpus_warning"] == 1
     assert summary["power_draw_w"] == 570
+    assert summary["gpus_reporting"] == 3
+    assert abs(summary["utilization_average_percent"] - 65 / 3) < 1e-12
+    assert summary["utilization_peak_percent"] == 65
+    assert summary["utilization_peak_gpu"] == "server / GPU ?"
+    assert abs(summary["temperature_average_c"] - 173 / 3) < 1e-12
+    assert summary["temperature_peak_c"] == 83
+    assert summary["processes_active"] == 1
+    assert summary["active_users"] == ["gpuuser"]
 
 
 def test_history_store_records_gpu_process_and_storage(tmp_path):
@@ -205,3 +213,31 @@ def test_history_store_records_gpu_process_and_storage(tmp_path):
     assert report["raw_point_count"] == 1
     assert report["points"][0]["memory_used_mib"] == 2048
     assert report["processes"][0]["user"] == "gpuuser"
+
+    fleet_report = store.aggregate_history(hours=1)
+    assert fleet_report["scope"] == "fleet"
+    assert fleet_report["raw_point_count"] == 1
+    assert fleet_report["points"][0]["reporting_gpus"] == 1
+    assert fleet_report["points"][0]["utilization_average_percent"] == 80
+    assert abs(
+        fleet_report["points"][0]["memory_utilization_percent"]
+        - 2048 / 81559 * 100
+    ) < 1e-12
+    assert fleet_report["processes"][0]["server_id"] == "server-1"
+    assert fleet_report["processes"][0]["gpu_index"] == 0
+
+    server_report = store.aggregate_history(hours=1, server_id="server-1")
+    assert server_report["scope"] == "server"
+    assert server_report["server_id"] == "server-1"
+    assert server_report["summary"]["latest"]["process_count"] == 1
+
+    storage_report = store.storage_history("server-1", "/dataset", hours=1)
+    assert storage_report["scope"] == "storage"
+    assert storage_report["raw_point_count"] == 1
+    assert storage_report["kind"] == "shared"
+    assert storage_report["points"][0]["used_bytes"] == 20_000_000
+    assert (
+        storage_report["points"][0]["effective_remaining_bytes"]
+        == 39_999_980_000_000
+    )
+    assert storage_report["summary"]["change_bytes"] == 0

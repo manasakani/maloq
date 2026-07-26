@@ -36,14 +36,14 @@ from typing import Any, Iterable
 
 
 SOURCE_COLLECTION = "0b73865a-ff20-4f57-a1d7-573d86b54624"
-DESTINATION_ENDPOINT = "6ac548e4-31bd-11f1-ae94-0ea3589134b3"
+LEGACY_QUASAR_DESTINATION_ENDPOINT = "6ac548e4-31bd-11f1-ae94-0ea3589134b3"
 
 DEFAULT_MANIFEST = Path(
-    "/home1/irteam/data-vol1/datasets/omol25/manifests/ml_mo_v1/"
-    "strict_transition_metal.jsonl"
+    "/dataset/seongsu/shared-home/datasets/omol25_open_shell_maloq_ase/"
+    "manifests/strict_transition_metal.jsonl"
 )
 DEFAULT_DESTINATION_ROOT = Path(
-    "/home1/irteam/data-vol1/data/omol25/open_shell_restore"
+    "/dataset/seongsu/shared-home/datasets/omol25_open_shell_source"
 )
 
 TRANSFER_FILES = ("density_mat.npz", "orca.tar.zst")
@@ -139,10 +139,6 @@ def _globus_command() -> tuple[list[str], dict[str, str]]:
 
     uvx = shutil.which("uvx")
     if uvx is None:
-        candidate = Path("/home1/irteam/.local/bin/uvx")
-        if candidate.is_file():
-            uvx = str(candidate)
-    if uvx is None:
         raise RuntimeError("Neither globus nor uvx is available.")
     env.setdefault("UV_CACHE_DIR", "/tmp/omol_open_shell_globus_uv_cache")
     return [uvx, "--from", "globus-cli", "globus"], env
@@ -186,8 +182,9 @@ def make_batches(
 
 
 class TransferState:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, destination_endpoint: str | None = None) -> None:
         self.root = root
+        self.destination_endpoint = destination_endpoint
         self.control_dir = root / "_transfer"
         self.batch_dir = self.control_dir / "batches"
         self.state_log = self.control_dir / "state.jsonl"
@@ -280,12 +277,14 @@ def submit_batch(
     rows: list[dict[str, Any]],
     attempt: int,
 ) -> str:
+    if not state.destination_endpoint:
+        raise RuntimeError("SC26 Globus destination endpoint is not configured")
     batch_file = state.write_batch_file(batch_key, rows)
     label = f"{LABEL_PREFIX}-{batch_key}-a{attempt}"
     result = run_globus(
         "transfer",
         SOURCE_COLLECTION,
-        DESTINATION_ENDPOINT,
+        state.destination_endpoint,
         "--batch",
         str(batch_file),
         "--label",
@@ -614,6 +613,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--destination-root", type=Path, default=DEFAULT_DESTINATION_ROOT
     )
+    parser.add_argument(
+        "--destination-endpoint",
+        default=os.environ.get("OMOL_GLOBUS_DESTINATION_ENDPOINT"),
+        help=(
+            "SC26 Globus collection UUID; defaults to "
+            "OMOL_GLOBUS_DESTINATION_ENDPOINT"
+        ),
+    )
     parser.add_argument("--preflight-count", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=500)
     parser.add_argument("--parallel", type=int, default=4)
@@ -622,9 +629,20 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.preflight or args.all:
+        if not args.destination_endpoint:
+            raise SystemExit(
+                "Set OMOL_GLOBUS_DESTINATION_ENDPOINT or pass "
+                "--destination-endpoint with the SC26 collection UUID."
+            )
+        if args.destination_endpoint == LEGACY_QUASAR_DESTINATION_ENDPOINT:
+            raise SystemExit(
+                "Refusing the deprecated Quasar destination endpoint. "
+                "Configure an SC26 collection rooted under /dataset."
+            )
     rows = load_open_shell_rows(args.manifest)
     preflight_rows = select_preflight(rows, args.preflight_count)
-    state = TransferState(args.destination_root)
+    state = TransferState(args.destination_root, args.destination_endpoint)
     preflight_batches = make_batches(
         preflight_rows,
         kind=f"preflight{args.preflight_count}",

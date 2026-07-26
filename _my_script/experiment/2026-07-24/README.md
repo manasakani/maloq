@@ -1,7 +1,8 @@
 # NablaDFT MALOQ Muon-head scale-shift
 
-Compact experiment ID: `nabla-maloq-muon-ss1-v1`.
-W&B display name: `NablaDFT | MALOQ | Muon | SS1 | V1`.
+Canonical experiment ID: `nabla-maloq-muon-shift-std-v1`.
+Legacy output-directory ID: `nabla-maloq-muon-ss1-v1`.
+W&B display name: `NablaDFT | MALOQ | Muon | SHIFT+STD | V1`.
 
 This experiment adds train-only label scale/shift to
 `nabladft-maloq-muon-head-2gpu-eb20-mb5-ga2-full-e20-seed44-20260722-190344-maloq`.
@@ -66,5 +67,5 @@ Status:
   10; the two-rank `smoke` and `full` commands use effective batch 20
 - full training completed for 20 epochs with exit code 0
 - W&B run `jal9l7uk` is named
-  `NablaDFT | MALOQ | Muon | SS1 | V1` and grouped with MALOQ SS0 under
+  `NablaDFT | MALOQ | Muon | SHIFT+STD | V1` and grouped with MALOQ RAW under
   `nabla-maloq-ss`

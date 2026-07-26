@@ -87,6 +87,9 @@ def _model_defaults() -> dict[str, Any]:
         "residual_update_scale_mode": "none",
         "residual_update_scale_init": 1.0,
         "residual_update_scale_log_range": 0.0,
+        "unscaled_node_layers": (),
+        "repeat_system_embedding_each_node_block": False,
+        "edge_stack_mode": "recurrent",
         "esen_grid_resolution": None,
         "nte_input_conditioning": "none",
         "qhflow3_max_radius": 12.0,
@@ -123,6 +126,7 @@ def _optimization_defaults() -> dict[str, Any]:
         "muon_adamw_lr": None,
         "muon_adamw_betas": (0.9, 0.95),
         "muon_adamw_eps": 1e-10,
+        "muon_output_projection_policy": "shape_muon",
         "gradient_clip_val": None,
         "gradient_accumulation_steps": 1,
         "scheduler_type": "cosine",
@@ -142,6 +146,7 @@ def _loss_defaults() -> dict[str, Any]:
         "train_loss": "rmse_mse_padded_loss",
         "test_loss": "l1_unpadded_loss",
         "scale_and_shift": False,
+        "scale_shift_mode": "standardize",
         "scale_shift_path": None,
         "delta_learning": False,
     }
@@ -216,7 +221,13 @@ class ModelConfig(BaseModel):
 
     model_variant: str = "maloq-baseline"
     backbone_type: Literal["esen", "qhflow3_clean"] = "esen"
-    head_type: Literal["maloq", "maloq_muon", "static_te"] = "maloq"
+    head_type: Literal[
+        "maloq",
+        "maloq_muon",
+        "maloq_semantic_global_muon",
+        "maloq_semantic_global_gate_muon",
+        "static_te",
+    ] = "maloq"
     wigner_backend: Literal["torch", "triton"] = "torch"
     l_embedding_dim: int = 128
     num_distance_basis: int = 128
@@ -237,11 +248,18 @@ class ModelConfig(BaseModel):
     residual_update_scale_mode: Literal["none", "bounded_degree"] = "none"
     residual_update_scale_init: float = 1.0
     residual_update_scale_log_range: float = 0.0
+    unscaled_node_layers: tuple[int, ...] = ()
+    repeat_system_embedding_each_node_block: bool = False
+    edge_stack_mode: Literal[
+        "recurrent",
+        "nte_parallel",
+        "qhflow3_parallel",
+    ] = "recurrent"
     esen_grid_resolution: int | None = Field(default=None, gt=0)
     nte_input_conditioning: Literal["none", "overlap", "qhflow3_exact"] = "none"
     qhflow3_max_radius: float = 12.0
     qhflow3_radius_embed_dim: int = 32
-    qhflow3_grid_resolution: int = 48
+    qhflow3_grid_resolution: int | None = 48
     qhflow3_grid_ffn_chunk_size: int | None = 512
     qhflow3_use_overlap: bool = True
     static_te_init_mode: Literal["zero", "normal"] = "zero"
@@ -273,6 +291,7 @@ class OptimizationConfig(BaseModel):
     muon_adamw_lr: float | None = None
     muon_adamw_betas: tuple[float, float] = (0.9, 0.95)
     muon_adamw_eps: float = 1e-10
+    muon_output_projection_policy: Literal["shape_muon", "adamw"] = "shape_muon"
     gradient_clip_val: float | None = None
     gradient_accumulation_steps: int = Field(default=1, ge=1)
     scheduler_type: Literal["plateau", "cosine", "warmup_polynomial"] = "cosine"
@@ -292,6 +311,7 @@ class LossConfig(BaseModel):
     train_loss: LossName = "rmse_mse_padded_loss"
     test_loss: LossName = "l1_unpadded_loss"
     scale_and_shift: bool = False
+    scale_shift_mode: Literal["standardize", "shift_only"] = "standardize"
     scale_shift_path: str | None = None
     delta_learning: bool = False
 
@@ -407,6 +427,9 @@ class MaloqConfig(BaseModel):
             "residual_update_scale_mode": "model",
             "residual_update_scale_init": "model",
             "residual_update_scale_log_range": "model",
+            "unscaled_node_layers": "model",
+            "repeat_system_embedding_each_node_block": "model",
+            "edge_stack_mode": "model",
             "esen_grid_resolution": "model",
             "nte_input_conditioning": "model",
             "qhflow3_max_radius": "model",
@@ -439,6 +462,7 @@ class MaloqConfig(BaseModel):
             "muon_adamw_lr": "optimization",
             "muon_adamw_betas": "optimization",
             "muon_adamw_eps": "optimization",
+            "muon_output_projection_policy": "optimization",
             "gradient_clip_val": "optimization",
             "gradient_accumulation_steps": "optimization",
             "scheduler_type": "optimization",
@@ -454,6 +478,7 @@ class MaloqConfig(BaseModel):
             "train_loss": "loss",
             "test_loss": "loss",
             "scale_and_shift": "loss",
+            "scale_shift_mode": "loss",
             "scale_shift_path": "loss",
             "delta_learning": "loss",
             # checkpoint

@@ -1,0 +1,30 @@
+jobs:
+  - id: nabla-nte64-qcond-repeatsys-v1-20260726b
+    description: NTE-64/2 QHFcond with QHFlow3 system scalar repeated inside each NodeBlock
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/02_nabladft_nte64_layer_ablation_2gpu.sh
+    args:
+      - full
+      - repeatsys
+      - "{gpus}"
+    gpu_count: 2
+    allowed_hosts:
+      - server-1
+    priority: 20
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/02_nabladft_nte64_layer_ablation_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_repeat_system_nabladft.yaml
+
+  - id: nabla-nte64-qcond-nteparallel-v1-20260726b
+    description: NTE-64/2 QHFcond with independent summed branches retaining NTE EdgeBlock math
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/02_nabladft_nte64_layer_ablation_2gpu.sh
+    args:
+      - full
+      - nteparallel
+      - "{gpus}"
+    gpu_count: 2
+    allowed_hosts:
+      - server-2
+    priority: 20
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/02_nabladft_nte64_layer_ablation_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_nte_parallel_edge_nabladft.yaml

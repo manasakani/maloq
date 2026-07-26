@@ -218,12 +218,12 @@ batch 20, 20 epochs, seed 44, and W&B
 `kaist-korea/maloq-nablaDFT` logging every 10 optimizer steps. Full outputs are
 written to compact, configuration-specific directories:
 
-| Head | Scale-shift | Experiment ID / output directory |
+| Head | Normalization | Legacy output directory |
 | --- | --- | --- |
-| native | off | `nabla-nte128e3-native-ss0-v1` |
-| native | on | `nabla-nte128e3-native-ss1-v1` |
-| corrected Muon | off | `nabla-nte128e3-muon-ss0-v1` |
-| corrected Muon | on | `nabla-nte128e3-muon-ss1-v1` |
+| native | RAW | `nabla-nte128e3-native-ss0-v1` |
+| native | SHIFT+STD | `nabla-nte128e3-native-ss1-v1` |
+| corrected Muon | RAW | `nabla-nte128e3-muon-ss0-v1` |
+| corrected Muon | SHIFT+STD | `nabla-nte128e3-muon-ss1-v1` |
 
 Each directory lives directly below
 `/dataset/seongsu/shared-home/workspace/project/outputs/`. Repeated launches
@@ -304,13 +304,17 @@ Validation status on 2026-07-24:
 ## Compact NablaDFT naming
 
 New NablaDFT experiment IDs follow
-`nabla-<model>-<head>-ss<0|1>-v<N>`. W&B uses a separate readable display
-name: `NablaDFT | <model> | <head> | SS<0|1> | V<N>`.
+`nabla-<model>-<head>-<raw|shift|shift-std>-v<N>`. W&B uses the readable
+display name
+`NablaDFT | <model> | <head> | <RAW|SHIFT|SHIFT+STD> | V<N>`.
+Existing `ss0`/`ss1` output directories remain unchanged as provenance paths.
 
 - `nte128e3` means MALOQ-NTE output width 128 and three edge layers.
 - `qhf3` means the local-objective QHFlow3-clean trunk.
 - `native`, `muon`, and `staticte` identify the matrix head.
-- `SS0`/`ss0` disables train-label scale-shift; `SS1`/`ss1` enables it.
+- `RAW` applies no target transform.
+- `SHIFT` subtracts the element-specific `l=0` node mean only.
+- `SHIFT+STD` subtracts that mean and divides by the standard deviation.
 - `V1`, `V2`, and later values distinguish revisions of the same model/head/
   scale-shift lineage. A materially different head or scale-shift setting
   starts its own version sequence.

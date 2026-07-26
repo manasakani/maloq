@@ -147,10 +147,28 @@ class SemanticIrrepLinear(nn.Module):
 class MuonFockIrrepsHead(Fock_Irreps_Head):
     """Native gated MALOQ head with Muon-visible semantic output matrices."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    SEMANTIC_MUON_ROUTING = "semantic_global_node_edge"
+    SEMANTIC_GATE_ROUTING = "semantic_scalar_gate"
+
+    def __init__(self, *args, muonize_gate: bool = False, **kwargs) -> None:
         if kwargs.get("reduce_edge", False):
             raise ValueError("maloq_muon currently requires reduce_edge=False.")
         super().__init__(*args, **kwargs)
+        self.muonize_gate = bool(muonize_gate)
+
+        if self.muonize_gate:
+            gate_layers = nn.ModuleList(
+                [
+                    SemanticIrrepLinear(
+                        source.irreps_out,
+                        self.sphere_channels,
+                        (source,),
+                    )
+                    for source in self.lin_scalars_learnable
+                ]
+            )
+            del self.lin_scalars_learnable
+            self.gate_semantic_layers = gate_layers
 
         if self.reduce_node:
             node_layers = nn.ModuleList(
@@ -192,7 +210,7 @@ class MuonFockIrrepsHead(Fock_Irreps_Head):
             self.common_semantic_layers = common_layers
 
     def semantic_matrix_parameters(self) -> Iterator[nn.Parameter]:
-        """Yield only path-by-channel matrices; gates and biases stay on AdamW."""
+        """Yield the node/edge global path-by-channel contraction matrices."""
         if self.reduce_node:
             for layers in (self.node_semantic_layers, self.edge_semantic_layers):
                 for layer in layers:
@@ -201,10 +219,20 @@ class MuonFockIrrepsHead(Fock_Irreps_Head):
             for layer in self.common_semantic_layers:
                 yield layer.weight
 
+    def gate_matrix_parameters(self) -> Iterator[nn.Parameter]:
+        """Yield the scalar/gate projection matrices materialized for Muon."""
+        if not self.muonize_gate:
+            return
+        for layer in self.gate_semantic_layers:
+            yield layer.weight
+
     def process(self, x, node_or_edge, spin):
         x_scalars = x[:, : self.sphere_channels]
         x_nonscalars = x[:, self.sphere_channels :]
-        all_scalars = self.lin_scalars_learnable[spin](x_scalars)
+        if self.muonize_gate:
+            all_scalars = self.gate_semantic_layers[spin](x_scalars)
+        else:
+            all_scalars = self.lin_scalars_learnable[spin](x_scalars)
         transformed_l0_scalars = all_scalars[:, : self.sphere_channels]
         gating_scalars = all_scalars[:, self.sphere_channels :]
         x_gated = self.gate[spin](

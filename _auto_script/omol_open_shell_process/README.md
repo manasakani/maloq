@@ -13,18 +13,22 @@ float32 for the current MALOQ CUDA label kernel. Each completed shard is
 atomically renamed and has a report in `_state/`, so rerunning the same command
 skips valid completed shards and retries incomplete/failed shards.
 
-Default Quasar paths:
+Default SC26 paths:
 
 ```text
-source: /home1/irteam/data-vol1/data/omol25/open_shell_restore
-output: /home1/irteam/data-vol1/data/omol25/open_shell_maloq_ase
+source: /dataset/seongsu/shared-home/datasets/omol25_open_shell_source
+output: /dataset/seongsu/shared-home/datasets/omol25_open_shell_maloq_ase
 ```
 
-Smoke and full commands:
+New download and processing jobs must be launched on SC26. The existing
+Quasar copy is retained only as the read-only source for the one-time
+processed-data migration.
+
+Smoke and full commands on SC26:
 
 ```bash
 python process_omol_open_shell_to_ase.py \
-  --output-root /home1/irteam/data-vol1/data/omol25/open_shell_maloq_ase_smoke \
+  --output-root /dataset/seongsu/shared-home/datasets/omol25_open_shell_maloq_ase_smoke \
   --limit-per-split 1 --shard-size 1 --workers 2
 
 python process_omol_open_shell_to_ase.py \

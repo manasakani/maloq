@@ -91,10 +91,10 @@ tracking:
   wandb_project: maloq-nablaDFT
   wandb_entity: kaist-korea
   wandb_mode: online
-  wandb_run_name: "NablaDFT | NTE-64/2 | Muon | SS0 | Grid48 | V1"
+  wandb_run_name: "NablaDFT | NTE-64/2 | Muon | RAW | Grid48 | V1"
   wandb_group: nabla-nte64e2-head-ss
   wandb_job_type: full
-  wandb_tags: [dataset:nabladft, model:nte64e2, head:muon, scale-shift:off, grid:48x48, ablation:esen-grid, baseline:loaiifgp, seed:44, version:v1, sc26-seongsu]
+  wandb_tags: [dataset:nabladft, model:nte64e2, head:muon, normalization:none, target:raw, scale-shift:off, grid:48x48, ablation:esen-grid, baseline:loaiifgp, seed:44, version:v1, sc26-seongsu]
   experiment_version: 1
   wandb_log_every_n_steps: 10
   validation_matrix_metrics: true

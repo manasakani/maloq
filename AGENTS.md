@@ -56,6 +56,25 @@ These rules apply to the canonical SC26-seongsu project at
 - Compute any scale/shift statistics from the training split only, and save provenance with the resulting artifact.
 - Keep `distribute_graphs=False` until the QH9 streaming path is explicitly implemented and tested for distributed graphs.
 
+## Dataset download and transfer
+
+- Initiate new dataset downloads, restores, and processing jobs from an SC26
+  server and write their outputs under `/dataset`; do not submit new download
+  or processing jobs to Quasar.
+- Quasar may be used only as a read-only source when migrating an already
+  completed artifact to SC26. Keep orchestration, logs, retries, and
+  verification on SC26.
+- Before a large transfer, check the shared `/dataset` volume against the
+  40 TB operating limit. Remember that both SC26 GPU servers see the same NFS
+  volume, so count it once.
+- Use resumable transfers for large datasets. For rsync-over-SSH, retain
+  partial files, enable SSH keepalives and batch mode, and verify expected
+  shard counts, total bytes, and a manifest checksum after completion.
+- A Globus transfer destination must be an SC26 collection rooted at a
+  narrowly scoped writable directory under
+  `/dataset/seongsu/shared-home/datasets`. Never reuse the historical Quasar
+  destination endpoint for a new transfer.
+
 ## Verification
 
 - Use the project interpreter explicitly:

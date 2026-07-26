@@ -28,6 +28,20 @@ def spec(
         "ndft-archive-failed": "nabla-failed",
     }.get(group, group)
     tags = tuple("auxiliary" if tag == "archive" else tag for tag in tags)
+    if "| RAW |" in name:
+        normalization_tags = ("normalization:none", "target:raw")
+    elif "| SHIFT |" in name:
+        normalization_tags = (
+            "normalization:l0-shift-only",
+            "target:mean-centered",
+        )
+    elif "| SHIFT+STD |" in name:
+        normalization_tags = (
+            "normalization:l0-shift-std",
+            "target:standardized",
+        )
+    else:
+        normalization_tags = ()
     return {
         "id": run_id,
         "local_output": local_output,
@@ -37,6 +51,7 @@ def spec(
         "tags": (
             "dataset:nabladft",
             "sc26-seongsu",
+            *normalization_tags,
             *tags,
         ),
         "note": note,
@@ -48,7 +63,7 @@ RUNS = (
     spec(
         "9ldrunh9",
         "outputs/nabladft-maloq-muon-head-2gpu-eb20-mb5-ga2-full-e20-seed44-20260722-190344/maloq",
-        "NablaDFT | MALOQ | Muon | SS0 | V1",
+        "NablaDFT | MALOQ | MatMuon+SemHead | RAW | V1",
         "nabla-maloq-ss",
         "full",
         "current",
@@ -63,7 +78,7 @@ RUNS = (
     spec(
         "loaiifgp",
         "outputs/nabladft-maloq-nte-muon-head-2gpu-eb20-mb5-ga2-full-e20-seed44-20260722-190356/maloq-nte",
-        "NablaDFT | NTE-64/2 | Muon | SS0 | V1",
+        "NablaDFT | NTE-64/2 | MatMuon+SemHead | RAW | V1",
         "nabla-nte64e2-head-ss",
         "full",
         "current",
@@ -78,7 +93,7 @@ RUNS = (
     spec(
         "cvnthb0u",
         "outputs/nabladft-maloq-nte-do128-le3-head-comparison-parallel-2x2gpu-eb20-mb5-ga2-full-e20-seed44-20260723-154105/native-head",
-        "NablaDFT | NTE-128/3 | Native | SS0 | V1",
+        "NablaDFT | NTE-128/3 | Native | RAW | V1",
         "nabla-nte128e3-head-ss",
         "full",
         "current",
@@ -93,7 +108,7 @@ RUNS = (
     spec(
         "119izc66",
         "outputs/nabladft-maloq-nte-do128-le3-head-comparison-parallel-2x2gpu-eb20-mb5-ga2-full-e20-seed44-20260723-154105/muon-head",
-        "NablaDFT | NTE-128/3 | Muon | SS0 | V1",
+        "NablaDFT | NTE-128/3 | MatMuon+SemHead | RAW | V1",
         "nabla-nte128e3-head-ss",
         "full",
         "current",
@@ -108,7 +123,7 @@ RUNS = (
     spec(
         "27dk4l35",
         "outputs/nabladft-nte-do128-le3-native-head-scale-shift-2gpu-eb20-mb5-ga2-full-e20-seed44-20260724-042801/run",
-        "NablaDFT | NTE-128/3 | Native | SS1 | V1",
+        "NablaDFT | NTE-128/3 | Native | SHIFT+STD | V1",
         "nabla-nte128e3-head-ss",
         "full",
         "current",
@@ -125,7 +140,7 @@ RUNS = (
     spec(
         "qpa1dbz8",
         "outputs/nabladft-nte-do128-le3-muon-head-scale-shift-2gpu-eb20-mb5-ga2-full-e20-seed44-20260723-164854/run",
-        "NablaDFT | NTE-128/3 | Muon | SS1 | V1",
+        "NablaDFT | NTE-128/3 | MatMuon+SemHead | SHIFT+STD | V1",
         "nabla-nte128e3-head-ss",
         "full",
         "current",
@@ -142,7 +157,7 @@ RUNS = (
     spec(
         "zqs1eohc",
         "outputs/nabladft-qhflow3-local-muon-head-2gpu-eb20-mb5-ga2-full-e20-seed44-20260723-170017/qhflow3",
-        "NablaDFT | QHFlow3 | Muon | SS0 | V2",
+        "NablaDFT | QHFlow3 | MatMuon+SemHead | RAW | V2",
         "nabla-qhflow3-ss",
         "full",
         "current",
@@ -157,7 +172,7 @@ RUNS = (
     spec(
         "2ygp53bs",
         "outputs/nabladft-qhflow3-local-muon-head-scale-shift-2gpu-eb20-mb5-ga2-full-e20-seed44-20260724-043801/run",
-        "NablaDFT | QHFlow3 | Muon | SS1 | V1",
+        "NablaDFT | QHFlow3 | MatMuon+SemHead | SHIFT+STD | V1",
         "nabla-qhflow3-ss",
         "full",
         "current",
@@ -172,7 +187,7 @@ RUNS = (
     spec(
         "jal9l7uk",
         "outputs/nabladft-maloq-muon-head-ss/run",
-        "NablaDFT | MALOQ | Muon | SS1 | V1",
+        "NablaDFT | MALOQ | MatMuon+SemHead | SHIFT+STD | V1",
         "nabla-maloq-ss",
         "full",
         "current",
@@ -265,7 +280,7 @@ RUNS = (
     spec(
         "732zfuml",
         "outputs/nabladft-three-model-parallel-3x2gpu-eb20-mb5-ga2-full-e20-seed44-20260722-061320/maloq",
-        "NablaDFT | MALOQ | Native | SS0 | V1",
+        "NablaDFT | MALOQ | Native | RAW | V1",
         "nabla-initial-3model",
         "full",
         "superseded",
@@ -279,7 +294,7 @@ RUNS = (
     spec(
         "cz7gx8ro",
         "outputs/nabladft-three-model-parallel-3x2gpu-eb20-mb5-ga2-full-e20-seed44-20260722-061333/maloq-nte",
-        "NablaDFT | NTE-64/2 | Native | SS0 | V1",
+        "NablaDFT | NTE-64/2 | Native | RAW | V1",
         "nabla-initial-3model",
         "full",
         "superseded",
@@ -293,7 +308,7 @@ RUNS = (
     spec(
         "tqmy5qme",
         "outputs/nabladft-three-model-parallel-3x2gpu-eb20-mb5-ga2-full-e20-seed44-20260722-061342/qhflow3",
-        "NablaDFT | QHFlow3 | Native | SS0 | V1",
+        "NablaDFT | QHFlow3 | Native | RAW | V1",
         "nabla-initial-3model",
         "full",
         "superseded",
@@ -308,7 +323,7 @@ RUNS = (
     spec(
         "wa3w0p5j",
         "outputs/nabladft-qhflow3-clean-muon-head-2gpu-eb20-mb5-ga2-full-e20-seed44-20260722-181348/qhflow3",
-        "NablaDFT | QHFlow3 | Muon | SS0 | V1",
+        "NablaDFT | QHFlow3 | MatMuon+SemHead | RAW | V1",
         "nabla-qhflow3-ss",
         "full",
         "superseded",

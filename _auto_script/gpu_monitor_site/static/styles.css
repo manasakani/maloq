@@ -234,7 +234,17 @@ h1 {
   grid-template-columns: 1.3fr 0.7fr;
   gap: 40px;
   align-items: end;
+  max-height: 760px;
   padding: 72px 0 52px;
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+  transition:
+    max-height 360ms cubic-bezier(0.4, 0, 0.2, 1),
+    padding 360ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 180ms ease,
+    transform 300ms ease,
+    visibility 0s;
 }
 
 .hero-kicker {
@@ -341,6 +351,145 @@ h1 {
   border-radius: inherit;
   background: linear-gradient(90deg, var(--mint), var(--cyan));
   transition: width 500ms ease;
+}
+
+.summary-memory-row,
+.memory-progress-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.summary-memory-row strong,
+.memory-progress-row strong {
+  color: var(--text);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.memory-progress {
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  appearance: none;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.memory-progress::-webkit-progress-bar {
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.memory-progress::-webkit-progress-value {
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--mint), var(--cyan));
+  transition: width 500ms ease;
+}
+
+.memory-progress::-moz-progress-bar {
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--mint), var(--cyan));
+}
+
+.fleet-statistics {
+  margin-bottom: 24px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgba(10, 20, 18, 0.68);
+  transition:
+    margin 300ms ease,
+    padding 300ms ease,
+    border-radius 300ms ease;
+}
+
+.fleet-statistics-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 13px;
+}
+
+.fleet-statistics-header h2 {
+  margin: 5px 0 0;
+  font-size: 1.05rem;
+  font-weight: 610;
+}
+
+.fleet-statistics-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fleet-statistics-actions > span {
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.scope-history-button {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  color: var(--mint);
+  border: 1px solid rgba(113, 239, 189, 0.2);
+  border-radius: 8px;
+  background: var(--mint-soft);
+  cursor: pointer;
+  font-size: 0.61rem;
+  font-weight: 640;
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.scope-history-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(113, 239, 189, 0.42);
+}
+
+.fleet-statistics-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.fleet-statistics-grid article {
+  min-width: 0;
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.fleet-statistics-grid span,
+.fleet-statistics-grid strong,
+.fleet-statistics-grid small {
+  display: block;
+}
+
+.fleet-statistics-grid span {
+  color: var(--muted);
+  font-size: 0.6rem;
+}
+
+.fleet-statistics-grid strong {
+  margin: 8px 0 5px;
+  overflow: hidden;
+  font-size: 1.3rem;
+  font-weight: 570;
+  letter-spacing: -0.035em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-statistics-grid small {
+  overflow: hidden;
+  color: #71857e;
+  font-size: 0.57rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .controls {
@@ -496,6 +645,28 @@ h1 {
   font-weight: 650;
 }
 
+.storage-topline-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.storage-history-button {
+  padding: 3px 6px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.018);
+  cursor: pointer;
+  font-size: 0.54rem;
+  font-weight: 630;
+}
+
+.storage-history-button:hover {
+  color: var(--mint);
+  border-color: rgba(113, 239, 189, 0.28);
+}
+
 .storage-kind {
   display: inline-flex;
   margin-left: 4px;
@@ -523,7 +694,11 @@ h1 {
   color: var(--amber);
 }
 
-.storage-volume.attention .storage-bar i {
+.storage-volume.attention .storage-progress::-webkit-progress-value {
+  background: var(--amber);
+}
+
+.storage-volume.attention .storage-progress::-moz-progress-bar {
   background: var(--amber);
 }
 
@@ -536,7 +711,11 @@ h1 {
   color: var(--red);
 }
 
-.storage-volume.exceeded .storage-bar i {
+.storage-volume.exceeded .storage-progress::-webkit-progress-value {
+  background: var(--red);
+}
+
+.storage-volume.exceeded .storage-progress::-moz-progress-bar {
   background: var(--red);
 }
 
@@ -546,19 +725,10 @@ h1 {
   font-size: 0.63rem;
 }
 
-.storage-bar {
-  height: 3px;
-  margin: 8px 0 6px;
-  overflow: hidden;
-  border-radius: 99px;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.storage-bar i {
+.storage-progress {
   display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--mint), var(--cyan));
+  height: 4px;
+  margin: 8px 0 6px;
 }
 
 .storage-volume small,
@@ -737,23 +907,26 @@ h1 {
 .metric-row span { color: var(--muted); }
 .metric-row strong { font-weight: 600; }
 
-.bar {
-  height: 3px;
-  margin-top: -3px;
-  overflow: hidden;
-  border-radius: 99px;
-  background: rgba(255, 255, 255, 0.06);
+.gpu-memory-progress {
+  width: 100%;
+  height: 5px;
 }
 
-.bar i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--mint);
+.gpu-card.busy .gpu-memory-progress::-webkit-progress-value {
+  background: var(--cyan);
 }
 
-.busy .bar i { background: var(--cyan); }
-.warning .bar i { background: var(--amber); }
+.gpu-card.busy .gpu-memory-progress::-moz-progress-bar {
+  background: var(--cyan);
+}
+
+.gpu-card.warning .gpu-memory-progress::-webkit-progress-value {
+  background: var(--amber);
+}
+
+.gpu-card.warning .gpu-memory-progress::-moz-progress-bar {
+  background: var(--amber);
+}
 
 .processes {
   margin-top: 15px;
@@ -904,7 +1077,20 @@ footer {
 }
 
 .clean-view .hero {
-  display: none;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-12px);
+  visibility: hidden;
+  transition:
+    max-height 360ms cubic-bezier(0.4, 0, 0.2, 1),
+    padding 360ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 160ms ease,
+    transform 260ms ease,
+    visibility 0s 360ms;
 }
 
 .clean-view .summary-grid {
@@ -926,6 +1112,33 @@ footer {
 
 .clean-view .summary-value strong {
   font-size: clamp(1.7rem, 2.4vw, 2.2rem);
+}
+
+.clean-view .fleet-statistics {
+  margin-bottom: 12px;
+  padding: 10px;
+  border-radius: 15px;
+}
+
+.clean-view .fleet-statistics-header {
+  margin-bottom: 8px;
+}
+
+.clean-view .fleet-statistics-header h2 {
+  font-size: 0.86rem;
+}
+
+.clean-view .fleet-statistics-actions > span {
+  display: none;
+}
+
+.clean-view .fleet-statistics-grid article {
+  padding: 9px 10px;
+}
+
+.clean-view .fleet-statistics-grid strong {
+  margin: 5px 0 3px;
+  font-size: 1.05rem;
 }
 
 .clean-view .controls {
@@ -1031,6 +1244,14 @@ footer {
   white-space: nowrap;
 }
 
+.clean-view .memory-progress-row {
+  gap: 5px;
+}
+
+.clean-view .memory-progress-row strong {
+  font-size: 0.57rem;
+}
+
 .clean-view .server-storage {
   margin-bottom: 8px;
 }
@@ -1039,11 +1260,19 @@ footer {
   padding: 8px 10px;
 }
 
+.clean-view .storage-topline-actions {
+  gap: 5px;
+}
+
+.clean-view .storage-history-button {
+  padding: 2px 4px;
+}
+
 .clean-view .storage-values {
   margin-top: 3px;
 }
 
-.clean-view .storage-bar {
+.clean-view .storage-progress {
   margin: 5px 0 3px;
 }
 
@@ -1095,6 +1324,37 @@ footer {
 .toast.show {
   opacity: 1;
   transform: translateY(0);
+}
+
+@keyframes view-fade-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.997);
+  }
+}
+
+@keyframes view-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.997);
+  }
+}
+
+::view-transition-old(root) {
+  animation: 160ms cubic-bezier(0.4, 0, 1, 1) both view-fade-out;
+}
+
+::view-transition-new(root) {
+  animation: 240ms cubic-bezier(0, 0, 0.2, 1) both view-fade-in;
+}
+
+.shell {
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.view-changing .shell {
+  opacity: 0.46;
+  transform: translateY(4px) scale(0.997);
 }
 
 .modal-open {
@@ -1361,6 +1621,10 @@ footer {
   border-top: 1px solid var(--line);
 }
 
+.process-history[hidden] {
+  display: none;
+}
+
 .process-history-heading {
   justify-content: space-between;
   gap: 20px;
@@ -1439,6 +1703,7 @@ footer {
   .gpu-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .summary-grid { grid-template-columns: repeat(2, 1fr); }
   .clean-view .gpu-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .fleet-statistics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .history-charts { grid-template-columns: 1fr; }
 }
 
@@ -1475,8 +1740,19 @@ footer {
 
   .summary-grid,
   .gpu-grid,
-  .server-storage {
+  .server-storage,
+  .fleet-statistics-grid {
     grid-template-columns: 1fr;
+  }
+
+  .fleet-statistics-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .fleet-statistics-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .summary-card {
