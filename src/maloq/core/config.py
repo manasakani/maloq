@@ -84,6 +84,7 @@ def _model_defaults() -> dict[str, Any]:
         "num_edge_layers": None,
         "output_l_embedding_dim": None,
         "nte_output_projection_mode": "so3_linear",
+        "output_norm_sharing": "shared",
         "use_edge_envelope": False,
         "use_edge_scalar_modulation": False,
         "residual_update_scale_mode": "none",
@@ -260,6 +261,7 @@ class ModelConfig(BaseModel):
         "so3_linear",
         "qhflow3_irrep_linear",
     ] = "so3_linear"
+    output_norm_sharing: Literal["shared", "separate"] = "shared"
     use_edge_envelope: bool = False
     use_edge_scalar_modulation: bool = False
     residual_update_scale_mode: Literal["none", "bounded_degree"] = "none"
@@ -466,6 +468,7 @@ class MaloqConfig(BaseModel):
             "num_edge_layers": "model",
             "output_l_embedding_dim": "model",
             "nte_output_projection_mode": "model",
+            "output_norm_sharing": "model",
             "use_edge_envelope": "model",
             "use_edge_scalar_modulation": "model",
             "residual_update_scale_mode": "model",

@@ -677,6 +677,10 @@ def build_backbone(
             nte_output_projection_mode=config[
                 "nte_output_projection_mode"
             ],
+            output_norm_sharing=config.get(
+                "output_norm_sharing",
+                "shared",
+            ),
             use_edge_envelope=config["use_edge_envelope"],
             use_edge_scalar_modulation=config["use_edge_scalar_modulation"],
             residual_update_scale_mode=config["residual_update_scale_mode"],

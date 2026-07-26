@@ -44,6 +44,7 @@ class TrainingWorkflow:
         "num_edge_layers": None,
         "output_l_embedding_dim": None,
         "nte_output_projection_mode": "so3_linear",
+        "output_norm_sharing": "shared",
         "use_edge_envelope": False,
         "use_edge_scalar_modulation": False,
         "residual_update_scale_mode": "none",
@@ -325,6 +326,35 @@ class TrainingWorkflow:
             raise ValueError(
                 "nte_output_projection_mode='qhflow3_irrep_linear' "
                 "requires backbone_type='esen'."
+            )
+        if self.config['output_norm_sharing'] not in {'shared', 'separate'}:
+            raise ValueError(
+                "output_norm_sharing must be 'shared' or 'separate'."
+            )
+        if (
+            self.config['output_norm_sharing'] == 'separate'
+            and self.config['backbone_type'] != 'esen'
+        ):
+            raise ValueError(
+                "output_norm_sharing='separate' requires "
+                "backbone_type='esen'."
+            )
+        if (
+            self.config['output_norm_sharing'] == 'separate'
+            and 'matrix' not in self.config['loss_target']
+        ):
+            raise ValueError(
+                "output_norm_sharing='separate' requires a matrix loss "
+                "target with edge embeddings."
+            )
+        if (
+            self.config['output_norm_sharing'] == 'separate'
+            and self.config['edge_stack_mode'] == 'qhflow3_exact_parallel'
+        ):
+            raise ValueError(
+                "output_norm_sharing='separate' is redundant with "
+                "edge_stack_mode='qhflow3_exact_parallel', which already "
+                "uses a separate QHFlow3 pair norm."
             )
         if self.config['edge_stack_mode'] not in {
             'recurrent', 'nte_parallel', 'qhflow3_parallel',
@@ -1259,6 +1289,7 @@ class TrainingWorkflow:
                 num_edge_layers=c['num_edge_layers'],
                 output_sphere_channels=c['output_l_embedding_dim'],
                 nte_output_projection_mode=c['nte_output_projection_mode'],
+                output_norm_sharing=c['output_norm_sharing'],
                 use_edge_envelope=c['use_edge_envelope'],
                 use_edge_scalar_modulation=c['use_edge_scalar_modulation'],
                 residual_update_scale_mode=c['residual_update_scale_mode'],
@@ -1487,6 +1518,9 @@ class TrainingWorkflow:
                 ),
                 'nte_output_projection_mode': (
                     None if is_qhflow3 else c['nte_output_projection_mode']
+                ),
+                'output_norm_sharing': (
+                    None if is_qhflow3 else c['output_norm_sharing']
                 ),
                 'nte_output_projection_rng_contract': (
                     None

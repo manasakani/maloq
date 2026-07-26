@@ -530,6 +530,19 @@ def nabladft_tracking_identity(
                     "ablation:output-projection-parameterization",
                 )
             )
+        output_norm_sharing = config.get(
+            "output_norm_sharing",
+            "shared",
+        )
+        if output_norm_sharing == "separate":
+            ablation_slugs.append("splitoutnorm")
+            ablation_labels.append("SplitOutNorm")
+            ablation_tags.extend(
+                (
+                    "output-norm-sharing:separate",
+                    "ablation:output-norm-sharing",
+                )
+            )
     elif variant == "qhflow3":
         model_slug = "qhf3"
         model_label = "QHFlow3"
@@ -579,6 +592,7 @@ def nabladft_tracking_identity(
         or config.get("qhflow3_exact_pair_rng_aligned", False)
         or config.get("nte_output_projection_mode", "so3_linear")
         != "so3_linear"
+        or config.get("output_norm_sharing", "shared") != "shared"
         or projection_policy != "shape_muon"
     )
     if head_type == "maloq_muon" and has_layer_structure_ablation:
@@ -1076,6 +1090,7 @@ def main() -> None:
                     "qhflow3_layer_grid_ffn_chunk_size",
                     "qhflow3_exact_pair_rng_aligned",
                     "nte_output_projection_mode",
+                    "output_norm_sharing",
                     "esen_grid_resolution",
                     "nte_input_conditioning",
                     "qhflow3_use_overlap",

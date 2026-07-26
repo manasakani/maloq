@@ -240,6 +240,7 @@ class eSEN_Backbone(nn.Module):
         num_edge_layers: int | None = None,
         output_sphere_channels: int | None = None,
         nte_output_projection_mode: str = "so3_linear",
+        output_norm_sharing: str = "shared",
         use_edge_envelope: bool = False,
         use_edge_scalar_modulation: bool = False,
         residual_update_scale_mode: str = "none",
@@ -296,6 +297,25 @@ class eSEN_Backbone(nn.Module):
                 f"'qhflow3_irrep_linear', got {nte_output_projection_mode!r}."
             )
         self.nte_output_projection_mode = nte_output_projection_mode
+        if output_norm_sharing not in {"shared", "separate"}:
+            raise ValueError(
+                "output_norm_sharing must be 'shared' or 'separate', "
+                f"got {output_norm_sharing!r}."
+            )
+        if output_norm_sharing == "separate" and not include_edges:
+            raise ValueError(
+                "output_norm_sharing='separate' requires include_edges=True."
+            )
+        if (
+            output_norm_sharing == "separate"
+            and edge_stack_mode == "qhflow3_exact_parallel"
+        ):
+            raise ValueError(
+                "output_norm_sharing='separate' is redundant with "
+                "edge_stack_mode='qhflow3_exact_parallel', which already "
+                "uses a separate QHFlow3 pair norm."
+            )
+        self.output_norm_sharing = output_norm_sharing
         parallel_edge_stack_modes = {
             "nte_parallel",
             "qhflow3_parallel",
@@ -748,6 +768,15 @@ class eSEN_Backbone(nn.Module):
             lmax=self.lmax,
             num_channels=self.sphere_channels
         )
+        self.edge_norm = (
+            get_normalization_layer(
+                self.norm_type,
+                lmax=self.lmax,
+                num_channels=self.sphere_channels,
+            )
+            if self.output_norm_sharing == "separate"
+            else None
+        )
         self.qhflow3_pair_norm = (
             get_qhflow3_normalization_layer(
                 self.norm_type,
@@ -1173,7 +1202,9 @@ class eSEN_Backbone(nn.Module):
         x_message_node = self.node_output_projection(x_message_node)
 
         if self.include_edges:
-            if self.qhflow3_pair_norm is None:
+            if self.edge_norm is not None:
+                x_message_edge = self.edge_norm(x_message_edge)
+            elif self.qhflow3_pair_norm is None:
                 x_message_edge = self.norm(x_message_edge)
             else:
                 # QHFlow3 has a pair-stack norm with separate affine weights.
