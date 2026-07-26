@@ -82,6 +82,7 @@ def _model_defaults() -> dict[str, Any]:
         "message_passing_schedule": "interleaved",
         "num_edge_layers": None,
         "output_l_embedding_dim": None,
+        "nte_output_projection_mode": "so3_linear",
         "use_edge_envelope": False,
         "use_edge_scalar_modulation": False,
         "residual_update_scale_mode": "none",
@@ -253,6 +254,10 @@ class ModelConfig(BaseModel):
     message_passing_schedule: Literal["interleaved", "node_then_edge"] = "interleaved"
     num_edge_layers: int | None = None
     output_l_embedding_dim: int | None = None
+    nte_output_projection_mode: Literal[
+        "so3_linear",
+        "qhflow3_irrep_linear",
+    ] = "so3_linear"
     use_edge_envelope: bool = False
     use_edge_scalar_modulation: bool = False
     residual_update_scale_mode: Literal["none", "bounded_degree"] = "none"
@@ -457,6 +462,7 @@ class MaloqConfig(BaseModel):
             "message_passing_schedule": "model",
             "num_edge_layers": "model",
             "output_l_embedding_dim": "model",
+            "nte_output_projection_mode": "model",
             "use_edge_envelope": "model",
             "use_edge_scalar_modulation": "model",
             "residual_update_scale_mode": "model",

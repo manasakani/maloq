@@ -1,0 +1,22 @@
+jobs:
+  - id: nabla-nte64-qcond-qhfproj-v1-20260726a
+    description: Recurrent NTE QHFcond baseline with QHFlow3 e3nn irrep output projections
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/13_nabladft_nte64_qhflow3_irrep_projection_2gpu.sh
+    args: [full, proj, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [any]
+    priority: 15
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/13_nabladft_nte64_qhflow3_irrep_projection_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_qhflow3_irrep_projection_nabladft.yaml
+
+  - id: nabla-nte64-qcond-edgepre-qhfproj-v1-20260726a
+    description: Recurrent NTE combining pre-edgewise norm with QHFlow3 e3nn irrep output projections
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/13_nabladft_nte64_qhflow3_irrep_projection_2gpu.sh
+    args: [full, edgepre-proj, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [any]
+    priority: 11
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/13_nabladft_nte64_qhflow3_irrep_projection_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_edgepre_qhflow3_irrep_projection_nabladft.yaml

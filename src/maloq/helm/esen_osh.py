@@ -54,6 +54,7 @@ from .nn.activation import GateActivation
 from .nte_conditioning import NTEMatrixConditioning
 from .qhflow3_clean import (
     GridAtomwise as QHFlow3GridAtomwise,
+    MuonVisibleIrrepLinear,
     eSCNMD_Block as QHFlow3NodeBlock,
     eSCNMD_Block_xy2 as QHFlow3PairBlock,
 )
@@ -63,6 +64,145 @@ from .qhf_layer.layer_norm import (
 from .qhf_layer.radial import GaussianSmearing as QHFlow3GaussianSmearing
 
 from .common.irreps_utils import get_reduced_to_all_indices, get_parity_multiplier, get_product_irreps, get_subspace_remix_permutation
+
+
+class QHFlow3IrrepLinear(nn.Module):
+    """Apply QHFlow3's e3nn projection to native eSEN embeddings.
+
+    eSEN stores features as ``[sample, l-major coefficient, channel]``, while
+    :class:`MuonVisibleIrrepLinear` follows e3nn's flattened
+    degree/channel/m ordering.  This adapter performs the exact layout
+    conversion in both directions and keeps the wrapped path weights visible
+    to the shape-based Muon router as ``[degree, output, input]``.  With raw
+    path weight ``M[l, out, in]``, e3nn applies the degreewise channel map
+    ``M / sqrt(in_features)`` independently to every magnetic component.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        lmax: int,
+    ) -> None:
+        super().__init__()
+        self.in_features = int(in_features)
+        self.out_features = int(out_features)
+        self.lmax = int(lmax)
+        if self.in_features <= 0 or self.out_features <= 0:
+            raise ValueError("Projection channel counts must be positive.")
+        if self.lmax < 0:
+            raise ValueError("lmax must be non-negative.")
+
+        irreps_in = Irreps(
+            [
+                (
+                    self.in_features,
+                    (degree, 1 if degree % 2 == 0 else -1),
+                )
+                for degree in range(self.lmax + 1)
+            ]
+        )
+        irreps_out = Irreps(
+            [
+                (
+                    self.out_features,
+                    (degree, 1 if degree % 2 == 0 else -1),
+                )
+                for degree in range(self.lmax + 1)
+            ]
+        )
+        self.linear = MuonVisibleIrrepLinear(irreps_in, irreps_out)
+        expected_shape = (
+            self.lmax + 1,
+            self.out_features,
+            self.in_features,
+        )
+        if tuple(self.linear.weight.shape) != expected_shape:
+            raise RuntimeError(
+                "Unexpected QHFlow3 projection path layout: "
+                f"{tuple(self.linear.weight.shape)} != {expected_shape}."
+            )
+
+    @property
+    def weight(self) -> nn.Parameter:
+        """Return the sole registered path tensor without registering an alias."""
+        return self.linear.weight
+
+    def _native_to_e3nn(self, features: torch.Tensor) -> torch.Tensor:
+        blocks = [
+            features[:, degree**2 : (degree + 1) ** 2, :]
+            .transpose(1, 2)
+            .reshape(features.shape[0], -1)
+            for degree in range(self.lmax + 1)
+        ]
+        return torch.cat(blocks, dim=1)
+
+    def _e3nn_to_native(self, features: torch.Tensor) -> torch.Tensor:
+        blocks = []
+        offset = 0
+        for degree in range(self.lmax + 1):
+            multiplicity = 2 * degree + 1
+            width = self.out_features * multiplicity
+            block = features[:, offset : offset + width].reshape(
+                features.shape[0],
+                self.out_features,
+                multiplicity,
+            )
+            blocks.append(block.transpose(1, 2))
+            offset += width
+        return torch.cat(blocks, dim=1)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        expected_shape = (
+            (self.lmax + 1) ** 2,
+            self.in_features,
+        )
+        if features.ndim != 3 or tuple(features.shape[1:]) != expected_shape:
+            raise ValueError(
+                "QHFlow3IrrepLinear expects native eSEN features shaped "
+                f"[N, {expected_shape[0]}, {expected_shape[1]}], got "
+                f"{tuple(features.shape)}."
+            )
+        projected = self.linear(self._native_to_e3nn(features))
+        return self._e3nn_to_native(projected)
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(in_features={self.in_features}, "
+            f"out_features={self.out_features}, lmax={self.lmax})"
+        )
+
+
+def _qhflow3_irrep_projection_with_legacy_rng(
+    in_features: int,
+    out_features: int,
+    lmax: int,
+) -> QHFlow3IrrepLinear:
+    """Build the QHFlow3 operator without shifting downstream initialization.
+
+    The ablation intentionally changes projection math and parameterization,
+    not the initialization of the following edge projection or matrix head.
+    Preserve the QHFlow3 normal weight sampled from the entry RNG state, then
+    advance the global CPU RNG exactly as the replaced legacy ``SO3_Linear``
+    constructor would have done.
+    """
+    with torch.random.fork_rng(devices=[]):
+        projection = QHFlow3IrrepLinear(
+            in_features,
+            out_features,
+            lmax,
+        )
+    # ``SO3_Linear`` consumes a normal draw for parameter construction and a
+    # uniform draw for its final initialization. Discarding this temporary
+    # module reproduces that exact legacy CPU RNG trajectory.
+    SO3_Linear(
+        in_features,
+        out_features,
+        lmax=lmax,
+        bias=False,
+    )
+    return projection
+
 
 @registry.register_model("esen_backbone")
 class eSEN_Backbone(nn.Module):
@@ -98,6 +238,7 @@ class eSEN_Backbone(nn.Module):
         message_passing_schedule: str = "interleaved",
         num_edge_layers: int | None = None,
         output_sphere_channels: int | None = None,
+        nte_output_projection_mode: str = "so3_linear",
         use_edge_envelope: bool = False,
         use_edge_scalar_modulation: bool = False,
         residual_update_scale_mode: str = "none",
@@ -139,6 +280,15 @@ class eSEN_Backbone(nn.Module):
                 f"got {node_stack_mode!r}."
             )
         self.node_stack_mode = node_stack_mode
+        if nte_output_projection_mode not in {
+            "so3_linear",
+            "qhflow3_irrep_linear",
+        }:
+            raise ValueError(
+                "nte_output_projection_mode must be 'so3_linear' or "
+                f"'qhflow3_irrep_linear', got {nte_output_projection_mode!r}."
+            )
+        self.nte_output_projection_mode = nte_output_projection_mode
         parallel_edge_stack_modes = {
             "nte_parallel",
             "qhflow3_parallel",
@@ -585,6 +735,17 @@ class eSEN_Backbone(nn.Module):
         if self.output_sphere_channels == self.sphere_channels:
             self.node_output_projection = nn.Identity()
             self.edge_output_projection = nn.Identity()
+        elif self.nte_output_projection_mode == "qhflow3_irrep_linear":
+            self.node_output_projection = _qhflow3_irrep_projection_with_legacy_rng(
+                self.sphere_channels,
+                self.output_sphere_channels,
+                self.lmax,
+            )
+            self.edge_output_projection = _qhflow3_irrep_projection_with_legacy_rng(
+                self.sphere_channels,
+                self.output_sphere_channels,
+                self.lmax,
+            )
         else:
             self.node_output_projection = SO3_Linear(
                 self.sphere_channels,

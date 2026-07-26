@@ -490,6 +490,20 @@ def nabladft_tracking_identity(
                     "ablation:dead-fc2-rng",
                 )
             )
+        output_projection_mode = config.get(
+            "nte_output_projection_mode",
+            "so3_linear",
+        )
+        if output_projection_mode == "qhflow3_irrep_linear":
+            ablation_slugs.append("qhfproj")
+            ablation_labels.append("QHFProj")
+            ablation_tags.extend(
+                (
+                    "output-projection:qhflow3-irrep-linear",
+                    "output-projection-rng:legacy-so3-linear-aligned",
+                    "ablation:output-projection-parameterization",
+                )
+            )
     elif variant == "qhflow3":
         model_slug = "qhf3"
         model_label = "QHFlow3"
@@ -532,6 +546,8 @@ def nabladft_tracking_identity(
         or config.get("direct_edgewise_layers", ())
         or config.get("edge_stack_mode", "recurrent") != "recurrent"
         or config.get("qhflow3_exact_pair_rng_aligned", False)
+        or config.get("nte_output_projection_mode", "so3_linear")
+        != "so3_linear"
         or projection_policy != "shape_muon"
     )
     if head_type == "maloq_muon" and has_layer_structure_ablation:
@@ -1028,6 +1044,7 @@ def main() -> None:
                     "qhflow3_layer_gaussian_width",
                     "qhflow3_layer_grid_ffn_chunk_size",
                     "qhflow3_exact_pair_rng_aligned",
+                    "nte_output_projection_mode",
                     "esen_grid_resolution",
                     "nte_input_conditioning",
                     "qhflow3_use_overlap",

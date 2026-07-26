@@ -42,6 +42,7 @@ class TrainingWorkflow:
         "message_passing_schedule": "interleaved",
         "num_edge_layers": None,
         "output_l_embedding_dim": None,
+        "nte_output_projection_mode": "so3_linear",
         "use_edge_envelope": False,
         "use_edge_scalar_modulation": False,
         "residual_update_scale_mode": "none",
@@ -301,6 +302,22 @@ class TrainingWorkflow:
         if self.config['node_stack_mode'] not in {'nte', 'qhflow3_exact'}:
             raise ValueError(
                 "node_stack_mode must be 'nte' or 'qhflow3_exact'."
+            )
+        if self.config['nte_output_projection_mode'] not in {
+            'so3_linear', 'qhflow3_irrep_linear'
+        }:
+            raise ValueError(
+                "nte_output_projection_mode must be 'so3_linear' or "
+                "'qhflow3_irrep_linear'."
+            )
+        if (
+            self.config['nte_output_projection_mode']
+            != 'so3_linear'
+            and self.config['backbone_type'] != 'esen'
+        ):
+            raise ValueError(
+                "nte_output_projection_mode='qhflow3_irrep_linear' "
+                "requires backbone_type='esen'."
             )
         if self.config['edge_stack_mode'] not in {
             'recurrent', 'nte_parallel', 'qhflow3_parallel',
@@ -1199,6 +1216,7 @@ class TrainingWorkflow:
                 message_passing_schedule=c['message_passing_schedule'],
                 num_edge_layers=c['num_edge_layers'],
                 output_sphere_channels=c['output_l_embedding_dim'],
+                nte_output_projection_mode=c['nte_output_projection_mode'],
                 use_edge_envelope=c['use_edge_envelope'],
                 use_edge_scalar_modulation=c['use_edge_scalar_modulation'],
                 residual_update_scale_mode=c['residual_update_scale_mode'],
@@ -1421,6 +1439,19 @@ class TrainingWorkflow:
                 ),
                 'edge_norm1_position': (
                     None if is_qhflow3 else c['edge_norm1_position']
+                ),
+                'nte_output_projection_mode': (
+                    None if is_qhflow3 else c['nte_output_projection_mode']
+                ),
+                'nte_output_projection_rng_contract': (
+                    None
+                    if is_qhflow3
+                    else (
+                        'legacy_so3_linear_aligned'
+                        if c['nte_output_projection_mode']
+                        == 'qhflow3_irrep_linear'
+                        else 'native_so3_linear'
+                    )
                 ),
                 'muon_output_projection_policy': (
                     c['muon_output_projection_policy']

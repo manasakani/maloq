@@ -55,6 +55,7 @@ _SIGNATURE_COMPATIBILITY_DEFAULTS = {
     "direct_edgewise_layers": [],
     "qhflow3_muonize_output_projection": False,
     "node_stack_mode": "nte",
+    "nte_output_projection_mode": "so3_linear",
     "qhflow3_layer_gaussian_width": 2.0,
     "qhflow3_layer_grid_ffn_chunk_size": 512,
     "qhflow3_exact_pair_rng_aligned": False,

@@ -522,4 +522,87 @@ effective batch 20, no distributed graphs, and W&B logging every 10 optimizer
 steps. Full outputs are written below
 `/dataset/seongsu/shared-home/workspace/project/outputs/nabladft-nte64-edgepre-edge1direct-2gpu-eb20-mb5-ga2-full-e20-<timestamp>/`.
 The durable manifest is `queue_nte64_edgepre_edge1direct.yaml`. Validation
-passed; no smoke or full job has been started yet.
+and a full-model two-GPU 20-train/20-validation smoke passed; successful smoke
+artifacts were removed. No full job has been started yet.
+
+
+## Literal pair dead-fc2 RNG control
+
+`QHFPairExact+RNGAlign` starts from completed exact-pair run `tc91f0zt`.
+QHFlow3's original `xy2` block registers a second scalar-modulation branch
+(`fc2`) that is never read by its forward. The reference exact transplant kept
+that dead branch literally, so its constructor consumed random values before
+the active SO(2), gate, normalization, and grid-FFN parameters were
+initialized. This control keeps `fc2` registered with the same values and
+still verifies that it receives no gradient, but constructs it inside an RNG
+fork. The only intended change is therefore the initialization stream seen by
+the active exact-pair layers; the node stack, exact pair operations, parameter
+count, optimizer routing, data order, and training recipe remain fixed.
+
+Commands:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/12_nabladft_nte64_qhflow3_exact_pair_rng_aligned_2gpu.sh validate
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/12_nabladft_nte64_qhflow3_exact_pair_rng_aligned_2gpu.sh smoke 0,1
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/12_nabladft_nte64_qhflow3_exact_pair_rng_aligned_2gpu.sh full 0,1
+```
+
+The environment is
+`/dataset/seongsu/shared-home/conda/envs/proj-dft-baselines-maloq-sc26`.
+The full lane uses NablaDFT rows 12,081/64/0, RAW Fock targets, seed 44,
+two data-parallel GPUs, micro-batch 5 per rank, gradient accumulation 2,
+effective batch 20, no distributed graphs, and W&B logging every 10 optimizer
+steps. Outputs use
+`/dataset/seongsu/shared-home/workspace/project/outputs/nabladft-nte64-qhfpairexact-rngalign-v1-2gpu-eb20-mb5-ga2-full-e20-<timestamp>-<pid>/`.
+The durable manifest is
+`queue_nte64_qhflow3_exact_pair_rng_aligned.yaml`. Validation and a full-model
+two-GPU 20-train/20-validation smoke passed; successful smoke artifacts were
+removed. No full job has been started yet.
+
+
+## NTE QHFlow3 output channel-contraction factorial
+
+These runs isolate the final node/edge `128 -> 64` channel contraction from
+the strongest recurrent pair boundary:
+
+| Pair boundary | NTE `SO3_Linear` | QHFlow3 e3nn contraction |
+|---|---|---|
+| Baseline post-edgewise norm | `fao0946w` | `QHFProj` |
+| Pre-node norm | `3uq7prdf` | `EdgePre+QHFProj` |
+
+`QHFProj` converts the native NTE `[item, (lmax+1)^2, channel]` layout to
+QHFlow3/e3nn's degree-wise channel-major layout, invokes the literal
+`MuonVisibleIrrepLinear`, and converts back before the unchanged MALOQ head.
+It retains QHFlow3's normal initialization and e3nn path normalization; no
+feature-scale or effective-weight matching is applied. To prevent a separate
+initialization confound, projection construction preserves the global RNG
+state that the NTE `SO3_Linear` baseline would leave for the following
+projection and head. The node and edge weights retain the same
+`[degree, output, input]` shape and the same shape-Muon route (`81,920`
+parameters total). Ordering, forward and input/weight gradients, strict state
+round-trip, and SO(3) rotation covariance are covered by regression tests;
+this does not assert an identical O(3) inversion-parity contract.
+
+Commands:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/13_nabladft_nte64_qhflow3_irrep_projection_2gpu.sh validate proj
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/13_nabladft_nte64_qhflow3_irrep_projection_2gpu.sh validate edgepre-proj
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/13_nabladft_nte64_qhflow3_irrep_projection_2gpu.sh smoke proj 0,1
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/13_nabladft_nte64_qhflow3_irrep_projection_2gpu.sh smoke edgepre-proj 2,3
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/13_nabladft_nte64_qhflow3_irrep_projection_2gpu.sh full proj 0,1
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/13_nabladft_nte64_qhflow3_irrep_projection_2gpu.sh full edgepre-proj 2,3
+```
+
+Both full lanes use the same environment, NablaDFT 12,081/64/0 split, RAW
+target, seed 44, two data-parallel GPUs, micro-batch 5 per rank, gradient
+accumulation 2, effective batch 20, no distributed graphs, and W&B logging
+every 10 optimizer steps. Outputs use:
+
+- `outputs/nabladft-nte64-qhfproj-v1-2gpu-eb20-mb5-ga2-full-e20-<timestamp>-<pid>/`
+- `outputs/nabladft-nte64-edgepre-qhfproj-v1-2gpu-eb20-mb5-ga2-full-e20-<timestamp>-<pid>/`
+
+The durable manifest is
+`queue_nte64_qhflow3_irrep_projection_factorial.yaml`. Both configs passed
+runner validation and a full-model two-GPU 20-train/20-validation smoke;
+successful smoke artifacts were removed. Full training is pending.
