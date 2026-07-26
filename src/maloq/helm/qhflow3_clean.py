@@ -35,29 +35,29 @@ from e3nn.o3 import Irreps, Linear
 from torch.profiler import record_function
 
 from ..fock_utils import basis_sets
-from ..qhflow3_vendor.embedding import (
+from .qhf_layer.embedding import (
     ChgSpinEmbedding,
     EdgeDegreeEmbedding,
 )
-from ..qhflow3_vendor.activation import (
+from .qhf_layer.activation import (
     GateActivation,
     SeparableS2Activation_M,
 )
-from ..qhflow3_vendor.layer_norm import (
+from .qhf_layer.layer_norm import (
     get_normalization_layer,
 )
-from ..qhflow3_vendor.radial import (
+from .qhf_layer.radial import (
     GaussianSmearing,
     PolynomialEnvelope,
 )
-from ..qhflow3_vendor.so2_layers import (
+from .qhf_layer.so2_layers import (
     SO2_Convolution,
 )
-from ..qhflow3_vendor.rotation import (
+from .qhf_layer.rotation import (
     eulers_to_wigner,
     init_edge_rot_euler_angles,
 )
-from ..qhflow3_vendor.so3 import (
+from .qhf_layer.so3 import (
     CoefficientMapping,
     SO3_Grid,
 )
@@ -80,7 +80,7 @@ class BackboneOutput:
 
 
 _QHFLOW3_CLEAN_JD_PATH = (
-    Path(__file__).resolve().parents[1] / "qhflow3_vendor/Jd.pt"
+    Path(__file__).resolve().parent / "qhf_layer/Jd.pt"
 )
 
 

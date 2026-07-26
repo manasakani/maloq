@@ -30,3 +30,4 @@ configs/
 *.egg-info/*
 src/*.egg-info/*
 src/maloq/*.egg-info/*
+/build/

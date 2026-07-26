@@ -150,6 +150,29 @@ It pins `RepeatSys` to `server-1` and `NTEParallel` to `server-2`, with one
 two-GPU full job per host. Both use the already smoke-tested launcher and keep
 the baseline seed, effective batch, scheduler, and W&B logging unchanged.
 
+### Source-target-message ablation
+
+`nte64e2_qcond_source_target_message_nabladft.yaml` keeps the cited
+NTE-64/2 QHFcond baseline's recurrent edge stack, bounded degree residuals,
+seed, scheduler, and MatrixMuon+AuxAdamW head fixed. Its only model change is
+`message_type: source-target-message`, so the initial or previous edge state
+is concatenated with source and target node features inside every first SO(2)
+convolution.
+
+Commands:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/04_nabladft_nte64_stmessage_2gpu.sh validate
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/04_nabladft_nte64_stmessage_2gpu.sh smoke 2,3
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/04_nabladft_nte64_stmessage_2gpu.sh full 2,3
+```
+
+The full run uses two data-parallel GPUs, micro-batch 5 per rank, gradient
+accumulation 2, effective batch 20, 20 epochs, and W&B logging every 10
+optimizer steps. `queue_nte64_stmessage.yaml` restricts its full job to
+`server-1`. Successful smoke output is removed; failed smoke and full outputs
+remain below `outputs/`.
+
 ## NTE-64/2 semantic gate-Muon comparison
 
 This V3 lane changes one optimizer-routing factor relative to W&B baseline

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from ..qhflow3_vendor.embedding import ChgSpinEmbedding
+from .qhf_layer.embedding import ChgSpinEmbedding
 from .qhflow3_clean import (
     ParamContraction,
     _orbital_masks_for_basis,

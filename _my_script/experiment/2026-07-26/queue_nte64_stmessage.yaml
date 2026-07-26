@@ -1,0 +1,14 @@
+jobs:
+  - id: nabla-nte64-qcond-stmessage-v1-20260726c
+    description: NTE-64/2 QHFcond with previous edge state concatenated into every SO2 message
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/04_nabladft_nte64_stmessage_2gpu.sh
+    args:
+      - full
+      - "{gpus}"
+    gpu_count: 2
+    allowed_hosts:
+      - server-1
+    priority: 15
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/04_nabladft_nte64_stmessage_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_source_target_message_nabladft.yaml
