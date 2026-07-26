@@ -652,6 +652,7 @@ class Edgewise_xy(torch.nn.Module):
         cutoff: float,
         activation_checkpoint_chunk_size: int | None,
         act_type: Literal["gate", "s2"] = "gate",
+        rng_align_dead_fc2: bool = False,
     ) -> None:
         super().__init__()
         self.sphere_channels = sphere_channels
@@ -694,11 +695,19 @@ class Edgewise_xy(torch.nn.Module):
             nn.SiLU(),
             nn.Linear(self.hidden_channels, self.len_edge_channels),
         )
-        self.fc2 = nn.Sequential(
-            nn.Linear(self.sphere_channels, self.hidden_channels),
-            nn.SiLU(),
-            nn.Linear(self.hidden_channels, self.len_edge_channels),
-        )
+        if rng_align_dead_fc2:
+            with torch.random.fork_rng(devices=[]):
+                self.fc2 = nn.Sequential(
+                    nn.Linear(self.sphere_channels, self.hidden_channels),
+                    nn.SiLU(),
+                    nn.Linear(self.hidden_channels, self.len_edge_channels),
+                )
+        else:
+            self.fc2 = nn.Sequential(
+                nn.Linear(self.sphere_channels, self.hidden_channels),
+                nn.SiLU(),
+                nn.Linear(self.hidden_channels, self.len_edge_channels),
+            )
 
         self.so2_conv_1 = SO2_Convolution(
             2 * self.sphere_channels,
@@ -1032,6 +1041,7 @@ class eSCNMD_Block_xy2(torch.nn.Module):
         act_type: Literal["gate", "s2"],
         ff_type: Literal["spectral", "grid"],
         activation_checkpoint_chunk_size: int | None,
+        rng_align_dead_fc2: bool = False,
     ) -> None:
         super().__init__()
         if ff_type != "grid":
@@ -1058,6 +1068,7 @@ class eSCNMD_Block_xy2(torch.nn.Module):
             cutoff=cutoff,
             act_type=act_type,
             activation_checkpoint_chunk_size=activation_checkpoint_chunk_size,
+            rng_align_dead_fc2=rng_align_dead_fc2,
         )
         self.norm_2 = get_normalization_layer(
             norm_type,

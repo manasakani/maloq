@@ -184,6 +184,141 @@ def test_exact_qhflow3_layer_transplant_options_round_trip():
     assert workflow["edge_stack_mode"] == "qhflow3_exact_parallel"
     assert workflow["qhflow3_layer_gaussian_width"] == 2.0
     assert workflow["qhflow3_layer_grid_ffn_chunk_size"] == 256
+    assert workflow["qhflow3_exact_pair_rng_aligned"] is False
+
+    aligned = MaloqConfig(
+        model={
+            "mlp_type": "grid",
+            "message_passing_schedule": "node_then_edge",
+            "edge_stack_mode": "qhflow3_exact_parallel",
+            "qhflow3_exact_pair_rng_aligned": True,
+        }
+    ).to_workflow_config()
+    assert aligned["qhflow3_exact_pair_rng_aligned"] is True
+
+
+def _small_exact_pair_backbone(*, rng_aligned: bool | None = None):
+    kwargs = {}
+    if rng_aligned is not None:
+        kwargs["qhflow3_exact_pair_rng_aligned"] = rng_aligned
+    return eSEN_Backbone(
+        Irreps("1x0e"),
+        sphere_channels=4,
+        hidden_channels=4,
+        lmax=1,
+        mmax=1,
+        cutoff=8.0,
+        edge_channels=4,
+        num_layers=1,
+        num_edge_layers=1,
+        num_distance_basis=4,
+        mlp_type="grid",
+        message_passing_schedule="node_then_edge",
+        edge_stack_mode="qhflow3_exact_parallel",
+        qhflow3_layer_grid_ffn_chunk_size=None,
+        **kwargs,
+    )
+
+
+def test_exact_pair_rng_alignment_preserves_default_and_maps_only_initialization():
+    torch.manual_seed(2026)
+    implicit_default = _small_exact_pair_backbone()
+    implicit_rng = torch.get_rng_state().clone()
+    torch.manual_seed(2026)
+    explicit_default = _small_exact_pair_backbone(rng_aligned=False)
+    explicit_rng = torch.get_rng_state().clone()
+
+    assert torch.equal(implicit_rng, explicit_rng)
+    for name, tensor in implicit_default.state_dict().items():
+        torch.testing.assert_close(
+            tensor,
+            explicit_default.state_dict()[name],
+            rtol=0,
+            atol=0,
+        )
+
+    torch.manual_seed(2026)
+    aligned = _small_exact_pair_backbone(rng_aligned=True)
+    aligned_rng = torch.get_rng_state().clone()
+    default_edge = implicit_default.edge_blocks[0].edge_wise
+    aligned_edge = aligned.edge_blocks[0].edge_wise
+    assert set(default_edge.state_dict()) == set(aligned_edge.state_dict())
+    for prefix in ("fc1.", "fc2."):
+        for name, tensor in default_edge.state_dict().items():
+            if name.startswith(prefix):
+                torch.testing.assert_close(
+                    tensor,
+                    aligned_edge.state_dict()[name],
+                    rtol=0,
+                    atol=0,
+                )
+    assert not torch.equal(implicit_rng, aligned_rng)
+    assert any(
+        not torch.equal(parameter, dict(aligned_edge.named_parameters())[name])
+        for name, parameter in default_edge.named_parameters()
+        if name.startswith("so2_conv_")
+    )
+
+
+def test_exact_pair_rng_alignment_keeps_fc2_registered_dead_and_math_identical():
+    torch.manual_seed(44)
+    reference = _small_exact_pair_backbone(rng_aligned=False)
+    torch.manual_seed(91)
+    aligned = _small_exact_pair_backbone(rng_aligned=True)
+    aligned.load_state_dict(reference.state_dict(), strict=True)
+
+    edge_index = torch.tensor([[0, 1], [1, 0]])
+    edge_vectors = torch.tensor(
+        [[0.8, 0.2, -0.1], [-0.8, -0.2, 0.1]],
+        dtype=torch.float32,
+    )
+    edge_distance = edge_vectors.norm(dim=-1)
+    wigner, wigner_inv = reference._get_rotmat_and_wigner(edge_vectors)
+    qh_wigner, qh_wigner_inv = reference._to_qhflow3_wigner(
+        wigner,
+        wigner_inv,
+    )
+    base_x = torch.randn(2, 4, 4)
+    base_edge = torch.randn(2, 12)
+
+    results = []
+    for model in (reference, aligned):
+        x = base_x.detach().clone().requires_grad_(True)
+        x_edge = base_edge.detach().clone().requires_grad_(True)
+        result = model.edge_blocks[0](
+            x,
+            x_edge,
+            edge_distance,
+            edge_index,
+            qh_wigner,
+            qh_wigner_inv,
+        )
+        result.square().sum().backward()
+        results.append((result.detach(), x.grad, x_edge.grad))
+
+    for actual, expected in zip(results[1], results[0], strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    for model in (reference, aligned):
+        fc2_parameters = dict(
+            model.edge_blocks[0].edge_wise.fc2.named_parameters()
+        )
+        assert fc2_parameters
+        assert all(parameter.grad is None for parameter in fc2_parameters.values())
+        assert any(
+            key.startswith("edge_blocks.0.edge_wise.fc2.")
+            for key in model.state_dict()
+        )
+
+
+def test_exact_pair_rng_alignment_rejects_non_exact_pair_stack():
+    with pytest.raises(
+        ValueError,
+        match="edge_stack_mode='qhflow3_exact_parallel'",
+    ):
+        eSEN_Backbone(
+            Irreps("1x0e"),
+            qhflow3_exact_pair_rng_aligned=True,
+        )
 
 
 def test_exact_qhflow3_layer_transplants_instantiate_original_modules():
@@ -1265,6 +1400,17 @@ def test_nabladft_tracking_names_structural_ablations():
         },
         smoke=False,
     )
+    rngaligned = module.nabladft_tracking_identity(
+        "maloq-nte",
+        {
+            **common,
+            "experiment_version": 1,
+            "nte_input_conditioning": "qhflow3_exact",
+            "edge_stack_mode": "qhflow3_exact_parallel",
+            "qhflow3_exact_pair_rng_aligned": True,
+        },
+        smoke=False,
+    )
     nteparallel = module.nabladft_tracking_identity(
         "maloq-nte",
         {
@@ -1292,6 +1438,13 @@ def test_nabladft_tracking_names_structural_ablations():
     assert qhfpair["experiment_id"].endswith("-qcond-qhfpair-v1")
     assert qhfpair["display_name"].endswith("QHFcond | QHFPair | V1")
     assert "edge-stack:qhflow3-parallel" in qhfpair["tags"]
+    assert rngaligned["experiment_id"].endswith(
+        "-qcond-qhfpairexact-rngalign-v1"
+    )
+    assert rngaligned["display_name"].endswith(
+        "QHFcond | QHFPairExact | PairRNGAlign | V1"
+    )
+    assert "qhflow3-exact-pair-rng:aligned" in rngaligned["tags"]
     assert nteparallel["experiment_id"].endswith("-qcond-ntepair-v1")
     assert nteparallel["display_name"].endswith(
         "QHFcond | NTEParallel | V1"

@@ -1,0 +1,11 @@
+jobs:
+  - id: nabla-nte64-qcond-edgepre-edge1direct-v1-20260726a
+    description: Recurrent NTE combining pre-edgewise node norm with EdgeBlock 1 direct output
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/11_nabladft_nte64_edgepre_edge1direct_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [any]
+    priority: 14
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/11_nabladft_nte64_edgepre_edge1direct_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/nte64e2_qcond_edgepre_edge1direct_nabladft.yaml

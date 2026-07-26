@@ -270,6 +270,7 @@ MAE over epochs 16–20.
 | Variant | W&B | Final matrix MAE | Tail-5 matrix MAE |
 |---|---|---:|---:|
 | QHFlow3 reference | `80sa5m4j` | 5.5018e-5 | 9.2024e-5 |
+| QHFlow3 ProjMuon reference | `aeorq52s` | 5.2162e-5 | 8.7160e-5 |
 | NTE-64/2 QHFcond reference | `fao0946w` | 7.0757e-5 | 1.0854e-4 |
 | QHFPair | `sb9afgms` | 6.0942e-5 | 9.2118e-5 |
 | RepeatSys | `cjea73l0` | 7.2947e-5 | 1.0225e-4 |
@@ -280,20 +281,27 @@ MAE over epochs 16–20.
 | EdgeDegreeNorm | `1xt6c4xb` | 7.3935e-5 | 1.0601e-4 |
 | EdgeAtomDirect | `6w6yjvzc` | 7.8412e-5 | 1.1432e-4 |
 | EdgePreNodeNorm | `3uq7prdf` | 6.1804e-5 | 9.0054e-5 |
+| Edge1Direct | `c71e96q3` | 6.3279e-5 | 9.1962e-5 |
+| QHFNodeExact | `776rtdmw` | 8.6368e-5 | 1.2342e-4 |
+| QHFPairExact | `tc91f0zt` | 6.1507e-5 | 9.6147e-5 |
+| QHFBlocksExact | `46mmzyid` | 5.9114e-5 | 9.4900e-5 |
 
 Independent branch topology alone (`NTEParallel`) and carrying the old edge
 state in the message (`STMessage`) do not explain the gap. Post-residual RMS
-normalization gives a real but partial improvement. The complete QHFlow3 pair
-operation (`QHFPair`) ties QHFlow3 on tail matrix MAE. `EdgeAtomDirect` shows
-that removing the final atomwise residual and bounded update scale alone is
-harmful. `EdgePreNodeNorm` is the strongest recurrent single-operation result:
-its epoch 16-20 matrix mean is 2.14% lower than QHFlow3 and 17.03% lower than
-the cited NTE baseline. Its corresponding node and edge means are also 9.37%
-and 0.86% lower than QHFlow3. The final-epoch matrix MAE remains 12.33% above
-QHFlow3, so the robust conclusion is parity over the common late-training
-window rather than superiority from one endpoint. Together with `QHFPair`,
-this isolates QHFlow3's `node norm -> edgewise` boundary as the leading tested
-pair-layer difference.
+normalization gives a real but partial improvement. The approximate complete
+QHFlow3 pair operation (`QHFPair`) ties the original QHFlow3 optimizer setting
+on tail matrix MAE. `EdgeAtomDirect` shows that removing the final atomwise
+residual and bounded update scale alone is harmful. `EdgePreNodeNorm` remains
+the strongest recurrent single-operation result: its epoch 16-20 matrix mean
+is 17.03% lower than the cited NTE baseline. It is 2.14% below the historical
+QHFlow3 reference but 3.32% above the optimizer-fair `QHFlow3 ProjMuon`
+reference, so the latter is the target for subsequent structural controls.
+`Edge1Direct` independently improves the NTE tail by 15.28% but is weaker than
+`EdgePreNodeNorm`. Literal QHFlow3 pair replacement improves the NTE baseline
+but is weaker than the approximate `QHFPair`; the exact node replacement alone
+is harmful. The exact node-plus-pair interaction is small at the tail, so the
+next tests keep the original NTE node stack and isolate pair boundaries and
+the final channel-contraction parameterization.
 
 
 ## NTE edge pre-node normalization ablation
@@ -359,7 +367,13 @@ targets, seed 44, no graph distribution, and W&B logging every 10 optimizer
 steps. The durable queue manifest is `queue_nte64_edge1_direct.yaml`.
 The config validation, 46 QH9 tests, three fixed-resume tests, and a full-model
 two-GPU 20-train/20-validation smoke passed; successful smoke artifacts were
-removed.
+removed. The full queue job
+`nabla-nte64-qcond-edge1-direct-v1-20260726a` then completed all 20 epochs on
+server 1 GPUs 0 and 1 from clean source commit `1e679e1`. W&B
+[`c71e96q3`](https://wandb.ai/kaist-korea/maloq-nablaDFT/runs/c71e96q3)
+finished with final matrix/node/edge MAE of `6.3279e-5`, `2.1322e-4`, and
+`7.6934e-5`; its epoch 16-20 means are `9.1962e-5`, `4.0026e-4`, and
+`1.0818e-4`.
 
 
 ## QHFlow3 output-projection Muon ablation
@@ -391,6 +405,15 @@ distribution, W&B logging every 10 optimizer steps in
 `kaist-korea/maloq-nablaDFT`, and the compact display name
 `NablaDFT | QHFlow3 | MatrixMuon+ProjMuon+AuxAdamW | RAW | OV0 |
 NTEGrid10x11 | V3`.
+
+The full queue job
+`nabla-qhf3-ov0-ntegrid-projmuon-v3-20260726a` completed all 20 epochs.
+W&B [`aeorq52s`](https://wandb.ai/kaist-korea/maloq-nablaDFT/runs/aeorq52s)
+finished with final matrix/node/edge MAE of `5.2162e-5`, `1.7006e-4`, and
+`6.3648e-5`; its epoch 16-20 means are `8.7160e-5`, `3.5191e-4`, and
+`1.0363e-4`. This moves exactly the two output projections (`81,920`
+parameters) from AdamW to Muon and is the optimizer-fair QHFlow3 comparator
+for the remaining layer-operation analysis.
 
 
 ## Literal QHFlow3 layer-transplant factorial
@@ -457,4 +480,46 @@ and `QHFNodeExact`, `QHFPairExact`, and `QHFBlocksExact` each passed a
 full-model two-GPU 20-train/20-validation smoke. Successful smoke artifacts
 were removed. A separate general-rotation check measured maximum covariance
 errors of `3.22e-6` for node features and `7.73e-7` for pair features. Full
-queue launch is pending the clean source commit.
+queue jobs `nabla-nte64-qcond-qhfnodeexact-v2-20260726a`,
+`nabla-nte64-qcond-qhfpairexact-v2-20260726a`, and
+`nabla-nte64-qcond-qhfblocksexact-v2-20260726a` completed all 20 epochs from
+clean source commit `b6139b3`.
+
+Their W&B runs are
+[`776rtdmw`](https://wandb.ai/kaist-korea/maloq-nablaDFT/runs/776rtdmw),
+[`tc91f0zt`](https://wandb.ai/kaist-korea/maloq-nablaDFT/runs/tc91f0zt), and
+[`46mmzyid`](https://wandb.ai/kaist-korea/maloq-nablaDFT/runs/46mmzyid).
+The epoch 16-20 matrix means are `1.2342e-4`, `9.6147e-5`, and `9.4900e-5`,
+respectively. The exact node stack is therefore ruled out as a direct
+improvement. Exact pair replacement accounts for most of the exact-block
+gain, while adding the exact node stack to it changes the tail by only 1.30%.
+The literal pair is still weaker than the approximate `QHFPair`, so future
+controls should isolate the remaining operation boundaries rather than match
+intermediate feature scales.
+
+
+## NTE EdgePre plus EdgeBlock-1 direct composition
+
+`EdgePre+Edge1Direct` combines the two independently useful recurrent
+pair-boundary changes while preserving the original NTE node stack and the
+rest of the recurrent edge operation. Each EdgeBlock moves its first RMS
+normalization to the node input (`edge_norm1_position: pre_node`), and only
+EdgeBlock 1 returns its normalized edgewise message directly
+(`direct_edgewise_layers: [1]`). EdgeBlock 2 still uses the bounded residual
+update, and both blocks retain their atomwise residual outputs.
+
+Commands:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/11_nabladft_nte64_edgepre_edge1direct_2gpu.sh validate
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/11_nabladft_nte64_edgepre_edge1direct_2gpu.sh smoke 0,1
+/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-26/11_nabladft_nte64_edgepre_edge1direct_2gpu.sh full 0,1
+```
+
+The experiment uses NablaDFT rows 12,081/64/0, RAW Fock targets, seed 44,
+two data-parallel GPUs, micro-batch 5 per rank, gradient accumulation 2,
+effective batch 20, no distributed graphs, and W&B logging every 10 optimizer
+steps. Full outputs are written below
+`/dataset/seongsu/shared-home/workspace/project/outputs/nabladft-nte64-edgepre-edge1direct-2gpu-eb20-mb5-ga2-full-e20-<timestamp>/`.
+The durable manifest is `queue_nte64_edgepre_edge1direct.yaml`. Validation
+passed; no smoke or full job has been started yet.

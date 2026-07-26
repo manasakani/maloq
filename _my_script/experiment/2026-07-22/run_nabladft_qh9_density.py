@@ -481,6 +481,15 @@ def nabladft_tracking_identity(
                     "ablation:pair-layer-transplant",
                 )
             )
+        if bool(config.get("qhflow3_exact_pair_rng_aligned", False)):
+            ablation_slugs.append("rngalign")
+            ablation_labels.append("PairRNGAlign")
+            ablation_tags.extend(
+                (
+                    "qhflow3-exact-pair-rng:aligned",
+                    "ablation:dead-fc2-rng",
+                )
+            )
     elif variant == "qhflow3":
         model_slug = "qhf3"
         model_label = "QHFlow3"
@@ -522,6 +531,7 @@ def nabladft_tracking_identity(
         or config.get("repeat_system_embedding_each_node_block", False)
         or config.get("direct_edgewise_layers", ())
         or config.get("edge_stack_mode", "recurrent") != "recurrent"
+        or config.get("qhflow3_exact_pair_rng_aligned", False)
         or projection_policy != "shape_muon"
     )
     if head_type == "maloq_muon" and has_layer_structure_ablation:
@@ -1017,6 +1027,7 @@ def main() -> None:
                     "edge_stack_mode",
                     "qhflow3_layer_gaussian_width",
                     "qhflow3_layer_grid_ffn_chunk_size",
+                    "qhflow3_exact_pair_rng_aligned",
                     "esen_grid_resolution",
                     "nte_input_conditioning",
                     "qhflow3_use_overlap",

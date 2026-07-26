@@ -53,6 +53,7 @@ class TrainingWorkflow:
         "edge_stack_mode": "recurrent",
         "qhflow3_layer_gaussian_width": 2.0,
         "qhflow3_layer_grid_ffn_chunk_size": 512,
+        "qhflow3_exact_pair_rng_aligned": False,
         "edge_atom_norm_type": None,
         "edge_post_residual_norm_type": None,
         "direct_edgewise_layers": (),
@@ -313,6 +314,14 @@ class TrainingWorkflow:
             self.config['node_stack_mode'] == 'qhflow3_exact'
             or self.config['edge_stack_mode'] == 'qhflow3_exact_parallel'
         )
+        if (
+            self.config['qhflow3_exact_pair_rng_aligned']
+            and self.config['edge_stack_mode'] != 'qhflow3_exact_parallel'
+        ):
+            raise ValueError(
+                "qhflow3_exact_pair_rng_aligned requires "
+                "edge_stack_mode='qhflow3_exact_parallel'."
+            )
         if exact_qhflow3_layers and self.config['backbone_type'] != 'esen':
             raise ValueError(
                 "Exact QHFlow3 layer transplants require backbone_type='esen'."
@@ -1203,6 +1212,9 @@ class TrainingWorkflow:
                 edge_stack_mode=c['edge_stack_mode'],
                 qhflow3_layer_gaussian_width=c['qhflow3_layer_gaussian_width'],
                 qhflow3_layer_grid_ffn_chunk_size=c['qhflow3_layer_grid_ffn_chunk_size'],
+                qhflow3_exact_pair_rng_aligned=(
+                    c['qhflow3_exact_pair_rng_aligned']
+                ),
                 edge_atom_norm_type=c['edge_atom_norm_type'],
                 edge_post_residual_norm_type=(
                     c['edge_post_residual_norm_type']

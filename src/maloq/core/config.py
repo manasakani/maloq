@@ -93,6 +93,7 @@ def _model_defaults() -> dict[str, Any]:
         "edge_stack_mode": "recurrent",
         "qhflow3_layer_gaussian_width": 2.0,
         "qhflow3_layer_grid_ffn_chunk_size": 512,
+        "qhflow3_exact_pair_rng_aligned": False,
         "edge_atom_norm_type": None,
         "edge_post_residual_norm_type": None,
         "direct_edgewise_layers": (),
@@ -268,6 +269,7 @@ class ModelConfig(BaseModel):
     ] = "recurrent"
     qhflow3_layer_gaussian_width: float = Field(default=2.0, gt=0.0)
     qhflow3_layer_grid_ffn_chunk_size: int | None = Field(default=512, gt=0)
+    qhflow3_exact_pair_rng_aligned: bool = False
     edge_atom_norm_type: Literal[
         "layer_norm",
         "layer_norm_sh",

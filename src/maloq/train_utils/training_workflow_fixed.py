@@ -57,6 +57,7 @@ _SIGNATURE_COMPATIBILITY_DEFAULTS = {
     "node_stack_mode": "nte",
     "qhflow3_layer_gaussian_width": 2.0,
     "qhflow3_layer_grid_ffn_chunk_size": 512,
+    "qhflow3_exact_pair_rng_aligned": False,
 }
 
 

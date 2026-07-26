@@ -109,6 +109,7 @@ class eSEN_Backbone(nn.Module):
         edge_stack_mode: str = "recurrent",
         qhflow3_layer_gaussian_width: float = 2.0,
         qhflow3_layer_grid_ffn_chunk_size: int | None = 512,
+        qhflow3_exact_pair_rng_aligned: bool = False,
         edge_atom_norm_type: str | None = None,
         edge_post_residual_norm_type: str | None = None,
         edge_atomwise_output_mode: str = "residual_scaled",
@@ -162,6 +163,17 @@ class eSEN_Backbone(nn.Module):
                 "message_passing_schedule='node_then_edge'."
             )
         self.edge_stack_mode = edge_stack_mode
+        self.qhflow3_exact_pair_rng_aligned = bool(
+            qhflow3_exact_pair_rng_aligned
+        )
+        if (
+            self.qhflow3_exact_pair_rng_aligned
+            and edge_stack_mode != "qhflow3_exact_parallel"
+        ):
+            raise ValueError(
+                "qhflow3_exact_pair_rng_aligned requires "
+                "edge_stack_mode='qhflow3_exact_parallel'."
+            )
         self.uses_qhflow3_exact_layers = (
             node_stack_mode == "qhflow3_exact"
             or edge_stack_mode == "qhflow3_exact_parallel"
@@ -513,6 +525,9 @@ class eSEN_Backbone(nn.Module):
                         self.act_type,
                         self.mlp_type,
                         activation_checkpoint_chunk_size=None,
+                        rng_align_dead_fc2=(
+                            self.qhflow3_exact_pair_rng_aligned
+                        ),
                     )
                 else:
                     edge_block = eSEN_Block(
