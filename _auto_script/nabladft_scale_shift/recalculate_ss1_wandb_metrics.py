@@ -395,9 +395,17 @@ def _build_model(
     ls_list,
 ):
     from maloq.core.config import MaloqConfig
-    from maloq.train_utils.training_workflow import TrainingWorkflow
 
     config = MaloqConfig.from_file(spec.config_path).to_workflow_config()
+    if (
+        config.get("backbone_type", "esen") == "esen"
+        and config.get("message_passing_schedule") == "node_then_edge"
+    ):
+        from maloq.experimental.nte_qhflow3_composition.workflow import (
+            TrainingWorkflow,
+        )
+    else:
+        from maloq.train_utils.training_workflow import TrainingWorkflow
     build_output = (
         OUTPUT_ROOT
         / "scale-shift-recalculation"

@@ -1,0 +1,12 @@
+jobs:
+  - id: nabla-v2-ofat-maloq-e3-muon-raw-20260728a
+    description: MALOQ-E3 with Muon-visible matrix head and RAW NablaDFT targets
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/01_nabladft_maloq_e3_muon_raw_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 10
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/01_nabladft_maloq_e3_muon_raw_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/run_nabladft_maloq_e3_muon_raw.py
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/nabladft_maloq_e3_muon_raw.yaml

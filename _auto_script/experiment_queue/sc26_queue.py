@@ -526,7 +526,11 @@ def choose_master_port(
             continue
         with socket.socket() as probe:
             try:
-                probe.bind(("127.0.0.1", port))
+                # PyTorch TCPStore listens on every local IPv4 address. Probe
+                # the same wildcard address so an established connection that
+                # already uses this port on a non-loopback interface is not
+                # mistaken for an available rendezvous port.
+                probe.bind(("0.0.0.0", port))
             except OSError:
                 lock_dir.rmdir()
                 continue

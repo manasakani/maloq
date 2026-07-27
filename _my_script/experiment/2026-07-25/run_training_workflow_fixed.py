@@ -73,10 +73,19 @@ def main() -> None:
             )
         torch.cuda.set_device(device_index)
 
+    from maloq.experimental.nte_qhflow3_composition import (
+        workflow as experimental_workflow,
+    )
+    from maloq.experimental.nte_qhflow3_composition.workflow import (
+        TrainingWorkflowFixed as ExperimentalTrainingWorkflowFixed,
+    )
     from maloq.train_utils import training_workflow
-    from maloq.train_utils.training_workflow_fixed import TrainingWorkflowFixed
+    from maloq.train_utils.training_workflow_fixed import (
+        TrainingWorkflowFixed as CanonicalTrainingWorkflowFixed,
+    )
 
-    training_workflow.TrainingWorkflow = TrainingWorkflowFixed
+    training_workflow.TrainingWorkflow = CanonicalTrainingWorkflowFixed
+    experimental_workflow.TrainingWorkflow = ExperimentalTrainingWorkflowFixed
     sys.argv = [sys.argv[0], *legacy_args]
     runpy.run_path(str(LEGACY_RUNNER), run_name="__main__")
 

@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_ROOT = PROJECT_ROOT / "src"
 REFERENCE_CONFIG_ROOT = PROJECT_ROOT / "_my_script/experiment/2026-07-21"
+V2_CONFIG_ROOT = PROJECT_ROOT / "_my_script/experiment/2026-07-27"
 for source_path in (PROJECT_ROOT, SOURCE_ROOT):
     if str(source_path) not in sys.path:
         sys.path.insert(0, str(source_path))
@@ -34,8 +35,7 @@ QH9_HAMILTONIAN_FULL_DB = Path(
     "/dataset/seongsu/shared-home/data/QH9_maloq_ase/QH9Stable_random.db"
 )
 QH9_HAMILTONIAN_SMOKE_DB = Path(
-    "/dataset_tmp/qh9_maloq_ase_verification/"
-    "QH9StableHamiltonianDelta_random_2_1_1.db"
+    "/dataset_tmp/qh9_maloq_ase_verification/QH9StableHamiltonianDelta_random_2_1_1.db"
 )
 NABLA_COUNTS = {"train": 12081, "val": 64, "test": 0}
 NABLA_SMOKE_COUNTS = {"train": 2, "val": 1, "test": 0}
@@ -44,11 +44,13 @@ QH9_SMOKE_COUNTS = {"train": 2, "val": 1, "test": 1}
 CONFIGS = {
     "maloq": REFERENCE_CONFIG_ROOT / "maloq_baseline_qh9stable.yaml",
     "maloq-nte": REFERENCE_CONFIG_ROOT / "maloq_qh9stable.yaml",
+    "maloq-nte-v2": V2_CONFIG_ROOT / "qh9stable_v2_maloq_nte_muon.yaml",
     "qhflow3": REFERENCE_CONFIG_ROOT / "qhflow3_maloq_head_qh9stable.yaml",
 }
 MODEL_NAMES = {
     "maloq": "MALOQ",
-    "maloq-nte": "MALOQ-NTE",
+    "maloq-nte": "MALOQ-NTE (experimental)",
+    "maloq-nte-v2": "MALOQ-NTE-V2",
     "qhflow3": "QHFlow3",
 }
 
@@ -62,7 +64,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--variant",
-        choices=("maloq", "maloq-nte", "qhflow3", "all"),
+        choices=(
+            "maloq",
+            "maloq-nte",
+            "maloq-nte-v2",
+            "qhflow3",
+            "all",
+        ),
         default="all",
         help="Train one named model, or all three sequentially for comparison.",
     )
@@ -137,9 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(
             "maloq",
             "maloq_muon",
-            "maloq_semantic_global_muon",
             "maloq_semantic_global_gate_muon",
-            "static_te",
         ),
         default=None,
         help="Override the matrix head while keeping the selected backbone.",
@@ -199,9 +205,11 @@ def build_parser() -> argparse.ArgumentParser:
 def validate_nabladft(path: Path, counts: dict[str, int]) -> dict[str, object]:
     from maloq.dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
+    if not path.is_file():
+        raise FileNotFoundError(path)
     database = HamiltonianDatabase(str(path))
-    if len(database) != 12145:
-        raise ValueError(f"{path} has {len(database)} rows; expected 12145")
+    if len(database) <= 0:
+        raise ValueError(f"{path} contains no rows")
     if sum(counts.values()) > len(database):
         raise ValueError(f"Requested split {counts} exceeds {len(database)} rows")
     z, positions, energy, forces, hamiltonian, overlap, *_ = database[0]
@@ -251,12 +259,8 @@ def validate_qh9_target_database(
             "xc": "b3lyp5",
             "maloq_loader_dataset_name": "QM7",
             "hamiltonian_storage_convention": "maloq_qm7_pre_orca_to_e3nn",
-            "initial_hamiltonian_storage_convention": (
-                "maloq_qm7_pre_orca_to_e3nn"
-            ),
-            "initial_density_storage_convention": (
-                "maloq_qm7_pre_orca_to_e3nn"
-            ),
+            "initial_hamiltonian_storage_convention": ("maloq_qm7_pre_orca_to_e3nn"),
+            "initial_density_storage_convention": ("maloq_qm7_pre_orca_to_e3nn"),
             "overlap_storage_convention": "maloq_e3nn_def2svp",
             "target_properties": ["hamiltonian"],
             "loss_targets_supported": ["fock_matrix"],
@@ -282,12 +286,8 @@ def validate_qh9_target_database(
             "xc": "b3lyp5",
             "maloq_loader_dataset_name": "QM7",
             "density_storage_convention": "maloq_qm7_pre_orca_to_e3nn",
-            "initial_density_storage_convention": (
-                "maloq_qm7_pre_orca_to_e3nn"
-            ),
-            "initial_hamiltonian_storage_convention": (
-                "maloq_qm7_pre_orca_to_e3nn"
-            ),
+            "initial_density_storage_convention": ("maloq_qm7_pre_orca_to_e3nn"),
+            "initial_hamiltonian_storage_convention": ("maloq_qm7_pre_orca_to_e3nn"),
             "overlap_storage_convention": "maloq_e3nn_def2svp",
             "target_properties": ["density_matrix"],
             "loss_targets_supported": ["density_matrix"],
@@ -348,17 +348,33 @@ def nabladft_tracking_identity(
     ablation_slugs = []
     ablation_labels = []
     ablation_tags = []
+    feature_slug = None
     if variant == "maloq":
         model_slug = "maloq"
         model_label = "MALOQ"
         group = "nabla-maloq-ss"
+    elif variant == "maloq-nte-v2":
+        model_slug = "maloq-nte-v2"
+        model_label = "MALOQ-NTE-V2"
+        group = "maloq-nte-v2"
+        ablation_tags.extend(
+            (
+                "architecture:maloq-nte-v2",
+                "conditioning:qhflow3-exact",
+                "edge-stack:fixed-edge2",
+                "atomwise-output:direct",
+            )
+        )
     elif variant == "maloq-nte":
+        from maloq.experimental.nte_qhflow3_composition.config import (
+            FEATURE_SLUG,
+        )
+
+        feature_slug = FEATURE_SLUG
         output_channels = int(
             config.get("output_l_embedding_dim") or config["l_embedding_dim"]
         )
-        edge_layers = int(
-            config.get("num_edge_layers") or config["num_mp_layers"]
-        )
+        edge_layers = int(config.get("num_edge_layers") or config["num_mp_layers"])
         model_slug = f"nte{output_channels}e{edge_layers}"
         model_label = f"NTE-{output_channels}/{edge_layers}"
         group = f"nabla-{model_slug}-head-ss"
@@ -406,12 +422,12 @@ def nabladft_tracking_identity(
             int(index) for index in config.get("unscaled_node_layers", ())
         )
         if unscaled_node_layers:
-            layer_slug = "n" + "-".join(
-                str(index) for index in unscaled_node_layers
-            ) + "nols"
-            layer_label = "N" + ",".join(
-                str(index) for index in unscaled_node_layers
-            ) + "NoLS"
+            layer_slug = (
+                "n" + "-".join(str(index) for index in unscaled_node_layers) + "nols"
+            )
+            layer_label = (
+                "N" + ",".join(str(index) for index in unscaled_node_layers) + "NoLS"
+            )
             ablation_slugs.append(layer_slug)
             ablation_labels.append(layer_label)
             ablation_tags.extend(
@@ -460,17 +476,13 @@ def nabladft_tracking_identity(
             int(index) for index in config.get("direct_edgewise_layers", ())
         )
         if direct_edgewise_layers:
-            layer_value = ",".join(
-                str(index) for index in direct_edgewise_layers
-            )
+            layer_value = ",".join(str(index) for index in direct_edgewise_layers)
             ablation_slugs.append(
-                "edge" + "-".join(
-                    str(index) for index in direct_edgewise_layers
-                ) + "direct"
+                "edge"
+                + "-".join(str(index) for index in direct_edgewise_layers)
+                + "direct"
             )
-            ablation_labels.append(
-                "Edge" + layer_value + "Direct"
-            )
+            ablation_labels.append("Edge" + layer_value + "Direct")
             ablation_tags.extend(
                 (
                     f"edgewise-direct-layers:{layer_value}",
@@ -481,17 +493,13 @@ def nabladft_tracking_identity(
             int(index) for index in config.get("direct_atomwise_layers", ())
         )
         if direct_atomwise_layers:
-            layer_value = ",".join(
-                str(index) for index in direct_atomwise_layers
-            )
+            layer_value = ",".join(str(index) for index in direct_atomwise_layers)
             ablation_slugs.append(
-                "edge" + "-".join(
-                    str(index) for index in direct_atomwise_layers
-                ) + "atomdirect"
+                "edge"
+                + "-".join(str(index) for index in direct_atomwise_layers)
+                + "atomdirect"
             )
-            ablation_labels.append(
-                "Edge" + layer_value + "AtomDirect"
-            )
+            ablation_labels.append("Edge" + layer_value + "AtomDirect")
             ablation_tags.extend(
                 (
                     f"atomwise-direct-layers:{layer_value}",
@@ -584,36 +592,33 @@ def nabladft_tracking_identity(
     head_names = {
         "maloq": ("native", "Native"),
         "maloq_muon": ("muon", "Muon"),
-        "maloq_semantic_global_muon": (
-            "matrixmuon-auxadamw-sghead",
-            "MatrixMuon+AuxAdamW+SGHead",
-        ),
         "maloq_semantic_global_gate_muon": (
             "matmuon-sghead-gatemuon",
             "MatMuon+SGHead+GateMuon",
         ),
-        "static_te": ("staticte", "StaticTE"),
     }
     head_slug, head_label = head_names[head_type]
     optimizer_tags = ()
-    projection_policy = config.get(
-        "muon_output_projection_policy", "shape_muon"
-    )
+    if variant == "maloq-nte-v2":
+        head_slug = "matrixmuon-auxadamw"
+        head_label = "MatrixMuon+AuxAdamW"
+        optimizer_tags = (
+            "optimizer:muon",
+            "muon-routing:ndim-ge-2",
+            "aux-optimizer:adamw",
+        )
+    projection_policy = config.get("muon_output_projection_policy", "shape_muon")
     has_layer_structure_ablation = bool(
         config.get("node_stack_mode", "nte") != "nte"
         or config.get("unscaled_node_layers", ())
         or config.get("repeat_system_embedding_each_node_block", False)
-        or (
-            config.get("initial_edge_state_mode", "edge_degree")
-            != "edge_degree"
-        )
+        or (config.get("initial_edge_state_mode", "edge_degree") != "edge_degree")
         or config.get("edge_norm1_position", "post_edgewise") != "post_edgewise"
         or config.get("direct_edgewise_layers", ())
         or config.get("direct_atomwise_layers", ())
         or config.get("edge_stack_mode", "recurrent") != "recurrent"
         or config.get("qhflow3_exact_pair_rng_aligned", False)
-        or config.get("nte_output_projection_mode", "so3_linear")
-        != "so3_linear"
+        or config.get("nte_output_projection_mode", "so3_linear") != "so3_linear"
         or config.get("output_norm_sharing", "shared") != "shared"
         or projection_policy != "shape_muon"
     )
@@ -636,22 +641,18 @@ def nabladft_tracking_identity(
         )
         head_slug = "matrixmuon-projadamw-auxadamw"
         head_label = "MatrixMuon+ProjAdamW+AuxAdamW"
-    if head_type in {
-        "maloq_semantic_global_muon",
-        "maloq_semantic_global_gate_muon",
-    }:
+    if head_type == "maloq_semantic_global_gate_muon":
         optimizer_tags = (
             "optimizer:muon",
             "muon-routing:ndim-ge-2",
             "aux-optimizer:adamw",
             "head-routing:semantic-global",
         )
-        if head_type == "maloq_semantic_global_gate_muon":
-            optimizer_tags = (
-                *optimizer_tags,
-                "gate-optimizer:muon",
-                "gate-routing:semantic-matrix",
-            )
+        optimizer_tags = (
+            *optimizer_tags,
+            "gate-optimizer:muon",
+            "gate-routing:semantic-matrix",
+        )
     scale_and_shift = bool(config["scale_and_shift"])
     if not scale_and_shift:
         normalization_slug = "raw"
@@ -677,15 +678,17 @@ def nabladft_tracking_identity(
     ablation_slug = "".join(f"-{value}" for value in ablation_slugs)
     ablation_label = "".join(f" | {value}" for value in ablation_labels)
     experiment_id = (
-        f"nabla-{model_slug}-{head_slug}-{normalization_slug}"
-        f"{ablation_slug}-v{version}"
+        f"nabla-{model_slug}-{head_slug}-{normalization_slug}{ablation_slug}-v{version}"
     )
+    display_name = (
+        f"NablaDFT | {model_label} | {head_label} | "
+        f"{normalization_label}{ablation_label} | V{version}"
+    )
+    if feature_slug is not None:
+        experiment_id = f"{feature_slug}-{experiment_id}"
     return {
         "experiment_id": experiment_id,
-        "display_name": (
-            f"NablaDFT | {model_label} | {head_label} | "
-            f"{normalization_label}{ablation_label} | V{version}"
-        ),
+        "display_name": display_name,
         "group": group,
         "job_type": scope,
         "tags": (
@@ -697,6 +700,7 @@ def nabladft_tracking_identity(
             f"scope:{scope}",
             f"seed:{int(config['seed'])}",
             f"version:v{version}",
+            *((f"feature:{feature_slug}",) if feature_slug is not None else ()),
             *ablation_tags,
             *optimizer_tags,
             "sc26-seongsu",
@@ -712,7 +716,16 @@ def prepare_config(
     output_dir: Path,
     args: argparse.Namespace,
 ) -> dict:
-    from maloq.core.config import MaloqConfig
+    feature_slug = None
+    if variant == "maloq-nte":
+        from maloq.experimental.nte_qhflow3_composition.config import (
+            FEATURE_SLUG,
+            MaloqConfig,
+        )
+
+        feature_slug = FEATURE_SLUG
+    else:
+        from maloq.core.config import MaloqConfig
     from maloq.train_utils.utils_compute import distributed_context
 
     model_config = args.model_config or CONFIGS[variant]
@@ -802,9 +815,10 @@ def prepare_config(
             ),
         )
     else:
-        config["run_name"] = (
-            args.run_name or f"{output_dir.parent.name}-{output_dir.name}"
-        )
+        default_run_name = f"{output_dir.parent.name}-{output_dir.name}"
+        if feature_slug is not None:
+            default_run_name = f"{feature_slug}-{default_run_name}"
+        config["run_name"] = args.run_name or default_run_name
         if args.wandb_run_name is not None:
             config["wandb_run_name"] = args.wandb_run_name
         if args.wandb_group is not None:
@@ -834,10 +848,19 @@ def run_variant(
     output_root: Path,
     args: argparse.Namespace,
 ) -> dict[str, object] | None:
-    from maloq.train_utils.training_workflow import TrainingWorkflow
-
     output_dir = output_root if args.flat_output else output_root / variant
     config = prepare_config(dataset_name, variant, dbpath, counts, output_dir, args)
+
+    if variant == "maloq-nte":
+        from maloq.experimental.nte_qhflow3_composition.workflow import (
+            TrainingWorkflow,
+        )
+    elif variant in {"maloq-nte-v2", "qhflow3"} or config["head_type"] == "maloq_muon":
+        from maloq.train_utils.training_workflow_v2 import TrainingWorkflowV2
+
+        TrainingWorkflow = TrainingWorkflowV2
+    else:
+        from maloq.train_utils.training_workflow import TrainingWorkflow
     started = time.perf_counter()
     workflow = TrainingWorkflow(config)
     workflow.run()
@@ -890,7 +913,7 @@ def run_variant(
 
 def selected_variants(choice: str) -> tuple[str, ...]:
     if choice == "all":
-        return ("maloq", "maloq-nte", "qhflow3")
+        return ("maloq", "maloq-nte-v2", "qhflow3")
     return (choice,)
 
 
@@ -1016,9 +1039,7 @@ def main() -> None:
         use_smoke_db = args.smoke and not args.full_size_smoke
         if args.dataset == "qh9-hamiltonian":
             default_db = (
-                QH9_HAMILTONIAN_SMOKE_DB
-                if use_smoke_db
-                else QH9_HAMILTONIAN_FULL_DB
+                QH9_HAMILTONIAN_SMOKE_DB if use_smoke_db else QH9_HAMILTONIAN_FULL_DB
             )
         else:
             default_db = QH9_MATRICES_SMOKE_DB if use_smoke_db else QH9_MATRICES_FULL_DB
@@ -1034,8 +1055,7 @@ def main() -> None:
     else:
         if not dbpath.is_file():
             converter = (
-                "_auto_script/qh9_raw_to_maloq/"
-                "process_qh9_raw_to_maloq_ase.py"
+                "_auto_script/qh9_raw_to_maloq/process_qh9_raw_to_maloq_ase.py"
                 if args.dataset == "qh9-hamiltonian"
                 else "_auto_script/qh9_matrix_lmdb_to_maloq/"
                 "process_qh9_matrix_lmdb_to_maloq_ase.py"
@@ -1143,6 +1163,7 @@ def main() -> None:
                     "wandb_log_every_n_steps",
                     "run_name",
                 )
+                if key in config
             }
             if config["optimizer_type"] == "muon":
                 if config["head_type"] == "maloq_semantic_global_gate_muon":
@@ -1150,14 +1171,8 @@ def main() -> None:
                         "shape_matrix_muon_plus_semantic_global_head_muon"
                         "_plus_semantic_gate_muon"
                     )
-                elif config["head_type"] == "maloq_semantic_global_muon":
-                    muon_routing = (
-                        "shape_matrix_muon_plus_semantic_global_head_muon"
-                    )
                 elif config["muon_output_projection_policy"] == "adamw":
-                    muon_routing = (
-                        "ndim_ge_2_muon_except_output_projection_adamw"
-                    )
+                    muon_routing = "ndim_ge_2_muon_except_output_projection_adamw"
                 else:
                     muon_routing = "all_trainable_ndim_ge_2"
                 run_config[variant]["muon_routing"] = muon_routing

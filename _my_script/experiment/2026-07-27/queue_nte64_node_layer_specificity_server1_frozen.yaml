@@ -1,0 +1,132 @@
+jobs:
+  - id: nabla-nte64-ie0-n3postres-frozen-v1-20260727a
+    description: InitialEdgeZero best with only NodeBlock 3 incoming node residual moved after the complete Edgewise plus AtomWise branch
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 38
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "23143"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-node-layer-specificity-0829f940.tar.gz
+      SC26_SOURCE_FINGERPRINT: 0829f9404d79d30db3ce8aeedd411a571ea1592b821aec4233feea5c3d7fb4db
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-node-layer-specificity-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/nte64e2_initial_edge_zero_node3_post_atomwise_residual_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | InitialEdgeZero+Node3PostResidual+QHFProj+SplitOutNorm | V1"
+      SC26_WANDB_GROUP: nabla-nte64-node-layer-specificity-v1
+      SC26_RUN_PREFIX: nabladft-nte64-ie0-n3postres-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_initial_edge_zero_node3_post_atomwise_residual_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/nte64e2_initial_edge_zero_node3_post_atomwise_residual_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/PROVENANCE/source-snapshot/nte64-node-layer-specificity.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-node-layer-specificity-0829f940.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-node-layer-specificity-frozen-v1-20260727a/package.sha256
+
+  - id: nabla-nte64-ie0-n1postres-frozen-v1-20260727a
+    description: InitialEdgeZero best with only NodeBlock 1 incoming node residual moved after the complete Edgewise plus AtomWise branch
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 37
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "23145"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-node-layer-specificity-0829f940.tar.gz
+      SC26_SOURCE_FINGERPRINT: 0829f9404d79d30db3ce8aeedd411a571ea1592b821aec4233feea5c3d7fb4db
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-node-layer-specificity-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/nte64e2_initial_edge_zero_node1_post_atomwise_residual_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | InitialEdgeZero+Node1PostResidual+QHFProj+SplitOutNorm | V1"
+      SC26_WANDB_GROUP: nabla-nte64-node-layer-specificity-v1
+      SC26_RUN_PREFIX: nabladft-nte64-ie0-n1postres-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_initial_edge_zero_node1_post_atomwise_residual_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/nte64e2_initial_edge_zero_node1_post_atomwise_residual_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/PROVENANCE/source-snapshot/nte64-node-layer-specificity.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-node-layer-specificity-0829f940.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-node-layer-specificity-frozen-v1-20260727a/package.sha256
+
+  - id: nabla-nte64-iedeg-noe1-frozen-v1-20260727a
+    description: InitialEdgeZero best with only the initial edge state restored to edge degree while EdgeBlock 1 remains non-direct
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 36
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "23147"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-node-layer-specificity-0829f940.tar.gz
+      SC26_SOURCE_FINGERPRINT: 0829f9404d79d30db3ce8aeedd411a571ea1592b821aec4233feea5c3d7fb4db
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-node-layer-specificity-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/nte64e2_initial_edge_degree_no_edge1direct_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | InitialEdgeDegree+NoEdge1Direct+QHFProj+SplitOutNorm | V1"
+      SC26_WANDB_GROUP: nabla-nte64-node-layer-specificity-v1
+      SC26_RUN_PREFIX: nabladft-nte64-iedeg-noe1-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_initial_edge_degree_no_edge1direct_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/nte64e2_initial_edge_degree_no_edge1direct_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/PROVENANCE/source-snapshot/nte64-node-layer-specificity.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-node-layer-specificity-0829f940.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-node-layer-specificity-frozen-v1-20260727a/package.sha256
+
+  - id: nabla-nte64-iedeg-noe1-n2postres-frozen-v1-20260727a
+    description: InitialEdgeDegree without EdgeBlock 1 direct output plus only NodeBlock 2 incoming node residual moved after the complete Edgewise plus AtomWise branch
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 35
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "23149"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-node-layer-specificity-0829f940.tar.gz
+      SC26_SOURCE_FINGERPRINT: 0829f9404d79d30db3ce8aeedd411a571ea1592b821aec4233feea5c3d7fb4db
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-node-layer-specificity-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/nte64e2_initial_edge_degree_no_edge1direct_node2_post_atomwise_residual_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | InitialEdgeDegree+NoEdge1Direct+Node2PostResidual+QHFProj+SplitOutNorm | V1"
+      SC26_WANDB_GROUP: nabla-nte64-node-layer-specificity-v1
+      SC26_RUN_PREFIX: nabladft-nte64-iedeg-noe1-n2postres-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_initial_edge_degree_no_edge1direct_node2_post_atomwise_residual_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/_my_script/experiment/2026-07-27/nte64e2_initial_edge_degree_no_edge1direct_node2_post_atomwise_residual_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-node-layer-specificity-0829f940/PROVENANCE/source-snapshot/nte64-node-layer-specificity.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-node-layer-specificity-0829f940.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-node-layer-specificity-frozen-v1-20260727a/package.sha256

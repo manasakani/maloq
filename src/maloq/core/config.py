@@ -37,6 +37,8 @@ def _dataset_defaults() -> dict[str, Any]:
         "output_folder": "outputs",
         "run_name": "run",
         "open_shell": False,
+        "dataset_format": "auto",
+        "omol_csh_metadata_policy": "preserve",
     }
 
 
@@ -46,6 +48,7 @@ def _execution_defaults() -> dict[str, Any]:
         "train_backbone": True,
         "train_head": True,
         "compute_total_energy": False,
+        "compute_eigenvalues": True,
     }
 
 
@@ -66,56 +69,30 @@ def _model_defaults() -> dict[str, Any]:
     return {
         "model_variant": "maloq-baseline",
         "backbone_type": "esen",
+        "atom_scalar_embedding_mode": "element_charge_spin",
         "head_type": "maloq",
         "wigner_backend": "torch",
         "l_embedding_dim": 128,
+        "hidden_dim": None,
         "num_distance_basis": 128,
         "num_mp_layers": 3,
+        "message_type": "source-target",
         "rcut_orbitals": 8.0,
         "rcut_gaussian": 16.0,
         "gaussian_width": 1.0,
         "reduce_edge": False,
         "reduce_node": True,
         "reduce_node_intra": True,
-        "gate_act_type": "tanh",
         "mlp_type": "spectral",
-        "message_passing_schedule": "interleaved",
-        "initial_edge_state_mode": "edge_degree",
         "num_edge_layers": None,
         "output_l_embedding_dim": None,
-        "nte_output_projection_mode": "so3_linear",
-        "output_norm_sharing": "shared",
-        "use_edge_envelope": False,
-        "use_edge_scalar_modulation": False,
-        "residual_update_scale_mode": "none",
-        "residual_update_scale_init": 1.0,
-        "residual_update_scale_log_range": 0.0,
-        "unscaled_node_layers": (),
-        "repeat_system_embedding_each_node_block": False,
-        "node_stack_mode": "nte",
-        "edge_stack_mode": "recurrent",
-        "qhflow3_layer_gaussian_width": 2.0,
-        "qhflow3_layer_grid_ffn_chunk_size": 512,
-        "qhflow3_exact_pair_rng_aligned": False,
-        "edge_atom_norm_type": None,
-        "edge_post_residual_norm_type": None,
-        "direct_edgewise_layers": (),
-        "direct_atomwise_layers": (),
-        "edge_atomwise_output_mode": "residual_scaled",
-        "edge_norm1_position": "post_edgewise",
         "esen_grid_resolution": None,
-        "nte_input_conditioning": "none",
         "qhflow3_max_radius": 12.0,
         "qhflow3_radius_embed_dim": 32,
         "qhflow3_grid_resolution": 48,
         "qhflow3_grid_ffn_chunk_size": 512,
         "qhflow3_use_overlap": True,
         "qhflow3_muonize_output_projection": False,
-        "static_te_init_mode": "zero",
-        "static_te_init_std": 1.0,
-        "static_te_gate_degrees": (),
-        "static_te_gate_activation": "none",
-        "static_te_gate_init": 1.0,
     }
 
 
@@ -162,6 +139,7 @@ def _loss_defaults() -> dict[str, Any]:
         "scale_and_shift": False,
         "scale_shift_mode": "standardize",
         "scale_shift_path": None,
+        "compute_uncoupled_loss": False,
         "delta_learning": False,
     }
 
@@ -206,6 +184,11 @@ class DatasetConfig(BaseModel):
     output_folder: str = "outputs"
     run_name: str = "run"
     open_shell: bool = False
+    dataset_format: Literal["auto", "ase", "omol_csh_h5"] = "auto"
+    omol_csh_metadata_policy: Literal[
+        "preserve",
+        "paper_contract",
+    ] = "preserve"
 
 
 class ExecutionConfig(BaseModel):
@@ -215,6 +198,7 @@ class ExecutionConfig(BaseModel):
     train_backbone: bool = True
     train_head: bool = True
     compute_total_energy: bool = False
+    compute_eigenvalues: bool = True
 
 
 class SplitConfig(BaseModel):
@@ -231,88 +215,36 @@ class SplitConfig(BaseModel):
 
 
 class ModelConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     model_variant: str = "maloq-baseline"
-    backbone_type: Literal["esen", "qhflow3_clean"] = "esen"
-    head_type: Literal[
-        "maloq",
-        "maloq_muon",
-        "maloq_semantic_global_muon",
-        "maloq_semantic_global_gate_muon",
-        "static_te",
-    ] = "maloq"
+    backbone_type: Literal["esen", "maloq_nte_v2", "qhflow3"] = "esen"
+    atom_scalar_embedding_mode: Literal["element_charge_spin", "element_only"] = (
+        "element_charge_spin"
+    )
+    head_type: Literal["maloq", "maloq_muon"] = "maloq"
     wigner_backend: Literal["torch", "triton"] = "torch"
     l_embedding_dim: int = 128
+    hidden_dim: int | None = None
     num_distance_basis: int = 128
     num_mp_layers: int = 3
+    message_type: Literal["source-target", "source-target-message"] = "source-target"
     rcut_orbitals: float = 8.0
     rcut_gaussian: float = 16.0
     gaussian_width: float = 1.0
     reduce_edge: bool = False
     reduce_node: bool = True
     reduce_node_intra: bool = True
-    gate_act_type: Literal["tanh", "sigmoid"] = "tanh"
     mlp_type: Literal["spectral", "grid"] = "spectral"
-    message_passing_schedule: Literal["interleaved", "node_then_edge"] = "interleaved"
-    initial_edge_state_mode: Literal["edge_degree", "zero"] = "edge_degree"
     num_edge_layers: int | None = None
     output_l_embedding_dim: int | None = None
-    nte_output_projection_mode: Literal[
-        "so3_linear",
-        "qhflow3_irrep_linear",
-    ] = "so3_linear"
-    output_norm_sharing: Literal["shared", "separate"] = "shared"
-    use_edge_envelope: bool = False
-    use_edge_scalar_modulation: bool = False
-    residual_update_scale_mode: Literal["none", "bounded_degree"] = "none"
-    residual_update_scale_init: float = 1.0
-    residual_update_scale_log_range: float = 0.0
-    unscaled_node_layers: tuple[int, ...] = ()
-    repeat_system_embedding_each_node_block: bool = False
-    node_stack_mode: Literal["nte", "qhflow3_exact"] = "nte"
-    edge_stack_mode: Literal[
-        "recurrent",
-        "nte_parallel",
-        "qhflow3_parallel",
-        "qhflow3_exact_parallel",
-    ] = "recurrent"
-    qhflow3_layer_gaussian_width: float = Field(default=2.0, gt=0.0)
-    qhflow3_layer_grid_ffn_chunk_size: int | None = Field(default=512, gt=0)
-    qhflow3_exact_pair_rng_aligned: bool = False
-    edge_atom_norm_type: Literal[
-        "layer_norm",
-        "layer_norm_sh",
-        "rms_norm_sh",
-    ] | None = None
-    edge_post_residual_norm_type: Literal[
-        "layer_norm",
-        "layer_norm_sh",
-        "rms_norm_sh",
-    ] | None = None
-    direct_edgewise_layers: tuple[int, ...] = ()
-    direct_atomwise_layers: tuple[int, ...] = ()
-    edge_atomwise_output_mode: Literal[
-        "residual_scaled",
-        "direct",
-    ] = "residual_scaled"
-    edge_norm1_position: Literal[
-        "post_edgewise",
-        "pre_node",
-    ] = "post_edgewise"
     esen_grid_resolution: int | None = Field(default=None, gt=0)
-    nte_input_conditioning: Literal["none", "overlap", "qhflow3_exact"] = "none"
     qhflow3_max_radius: float = 12.0
     qhflow3_radius_embed_dim: int = 32
     qhflow3_grid_resolution: int | None = 48
     qhflow3_grid_ffn_chunk_size: int | None = 512
     qhflow3_use_overlap: bool = True
     qhflow3_muonize_output_projection: bool = False
-    static_te_init_mode: Literal["zero", "normal"] = "zero"
-    static_te_init_std: float = Field(default=1.0, gt=0.0)
-    static_te_gate_degrees: tuple[int, ...] = ()
-    static_te_gate_activation: Literal["none", "residual_tanh", "sigmoid"] = "none"
-    static_te_gate_init: float = 1.0
 
 
 class OptimizationConfig(BaseModel):
@@ -359,6 +291,7 @@ class LossConfig(BaseModel):
     scale_and_shift: bool = False
     scale_shift_mode: Literal["standardize", "shift_only"] = "standardize"
     scale_shift_path: str | None = None
+    compute_uncoupled_loss: bool = False
     delta_learning: bool = False
 
 
@@ -400,17 +333,31 @@ class TrackingConfig(BaseModel):
 class MaloqConfig(BaseModel):
     """Typed run configuration for MALOQ training/evaluation."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
-    dataset: DatasetConfig = Field(default_factory=lambda: DatasetConfig(**_dataset_defaults()))
-    execution: ExecutionConfig = Field(default_factory=lambda: ExecutionConfig(**_execution_defaults()))
-    splits: SplitConfig = Field(default_factory=lambda: SplitConfig(**_split_defaults()))
+    dataset: DatasetConfig = Field(
+        default_factory=lambda: DatasetConfig(**_dataset_defaults())
+    )
+    execution: ExecutionConfig = Field(
+        default_factory=lambda: ExecutionConfig(**_execution_defaults())
+    )
+    splits: SplitConfig = Field(
+        default_factory=lambda: SplitConfig(**_split_defaults())
+    )
     model: ModelConfig = Field(default_factory=lambda: ModelConfig(**_model_defaults()))
-    optimization: OptimizationConfig = Field(default_factory=lambda: OptimizationConfig(**_optimization_defaults()))
+    optimization: OptimizationConfig = Field(
+        default_factory=lambda: OptimizationConfig(**_optimization_defaults())
+    )
     loss: LossConfig = Field(default_factory=lambda: LossConfig(**_loss_defaults()))
-    checkpointing: CheckpointConfig = Field(default_factory=lambda: CheckpointConfig(**_checkpoint_defaults()))
-    runtime: RuntimeConfig = Field(default_factory=lambda: RuntimeConfig(**_runtime_defaults()))
-    tracking: TrackingConfig = Field(default_factory=lambda: TrackingConfig(**_tracking_defaults()))
+    checkpointing: CheckpointConfig = Field(
+        default_factory=lambda: CheckpointConfig(**_checkpoint_defaults())
+    )
+    runtime: RuntimeConfig = Field(
+        default_factory=lambda: RuntimeConfig(**_runtime_defaults())
+    )
+    tracking: TrackingConfig = Field(
+        default_factory=lambda: TrackingConfig(**_tracking_defaults())
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -420,7 +367,17 @@ class MaloqConfig(BaseModel):
             return data
 
         raw = dict(data)
-        section_names = ("dataset", "execution", "splits", "model", "optimization", "loss", "checkpointing", "runtime", "tracking")
+        section_names = (
+            "dataset",
+            "execution",
+            "splits",
+            "model",
+            "optimization",
+            "loss",
+            "checkpointing",
+            "runtime",
+            "tracking",
+        )
         nested = {name: dict(raw.pop(name, {}) or {}) for name in section_names}
         # Muon matrix routing is intentionally no longer configurable. Drop
         # the legacy option while loading old experiment files so every run
@@ -435,11 +392,14 @@ class MaloqConfig(BaseModel):
             "output_folder": "dataset",
             "run_name": "dataset",
             "open_shell": "dataset",
+            "dataset_format": "dataset",
+            "omol_csh_metadata_policy": "dataset",
             # execution
             "train_or_eval": "execution",
             "train_backbone": "execution",
             "train_head": "execution",
             "compute_total_energy": "execution",
+            "compute_eigenvalues": "execution",
             # splits
             "num_train": "splits",
             "num_val": "splits",
@@ -452,55 +412,30 @@ class MaloqConfig(BaseModel):
             # model
             "model_variant": "model",
             "backbone_type": "model",
+            "atom_scalar_embedding_mode": "model",
             "head_type": "model",
             "wigner_backend": "model",
             "l_embedding_dim": "model",
+            "hidden_dim": "model",
             "num_distance_basis": "model",
             "num_mp_layers": "model",
+            "message_type": "model",
             "rcut_orbitals": "model",
             "rcut_gaussian": "model",
             "gaussian_width": "model",
             "reduce_edge": "model",
             "reduce_node": "model",
             "reduce_node_intra": "model",
-            "gate_act_type": "model",
             "mlp_type": "model",
-            "message_passing_schedule": "model",
-            "initial_edge_state_mode": "model",
             "num_edge_layers": "model",
             "output_l_embedding_dim": "model",
-            "nte_output_projection_mode": "model",
-            "output_norm_sharing": "model",
-            "use_edge_envelope": "model",
-            "use_edge_scalar_modulation": "model",
-            "residual_update_scale_mode": "model",
-            "residual_update_scale_init": "model",
-            "residual_update_scale_log_range": "model",
-            "unscaled_node_layers": "model",
-            "repeat_system_embedding_each_node_block": "model",
-            "node_stack_mode": "model",
-            "edge_stack_mode": "model",
-            "qhflow3_layer_gaussian_width": "model",
-            "qhflow3_layer_grid_ffn_chunk_size": "model",
-            "edge_atom_norm_type": "model",
-            "edge_post_residual_norm_type": "model",
-            "direct_edgewise_layers": "model",
-            "direct_atomwise_layers": "model",
-            "edge_atomwise_output_mode": "model",
-            "edge_norm1_position": "model",
             "esen_grid_resolution": "model",
-            "nte_input_conditioning": "model",
             "qhflow3_max_radius": "model",
             "qhflow3_radius_embed_dim": "model",
             "qhflow3_grid_resolution": "model",
             "qhflow3_grid_ffn_chunk_size": "model",
             "qhflow3_use_overlap": "model",
             "qhflow3_muonize_output_projection": "model",
-            "static_te_init_mode": "model",
-            "static_te_init_std": "model",
-            "static_te_gate_degrees": "model",
-            "static_te_gate_activation": "model",
-            "static_te_gate_init": "model",
             # optimization
             "num_epochs": "optimization",
             "lr_init": "optimization",
@@ -539,6 +474,7 @@ class MaloqConfig(BaseModel):
             "scale_and_shift": "loss",
             "scale_shift_mode": "loss",
             "scale_shift_path": "loss",
+            "compute_uncoupled_loss": "loss",
             "delta_learning": "loss",
             # checkpoint
             "save_frequency": "checkpointing",

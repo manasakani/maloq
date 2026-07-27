@@ -3,16 +3,21 @@ from __future__ import annotations
 from copy import deepcopy
 from types import SimpleNamespace
 
+import pytest
 import torch
 from e3nn.o3 import Irreps
 
 from maloq.core.config import MaloqConfig
+from maloq.experimental.nte_qhflow3_composition.config import (
+    MaloqConfig as ExperimentalMaloqConfig,
+)
 from maloq.fock_utils.basis_sets import orbital_basis_def2_svp_QM7
 from maloq.fock_utils.utils_tensor_decomp import make_output_irreps
 from maloq.helm.esen_osh import Fock_Irreps_Head
-from maloq.helm.muon_fock_head import MuonFockIrrepsHead
+from maloq.helm.nn.muon_fock_head import MuonFockIrrepsHead
 from maloq.train_utils.optimizers import Muon
 from maloq.train_utils.training_workflow import TrainingWorkflow
+from maloq.train_utils.training_workflow_v2 import TrainingWorkflowV2
 
 
 def _qh9_head_inputs(channels: int):
@@ -37,9 +42,7 @@ def _qh9_head_inputs(channels: int):
         "node_embeddings": torch.randn(3, 25, channels),
         "edge_embeddings": torch.randn(4, 25, channels),
     }
-    batch = SimpleNamespace(
-        edge_index=torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]])
-    )
+    batch = SimpleNamespace(edge_index=torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]]))
     return kwargs, embeddings, batch
 
 
@@ -129,25 +132,22 @@ def test_muon_maloq_head_config_round_trip() -> None:
     assert "muon_parameter_policy" not in workflow
 
 
-def test_semantic_global_muon_head_config_and_parameter_contract() -> None:
-    workflow = MaloqConfig(
-        model={"head_type": "maloq_semantic_global_muon"},
-        optimization={"optimizer_type": "muon"},
-    ).to_workflow_config()
-    assert workflow["head_type"] == "maloq_semantic_global_muon"
-
-    kwargs, _, _ = _qh9_head_inputs(channels=4)
-    head = MuonFockIrrepsHead(**kwargs)
-    parameters = TrainingWorkflow._collect_semantic_global_muon_parameters(head)
-    assert [tuple(parameter.shape) for parameter in parameters] == [
-        (31, 4),
-        (56, 4),
-    ]
-    assert head.SEMANTIC_MUON_ROUTING == "semantic_global_node_edge"
+@pytest.mark.parametrize(
+    "deprecated_head",
+    (
+        "maloq_semantic_global_muon",
+        "maloq_semantic_global_gate_muon",
+    ),
+)
+def test_deprecated_semantic_head_aliases_are_rejected_by_core_config(
+    deprecated_head: str,
+) -> None:
+    with pytest.raises(ValueError, match="head_type"):
+        MaloqConfig(model={"head_type": deprecated_head})
 
 
 def test_semantic_gate_muon_head_config_and_parameter_contract() -> None:
-    workflow = MaloqConfig(
+    workflow = ExperimentalMaloqConfig(
         model={"head_type": "maloq_semantic_global_gate_muon"},
         optimization={"optimizer_type": "muon"},
     ).to_workflow_config()
@@ -155,9 +155,14 @@ def test_semantic_gate_muon_head_config_and_parameter_contract() -> None:
 
     kwargs, _, _ = _qh9_head_inputs(channels=4)
     head = MuonFockIrrepsHead(**kwargs, muonize_gate=True)
-    gate_parameters = TrainingWorkflow._collect_semantic_gate_muon_parameters(
-        head
-    )
+    global_parameters = list(head.semantic_matrix_parameters())
+    assert [tuple(parameter.shape) for parameter in global_parameters] == [
+        (31, 4),
+        (56, 4),
+    ]
+    assert head.SEMANTIC_MUON_ROUTING == "semantic_global_node_edge"
+
+    gate_parameters = list(head.gate_matrix_parameters())
     assert [tuple(parameter.shape) for parameter in gate_parameters] == [
         (20, 4),
     ]
@@ -196,9 +201,9 @@ def test_nte_output_projection_parameters_can_be_routed_to_adamw() -> None:
         edge_output_projection=torch.nn.Linear(8, 4, bias=False),
     )
 
-    parameters = TrainingWorkflow._collect_nte_output_projection_parameters(
-        backbone
-    )
+    workflow = object.__new__(TrainingWorkflowV2)
+    workflow.config = {"backbone_type": "maloq_nte_v2"}
+    parameters = workflow._collect_output_projection_adamw_parameters(backbone)
 
     assert [id(parameter) for parameter in parameters] == [
         id(backbone.node_output_projection.weight),

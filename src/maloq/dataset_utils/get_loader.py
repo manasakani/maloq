@@ -7,6 +7,10 @@ import matplotlib.pyplot as plt
 
 from ..fock_utils import utils_orca_out, fock_targets_batched, matrix2labels_kernels, basis_sets
 from .ASEDataset import ASEDataset, ASEAtomsData, sampleDataset
+from .omol_csh_58k_dataset_utils import (
+    OMolCSH58kDatabase,
+    OMolCSHGraphDataset,
+)
 
 from ase import Atoms
 from ase.neighborlist import NeighborList
@@ -89,7 +93,8 @@ def get_loader(database,
                 partition_type='linear',
                 train_or_eval='train',
                 delta_learning=False,
-                load_delta_auxiliary_matrix=False):
+                load_delta_auxiliary_matrix=False,
+                shuffle=False):
     """
     Make dataloader with the given indices of the mocules in the input database
     Currently set up for three datasets: QM7, nablaDFT, omol. Need to modify for others.
@@ -111,6 +116,80 @@ def get_loader(database,
     if delta_learning and is_open_shell:
         raise ValueError("delta_learning is currently implemented for closed shell only")
     dist.barrier()
+
+    if isinstance(database, OMolCSH58kDatabase):
+        if dataset_name != "omol":
+            raise ValueError(
+                "Published OMol_CSH H5 files use dataset_name='omol' so the "
+                "original HELM def2-TZVPD contract is retained."
+            )
+        if loss_target_string != "fock_matrix":
+            raise ValueError(
+                "Published OMol_CSH H5 files contain only Fock targets."
+            )
+        if is_open_shell:
+            raise ValueError(
+                "Published OMol_CSH H5 files are single-channel closed-shell "
+                "targets and cannot be loaded with open_shell=True."
+            )
+        if distribute_graphs:
+            raise ValueError(
+                "Streaming OMol_CSH H5 loading supports data-parallel ranks, "
+                "not distributed-graph training."
+            )
+        if delta_learning or load_delta_auxiliary_matrix:
+            raise ValueError(
+                "Published OMol_CSH H5 files do not contain the auxiliary "
+                "matrices required for delta learning."
+            )
+
+        graph_dataset = None
+        # The first construction may populate HELM's orbital-interaction cache.
+        # Serialize that one-time initialization so ranks cannot race while
+        # writing the same cache file.
+        for active_rank in range(world_size):
+            if rank == active_rank:
+                graph_dataset = OMolCSHGraphDataset(
+                    database=database,
+                    start_idx=start_idx,
+                    end_idx=end_idx,
+                    cutoff=rcut,
+                    dtype=dtype,
+                    scale_shift_data=scale_shift_data,
+                )
+            dist.barrier()
+        assert graph_dataset is not None
+
+        data_loader = DataLoader(
+            graph_dataset,
+            batch_size=batch_size,
+            shuffle=bool(shuffle and train_or_eval == "train"),
+            num_workers=0,
+        )
+        orbital_basis = {
+            key: torch.tensor(value)
+            for key, value in graph_dataset._target_orbital_basis.items()
+        }
+        if rank == 0:
+            print(
+                "OMol_CSH H5 streaming loader: "
+                f"{len(graph_dataset)} samples, {len(data_loader)} batches.",
+                flush=True,
+            )
+            print(
+                "OMol_CSH output irreps: "
+                f"dim={graph_dataset.required_irreps.dim}, "
+                f"lmax={graph_dataset.required_irreps.lmax}, "
+                f"terms={len(graph_dataset.required_irreps)}.",
+                flush=True,
+            )
+        return (
+            data_loader,
+            graph_dataset.required_irreps,
+            graph_dataset.basis_transformation,
+            orbital_basis,
+            graph_dataset.ls_list,
+        )
 
     # These dense conditioning matrices are optional and are currently loaded
     # only by the QM7 delta-learning path. Keep them explicitly absent for

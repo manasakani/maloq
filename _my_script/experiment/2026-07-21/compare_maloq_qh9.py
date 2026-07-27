@@ -143,11 +143,22 @@ def run_variant(
     num_epochs: int | None,
     batch_size: int | None,
 ) -> dict[str, object]:
-    from maloq.core.config import MaloqConfig
-    from maloq.train_utils.training_workflow import TrainingWorkflow
+    if variant == "maloq-nte":
+        from maloq.experimental.nte_qhflow3_composition.config import (
+            FEATURE_SLUG,
+            MaloqConfig,
+        )
+        from maloq.experimental.nte_qhflow3_composition.workflow import (
+            TrainingWorkflow,
+        )
+        output_name = FEATURE_SLUG
+    else:
+        from maloq.core.config import MaloqConfig
+        from maloq.train_utils.training_workflow import TrainingWorkflow
+        output_name = variant
 
     config = MaloqConfig.from_file(CONFIGS[variant]).to_workflow_config()
-    output_dir = output_root / variant
+    output_dir = output_root / output_name
     config.update(
         dbpath=str(dbpath),
         output_folder=str(output_dir),

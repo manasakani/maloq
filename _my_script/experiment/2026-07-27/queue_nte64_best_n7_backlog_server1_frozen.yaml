@@ -1,0 +1,116 @@
+jobs:
+  - id: nabla-nte64-best-initzero-frozen-v1-20260727b
+    description: Best NTE control with EdgePre initial edge state zero, QHFlow3 irrep projection, and separate output norms
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 18
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "22038"
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-best-backlog-42e50501.tar.gz
+      SC26_SOURCE_FINGERPRINT: bea057e0638f09710a57e5bcc5d1bd91fd836558617c206a88b7f93f02548564
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-best-backlog-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/_my_script/experiment/2026-07-27/nte64e2_qcond_edgepre_initial_edge_zero_qhflow3_irrep_projection_split_output_norm_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | EdgePre+InitialEdgeZero+QHFProj+SplitOutNorm | V1"
+      SC26_WANDB_GROUP: nabla-nte64-best-n7-backlog-v1
+      SC26_RUN_PREFIX: nabladft-nte64-initzero-qhfproj-splitoutnorm-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_qcond_edgepre_initial_edge_zero_qhflow3_irrep_projection_split_output_norm_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/_my_script/experiment/2026-07-27/nte64e2_qcond_edgepre_initial_edge_zero_qhflow3_irrep_projection_split_output_norm_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/PROVENANCE/source-snapshot/backlog-runtime.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-best-backlog-42e50501.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-best-backlog-frozen-v1-20260727a/package.sha256
+
+  - id: nabla-nte64-best-qhfpair-frozen-v1-20260727a
+    description: Native NTE node stack with two independent QHFlow3-style native pair branches, QHFlow3 irrep projection, and separate output norms
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 17
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "20024"
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-best-backlog-42e50501.tar.gz
+      SC26_SOURCE_FINGERPRINT: bea057e0638f09710a57e5bcc5d1bd91fd836558617c206a88b7f93f02548564
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-best-backlog-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/_my_script/experiment/2026-07-27/nte64e2_qcond_qhflow3_parallel_edge_qhflow3_irrep_projection_split_output_norm_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | QHFPair+QHFProj+SplitOutNorm | V1"
+      SC26_WANDB_GROUP: nabla-nte64-best-n7-backlog-v1
+      SC26_RUN_PREFIX: nabladft-nte64-qhfpair-qhfproj-splitoutnorm-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_qcond_qhflow3_parallel_edge_qhflow3_irrep_projection_split_output_norm_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/_my_script/experiment/2026-07-27/nte64e2_qcond_qhflow3_parallel_edge_qhflow3_irrep_projection_split_output_norm_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/PROVENANCE/source-snapshot/backlog-runtime.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-best-backlog-42e50501.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-best-backlog-frozen-v1-20260727a/package.sha256
+
+  - id: nabla-nte64-best-gw2-frozen-v1-20260727b
+    description: Best completed NTE lane with only native eSEN Gaussian width changed from 1.0 to 2.0
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 16
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "24580"
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-best-backlog-42e50501.tar.gz
+      SC26_SOURCE_FINGERPRINT: bea057e0638f09710a57e5bcc5d1bd91fd836558617c206a88b7f93f02548564
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-best-backlog-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/_my_script/experiment/2026-07-27/nte64e2_best_n7_gaussian_width2_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | EdgePre+Edge1+QHFProj+SplitOutNorm+GaussianWidth2 | V1"
+      SC26_WANDB_GROUP: nabla-nte64-best-n7-backlog-v1
+      SC26_RUN_PREFIX: nabladft-nte64-best-gw2-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_best_n7_gaussian_width2_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/_my_script/experiment/2026-07-27/nte64e2_best_n7_gaussian_width2_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/PROVENANCE/source-snapshot/backlog-runtime.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-best-backlog-42e50501.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-best-backlog-frozen-v1-20260727a/package.sha256
+
+  - id: nabla-nte64-best-edgepostrms-frozen-v1-20260727b
+    description: Best completed NTE lane with only block-local edge post-residual RMS normalization enabled
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 15
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "29490"
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-best-backlog-42e50501.tar.gz
+      SC26_SOURCE_FINGERPRINT: bea057e0638f09710a57e5bcc5d1bd91fd836558617c206a88b7f93f02548564
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-best-backlog-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/_my_script/experiment/2026-07-27/nte64e2_best_n7_edge_post_rms_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | EdgePre+Edge1+QHFProj+SplitOutNorm+EdgePostRMS | V1"
+      SC26_WANDB_GROUP: nabla-nte64-best-n7-backlog-v1
+      SC26_RUN_PREFIX: nabladft-nte64-best-edgepostrms-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_best_n7_edge_post_rms_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/_my_script/experiment/2026-07-27/nte64e2_best_n7_edge_post_rms_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-best-backlog-42e50501/PROVENANCE/source-snapshot/backlog-runtime.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-best-backlog-42e50501.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-best-backlog-frozen-v1-20260727a/package.sha256

@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: dft-dataset
+Version: 0.2.0
+Summary: Unified DFT data toolkit for MLIP / MLDFT / density prediction
+Requires-Python: >=3.10
+Requires-Dist: numpy
+Requires-Dist: lmdb>=2.1.1
+Provides-Extra: torch
+Requires-Dist: torch; extra == "torch"
+Requires-Dist: torch_geometric; extra == "torch"
+Provides-Extra: ase
+Requires-Dist: ase; extra == "ase"
+Provides-Extra: full
+Requires-Dist: torch; extra == "full"
+Requires-Dist: torch_geometric; extra == "full"
+Requires-Dist: ase; extra == "full"
+Requires-Dist: pyscf; extra == "full"

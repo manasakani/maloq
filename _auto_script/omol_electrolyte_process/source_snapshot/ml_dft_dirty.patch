@@ -1,0 +1,211 @@
+diff --git a/scripts/build_omol_density_pilot.py b/scripts/build_omol_density_pilot.py
+index f80ba81..715e71a 100644
+--- a/scripts/build_omol_density_pilot.py
++++ b/scripts/build_omol_density_pilot.py
+@@ -269,10 +269,19 @@ def _atom_string(mol: Molecule) -> str:
+     )
+ 
+ 
+-def _pyscf_mol(mol: Molecule, basis: str):
++def _pyscf_mol(mol: Molecule, basis: str, *, with_ecp: bool = False):
++    ecp = None
++    if with_ecp:
++        ecp = {}
++        for z in sorted(set(int(value) for value in mol.atomic_numbers)):
++            symbol = gto.elements.ELEMENTS[z]
++            ecp_data = gto.basis.load_ecp(basis, symbol)
++            if ecp_data:
++                ecp[symbol] = ecp_data
+     return gto.M(
+         atom=_atom_string(mol),
+         basis=basis,
++        ecp=ecp,
+         charge=mol.charge,
+         spin=mol.spin,
+         unit="Angstrom",
+@@ -288,11 +297,19 @@ def _unpack_upper_triangle(packed: np.ndarray, n: int) -> np.ndarray:
+     return out
+ 
+ 
+-def _load_raw_orca_total_density(path: Path, n: int) -> np.ndarray:
++def _load_raw_orca_total_density(
++    path: Path,
++    n: int,
++    required_dtype: str | np.dtype | None = None,
++) -> np.ndarray:
+     with np.load(path) as data:
+         if "orca.scfp" not in data:
+             raise KeyError(f"{path} does not contain 'orca.scfp'; keys={list(data.files)}")
+         packed = data["orca.scfp"]
++    if required_dtype is not None and packed.dtype != np.dtype(required_dtype):
++        raise ValueError(
++            f"{path} orca.scfp dtype {packed.dtype} != required {np.dtype(required_dtype)}"
++        )
+     expected = n * (n + 1) // 2
+     if packed.shape[0] != expected:
+         raise ValueError(f"{path} packed size {packed.shape[0]} != expected {expected} for nao={n}")
+@@ -511,17 +528,28 @@ def _build_molecule(
+     orca_timeout_seconds: float = 1800.0,
+     keep_orca_overlap_files: bool = False,
+     orca_wait_for_completion: bool = False,
++    required_density_dtype: str | np.dtype | None = None,
+ ) -> tuple[Molecule, dict[str, float | int | bool]]:
+     mol = Molecule.from_omol25_row(row)
+     t0 = time.perf_counter()
+     pmol = _pyscf_mol(mol, basis)
++    pmol_ecp = _pyscf_mol(mol, basis, with_ecp=True)
++    if int(pmol_ecp.nelectron) != int(mol.num_electrons):
++        raise ValueError(
++            f"PySCF ECP nelectron={pmol_ecp.nelectron} but OMol metadata gives "
++            f"{mol.num_electrons} for {selected.mol_id}"
++        )
+     if int(pmol.nao) != int(selected.n_basis_orca):
+         raise ValueError(
+             f"PySCF nao={pmol.nao} but manifest ORCA n_basis={selected.n_basis_orca} "
+             f"for {selected.mol_id}"
+         )
+ 
+-    density_raw = _load_raw_orca_total_density(DATA_ROOT / selected.density_path, pmol.nao)
++    density_raw = _load_raw_orca_total_density(
++        DATA_ROOT / selected.density_path,
++        pmol.nao,
++        required_dtype=required_density_dtype,
++    )
+     idx_orca_to_e3nn = build_cached_orca_to_e3nn_indices(pmol, basis)
+     idx_pyscf_to_e3nn = _pyscf_to_e3nn_indices(pmol)
+ 
+@@ -571,12 +599,12 @@ def _build_molecule(
+     else:
+         raise ValueError(f"Unsupported overlap_source={overlap_source!r}")
+ 
+-    n_electrons = int(sum(int(z) for z in mol.atomic_numbers) - mol.charge)
++    n_electrons = int(pmol_ecp.nelectron)
+     init_dm = None
+     trace_initial_uncorrected = None
+     initial_density_charge_scale = 1.0
+     if initial_density == "sad":
+-        sad_pyscf = _sad_density_pyscf(pmol)
++        sad_pyscf = _sad_density_pyscf(pmol_ecp)
+         if overlap_source == "pyscf":
+             init_dm = reorder_matrix(sad_pyscf, idx_pyscf_to_e3nn)
+         else:
+@@ -626,6 +654,11 @@ def _build_molecule(
+         "trace_error": trace_target - n_electrons,
+         "n_electrons": n_electrons,
+         "storage_dtype": str(store_dtype),
++        "source_density_dtype_requirement": (
++            str(np.dtype(required_density_dtype))
++            if required_density_dtype is not None
++            else "unchecked"
++        ),
+         "overlap_source": overlap_source,
+         "overlap_effective_source": effective_overlap_source,
+     }
+diff --git a/scripts/build_omol_density_shards.py b/scripts/build_omol_density_shards.py
+index c31867b..41dc0f2 100644
+--- a/scripts/build_omol_density_shards.py
++++ b/scripts/build_omol_density_shards.py
+@@ -113,10 +113,25 @@ def _parse_args() -> argparse.Namespace:
+         "--storage-dtype",
+         choices=("float32", "float64"),
+         default="float32",
+-        help="Matrix dtype stored in LMDB. Raw OMol density is float32; "
++        help="Matrix dtype stored in LMDB. Raw OMol density may be fp32/fp64; "
+         "float32 keeps converted LMDBs compact, while float64 preserves the "
+         "previous conversion behavior.",
+     )
++    parser.add_argument(
++        "--require-density-dtype",
++        choices=("any", "float32", "float64"),
++        default="any",
++        help="Reject a source density whose orca.scfp dtype does not match.",
++    )
++    parser.add_argument(
++        "--max-trace-error",
++        type=float,
++        default=0.0,
++        help=(
++            "Reject a converted sample when abs(Tr(D S) - n_electrons) exceeds "
++            "this value. Zero disables the gate."
++        ),
++    )
+     parser.add_argument(
+         "--lmdb-map-size-gb",
+         type=float,
+@@ -199,6 +214,8 @@ def _write_shard(
+     orca_timeout_seconds: float,
+     keep_orca_overlap_files: bool,
+     orca_wait_for_completion: bool,
++    required_density_dtype: str | None,
++    max_trace_error: float,
+ ) -> dict[str, Any]:
+     shard_path = out_dir / split / f"shard_{shard_idx:06d}.lmdb"
+     row_tables = _load_row_tables(items)
+@@ -225,7 +242,16 @@ def _write_shard(
+                 orca_timeout_seconds=orca_timeout_seconds,
+                 keep_orca_overlap_files=keep_orca_overlap_files,
+                 orca_wait_for_completion=orca_wait_for_completion,
++                required_density_dtype=required_density_dtype,
+             )
++            if (
++                max_trace_error > 0.0
++                and abs(float(stats["trace_error"])) > max_trace_error
++            ):
++                raise ValueError(
++                    f"abs trace error {abs(float(stats['trace_error'])):.6g} exceeds "
++                    f"--max-trace-error={max_trace_error:.6g}"
++                )
+         except Exception as exc:  # keep the full job moving, but record loudly
+             failed = dict(item)
+             failed["error"] = f"{type(exc).__name__}: {exc}"
+@@ -258,6 +284,7 @@ def _write_shard(
+         "overlap_source": overlap_source,
+         "pyscf_overlap_deprecated": overlap_source == "pyscf",
+         "storage_dtype": storage_dtype,
++        "source_density_dtype_requirement": required_density_dtype or "any",
+         "split": split,
+         "shard_index": shard_idx,
+     }
+@@ -312,6 +339,8 @@ def main() -> int:
+         "overlap_source": args.overlap_source,
+         "pyscf_overlap_deprecated": args.overlap_source == "pyscf",
+         "storage_dtype": args.storage_dtype,
++        "source_density_dtype_requirement": args.require_density_dtype,
++        "max_trace_error": args.max_trace_error,
+         "lmdb_map_size_gb": args.lmdb_map_size_gb,
+         "shard_size": args.shard_size,
+         "shard_stride": args.shard_stride,
+@@ -357,13 +386,31 @@ def main() -> int:
+                     orca_timeout_seconds=args.orca_timeout_seconds,
+                     keep_orca_overlap_files=args.keep_orca_overlap_files,
+                     orca_wait_for_completion=args.orca_wait_for_completion,
++                    required_density_dtype=(
++                        None
++                        if args.require_density_dtype == "any"
++                        else args.require_density_dtype
++                    ),
++                    max_trace_error=args.max_trace_error,
+                 )
+             )
+         root_summary["splits"][split] = split_summaries
+ 
+-    (args.out / "summary.json").write_text(json.dumps(root_summary, indent=2, sort_keys=True) + "\n")
++    summary_name = (
++        "summary.json"
++        if args.shard_stride == 1
++        else f"summary.offset_{args.shard_offset:03d}_of_{args.shard_stride:03d}.json"
++    )
++    root_summary["failure_count"] = sum(
++        int(summary.get("failure_count", 0))
++        for summaries in root_summary["splits"].values()
++        for summary in summaries
++    )
++    (args.out / summary_name).write_text(
++        json.dumps(root_summary, indent=2, sort_keys=True) + "\n"
++    )
+     print(json.dumps(root_summary, indent=2, sort_keys=True))
+-    return 0
++    return 1 if root_summary["failure_count"] else 0
+ 
+ 
+ if __name__ == "__main__":

@@ -32,16 +32,9 @@ model:
   reduce_edge: false
   reduce_node: true
   reduce_node_intra: true
-  gate_act_type: tanh
   mlp_type: spectral
-  message_passing_schedule: interleaved
   num_edge_layers: 3
   output_l_embedding_dim: null
-  use_edge_envelope: false
-  use_edge_scalar_modulation: false
-  residual_update_scale_mode: none
-  residual_update_scale_init: 1.0
-  residual_update_scale_log_range: 0.0
 
 optimization:
   num_epochs: 80

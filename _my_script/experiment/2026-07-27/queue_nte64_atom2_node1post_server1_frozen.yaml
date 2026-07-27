@@ -1,0 +1,33 @@
+jobs:
+  - id: nabla-nte64-edge2-initenv-atom2direct-node1post-frozen-v1-20260727a
+    description: Current primary-final Atom2Direct best with only NodeBlock 1 incoming residual moved after its complete local branch
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 44
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "23157"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-atom2-node1post-814f4704/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-atom2-node1post-814f4704
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-atom2-node1post-814f4704/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-atom2-node1post-814f4704.tar.gz
+      SC26_SOURCE_FINGERPRINT: 814f4704b6a8aaf34f0cb1316cacda36b0f2517f53c59da654a88ac788de161b
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-atom2-node1post-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-atom2-node1post-814f4704/_my_script/experiment/2026-07-27/nte64e2_edge2postres_initial_edge_degree_envelope_atom2_direct_node1_post_atomwise_residual_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | Edge2+InitEnv+Atom2Direct+Node1PostResidual | V1"
+      SC26_WANDB_GROUP: nabla-nte64-atom2direct-localization-v1
+      SC26_RUN_PREFIX: nabladft-nte64-edge2-initenv-atom2direct-node1post-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_edge2postres_initial_edge_degree_envelope_atom2_direct_node1_post_atomwise_residual_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-atom2-node1post-814f4704/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-atom2-node1post-814f4704/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-atom2-node1post-814f4704/_my_script/experiment/2026-07-27/nte64e2_edge2postres_initial_edge_degree_envelope_atom2_direct_node1_post_atomwise_residual_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-atom2-node1post-814f4704/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-atom2-node1post-814f4704/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-atom2-node1post-814f4704/PROVENANCE/source-snapshot/nte64-atom2-node1post.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-atom2-node1post-814f4704.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-atom2-node1post-frozen-v1-20260727a/package.sha256

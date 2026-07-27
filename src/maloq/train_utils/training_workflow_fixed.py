@@ -23,6 +23,8 @@ import torch.distributed as dist
 
 from . import splittrainer
 from . import training_workflow as legacy
+from ..dataset_utils.ASEDataset import ASEAtomsData
+from ..dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 
 
 CHECKPOINT_SCHEMA_VERSION = 1
@@ -52,16 +54,11 @@ _SIGNATURE_EXCLUDED_KEYS = {
 }
 
 _SIGNATURE_COMPATIBILITY_DEFAULTS = {
-    "direct_atomwise_layers": [],
-    "direct_edgewise_layers": [],
-    "initial_edge_state_mode": "edge_degree",
-    "qhflow3_muonize_output_projection": False,
-    "node_stack_mode": "nte",
-    "nte_output_projection_mode": "so3_linear",
-    "output_norm_sharing": "shared",
-    "qhflow3_layer_gaussian_width": 2.0,
-    "qhflow3_layer_grid_ffn_chunk_size": 512,
-    "qhflow3_exact_pair_rng_aligned": False,
+    "atom_scalar_embedding_mode": "element_charge_spin",
+    "compute_uncoupled_loss": False,
+    "compute_eigenvalues": True,
+    "dataset_format": "auto",
+    "omol_csh_metadata_policy": "preserve",
 }
 
 
@@ -111,10 +108,16 @@ def signature_digest(signature: dict[str, Any]) -> str:
 
 def _migrate_stored_signature_defaults(
     signature: dict[str, Any],
+    compatibility_defaults: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Add behavior-preserving defaults introduced after a checkpoint."""
+    """Add behavior-preserving defaults claimed by the active workflow."""
     migrated = dict(signature)
-    for key, value in _SIGNATURE_COMPATIBILITY_DEFAULTS.items():
+    defaults = (
+        _SIGNATURE_COMPATIBILITY_DEFAULTS
+        if compatibility_defaults is None
+        else compatibility_defaults
+    )
+    for key, value in defaults.items():
         migrated.setdefault(key, value)
     return migrated
 
@@ -171,8 +174,7 @@ def load_training_checkpoint(
         except Exception as exc:  # the previous generation may still be valid
             errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
     raise RuntimeError(
-        "No valid fixed-workflow checkpoint was found:\n- "
-        + "\n- ".join(errors)
+        "No valid fixed-workflow checkpoint was found:\n- " + "\n- ".join(errors)
     )
 
 
@@ -254,8 +256,7 @@ def _format_loss_history(history: dict[str, list[float]], validation: bool) -> s
     if edges is None:
         return "".join(f"{node:.10f}\n" for node in nodes)
     return "".join(
-        f"{edge:.10f}\t{node:.10f}\n"
-        for edge, node in zip(edges, nodes, strict=True)
+        f"{edge:.10f}\t{node:.10f}\n" for edge, node in zip(edges, nodes, strict=True)
     )
 
 
@@ -287,26 +288,25 @@ def _read_resume_metadata(source: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-class TrainingWorkflowFixed(legacy.TrainingWorkflow):
-    """Training workflow with opt-in, epoch-boundary exact resume."""
+class TrainingWorkflowFixedMixin:
+    """Reusable opt-in, epoch-boundary exact-resume behavior."""
+
+    SIGNATURE_COMPATIBILITY_DEFAULTS = _SIGNATURE_COMPATIBILITY_DEFAULTS
 
     def __init__(self, config: dict[str, Any]):
         fixed_config = dict(config)
         environment_resume = os.environ.get("MALOQ_FIXED_RESUME_FROM")
         resume_source = fixed_config.pop("resume_from", None) or environment_resume
         self.resume_source = (
-            Path(resume_source).expanduser().resolve()
-            if resume_source
-            else None
+            Path(resume_source).expanduser().resolve() if resume_source else None
         )
         self.allow_config_mismatch = bool(
             fixed_config.pop("allow_resume_config_mismatch", False)
             or os.environ.get("MALOQ_FIXED_ALLOW_CONFIG_MISMATCH") == "1"
         )
-        stop_after_epoch = (
-            fixed_config.pop("fixed_stop_after_epoch", None)
-            or os.environ.get("MALOQ_FIXED_STOP_AFTER_EPOCH")
-        )
+        stop_after_epoch = fixed_config.pop(
+            "fixed_stop_after_epoch", None
+        ) or os.environ.get("MALOQ_FIXED_STOP_AFTER_EPOCH")
         self.stop_after_epoch = (
             int(stop_after_epoch) if stop_after_epoch is not None else None
         )
@@ -393,17 +393,14 @@ class TrainingWorkflowFixed(legacy.TrainingWorkflow):
                     else "initial_hamiltonian"
                 )
                 load_properties.append(initial_target_property)
-                if (
-                    c["backbone_type"] == "qhflow3_clean"
-                    or c.get("nte_input_conditioning") == "qhflow3_exact"
-                ):
+                if self._needs_delta_auxiliary_matrix():
                     auxiliary_property = (
                         "initial_hamiltonian"
                         if target_property == "density_matrix"
                         else "initial_density_matrix"
                     )
                     load_properties.append(auxiliary_property)
-            database = legacy.ASEAtomsData(c["dbpath"])
+            database = ASEAtomsData(c["dbpath"])
             database.load_properties = load_properties
             if c["shuffle"]:
                 print("Shuffling QM7 dataset for training...")
@@ -412,7 +409,7 @@ class TrainingWorkflowFixed(legacy.TrainingWorkflow):
                 database = [database[index] for index in indices]
             return database
         if c["dataset_name"] == "nablaDFT":
-            return legacy.HamiltonianDatabase(c["dbpath"])
+            return HamiltonianDatabase(c["dbpath"])
         if c["dataset_name"] in {"omol", "cp2k_material"}:
             return None
         raise ValueError(f"Unknown dataset name: {c['dataset_name']}")
@@ -429,11 +426,12 @@ class TrainingWorkflowFixed(legacy.TrainingWorkflow):
         stored_signature = state.get("config_signature")
         if isinstance(stored_signature, dict):
             if signature_digest(stored_signature) != stored_digest:
-                raise ValueError(
-                    "Checkpoint configuration signature is corrupted."
-                )
+                raise ValueError("Checkpoint configuration signature is corrupted.")
             stored_digest = signature_digest(
-                _migrate_stored_signature_defaults(stored_signature)
+                _migrate_stored_signature_defaults(
+                    stored_signature,
+                    self.SIGNATURE_COMPATIBILITY_DEFAULTS,
+                )
             )
         if stored_digest != expected_digest and not self.allow_config_mismatch:
             raise ValueError(
@@ -501,9 +499,7 @@ class TrainingWorkflowFixed(legacy.TrainingWorkflow):
                 state = {
                     "schema_version": CHECKPOINT_SCHEMA_VERSION,
                     "completed_epoch": int(epoch),
-                    "optimizer_step": int(
-                        (epoch + 1) * optimizer_steps_per_epoch
-                    ),
+                    "optimizer_step": int((epoch + 1) * optimizer_steps_per_epoch),
                     "optimizer_steps_per_epoch": int(optimizer_steps_per_epoch),
                     "planned_num_epochs": int(self.config["num_epochs"]),
                     "world_size": int(self.world_size),
@@ -512,8 +508,7 @@ class TrainingWorkflowFixed(legacy.TrainingWorkflow):
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
                     "rng_states": {
-                        str(rank): rng
-                        for rank, rng in enumerate(gathered_rng)
+                        str(rank): rng for rank, rng in enumerate(gathered_rng)
                     },
                     "history": history,
                     "config_signature": signature,
@@ -595,13 +590,10 @@ class TrainingWorkflowFixed(legacy.TrainingWorkflow):
                 scheduler,
             )
 
-            trainer = splittrainer.SplitTrainer(
+            trainer = self._build_trainer(
                 backbone=backbone,
                 head=head,
                 head_irreps=irreps,
-                run_name=self.config.get("run_name", "run"),
-                save_frequency=self.config.get("save_frequency", 10),
-                wandb_run=self.wandb_run,
             )
             target_map = {
                 "fock_matrix": ("node_y", "y"),
@@ -671,3 +663,10 @@ class TrainingWorkflowFixed(legacy.TrainingWorkflow):
             )
         finally:
             self.close()
+
+
+class TrainingWorkflowFixed(
+    TrainingWorkflowFixedMixin,
+    legacy.TrainingWorkflow,
+):
+    """Canonical MALOQ workflow with atomic epoch-boundary resume."""

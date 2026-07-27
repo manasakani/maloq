@@ -15,6 +15,7 @@ dependencies = [
   "pyyaml>=6.0",
   "tomli>=2.0; python_version < '3.11'",
   "ase>=3.29",
+  "h5py>=3.14",
   "scipy>=1.18",
   "matplotlib>=3.11",
   "e3nn>=0.6",

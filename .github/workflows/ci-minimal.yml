@@ -62,3 +62,5 @@ jobs:
           print("MALOQ import smoke test passed")
           PY
 
+      - name: Experimental import boundary
+        run: python -m pytest -q tests/experimental/test_import_boundary.py

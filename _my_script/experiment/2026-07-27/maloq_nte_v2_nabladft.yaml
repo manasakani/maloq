@@ -1,0 +1,93 @@
+# Canonical MALOQ-NTE-V2 NablaDFT training configuration.
+# The architecture, MatrixMuon head, and Muon/AuxAdamW routing are selected by
+# backbone_type. Historical structural-ablation selectors are intentionally
+# absent.
+dataset:
+  dataset_name: nablaDFT
+  dbpath: /dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
+  output_folder: /dataset/seongsu/shared-home/workspace/project/outputs/maloq-nte-v2-nabladft-v1
+  run_name: maloq-nte-v2-nabladft-v1
+  open_shell: false
+
+execution:
+  train_or_eval: train
+  train_backbone: true
+  train_head: true
+  compute_total_energy: false
+
+splits:
+  num_train: 12081
+  num_val: 64
+  num_test: 0
+  batch_size: 5
+  shuffle: false
+  distribute_graphs: false
+
+model:
+  model_variant: maloq-nte-v2
+  backbone_type: maloq_nte_v2
+  head_type: maloq_muon
+  wigner_backend: torch
+  l_embedding_dim: 128
+  hidden_dim: 128
+  output_l_embedding_dim: 64
+  num_distance_basis: 512
+  num_mp_layers: 3
+  rcut_orbitals: 8.0
+  rcut_gaussian: 16.0
+  gaussian_width: 1.0
+  reduce_edge: false
+  reduce_node: true
+  reduce_node_intra: true
+
+optimization:
+  num_epochs: 20
+  lr_init: 0.0005
+  optimizer_type: muon
+  weight_decay: 0.0001
+  muon_lr: 0.02
+  muon_momentum: 0.95
+  muon_nesterov: true
+  muon_ns_steps: 5
+  muon_adamw_lr: 0.0005
+  muon_adamw_betas: [0.9, 0.95]
+  muon_adamw_eps: 1.0e-10
+  gradient_clip_val: 1.0
+  gradient_accumulation_steps: 2
+  scheduler_type: warmup_polynomial
+  warmup_steps: 1000
+  scheduler_power: 1.0
+  min_lr_ratio: 0.0
+  step_every_epoch: false
+
+loss:
+  loss_target: fock_matrix
+  train_loss: rmse_mse_padded_loss
+  test_loss: l1_unpadded_loss
+  scale_and_shift: false
+
+checkpointing:
+  save_frequency: 1
+  restart_backbone: false
+  restart_head: false
+  restart_optimizer: false
+  backbone_checkpoint: backbone.pt
+  head_checkpoint: head.pt
+
+runtime:
+  dtype: float32
+  seed: 44
+
+tracking:
+  use_wandb: true
+  wandb_project: maloq-nablaDFT
+  wandb_entity: kaist-korea
+  wandb_mode: online
+  wandb_run_name: "NablaDFT | MALOQ-NTE-V2 | MatrixMuon+AuxAdamW | RAW | V1"
+  wandb_group: maloq-nte-v2
+  wandb_job_type: full
+  wandb_tags: [dataset:nabladft, architecture:maloq-nte-v2, head:matrixmuon-auxadamw, target:raw, version:v1, sc26-seongsu]
+  experiment_version: 1
+  wandb_log_every_n_steps: 10
+  validation_matrix_metrics: true
+  validation_matrix_metrics_frequency: 1

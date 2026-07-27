@@ -1,0 +1,132 @@
+jobs:
+  - id: nabla-nte64-edge2-gw2-frozen-v1-20260727a
+    description: Completed Edge2PostResidual reference with only native Gaussian width changed from 1.0 to 2.0
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 24
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "21341"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-edge2-next-controls-d3daee03.tar.gz
+      SC26_SOURCE_FINGERPRINT: d3daee038300c5418d8442cf05db0fa71e335235cba1648169c8419d8915550b
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-edge2-next-controls-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/nte64e2_edge2postres_gaussian_width2_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | Edge2PostResidual+GaussianWidth2 | V1"
+      SC26_WANDB_GROUP: nabla-nte64-edge2postres-next-controls-v1
+      SC26_RUN_PREFIX: nabladft-nte64-edge2-gw2-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_edge2postres_gaussian_width2_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/nte64e2_edge2postres_gaussian_width2_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/PROVENANCE/source-snapshot/edge2-next-controls.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-edge2-next-controls-d3daee03.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-edge2-next-controls-frozen-v1-20260727a/package.sha256
+
+  - id: nabla-nte64-edge2-nodeso3-edgeqhf-frozen-v1-20260727a
+    description: Completed Edge2PostResidual reference with native SO3 node projection and QHFlow3 edge projection
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 23
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "21343"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-edge2-next-controls-d3daee03.tar.gz
+      SC26_SOURCE_FINGERPRINT: d3daee038300c5418d8442cf05db0fa71e335235cba1648169c8419d8915550b
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-edge2-next-controls-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/nte64e2_edge2postres_node_so3_edge_qhflow3_projection_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | Edge2PostResidual+NodeSO3Proj+EdgeQHFProj | V1"
+      SC26_WANDB_GROUP: nabla-nte64-edge2postres-next-controls-v1
+      SC26_RUN_PREFIX: nabladft-nte64-edge2-nodeso3-edgeqhf-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_edge2postres_node_so3_edge_qhflow3_projection_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/nte64e2_edge2postres_node_so3_edge_qhflow3_projection_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/PROVENANCE/source-snapshot/edge2-next-controls.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-edge2-next-controls-d3daee03.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-edge2-next-controls-frozen-v1-20260727a/package.sha256
+
+  - id: nabla-nte64-edge2-initenv-frozen-v1-20260727a
+    description: Completed Edge2PostResidual reference with only the QHFlow3 degree envelope on initial node and edge embeddings
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 22
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "21347"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-edge2-next-controls-d3daee03.tar.gz
+      SC26_SOURCE_FINGERPRINT: d3daee038300c5418d8442cf05db0fa71e335235cba1648169c8419d8915550b
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-edge2-next-controls-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/nte64e2_edge2postres_initial_edge_degree_envelope_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | Edge2PostResidual+InitialEdgeEnvelope | V1"
+      SC26_WANDB_GROUP: nabla-nte64-edge2postres-next-controls-v1
+      SC26_RUN_PREFIX: nabladft-nte64-edge2-initenv-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_edge2postres_initial_edge_degree_envelope_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/nte64e2_edge2postres_initial_edge_degree_envelope_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/PROVENANCE/source-snapshot/edge2-next-controls.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-edge2-next-controls-d3daee03.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-edge2-next-controls-frozen-v1-20260727a/package.sha256
+
+  - id: nabla-nte64-edge2-postrms-frozen-v1-20260727a
+    description: Completed Edge2PostResidual reference with only EdgeBlock2 post-residual RMS normalization
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 21
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "21349"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-edge2-next-controls-d3daee03.tar.gz
+      SC26_SOURCE_FINGERPRINT: d3daee038300c5418d8442cf05db0fa71e335235cba1648169c8419d8915550b
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-edge2-next-controls-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/nte64e2_edge2postres_edge2_postrms_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | Edge2PostResidual+Edge2PostRMS | V1"
+      SC26_WANDB_GROUP: nabla-nte64-edge2postres-next-controls-v1
+      SC26_RUN_PREFIX: nabladft-nte64-edge2-postrms-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_edge2postres_edge2_postrms_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/_my_script/experiment/2026-07-27/nte64e2_edge2postres_edge2_postrms_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2-next-controls-d3daee03/PROVENANCE/source-snapshot/edge2-next-controls.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-edge2-next-controls-d3daee03.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-edge2-next-controls-frozen-v1-20260727a/package.sha256

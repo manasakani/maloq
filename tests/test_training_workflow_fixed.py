@@ -19,6 +19,18 @@ from maloq.train_utils.training_workflow_fixed import (
     signature_digest,
 )
 
+from maloq.train_utils.training_workflow_v2 import (
+    TrainingWorkflowV2,
+    TrainingWorkflowV2Fixed,
+)
+
+
+def test_v2_fixed_workflow_combines_v2_model_and_resume_contracts():
+    assert issubclass(TrainingWorkflowV2Fixed, TrainingWorkflowV2)
+    assert TrainingWorkflowV2Fixed.SUPPORTED_BACKBONE_TYPES == frozenset(
+        {"esen", "maloq_nte_v2", "qhflow3"}
+    )
+
 
 def _checkpoint_payload(marker: int, world_size: int = 1) -> dict:
     signature = resume_signature({"dataset_name": "test"}, world_size)
@@ -113,16 +125,11 @@ def test_fixed_resume_restores_optimizer_scheduler_and_epoch(tmp_path: Path):
     workflow.resume_source = checkpoint_dir
     workflow.config = {
         **checkpoint_config,
-        "direct_atomwise_layers": (),
-        "direct_edgewise_layers": (),
-        "initial_edge_state_mode": "edge_degree",
-        "qhflow3_muonize_output_projection": False,
-        "node_stack_mode": "nte",
-        "nte_output_projection_mode": "so3_linear",
-        "output_norm_sharing": "shared",
-        "qhflow3_layer_gaussian_width": 2.0,
-        "qhflow3_layer_grid_ffn_chunk_size": 512,
-        "qhflow3_exact_pair_rng_aligned": False,
+        "atom_scalar_embedding_mode": "element_charge_spin",
+        "compute_uncoupled_loss": False,
+        "compute_eigenvalues": True,
+        "dataset_format": "auto",
+        "omol_csh_metadata_policy": "preserve",
     }
     workflow.world_size = 1
     workflow.rank = 0

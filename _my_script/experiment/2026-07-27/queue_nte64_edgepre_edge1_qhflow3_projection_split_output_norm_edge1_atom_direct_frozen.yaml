@@ -1,0 +1,19 @@
+jobs:
+  - id: nabla-nte64-edge1atom-frozen-v1-20260727a
+    description: Final-MAE EdgeBlock1 atomwise-direct control from the immutable smoke-validated source snapshot
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 19
+    environment:
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge1atom-smoke-dd7f2ba6
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge1atom-smoke-dd7f2ba6/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-edge1atom-smoke-dd7f2ba6.tar.gz
+      SC26_SOURCE_FINGERPRINT: dd7f2ba6d1ce5919163f62e23a5e1599794d722ea1654087c9a37f4f6de0d778
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge1atom-smoke-dd7f2ba6/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge1atom-smoke-dd7f2ba6/_my_script/experiment/2026-07-27/nte64e2_qcond_edgepre_edge1_qhflow3_irrep_projection_split_output_norm_edge1_atom_direct_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge1atom-smoke-dd7f2ba6/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-edge1atom-smoke-dd7f2ba6.tar.gz

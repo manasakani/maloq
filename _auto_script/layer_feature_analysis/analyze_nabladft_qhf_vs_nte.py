@@ -562,7 +562,9 @@ def source_provenance() -> dict[str, Any]:
 
 
 def load_config(path: Path) -> dict[str, Any]:
-    from maloq.core.config import MaloqConfig
+    from maloq.experimental.nte_qhflow3_composition.config import (
+        MaloqConfig,
+    )
 
     config = MaloqConfig.from_file(path).to_workflow_config()
     config.update(
@@ -613,11 +615,13 @@ def build_backbone(
     required_irreps: Any,
     device: Any,
 ) -> Any:
-    from maloq.helm.esen_osh import eSEN_Backbone
-    from maloq.helm.qhflow3_clean import QHFlow3MaloqBackbone
+    from maloq.experimental.nte_qhflow3_composition.backbone import (
+        ConfigurableNTEBackbone,
+    )
+    from maloq.helm.qhflow3 import QHFlow3Backbone
 
     if model == "qhflow3":
-        backbone = QHFlow3MaloqBackbone(
+        backbone = QHFlow3Backbone(
             sh_lmax=required_irreps.lmax,
             hidden_size=config["l_embedding_dim"],
             bottle_hidden_size=config["output_l_embedding_dim"],
@@ -645,7 +649,7 @@ def build_backbone(
             ],
         )
     else:
-        backbone = eSEN_Backbone(
+        backbone = ConfigurableNTEBackbone(
             required_irreps,
             sphere_channels=config["l_embedding_dim"],
             hidden_channels=config["hidden_dim"],

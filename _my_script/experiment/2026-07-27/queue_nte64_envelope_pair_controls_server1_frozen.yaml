@@ -1,0 +1,99 @@
+jobs:
+  - id: nabla-nte64-splitoutnorm-initenv-frozen-v1-20260727a
+    description: Completed SplitOutNorm reference with only the QHFlow3-style initial degree envelope enabled
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 31
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "23137"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-envelope-pair-controls-16c45227.tar.gz
+      SC26_SOURCE_FINGERPRINT: 16c45227e0d89a5f8a0446c22a819c5396eb108536f2e3688fe1b4eca2bfe6e5
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-envelope-pair-controls-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/nte64e2_best_initial_edge_degree_envelope_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | SplitOutNorm+InitEnv | V1"
+      SC26_WANDB_GROUP: nabla-nte64-envelope-branch-controls-v1
+      SC26_RUN_PREFIX: nabladft-nte64-splitoutnorm-initenv-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_best_initial_edge_degree_envelope_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/nte64e2_best_initial_edge_degree_envelope_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/PROVENANCE/source-snapshot/nte64-envelope-pair-controls.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-envelope-pair-controls-16c45227.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-envelope-pair-controls-frozen-v1-20260727a/package.sha256
+
+  - id: nabla-nte64-edge2-initenv-atom2direct-frozen-v1-20260727a
+    description: Edge2PostResidual plus InitialEnvelope with only EdgeBlock 2 switched to direct AtomWise output
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 30
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "23139"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-envelope-pair-controls-16c45227.tar.gz
+      SC26_SOURCE_FINGERPRINT: 16c45227e0d89a5f8a0446c22a819c5396eb108536f2e3688fe1b4eca2bfe6e5
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-envelope-pair-controls-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/nte64e2_edge2postres_initial_edge_degree_envelope_atom2_direct_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | Edge2+InitEnv+Atom2Direct | V1"
+      SC26_WANDB_GROUP: nabla-nte64-envelope-branch-controls-v1
+      SC26_RUN_PREFIX: nabladft-nte64-edge2-initenv-atom2direct-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_edge2postres_initial_edge_degree_envelope_atom2_direct_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/nte64e2_edge2postres_initial_edge_degree_envelope_atom2_direct_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/PROVENANCE/source-snapshot/nte64-envelope-pair-controls.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-envelope-pair-controls-16c45227.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-envelope-pair-controls-frozen-v1-20260727a/package.sha256
+
+  - id: nabla-nte64-edge2-initenv-edge12direct-frozen-v1-20260727a
+    description: Edge2PostResidual plus InitialEnvelope with only EdgeBlock 2 Edgewise LayerScale removed
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 29
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "23141"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-envelope-pair-controls-16c45227.tar.gz
+      SC26_SOURCE_FINGERPRINT: 16c45227e0d89a5f8a0446c22a819c5396eb108536f2e3688fe1b4eca2bfe6e5
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-envelope-pair-controls-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/nte64e2_edge2postres_initial_edge_degree_envelope_edge12_direct_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | Edge2+InitEnv+Edge12Direct | V1"
+      SC26_WANDB_GROUP: nabla-nte64-envelope-branch-controls-v1
+      SC26_RUN_PREFIX: nabladft-nte64-edge2-initenv-edge12direct-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_edge2postres_initial_edge_degree_envelope_edge12_direct_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/_my_script/experiment/2026-07-27/nte64e2_edge2postres_initial_edge_degree_envelope_edge12_direct_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-envelope-pair-controls-16c45227/PROVENANCE/source-snapshot/nte64-envelope-pair-controls.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-envelope-pair-controls-16c45227.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-envelope-pair-controls-frozen-v1-20260727a/package.sha256

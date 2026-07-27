@@ -529,20 +529,6 @@ class SplitTrainer():
                         del node_output, loss
                     del batch, backbone_out
 
-            # -- Scheduler --
-            if hasattr(scheduler, 'patience'):  # ReduceLROnPlateau
-                scheduler.step(val_loss)
-            current_lr = optimizer.param_groups[0]['lr']
-            if rank == 0:
-                print("Current learning rate: ", current_lr)
-
-            # -- Output dump --
-            if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
-                track_loss_node_val.append(val_loss_node/num_val_batches)
-                track_loss_edge_val.append(val_loss_edge/num_val_batches)
-            else:
-                track_loss_node_val.append(val_loss_node/num_val_batches)
-
             # Average validation loss across ranks:
             if dist.is_initialized():
                 val_loss_tensor = torch.tensor(val_loss, device=device)
@@ -557,6 +543,13 @@ class SplitTrainer():
                 val_loss = val_loss_tensor.item() / world_size
                 val_loss_node = val_loss_node_tensor.item() / world_size
                 val_loss_edge = val_loss_edge_tensor.item() / world_size
+
+            # -- Output dump (store the globally reduced values) --
+            if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
+                track_loss_node_val.append(val_loss_node/num_val_batches)
+                track_loss_edge_val.append(val_loss_edge/num_val_batches)
+            else:
+                track_loss_node_val.append(val_loss_node/num_val_batches)
 
             matrix_mae = None
             matrix_mse = None
@@ -611,15 +604,17 @@ class SplitTrainer():
                         flush=True,
                     )
 
-            # -- Scheduler --
-            if step_every_epoch:
-                if hasattr(scheduler, 'patience'):  # ReduceLROnPlateau
-                    scheduler.step(val_loss)
-                else:                               # CosineAnnealingLR
-                    scheduler.step()
-                current_lr = optimizer.param_groups[0]['lr']
-                if rank == 0:
-                    print("Current learning rate: ", current_lr)
+            # Plateau always steps once per epoch, after the validation metric
+            # has been reduced across ranks. Other schedulers step here only
+            # when configured for epoch-wise updates.
+            self.step_scheduler_after_validation(
+                scheduler,
+                val_loss / num_val_batches,
+                step_every_epoch,
+            )
+            current_lr = optimizer.param_groups[0]['lr']
+            if rank == 0:
+                print("Current learning rate: ", current_lr)
 
             if rank == 0 and self.wandb_run is not None:
                 optimizer_step = (epoch + 1) * optimizer_steps_per_epoch
@@ -679,6 +674,7 @@ class SplitTrainer():
                 output_folder=DEFAULT_OUTPUT_FOLDER,
                 dataset_name='omol',
                 orbital_basis=None,
+                compute_eigenvalues=True,
                 compute_total_energy=True):
 
         print(f"Loss Targets: {node_target_name}, {edge_target_name}" )
@@ -688,7 +684,6 @@ class SplitTrainer():
 
         dump_plots = True
         dump_embeddings = False
-        compute_eigenvalues = True
         save_density = False
 
         if dist.is_available() and dist.is_initialized():
@@ -742,6 +737,10 @@ class SplitTrainer():
             edge_labels = {}
 
         for index, batch in enumerate(eval_loader):
+            artifact_id = (
+                str(index) if world_size == 1
+                else f"rank{rank}_{index}"
+            )
             if rank == 0:
                 print(f"Processing molecule {index}...", flush=True)
                 print(f"Number of atoms in molecule {index}: {batch.num_nodes}", flush=True)
@@ -788,15 +787,18 @@ class SplitTrainer():
                         node_output = node_output[0]
                         edge_output = edge_output[0]
                     
+                    target_object, target_index = self._batch_target_reference(
+                        batch,
+                    )
                     # When using the distributed solver, each batch has its own fock targets object (it's a supergraph)
                     if distributed_graphs:
-                        neighbour_list = batch.fock_target_object[0].neighbour_list_list
-                        atomic_numbers = batch.fock_target_object[0].atomic_numbers_list
-                        orbitals_per_atom = batch.fock_target_object[0].orbitals_per_atom_list
+                        neighbour_list = target_object.neighbour_list_list
+                        atomic_numbers = target_object.atomic_numbers_list
+                        orbitals_per_atom = target_object.orbitals_per_atom_list
                     else:
-                        neighbour_list = batch.fock_target_object[0].neighbour_list_list[index]
-                        atomic_numbers = batch.fock_target_object[0].atomic_numbers_list[index]
-                        orbitals_per_atom = batch.fock_target_object[0].orbitals_per_atom_list[index]
+                        neighbour_list = target_object.neighbour_list_list[target_index]
+                        atomic_numbers = target_object.atomic_numbers_list[target_index]
+                        orbitals_per_atom = target_object.orbitals_per_atom_list[target_index]
                         
 
                     # ========================================
@@ -827,13 +829,17 @@ class SplitTrainer():
                         world_size=world_size
                     )
 
-                    # Undo scale/shift layers on output:
-                    print("Undoing scale/shift for outputs and labels...", flush=True)
-                    final_node_outputs = batch.fock_target_object[0].undo_scale_shift(final_node_outputs, atomic_numbers)
-
-                    # for nabladft and cp2k, we left the node scaling in
-                    if dataset_name == 'nablaDFT' or 'cp2k' in dataset_name:
-                        final_node_labels = batch.fock_target_object[0].undo_scale_shift(final_node_labels, atomic_numbers) # note: remove node scaling from evals
+                    # Output and labels share the same normalized target
+                    # convention. Return both to physical matrix units before
+                    # comparing or reconstructing AO matrices.
+                    if target_object.scale_shift_data is not None:
+                        print("Undoing scale/shift for outputs and labels...", flush=True)
+                        final_node_outputs = target_object.unscale_shift_node_blocks(
+                            final_node_outputs, atomic_numbers
+                        )
+                        final_node_labels = target_object.unscale_shift_node_blocks(
+                            final_node_labels, atomic_numbers
+                        )
 
                     # Transform back to uncoupled basis:
                     print("Transforming to uncoupled basis...", flush=True)
@@ -947,26 +953,42 @@ class SplitTrainer():
                         matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
                         plt.imshow(matrix_out, vmin=-0.01, vmax=0.01, cmap='bwr')
                         plt.colorbar()
-                        plt.savefig("predicted_fock.png", dpi=500, bbox_inches='tight')
+                        plt.savefig(
+                            os.path.join(
+                                output_folder,
+                                f"predicted_fock_{artifact_id}.png",
+                            ),
+                            dpi=500,
+                            bbox_inches='tight',
+                        )
                         plt.close()
 
                         matrix_out = label_fock_matrix.copy()
                         matrix_out[np.abs(matrix_out) < 1e-5] = 0.0
                         plt.imshow(matrix_out, vmin=-0.01, vmax=0.01, cmap='bwr')
                         plt.colorbar()
-                        plt.savefig("label_fock.png", dpi=500, bbox_inches='tight')
+                        plt.savefig(
+                            os.path.join(output_folder, f"label_fock_{artifact_id}.png"),
+                            dpi=500,
+                            bbox_inches='tight',
+                        )
                         plt.close()
 
                         diff_matrix_out = output_fock_matrix.copy() - label_fock_matrix.copy()
                         plt.imshow(np.abs(diff_matrix_out), cmap='bone_r', vmin=0, vmax=0.01)
                         plt.colorbar()
-                        plt.savefig("fock_diff.png", dpi=500, bbox_inches='tight')
+                        plt.savefig(
+                            os.path.join(output_folder, f"fock_diff_{artifact_id}.png"),
+                            dpi=500,
+                            bbox_inches='tight',
+                        )
                         plt.close()
 
                         # write output and label matrices to file, will load them later:
-                        np.save(os.path.join(output_folder, f"output_fock_{index}.npy"), output_fock_matrix)
-                        np.save(os.path.join(output_folder, f"label_fock_{index}.npy"), label_fock_matrix)
+                        np.save(os.path.join(output_folder, f"output_fock_{artifact_id}.npy"), output_fock_matrix)
+                        np.save(os.path.join(output_folder, f"label_fock_{artifact_id}.npy"), label_fock_matrix)
 
+                    overlap_matrix = None
                     # Compute the eigenvalues and eigenvalue error
                     if compute_eigenvalues:
 
@@ -983,9 +1005,9 @@ class SplitTrainer():
                             # write the output fock matrix to file:
                             if rank == 0:
                                 print("Writing matrices to file...", flush=True)
-                                np.save(os.path.join('./', f"output_fock_{index}.npy"), output_fock_matrix)
-                                np.save(os.path.join('./', f"label_fock_{index}.npy"), label_fock_matrix)
-                                np.save(os.path.join('./', f"overlap_matrix_{index}.npy"), overlap_matrix)
+                                np.save(os.path.join(output_folder, f"output_fock_{artifact_id}.npy"), output_fock_matrix)
+                                np.save(os.path.join(output_folder, f"label_fock_{artifact_id}.npy"), label_fock_matrix)
+                                np.save(os.path.join(output_folder, f"overlap_matrix_{artifact_id}.npy"), overlap_matrix)
                                 
                             dist.barrier()
                             print("Finished writing matrices to file.", flush=True)
@@ -993,17 +1015,25 @@ class SplitTrainer():
                             label_eigenvalues = sp.linalg.eigvalsh(label_fock_matrix, overlap_matrix)
                             pred_eigenvalues = sp.linalg.eigvalsh(output_fock_matrix, overlap_matrix)
                         else:
-                            print("Building overlap matrix and computing eigenvalues...", flush=True)
-                            print("For now, setting overlap matrix to identity!", flush=True)
-                            # label_eigenvalues, pred_eigenvalues, overlap_matrix = self.get_overlap_and_eigs(batch, output_fock_matrix, label_fock_matrix, orbital_basis, dataset_name)
-                            overlap_matrix = None
-                            label_eigenvalues = np.linalg.eigvalsh(label_fock_matrix) 
-                            pred_eigenvalues = np.linalg.eigvalsh(output_fock_matrix)
-                            print("Finished eigenvalue computation.", flush=True)
+                            raise ValueError(
+                                "Fock eigenvalue metrics require an overlap "
+                                "matrix; identity-overlap values are not "
+                                "physical molecular-orbital energies."
+                            )
                         
                         if dump_plots and rank == 0:
-                            self.plot_eigenvalues(label_eigenvalues, pred_eigenvalues, index)
-                            self.plot_eigenvalue_diff(label_eigenvalues, pred_eigenvalues)
+                            self.plot_eigenvalues(
+                                label_eigenvalues,
+                                pred_eigenvalues,
+                                artifact_id,
+                                output_folder,
+                            )
+                            self.plot_eigenvalue_diff(
+                                label_eigenvalues,
+                                pred_eigenvalues,
+                                artifact_id,
+                                output_folder,
+                            )
                         dist.barrier()
 
                         # take the first half (occupied):
@@ -1017,7 +1047,7 @@ class SplitTrainer():
                         if rank == 0:
                             print("MAE error in (H!) eigenvalues: ", eigenvalue_MAE, flush=True)
                     else:
-                        eigenvalue_maes.append(0)
+                        eigenvalue_maes.append(float("nan"))
 
                     num_atoms_in_molecule_list.append(batch.num_atoms_in_molecule.cpu().detach().numpy().tolist()[0])
 
@@ -1038,7 +1068,7 @@ class SplitTrainer():
                         print("Total energy error from predicted Fock matrix: ", total_energy_errors[-1], flush=True)
                         print("Energy from database: ", batch.energies.cpu().detach().numpy(), flush=True)
                     else:
-                        total_energy_errors.append(0.0)
+                        total_energy_errors.append(float("nan"))
 
 
                 elif loss_target_string == 'energies':
@@ -1218,15 +1248,18 @@ class SplitTrainer():
                     node_output = node_output[0]
                     edge_output = edge_output[0]
                 
+                target_object, target_index = self._batch_target_reference(
+                    batch,
+                )
                 # When using the distributed solver, each batch has its own fock targets object (it's a supergraph)
                 if distributed_graphs:
-                    neighbour_list = batch.fock_target_object[0].neighbour_list_list
-                    atomic_numbers = batch.fock_target_object[0].atomic_numbers_list
-                    orbitals_per_atom = batch.fock_target_object[0].orbitals_per_atom_list
+                    neighbour_list = target_object.neighbour_list_list
+                    atomic_numbers = target_object.atomic_numbers_list
+                    orbitals_per_atom = target_object.orbitals_per_atom_list
                 else:
-                    neighbour_list = batch.fock_target_object[0].neighbour_list_list[index]
-                    atomic_numbers = batch.fock_target_object[0].atomic_numbers_list[index]
-                    orbitals_per_atom = batch.fock_target_object[0].orbitals_per_atom_list[index]
+                    neighbour_list = target_object.neighbour_list_list[target_index]
+                    atomic_numbers = target_object.atomic_numbers_list[target_index]
+                    orbitals_per_atom = target_object.orbitals_per_atom_list[target_index]
                     
 
                 # ========================================
@@ -1253,9 +1286,12 @@ class SplitTrainer():
                     world_size=world_size
                 )
 
-                # Undo scale/shift layers on output:
-                print("Undoing scale/shift for outputs and labels...", flush=True)
-                final_node_outputs = batch.fock_target_object[0].undo_scale_shift(final_node_outputs, atomic_numbers)
+                # Undo target normalization on the predicted node blocks.
+                if target_object.scale_shift_data is not None:
+                    print("Undoing scale/shift for outputs...", flush=True)
+                    final_node_outputs = target_object.unscale_shift_node_blocks(
+                        final_node_outputs, atomic_numbers
+                    )
 
                 # Transform back to uncoupled basis:
                 print("Transforming to uncoupled basis...", flush=True)
@@ -1431,6 +1467,34 @@ class SplitTrainer():
             num_train_batches + gradient_accumulation_steps - 1
         ) // gradient_accumulation_steps
 
+    @staticmethod
+    def step_scheduler_after_validation(
+            scheduler,
+            reduced_validation_loss,
+            step_every_epoch):
+        """Step one scheduler exactly once at its configured cadence."""
+        if hasattr(scheduler, 'patience'):
+            scheduler.step(reduced_validation_loss)
+            return True
+        if step_every_epoch:
+            scheduler.step()
+            return True
+        return False
+
+    @staticmethod
+    def _batch_target_reference(batch, graph_index=0):
+        """Resolve sample-local Fock metadata without using loader position."""
+        target_indices = batch.fock_target_id.reshape(-1)
+        if graph_index < 0 or graph_index >= len(target_indices):
+            raise IndexError(
+                f"graph_index={graph_index} is outside a batch with "
+                f"{len(target_indices)} target ids."
+            )
+        return (
+            batch.fock_target_object[graph_index],
+            int(target_indices[graph_index].item()),
+        )
+
     def check_batch_consistency(self, num_train_batches, num_val_batches, device):
 
         if dist.is_available() and dist.is_initialized():
@@ -1580,7 +1644,6 @@ class SplitTrainer():
 
         node_slices = batch.ptr
         edge_graph_indices = batch.batch[batch.edge_index[0]]
-        target_indices = batch.fock_target_id.reshape(-1)
         abs_error_sum = 0.0
         squared_error_sum = 0.0
         num_elements = 0
@@ -1591,25 +1654,43 @@ class SplitTrainer():
         edge_squared_error_sum = 0.0
         edge_num_elements = 0
 
-        for spin_node_output, spin_edge_output, spin_node_target, spin_edge_target in spin_tensors:
+        for spin_index, (
+                spin_node_output,
+                spin_edge_output,
+                spin_node_target,
+                spin_edge_target,
+        ) in enumerate(spin_tensors):
             for graph_index in range(batch.num_graphs):
                 node_start = int(node_slices[graph_index].item())
                 node_end = int(node_slices[graph_index + 1].item())
                 edge_mask = edge_graph_indices == graph_index
 
-                node_error = (
-                    spin_node_output[node_start:node_end]
-                    - spin_node_target[node_start:node_end]
+                target_object, target_index = self._batch_target_reference(
+                    batch,
+                    graph_index,
                 )
+                neighbour_list = target_object.neighbour_list_list[target_index]
+                atomic_numbers = target_object.atomic_numbers_list[target_index]
+                orbitals_per_atom = target_object.orbitals_per_atom_list[target_index]
+                node_prediction = spin_node_output[node_start:node_end]
+                node_reference = spin_node_target[node_start:node_end]
+                if target_object.scale_shift_data is not None:
+                    spin_string = (
+                        ('_alpha', '_beta')[spin_index]
+                        if self.open_shell
+                        else ''
+                    )
+                    node_prediction = target_object.unscale_shift_node_blocks(
+                        node_prediction, atomic_numbers, spin_string=spin_string
+                    )
+                    node_reference = target_object.unscale_shift_node_blocks(
+                        node_reference, atomic_numbers, spin_string=spin_string
+                    )
+                node_error = node_prediction - node_reference
                 edge_error = spin_edge_output[edge_mask] - spin_edge_target[edge_mask]
                 node_error = basis_transform.get_H(node_error)
                 edge_error = basis_transform.get_H(edge_error)
 
-                target_object = batch.fock_target_object[graph_index]
-                target_index = int(target_indices[graph_index].item())
-                neighbour_list = target_object.neighbour_list_list[target_index]
-                atomic_numbers = target_object.atomic_numbers_list[target_index]
-                orbitals_per_atom = target_object.orbitals_per_atom_list[target_index]
                 num_atoms = len(atomic_numbers)
                 src_idxes = np.concatenate([
                     neighbour_list[0], np.arange(num_atoms)
@@ -2015,7 +2096,7 @@ class SplitTrainer():
             plt.savefig(output_folder+"/" + keyword + "_emb_"+str(i)+".png", dpi=300, bbox_inches='tight')
             plt.close()
 
-    def plot_eigenvalues(self, label_eigs, pred_eigs, index):
+    def plot_eigenvalues(self, label_eigs, pred_eigs, index, output_folder):
         """
         Here for convinience, just plots the eigenvalues of the matrix
         """
@@ -2033,21 +2114,31 @@ class SplitTrainer():
 
         plt.scatter(range(len(label_eigs)), label_eigs, s=15, alpha=0.4, label=r'$H^{ref}$', color='darkcyan', edgecolors='none')
         plt.scatter(range(len(pred_eigs)), pred_eigs, s=2, alpha=0.6, label=r'$H^{pred}$', color='mediumblue', marker='x', linewidths=0.5 )
-        plt.ylabel('$\lambda$ (eV)', color='mediumblue')
+        plt.ylabel(r'$\lambda$ (eV)', color='mediumblue')
         plt.legend(frameon=False, loc='upper right')
         plt.xlabel('Eigenvalue #')
 
         diff_eigenvalues = np.abs(label_eigs - pred_eigs)
         ax2 = plt.gca().twinx()
         ax2.scatter(range(len(diff_eigenvalues)), diff_eigenvalues, s=5, alpha=0.5, color='red', edgecolors='none')
-        ax2.set_ylabel('$\delta\lambda$ (eV)', color='red')
+        ax2.set_ylabel(r'$\delta\lambda$ (eV)', color='red')
 
         # plt.legend(frameon=False)
-        plt.savefig("eigenvalues_fock_" + str(index) + ".png", dpi=500, bbox_inches='tight')
+        plt.savefig(
+            os.path.join(output_folder, f"eigenvalues_fock_{index}.png"),
+            dpi=500,
+            bbox_inches='tight',
+        )
         plt.close()
 
 
-    def plot_eigenvalue_diff(self, label_eigs, pred_eigs, s=1):
+    def plot_eigenvalue_diff(
+            self,
+            label_eigs,
+            pred_eigs,
+            index,
+            output_folder,
+            s=1):
         """
         Here for convinience, just plots the eigenvalues of the matrix
         """
@@ -2057,9 +2148,13 @@ class SplitTrainer():
         plt.scatter(range(len(diff_eigenvalues)), diff_eigenvalues, s=5, alpha=0.5, label='Eigenvalue Difference', color='darkcyan', edgecolors='none')
 
         plt.xlabel('Eigenvalue #')
-        plt.ylabel('$\delta\lambda$ ($E_h$)')
+        plt.ylabel(r'$\delta\lambda$ ($E_h$)')
         plt.legend(frameon=False)
-        plt.savefig("eigenvalues_diff_fock.png", dpi=500, bbox_inches='tight')
+        plt.savefig(
+            os.path.join(output_folder, f"eigenvalues_diff_fock_{index}.png"),
+            dpi=500,
+            bbox_inches='tight',
+        )
         plt.close()
 
     def get_total_energy(self, batch, fock_matrix, orbital_basis, dataset_name, overlap_matrix=None, save_density=False, key='0'):

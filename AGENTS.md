@@ -5,13 +5,71 @@ These rules apply to the canonical SC26-seongsu project at
 
 ## Script ownership and placement
 
-- Put new agent-generated helper, migration, inspection, conversion, and automation scripts under `_auto_script/`.
+- Put new MALOQ-specific agent-generated helper, migration, inspection,
+  conversion, and automation scripts under `_auto_script/`. Put
+  project-independent server, storage, download, transfer, and monitoring
+  tools under
+  `/dataset/seongsu/shared-home/workspace/_global_auto_script/` instead. Store
+  their global outputs under
+  `/dataset/seongsu/shared-home/workspace/_global_auto_script_output/`, not
+  under this project's `outputs/` tree.
 - Put a script under `_my_script/` only when the user explicitly identifies it as an experiment script or asks for it there.
 - Organize experiment scripts as `_my_script/experiment/YYYY-MM-DD/`, using the `Asia/Seoul` calendar date. Create the dated directory when it does not exist.
 - If an experiment spans several days, keep its original dated directory and record later changes in that directory's README or notes instead of moving it.
 - Treat existing files under `_my_script/` as user-owned. Do not rewrite, move, or delete them unless the user explicitly asks.
 - Existing production modules stay in their canonical directories (`src/maloq/` and `tests/`). The `_auto_script/` rule applies to newly created standalone scripts, not to necessary edits of existing source files.
 - Do not add new one-off scripts at the repository root or in `scripts/`.
+
+## Experimental feature lifecycle
+
+- Start every new research model, layer, head, dataloader, optimizer behavior,
+  or architectural ablation under
+  `src/maloq/experimental/<semantic_feature_slug>/`. Keep its tests under
+  `tests/experimental/`. Do not add feature-specific branches, booleans,
+  selectors, defaults, or validation directly to canonical modules merely to
+  run an experiment.
+- Use a semantic lowercase snake-case slug such as
+  `nte_edge2_atom_direct`; do not use ambiguous names such as `v2`, `new`, or
+  `test`. One feature owns one directory.
+- Keep dependency direction one-way: experimental code may import canonical
+  MALOQ code, but canonical `src/maloq/` modules must not import
+  `maloq.experimental`. Do not auto-import experimental packages from
+  `maloq/__init__.py`, the CLI, or a canonical package `__init__.py`.
+  Experiment launchers must import their selected feature explicitly.
+- Keep feature-specific config defaults and validation inside the feature
+  package. If an experiment needs a canonical extension point, add one small
+  feature-neutral hook with unchanged default behavior and regression tests;
+  do not name the hook after the experiment.
+- Every feature directory must contain `FEATURE.md` documenting its status
+  (`draft`, `smoke`, `validated`, `promoted`, or `abandoned`), hypothesis,
+  baseline commit/config, explicit entry point, config namespace, checkpoint
+  compatibility, tests, dated experiment/output evidence, known limitations,
+  and intended promotion target.
+- Keep shared experimental code feature-local until at least two validated
+  consumers justify a common abstraction. Do not create a generic
+  experimental dumping-ground utility module.
+- Experimental run names and checkpoints must include the semantic feature
+  slug and must not masquerade as canonical baselines. Core defaults and
+  existing checkpoint loading behavior must remain unchanged during
+  experimentation.
+- Direct core edits are allowed only for an isolated correctness, crash,
+  security, or dtype fix with a regression test; a feature-neutral extension
+  seam; or a feature explicitly approved for promotion. A metric improvement
+  alone is not a bug fix.
+- Promotion requires matched baseline/candidate provenance, relevant
+  schema/shape/AO-convention and equivariance tests, CPU import, one train and
+  validation step on CUDA, checkpoint save/reload, DDP verification when
+  supported, and quality/parameter/memory/throughput comparison at matched
+  split, seed, effective batch, and optimizer. On promotion, move the winning
+  behavior into one coherent canonical implementation and remove ablation-only
+  flags and duplicate code. Retain a thin compatibility alias only when real
+  checkpoints require it.
+- Do not relocate source used by a running experiment or a frozen source
+  snapshot. Migrate grandfathered pre-policy experiments separately after
+  their active runs finish.
+- Follow `src/maloq/experimental/README.md` and its feature template for the
+  concrete package contract. The experimental import-boundary test is
+  authoritative and must remain passing.
 
 ## Experiment hygiene
 

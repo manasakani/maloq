@@ -45,7 +45,10 @@ class Fock_Targets:
                 orbital_template=None,
                 req_output_irreps=None,
                 out_js_list=None,
-                ls_list=None):
+                ls_list=None,
+                basis_transformation=None,
+                orbital_template_device_cache=None,
+                verbose=True):
         """
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]]
         orbital_basis - H2O: {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]} (ex. dzvp)
@@ -53,6 +56,8 @@ class Fock_Targets:
         """
         self.max_num_elements = 100
 
+        self.verbose = bool(verbose)
+        self.orbital_template_device_cache = orbital_template_device_cache
         if torch.cuda.is_available():
             self.device = torch.device('cuda')
         else:
@@ -118,7 +123,8 @@ class Fock_Targets:
                 self.orbital_template = cache["orbital_template"]
                 self.ls_list = cache["ls_list"]
             else:
-                print("Recomputing orbital interactions...")
+                if self.verbose:
+                    print("Recomputing orbital interactions...")
                 targets, self.req_output_irreps, simplified_out_irreps, ls_list, self.out_js_list, self.orbital_starts, full_orb_interaction_list = utils_tensor_decomp.make_output_irreps(self.orbital_basis)
                 equivariant_blocks = utils_tensor_decomp.process_targets(self.orbital_basis, targets, ls_list, self.out_js_list, full_orb_interaction_list)
                 self.orbital_template = matrix2labels_kernels.get_orbital_template(equivariant_blocks, self.orbital_starts)
@@ -159,12 +165,18 @@ class Fock_Targets:
             self.req_output_irreps = req_output_irreps
             self.ls_list = ls_list
 
-        # --> Create coupled/uncoupled basis transformation
-        self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(self.req_output_irreps,
-                                                                       self.out_js_list,
-                                                                       default_dtype_torch=dtype,
-                                                                       if_sort=False,
-                                                                       device_torch=self.device)
+        # --> Create coupled/uncoupled basis transformation. Streaming H5
+        # datasets reuse this immutable transform for every molecule.
+        if basis_transformation is None:
+            self.basis_transformation = utils_tensor_decomp.e3TensorDecomp(
+                self.req_output_irreps,
+                self.out_js_list,
+                default_dtype_torch=dtype,
+                if_sort=False,
+                device_torch=self.device,
+            )
+        else:
+            self.basis_transformation = basis_transformation
 
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         self.scale_shift_data = scale_shift_data
@@ -176,16 +188,18 @@ class Fock_Targets:
 
             if total_num_focks > 1 or not self.distribute_graphs:
                 if self.rank == 0:
-                    print("Multiple graphs in the dataset, doing molecule-wise load followed by label re-distribution...", flush=True)
+                    if self.verbose:
+                        print("Multiple graphs in the dataset, doing molecule-wise load followed by label re-distribution...", flush=True)
                 target_start = time.perf_counter()
                 self.make_targets(fock_matrices)
             else:
                 if self.rank == 0:
-                    print("Only one graph in the dataset, building distributed labels...", flush=True)
+                    if self.verbose:
+                        print("Only one graph in the dataset, building distributed labels...", flush=True)
                 target_start = time.perf_counter()
                 self.make_targets_singlegraph(fock_matrices)
 
-            if self.rank == 0:
+            if self.rank == 0 and self.verbose:
                 print(
                     "Matrix-to-label conversion finished in "
                     f"{time.perf_counter() - target_start:.1f}s.",
@@ -193,7 +207,7 @@ class Fock_Targets:
                 )
             mask_start = time.perf_counter()
             self.create_label_unpadding_mask() # This will be used to compute the loss only on the padded entries in the target
-            if self.rank == 0:
+            if self.rank == 0 and self.verbose:
                 print(
                     "Label-mask construction finished in "
                     f"{time.perf_counter() - mask_start:.1f}s.",
@@ -369,24 +383,37 @@ class Fock_Targets:
         self.edge_labels_list = []
 
         if method == 'cupy_kernel':
-            orbital_template_ptrs = []
-            orbital_template_tmp = []
-            for o in self.orbital_template:
-                inner_size = 5 * len(o)
-                tmp = np.zeros((inner_size,), dtype=cp.int32)
-                for j, (row_slice, col_slice, output_slice) in enumerate(o):
-                    tmp[j * 5 + 0] = row_slice.start
-                    tmp[j * 5 + 1] = row_slice.stop
-                    tmp[j * 5 + 2] = col_slice.start
-                    tmp[j * 5 + 3] = col_slice.stop
-                    tmp[j * 5 + 4] = output_slice.start
-                tmp = cp.array(tmp, dtype=cp.int32)
-                orbital_template_tmp.append(tmp)
-                orbital_template_ptrs.append(matrix2labels_kernels.get_ptr(tmp))
+            if self.orbital_template_device_cache is None:
+                orbital_template_ptrs = []
+                orbital_template_tmp = []
+                for o in self.orbital_template:
+                    inner_size = 5 * len(o)
+                    tmp = np.zeros((inner_size,), dtype=cp.int32)
+                    for j, (row_slice, col_slice, output_slice) in enumerate(o):
+                        tmp[j * 5 + 0] = row_slice.start
+                        tmp[j * 5 + 1] = row_slice.stop
+                        tmp[j * 5 + 2] = col_slice.start
+                        tmp[j * 5 + 3] = col_slice.stop
+                        tmp[j * 5 + 4] = output_slice.start
+                    tmp = cp.array(tmp, dtype=cp.int32)
+                    orbital_template_tmp.append(tmp)
+                    orbital_template_ptrs.append(
+                        matrix2labels_kernels.get_ptr(tmp)
+                    )
 
-            # template: for interation Z1-Z2, [row slice, col slice] of matrix goes to [output slice] of label
-            orbital_template_ptrs = cp.array(orbital_template_ptrs, dtype=cp.uintp)
-            cp.cuda.Stream.null.synchronize()
+                # Keep the CuPy arrays alive: orbital_template_ptrs contains
+                # device addresses into orbital_template_tmp.
+                orbital_template_ptrs = cp.array(
+                    orbital_template_ptrs,
+                    dtype=cp.uintp,
+                )
+                cp.cuda.Stream.null.synchronize()
+                self.orbital_template_device_cache = (
+                    tuple(orbital_template_tmp),
+                    orbital_template_ptrs,
+                )
+            else:
+                _, orbital_template_ptrs = self.orbital_template_device_cache
 
         if single_matrix:
             for i, fock_matrix in enumerate(fock_matrices):
@@ -484,7 +511,7 @@ class Fock_Targets:
                         flush=True,
                     )
             
-            if len(fock_matrices) > 0:
+            if len(fock_matrices) > 0 and self.verbose:
                 print("Rank ", self.rank, ": Node label magnitude range: ", torch.max(node_labels).item(), torch.min(node_labels).item(), flush=True)
             
         # process all incoming fock matrices at once
@@ -1206,15 +1233,19 @@ class Fock_Targets:
 
         return node_blocks
 
-    def unscale_shift_node_blocks(self, node_blocks, atomic_numbers):
+    def unscale_shift_node_blocks(
+            self,
+            node_blocks,
+            atomic_numbers,
+            spin_string=''):
         """
         Undo the scaling and shifting applied to the targets (l=0 values and optionally all irrep degrees).
         """
 
         new_node_blocks = node_blocks.clone()  # Create a copy to avoid modifying the original list
 
-        means = self.scale_shift_data['element_scalar_means']
-        stds = self.scale_shift_data['element_scalar_stds']
+        means = self.scale_shift_data['element_scalar_means'+spin_string]
+        stds = self.scale_shift_data['element_scalar_stds'+spin_string]
         scalar_indices = self.scale_shift_data['scalar_irrep_indices']
         normalization_mode = self.scale_shift_data.get(
             'normalization_mode',

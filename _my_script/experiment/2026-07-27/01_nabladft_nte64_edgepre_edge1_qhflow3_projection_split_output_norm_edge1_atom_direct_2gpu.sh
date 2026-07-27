@@ -6,14 +6,21 @@ GPUS=${2:-0,1}
 EXPECTED_HOST=${EXPECTED_HOST:-}
 
 PROJECT_ROOT=/dataset/seongsu/shared-home/workspace/project
-SCRIPT_ROOT=${PROJECT_ROOT}/_my_script/experiment/2026-07-27
+SOURCE_ROOT=${SC26_SOURCE_ROOT:-${PROJECT_ROOT}}
+SOURCE_MANIFEST=${SC26_SOURCE_MANIFEST:-}
+SOURCE_ARCHIVE=${SC26_SOURCE_ARCHIVE:-}
+SOURCE_FINGERPRINT=${SC26_SOURCE_FINGERPRINT:-}
+QUEUE_SOURCE_SNAPSHOT=${SC26_QUEUE_SOURCE_SNAPSHOT:-}
+SCRIPT_ROOT=${SOURCE_ROOT}/_my_script/experiment/2026-07-27
 ENV_ROOT=/dataset/seongsu/shared-home/conda/envs/proj-dft-baselines-maloq-sc26
 PY=${ENV_ROOT}/bin/python
 MPIRUN=${ENV_ROOT}/bin/mpirun
-RUNNER=${PROJECT_ROOT}/_my_script/experiment/2026-07-25/run_training_workflow_fixed.py
+RUNNER=${SOURCE_ROOT}/_my_script/experiment/2026-07-25/run_training_workflow_fixed.py
 NABLA_DB=/dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
-CONFIG=${SCRIPT_ROOT}/nte64e2_qcond_edgepre_edge1_qhflow3_irrep_projection_split_output_norm_edge1_atom_direct_nabladft.yaml
-WANDB_DISPLAY_NAME="NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | EdgePre+Edge1+QHFProj+SplitOutNorm+Edge1AtomDirect | V1"
+CONFIG=${SC26_MODEL_CONFIG:-${SCRIPT_ROOT}/nte64e2_qcond_edgepre_edge1_qhflow3_irrep_projection_split_output_norm_edge1_atom_direct_nabladft.yaml}
+WANDB_DISPLAY_NAME=${SC26_WANDB_DISPLAY_NAME:-"NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | EdgePre+Edge1+QHFProj+SplitOutNorm+Edge1AtomDirect | V1"}
+WANDB_GROUP=${SC26_WANDB_GROUP:-nabla-nte64-final-mae-edge1-atom-direct-v1}
+RUN_PREFIX=${SC26_RUN_PREFIX:-nabladft-nte64-edgepre-edge1-qhfproj-splitoutnorm-edge1atom-v1-2gpu-eb20-mb5-ga2}
 
 if [[ ! -x "${PY}" || ! -x "${MPIRUN}" || ! -f "${RUNNER}" ]]; then
   echo "SC26 Python, mpirun, or fixed training runner is missing." >&2
@@ -26,6 +33,45 @@ fi
 if [[ ! -r "${CONFIG}" ]]; then
   echo "Model config is missing or unreadable: ${CONFIG}" >&2
   exit 1
+fi
+if [[ "${SOURCE_ROOT}" != "${PROJECT_ROOT}" ]]; then
+  if [[ ! -d "${SOURCE_ROOT}/src/maloq" || ! -r "${SOURCE_MANIFEST}" ]]; then
+    echo "Frozen source tree or checksum manifest is missing." >&2
+    exit 1
+  fi
+  (
+    cd "${SOURCE_ROOT}"
+    sha256sum --check --quiet "${SOURCE_MANIFEST}"
+  )
+  if [[ -n "${SOURCE_ARCHIVE}" && ! -r "${SOURCE_ARCHIVE}" ]]; then
+    echo "Frozen source archive is missing: ${SOURCE_ARCHIVE}" >&2
+    exit 1
+  fi
+  if [[ -n "${SOURCE_FINGERPRINT}" ]]; then
+    ACTUAL_SOURCE_FINGERPRINT=$(
+      "${PY}" - "${SOURCE_ROOT}/PROVENANCE/source-snapshot/source-final.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["fingerprint"])
+PY
+    )
+    if [[ "${ACTUAL_SOURCE_FINGERPRINT}" != "${SOURCE_FINGERPRINT}" ]]; then
+      echo "Frozen source fingerprint mismatch." >&2
+      exit 1
+    fi
+  fi
+fi
+if [[ -n "${QUEUE_SOURCE_SNAPSHOT}" ]]; then
+  if [[ ! -d "${QUEUE_SOURCE_SNAPSHOT}" || ! -r "${QUEUE_SOURCE_SNAPSHOT}/package.sha256" ]]; then
+    echo "Queue source snapshot or checksum package is missing." >&2
+    exit 1
+  fi
+  (
+    cd "${QUEUE_SOURCE_SNAPSHOT}"
+    sha256sum --check --quiet package.sha256
+  )
 fi
 
 case "${SCOPE}" in
@@ -65,7 +111,7 @@ case "${SCOPE}" in
       --wandb-entity kaist-korea
       --wandb-mode online
       --wandb-log-every-n-steps 10
-      --wandb-group nabla-nte64-final-mae-edge1-atom-direct-v1
+      --wandb-group "${WANDB_GROUP}"
       --wandb-run-name "${WANDB_DISPLAY_NAME}"
     )
     SCOPE_SLUG=full-e20
@@ -102,7 +148,10 @@ fi
 cd "${PROJECT_ROOT}"
 
 if [[ "${SCOPE}" == "validate" ]]; then
-  exec env PYTHONPATH="${PROJECT_ROOT}/src" "${PY}" "${RUNNER}" \
+  exec env \
+    PYTHONPATH="${SOURCE_ROOT}/src" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    "${PY}" "${RUNNER}" \
     --dataset nabladft \
     --variant maloq-nte \
     --model-config "${CONFIG}" \
@@ -142,16 +191,58 @@ for gpu in "${GPU_INDICES[@]}"; do
 done
 
 RUN_ID=$(date +%Y%m%d-%H%M%S)-$$
-OUTPUT_ROOT=${PROJECT_ROOT}/outputs/nabladft-nte64-edgepre-edge1-qhfproj-splitoutnorm-edge1atom-v1-2gpu-eb20-mb5-ga2-${SCOPE_SLUG}-${RUN_ID}
+RUN_BASENAME=${RUN_PREFIX}-${SCOPE_SLUG}-${RUN_ID}
+OUTPUT_ALIAS=
+if [[ "${SOURCE_ROOT}" == "${PROJECT_ROOT}" ]]; then
+  OUTPUT_BASE=${PROJECT_ROOT}/outputs
+else
+  OUTPUT_BASE=${SOURCE_ROOT}/outputs
+  OUTPUT_ALIAS=${PROJECT_ROOT}/outputs/${RUN_BASENAME}
+fi
+OUTPUT_ROOT=${OUTPUT_BASE}/${RUN_BASENAME}
 if [[ -e "${OUTPUT_ROOT}" ]]; then
   echo "Output already exists: ${OUTPUT_ROOT}" >&2
   exit 1
 fi
 mkdir -p "${OUTPUT_ROOT}"
+if [[ -n "${OUTPUT_ALIAS}" ]]; then
+  if [[ -e "${OUTPUT_ALIAS}" || -L "${OUTPUT_ALIAS}" ]]; then
+    echo "Output alias already exists: ${OUTPUT_ALIAS}" >&2
+    exit 1
+  fi
+  ln -s "${OUTPUT_ROOT}" "${OUTPUT_ALIAS}"
+fi
+if [[ "${SOURCE_ROOT}" != "${PROJECT_ROOT}" ]]; then
+  mkdir -p "${OUTPUT_ROOT}/source-snapshot"
+  cp -a -- \
+    "${SOURCE_ROOT}/PROVENANCE/source-snapshot/." \
+    "${OUTPUT_ROOT}/source-snapshot/"
+  cp -- "${SOURCE_MANIFEST}" "${OUTPUT_ROOT}/SOURCE_TREE.sha256"
+  if [[ -n "${SOURCE_ARCHIVE}" ]]; then
+    cp -- "${SOURCE_ARCHIVE}" "${OUTPUT_ROOT}/"
+  fi
+  printf '%s\n' \
+    "source_root=${SOURCE_ROOT}" \
+    "source_manifest=${SOURCE_MANIFEST}" \
+    "source_archive=${SOURCE_ARCHIVE}" \
+    "source_fingerprint=${SOURCE_FINGERPRINT}" \
+    > "${OUTPUT_ROOT}/runtime-source.txt"
+  if [[ -n "${SC26_QUEUE_JOB_ID:-}" ]]; then
+    QUEUE_REQUEST=${PROJECT_ROOT}/outputs/experiment-queue/jobs/${SC26_QUEUE_JOB_ID}/request.json
+    if [[ -r "${QUEUE_REQUEST}" ]]; then
+      cp -- "${QUEUE_REQUEST}" "${OUTPUT_ROOT}/queue-request.json"
+    fi
+  fi
+fi
+if [[ -n "${QUEUE_SOURCE_SNAPSHOT}" ]]; then
+  mkdir -p "${OUTPUT_ROOT}/queue-source-snapshot"
+  cp -a -- "${QUEUE_SOURCE_SNAPSHOT}/." "${OUTPUT_ROOT}/queue-source-snapshot/"
+fi
 
 set +e
 env \
-  PYTHONPATH="${PROJECT_ROOT}/src" \
+  PYTHONPATH="${SOURCE_ROOT}/src" \
+  PYTHONDONTWRITEBYTECODE=1 \
   CUDA_VISIBLE_DEVICES="${GPUS}" \
   MASTER_ADDR=127.0.0.1 \
   MASTER_PORT="${PORT}" \
@@ -183,18 +274,21 @@ set -e
 
 if [[ "${SCOPE}" == "smoke" && ${EXIT_CODE} -eq 0 ]]; then
   case "${OUTPUT_ROOT}" in
-    "${PROJECT_ROOT}"/outputs/nabladft-nte64-edgepre-edge1-qhfproj-splitoutnorm-edge1atom-v1-2gpu-eb20-mb5-ga2-full-size-smoke-e1-*) ;;
+    "${OUTPUT_BASE}"/"${RUN_PREFIX}"-full-size-smoke-e1-*) ;;
     *)
       echo "Refusing to remove unexpected smoke path: ${OUTPUT_ROOT}" >&2
       exit 1
       ;;
   esac
   rm -rf -- "${OUTPUT_ROOT}"
+  if [[ -n "${OUTPUT_ALIAS}" && -L "${OUTPUT_ALIAS}" ]]; then
+    unlink -- "${OUTPUT_ALIAS}"
+  fi
   echo "Smoke passed; temporary artifacts removed."
 elif [[ ${EXIT_CODE} -ne 0 ]]; then
   echo "Run failed; evidence retained at ${OUTPUT_ROOT}" >&2
 else
-  echo "Run complete: ${OUTPUT_ROOT}"
+  echo "Run complete: ${OUTPUT_ALIAS:-${OUTPUT_ROOT}}"
 fi
 
 exit "${EXIT_CODE}"

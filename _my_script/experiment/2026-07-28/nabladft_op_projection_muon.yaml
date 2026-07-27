@@ -1,0 +1,103 @@
+# Shape-routed Muon operator-projection experiment on NablaDFT-2k.
+# The runner validates this contract before constructing the distributed trainer.
+schema_version: 1
+
+dataset:
+  dataset_name: nablaDFT
+  dbpath: /dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
+  num_train: 12081
+  num_val: 64
+  num_test: 0
+  train_start: 0
+  val_start: 12081
+
+graph:
+  local_graph_cutoff: 8.0
+  operator_cutoff: 16.0
+  include_self_edges: false
+
+model:
+  model_variant: nabladft-ntev2-op-projection-muon
+  node_channels: 128
+  hidden_channels: 128
+  output_channels: 64
+  pair_hidden_channels: 64
+  pair_edge_channels: 64
+  lmax: null
+  infer_lmax_from_basis: true
+  num_distance_basis: 512
+  num_layers: 3
+  pair_projection_chunk_size: 2048
+
+operator:
+  probe_distribution: rademacher
+  train_num_probes: 2
+  validation_num_probes: 8
+  normalize_action_loss: true
+
+matrix_metrics:
+  enabled: true
+  every_n_epochs: 1
+  # Train is a fixed diagnostic subset; validation is the complete 64-row split.
+  train_samples_per_rank: 1
+  validation_scope: full
+  identity_column_chunk_size: 64
+
+optimization:
+  num_epochs: 20
+  batch_size_per_rank: 5
+  world_size: 2
+  gradient_accumulation_steps: 2
+  effective_batch_size: 20
+  optimizer_type: muon
+  # ndim >= 2 trainable tensors use Muon; all others use auxiliary AdamW.
+  muon_lr: 0.02
+  muon_momentum: 0.95
+  muon_nesterov: true
+  muon_ns_steps: 5
+  # Auxiliary AdamW settings for scalar, vector, and packed 1-D parameters.
+  lr_init: 0.0005
+  weight_decay: 0.0001
+  adamw_betas: [0.9, 0.95]
+  adamw_eps: 1.0e-10
+  gradient_clip_val: 1.0
+  scheduler_type: warmup_polynomial
+  warmup_steps: 1000
+  scheduler_power: 1.0
+  min_lr_ratio: 0.0
+
+checkpointing:
+  save_frequency: 1
+
+runtime:
+  dtype: float32
+  seed: 44
+  num_workers: 0
+  dist_backend: nccl
+  log_every_n_steps: 10
+
+tracking:
+  use_wandb: true
+  wandb_project: MALOQ-nablaDFT-v2
+  wandb_entity: kaist-korea
+  wandb_mode: online
+  wandb_run_name: "NablaDFT | NTEV2-OpProjection | AdamW | RAW | V4 MUON"
+  wandb_group: nabladft-op-projection-v4-seed44
+  wandb_job_type: full
+  wandb_tags:
+    - dataset:nabladft
+    - split:train12081-val64
+    - model:ntev2-op-projection
+    - representation:node-latent
+    - head:matrix-free-operator
+    - target:raw
+    - probes:rademacher
+    - metrics:full-validation-exact-streamed-matrix
+    - optimizer:muon-auxadamw
+    - optimizer-routing:ndim-ge2-muon-plus-aux-adamw
+    - muon-lr:0.02
+    - aux-adamw-lr:0.0005
+    - effective-batch:20
+    - seed:44
+    - version:v4-muon
+    - sc26-seongsu

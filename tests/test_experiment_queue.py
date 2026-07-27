@@ -276,3 +276,31 @@ def test_cancel_refuses_claimed_job(tmp_path):
 
     with pytest.raises(ValueError, match="must not kill training"):
         module.cancel_job(paths, "queue-test-job")
+
+
+def test_master_port_probe_matches_tcpstore_wildcard_bind(tmp_path, monkeypatch):
+    module = load_queue_module()
+    paths = module.QueuePaths(tmp_path / "project", tmp_path / "queue")
+    paths.ensure()
+    bound_addresses = []
+
+    class Probe:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def bind(self, address):
+            bound_addresses.append(address)
+
+    monkeypatch.setattr(module.socket, "socket", Probe)
+
+    port, lock_dir = module.choose_master_port(
+        paths,
+        hostname="test-host",
+        job_id="queue-test-job",
+    )
+
+    assert bound_addresses == [("0.0.0.0", port)]
+    module.release_simple_lease(lock_dir)

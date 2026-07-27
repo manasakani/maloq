@@ -24,7 +24,7 @@ splits:
 
 model:
   model_variant: qhflow3-local-muon-head-nabladft-ov0-ntegrid-projmuon
-  backbone_type: qhflow3_clean
+  backbone_type: qhflow3
   head_type: maloq_muon
   l_embedding_dim: 128
   hidden_dim: 128

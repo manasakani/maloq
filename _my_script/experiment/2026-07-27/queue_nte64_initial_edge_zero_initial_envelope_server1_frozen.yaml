@@ -1,0 +1,33 @@
+jobs:
+  - id: nabla-nte64-initzero-initenv-frozen-v1-20260727a
+    description: New-best InitialEdgeZero reference with only the QHFlow3 degree envelope on initial node and edge embeddings
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 31
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      MASTER_PORT: "21355"
+      SC26_FROZEN_LAUNCHER: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-initzero-envelope-aea6e61f/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-initzero-envelope-aea6e61f
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-initzero-envelope-aea6e61f/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-initzero-envelope-aea6e61f.tar.gz
+      SC26_SOURCE_FINGERPRINT: aea6e61f893c146fea5866921c00830d581aa850ec10ccb821b0ddb2681103d1
+      SC26_QUEUE_SOURCE_SNAPSHOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-initzero-envelope-frozen-v1-20260727a
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-initzero-envelope-aea6e61f/_my_script/experiment/2026-07-27/nte64e2_initial_edge_zero_initial_edge_degree_envelope_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | InitialEdgeZero+InitialEdgeEnvelope+QHFProj+SplitOutNorm | V1"
+      SC26_WANDB_GROUP: nabla-nte64-initialedgezero-next-controls-v2
+      SC26_RUN_PREFIX: nabladft-nte64-initzero-initenv-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/nte64e2_initial_edge_zero_initial_edge_degree_envelope_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-initzero-envelope-aea6e61f/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-initzero-envelope-aea6e61f/_my_script/experiment/2026-07-27/03_nabladft_nte64_edge2_next_controls_2gpu_impl.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-initzero-envelope-aea6e61f/_my_script/experiment/2026-07-27/nte64e2_initial_edge_zero_initial_edge_degree_envelope_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-initzero-envelope-aea6e61f/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-initzero-envelope-aea6e61f/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-initzero-envelope-aea6e61f/PROVENANCE/source-snapshot/initzero-envelope.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-initzero-envelope-aea6e61f.tar.gz
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-snapshots/nabla-nte64-initzero-envelope-frozen-v1-20260727a/package.sha256

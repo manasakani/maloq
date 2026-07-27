@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from e3nn.o3 import Irreps, Linear
 
-from maloq.helm.qhflow3_clean import MuonVisibleIrrepLinear
+from maloq.helm.qhflow3 import MuonVisibleIrrepLinear
 from maloq.train_utils.training_workflow import TrainingWorkflow
 
 

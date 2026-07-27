@@ -1,0 +1,25 @@
+jobs:
+  - id: nabla-nte64-edge2postres-frozen-v1-20260727b
+    description: Final-MAE EdgeBlock2 post-atomwise recurrent-residual control from the immutable smoke-validated source snapshot
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 19
+    environment:
+      EXPECTED_HOST: usr310-gpumngc-01
+      SC26_SOURCE_ROOT: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2postres-fee42435
+      SC26_SOURCE_MANIFEST: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2postres-fee42435/SOURCE_TREE.sha256
+      SC26_SOURCE_ARCHIVE: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-edge2postres-fee42435.tar.gz
+      SC26_SOURCE_FINGERPRINT: e770d7b9dfecf3a18e988da21511ac2bed6f9e107d214d206cbfba9a7e46169c
+      SC26_MODEL_CONFIG: /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2postres-fee42435/_my_script/experiment/2026-07-27/nte64e2_qcond_edgepre_edge1_qhflow3_irrep_projection_split_output_norm_edge2_post_residual_nabladft.yaml
+      SC26_WANDB_DISPLAY_NAME: "NablaDFT | NTE-64/2 | MatrixMuon+AuxAdamW | RAW | QHFcond | EdgePre+Edge1+QHFProj+SplitOutNorm+Edge2PostResidual | V1"
+      SC26_WANDB_GROUP: nabla-nte64-final-mae-edge2-post-residual-v1
+      SC26_RUN_PREFIX: nabladft-nte64-edgepre-edge1-qhfproj-splitoutnorm-edge2postres-v1-2gpu-eb20-mb5-ga2
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-27/01_nabladft_nte64_edgepre_edge1_qhflow3_projection_split_output_norm_edge1_atom_direct_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2postres-fee42435/SOURCE_TREE.sha256
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2postres-fee42435/_my_script/experiment/2026-07-27/nte64e2_qcond_edgepre_edge1_qhflow3_irrep_projection_split_output_norm_edge2_post_residual_nabladft.yaml
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2postres-fee42435/PROVENANCE/source-snapshot/source-final.json
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-trees/nabla-nte64-edge2postres-fee42435/PROVENANCE/source-snapshot/edge2-post-atomwise-residual-ablation.patch
+      - /dataset/seongsu/shared-home/workspace/project/outputs/experiment-source-archives/nabla-nte64-edge2postres-fee42435.tar.gz

@@ -1,0 +1,87 @@
+# OMol_CSH public H5 with the paper-era HELM data/model input contract.
+dataset:
+  dataset_name: omol
+  dataset_format: omol_csh_h5
+  omol_csh_metadata_policy: paper_contract
+  dbpath: /dataset/seongsu/shared-home/datasets/omol_csh/omol_csh_58k_train.h5
+  output_folder: /dataset/seongsu/shared-home/workspace/project/outputs/omol-csh-helm-paper-contract
+  run_name: omol-csh-helm-paper-contract
+  open_shell: false
+
+execution:
+  train_or_eval: train
+  train_backbone: true
+  train_head: true
+  compute_total_energy: false
+  compute_eigenvalues: false
+
+splits:
+  # The public train file contains 57,559 structures. Keep 64 for validation
+  # and one unused so both 2-GPU ranks receive exactly the same train length.
+  num_train: 57494
+  num_val: 64
+  num_test: 0
+  batch_size: 1
+  shuffle: true
+  distribute_graphs: false
+  dist_backend: nccl
+
+model:
+  model_variant: helm-paper-contract-omol-csh
+  backbone_type: esen
+  atom_scalar_embedding_mode: element_only
+  head_type: maloq
+  wigner_backend: triton
+  l_embedding_dim: 128
+  hidden_dim: 128
+  num_distance_basis: 128
+  num_mp_layers: 3
+  rcut_orbitals: 6.0
+  rcut_gaussian: 12.0
+  gaussian_width: 1.0
+  reduce_edge: false
+  reduce_node: false
+  reduce_node_intra: false
+  nte_input_conditioning: none
+
+optimization:
+  # The historical run used 3000 epochs over 64 ranks with dynamic ~18k-edge
+  # batches. That schedule is not operationally equivalent on two GPUs;
+  # use a finite 20-epoch baseline while retaining its optimizer contract.
+  num_epochs: 20
+  lr_init: 0.001
+  optimizer_type: adamw
+  weight_decay: 0.0001
+  scheduler_type: plateau
+  patience: 10
+  threshold: 0.00001
+  eta_min: 1.0e-8
+  step_every_epoch: true
+  gradient_accumulation_steps: 1
+
+loss:
+  loss_target: fock_matrix
+  train_loss: rmse_mse_padded_loss
+  test_loss: l1_unpadded_loss
+  # Reuses the repository's legacy paper-era OMol artifact:
+  # src/maloq/fock_utils/element_scale_shifts_omol.pt
+  scale_and_shift: true
+  compute_uncoupled_loss: true
+  scale_shift_mode: standardize
+
+checkpointing:
+  save_frequency: 20
+  restart_backbone: false
+  restart_head: false
+  restart_optimizer: false
+  backbone_checkpoint: backbone.pt
+  head_checkpoint: head.pt
+
+runtime:
+  dtype: float32
+  seed: 42
+
+tracking:
+  use_wandb: false
+  validation_matrix_metrics: false
+  validation_matrix_metrics_frequency: 1

@@ -1,0 +1,21 @@
+jobs:
+  - id: nabla-ntev2-op-projection-full-val-matrix-metrics-2k-20260728c
+    description: NTEV2 matrix-free operator projection with canonical W&B logging and streamed full-validation exact matrix metrics on NablaDFT-2k
+    launcher: /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/02_nabladft_op_projection_2gpu.sh
+    args: [full, "{gpus}"]
+    gpu_count: 2
+    allowed_hosts: [server-1]
+    priority: 10
+    input_files:
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/02_nabladft_op_projection_2gpu.sh
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/run_nabladft_op_projection.py
+      - /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/nabladft_op_projection.yaml
+      - /dataset/seongsu/shared-home/workspace/project/orbital_cache_nablaDFT.pkl
+      - /dataset/seongsu/shared-home/workspace/project/src/maloq/experimental/op_projection/__init__.py
+      - /dataset/seongsu/shared-home/workspace/project/src/maloq/experimental/op_projection/FEATURE.md
+      - /dataset/seongsu/shared-home/workspace/project/src/maloq/experimental/op_projection/backbone.py
+      - /dataset/seongsu/shared-home/workspace/project/src/maloq/experimental/op_projection/block.py
+      - /dataset/seongsu/shared-home/workspace/project/src/maloq/experimental/op_projection/loss.py
+      - /dataset/seongsu/shared-home/workspace/project/src/maloq/experimental/op_projection/operator.py
+      - /dataset/seongsu/shared-home/workspace/project/src/maloq/experimental/op_projection/projection.py
+      - /dataset/seongsu/shared-home/workspace/project/src/maloq/experimental/op_projection/training.py
