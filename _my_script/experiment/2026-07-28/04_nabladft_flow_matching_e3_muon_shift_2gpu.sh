@@ -6,7 +6,7 @@ LANE=${2:-all}
 GPUS=${3:-}
 EXPECTED_HOST=${EXPECTED_HOST:-}
 
-PROJECT_ROOT=/dataset/seongsu/shared-home/workspace/project
+PROJECT_ROOT=/dataset/seongsu/shared-home/workspace/project/MALOQ
 SCRIPT_ROOT=${PROJECT_ROOT}/_my_script/experiment/2026-07-28
 ENV_ROOT=/dataset/seongsu/shared-home/conda/envs/proj-dft-baselines-maloq-sc26
 PY=${ENV_ROOT}/bin/python
@@ -15,7 +15,7 @@ BASE_CONFIG=${SCRIPT_ROOT}/flow_matching_e3_muon_shift_nabladft.yaml
 NABLA_DB=/dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
 SCALE_SHIFT=${PROJECT_ROOT}/outputs/scale-shift-statistics/nabladft-train12081-fock-l0-mean-std-rcut8-float32.pt
 SCALE_SHIFT_SHA256=375167ad551fb0b60dbe9cd049a4995276b54ce075e09906639ef3daa4f79475
-RUN_PREFIX=nabladft-flow-matching
+RUN_PREFIX=nabladft-flow-matching-maloq-loss
 
 LANES=(
   maloq-e3-muon-shift

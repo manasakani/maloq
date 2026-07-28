@@ -973,6 +973,9 @@ class TrainingWorkflow:
                     tiling_dims=c["tiling_dims"],
                     partition_type=c["partition_type"],
                     train_or_eval=c["train_or_eval"],
+                    compute_outside_cutoff_reference_stats=c.get(
+                        "validation_matrix_metrics", False
+                    ),
                     delta_learning=c.get("delta_learning", False),
                     load_delta_auxiliary_matrix=self._needs_delta_auxiliary_matrix(),
                 )
@@ -1008,6 +1011,9 @@ class TrainingWorkflow:
                     tiling_dims=c["tiling_dims"],
                     partition_type=c["partition_type"],
                     train_or_eval=c["train_or_eval"],
+                    compute_outside_cutoff_reference_stats=c.get(
+                        "validation_matrix_metrics", False
+                    ),
                     delta_learning=c.get("delta_learning", False),
                     load_delta_auxiliary_matrix=self._needs_delta_auxiliary_matrix(),
                 )

@@ -7,16 +7,22 @@ from pydantic import ValidationError
 from maloq.experimental.flow_matching import (
     EndpointFlowMatcher,
     FlowMatchingConfig,
-    coupled_frobenius_mse,
 )
+from maloq.train_utils.loss import rmse_mse_padded_loss
 
 
-def test_config_is_strict_and_names_the_implemented_reduction() -> None:
+def test_config_is_strict_and_leaves_loss_to_canonical_maloq_config() -> None:
     config = FlowMatchingConfig()
-    assert config.endpoint_loss == "masked_frobenius_mse"
+    assert not hasattr(config, "endpoint_loss")
+    assert not hasattr(config, "hamiltonian_weight")
+    assert not hasattr(config, "time_scaled_loss")
     assert not hasattr(config, "pair_symmetry")
     with pytest.raises(ValidationError, match="Extra inputs"):
         FlowMatchingConfig.model_validate({"unknown": True})
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        FlowMatchingConfig.model_validate({"endpoint_loss": "masked_frobenius_mse"})
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        FlowMatchingConfig.model_validate({"time_scaled_loss": False})
     with pytest.raises(ValidationError, match="strictly smaller"):
         FlowMatchingConfig(time_min=0.7, time_max=0.2)
 
@@ -103,11 +109,8 @@ def test_path_and_frobenius_loss_commute_with_orthogonal_irrep_action() -> None:
         time=time,
         source=source @ action.T,
     )
-    base_loss = matcher.masked_frobenius_mse(prediction, endpoint)
-    rotated_loss = matcher.masked_frobenius_mse(
-        prediction @ action.T,
-        endpoint @ action.T,
-    )
+    base_loss = rmse_mse_padded_loss(prediction, endpoint)
+    rotated_loss = rmse_mse_padded_loss(prediction @ action.T, endpoint @ action.T)
 
     assert torch.allclose(rotated.state, base.state @ action.T)
     assert torch.allclose(rotated_loss, base_loss)
@@ -139,7 +142,7 @@ def test_joint_corruption_shares_one_time_across_node_and_edge_entries() -> None
     )
 
 
-def test_endpoint_velocity_and_weighted_callback_are_exact() -> None:
+def test_endpoint_velocity_and_canonical_maloq_loss_are_exact() -> None:
     matcher = EndpointFlowMatcher(FlowMatchingConfig())
     state = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
     endpoint = torch.tensor([[5.0, 6.0], [7.0, 8.0]])
@@ -150,6 +153,4 @@ def test_endpoint_velocity_and_weighted_callback_are_exact() -> None:
     )
 
     assert torch.equal(velocity, 2.0 * (endpoint - state))
-    assert coupled_frobenius_mse(endpoint, state, weight=10.0).item() == pytest.approx(
-        160.0
-    )
+    assert rmse_mse_padded_loss(endpoint, state).item() == pytest.approx(20.0)

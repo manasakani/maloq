@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from functools import partial
 from typing import Any
 
 import torch
@@ -17,7 +16,8 @@ from .conditioning import (
     HamiltonianSymmetryProjector,
 )
 from .config import FlowMatchingConfig
-from .objective import EndpointFlowMatcher, coupled_frobenius_mse
+from .objective import EndpointFlowMatcher
+from .prior import build_coupled_prior
 from .sampler import EndpointEulerResult, EndpointEulerSampler, EndpointPrediction
 
 
@@ -155,6 +155,7 @@ class EndpointCorruptingLoader:
         self.matcher = matcher
         self.codec = CoupledAOCodec(basis_transform)
         self.projector = HamiltonianSymmetryProjector(basis_transform)
+        self.prior = build_coupled_prior(matcher.config, basis_transform)
         self.device = torch.device(device)
 
     def __len__(self) -> int:
@@ -200,8 +201,8 @@ class EndpointCorruptingLoader:
                 edge_mask=edge_mask,
             )
             source = self.projector(
-                self.matcher.sample_coupled_prior(clean.node, mask=node_mask),
-                self.matcher.sample_coupled_prior(clean.edge, mask=edge_mask),
+                self.prior.sample(clean.node, mask=node_mask),
+                self.prior.sample(clean.edge, mask=edge_mask),
                 edge_index=batch.edge_index,
                 node_mask=node_mask,
                 edge_mask=edge_mask,
@@ -273,6 +274,7 @@ class EndpointFlowTrainer(SplitTrainer):
         node_source: Tensor | None = None,
         edge_source: Tensor | None = None,
         generator: torch.Generator | None = None,
+        num_ode_steps: int | None = None,
     ) -> EndpointEulerResult:
         """Integrate a complete block-sparse Hamiltonian with joint Euler steps."""
         batch = batch.to(device)
@@ -298,9 +300,10 @@ class EndpointFlowTrainer(SplitTrainer):
             node_graph_index=node_graph_index,
             edge_count=clean_edge.shape[0],
         )
+        prior = build_coupled_prior(self.flow_config, basis_transform)
 
         if node_source is None:
-            node_source = self.matcher.sample_coupled_prior(
+            node_source = prior.sample(
                 clean_node,
                 mask=node_mask,
                 generator=generator,
@@ -308,7 +311,7 @@ class EndpointFlowTrainer(SplitTrainer):
         else:
             _validate_explicit_source(node_source, clean_node, name="node")
         if edge_source is None:
-            edge_source = self.matcher.sample_coupled_prior(
+            edge_source = prior.sample(
                 clean_edge,
                 mask=edge_mask,
                 generator=generator,
@@ -325,7 +328,17 @@ class EndpointFlowTrainer(SplitTrainer):
             node_mask=node_mask,
             edge_mask=edge_mask,
         )
-        sampler = EndpointEulerSampler(self.flow_config)
+        sampler_config = self.flow_config
+        if num_ode_steps is not None:
+            if isinstance(num_ode_steps, bool) or not isinstance(
+                    num_ode_steps, int):
+                raise TypeError("num_ode_steps override must be an integer.")
+            if num_ode_steps < 1:
+                raise ValueError("num_ode_steps override must be at least one.")
+            sampler_config = self.flow_config.model_copy(
+                update={"num_ode_steps": num_ode_steps}
+            )
+        sampler = EndpointEulerSampler(sampler_config)
 
         backbone_was_training = bool(getattr(self.backbone, "training", False))
         head_was_training = bool(getattr(self.head, "training", False))
@@ -426,12 +439,73 @@ class EndpointFlowTrainer(SplitTrainer):
         """Evaluate canonical AO metrics from the joint ODE endpoint."""
         del node_output, edge_output
         device = _closed_shell_target(batch, "node_y").device
-        endpoint = self.sample_batch(
+        return self._compute_endpoint_validation_matrix_error_sums(
             batch,
-            basis_transform=basis_transform,
+            node_target,
+            edge_target,
+            basis_transform,
             device=device,
             generator=self._next_validation_inference_generator(device),
         )
+
+    def compute_validation_matrix_error_sums_with_variants(
+        self,
+        batch,
+        node_output,
+        edge_output,
+        node_target,
+        edge_target,
+        basis_transform,
+    ):
+        """Record configured Euler and same-prior one-shot AO metrics."""
+        del node_output, edge_output
+        device = _closed_shell_target(batch, "node_y").device
+        configured_generator = self._next_validation_inference_generator(device)
+        initial_generator_state = configured_generator.get_state()
+        configured_stats = self._compute_endpoint_validation_matrix_error_sums(
+            batch,
+            node_target,
+            edge_target,
+            basis_transform,
+            device=device,
+            generator=configured_generator,
+        )
+
+        one_shot_generator = torch.Generator(device=torch.device(device))
+        one_shot_generator.set_state(initial_generator_state)
+        one_shot_stats = self._compute_endpoint_validation_matrix_error_sums(
+            batch,
+            node_target,
+            edge_target,
+            basis_transform,
+            device=device,
+            generator=one_shot_generator,
+            num_ode_steps=1,
+        )
+        return configured_stats, {
+            "validation/flow_matching_configured_ode": configured_stats,
+            "validation/flow_matching_one_shot": one_shot_stats,
+        }
+
+    def _compute_endpoint_validation_matrix_error_sums(
+        self,
+        batch,
+        node_target,
+        edge_target,
+        basis_transform,
+        *,
+        device: torch.device | str,
+        generator: torch.Generator,
+        num_ode_steps: int | None = None,
+    ):
+        sample_kwargs = {
+            "basis_transform": basis_transform,
+            "device": device,
+            "generator": generator,
+        }
+        if num_ode_steps is not None:
+            sample_kwargs["num_ode_steps"] = num_ode_steps
+        endpoint = self.sample_batch(batch, **sample_kwargs)
         return super().compute_validation_matrix_error_sums(
             batch,
             endpoint.node,
@@ -472,7 +546,6 @@ class EndpointFlowTrainer(SplitTrainer):
         checkpoint_callback=None,
         min_lr=1e-10,
     ):
-        del loss_fxn
         if basis_transform is None:
             raise ValueError("Endpoint flow requires the canonical basis_transform.")
         if loss_target_string not in {"fock_matrix", "density_matrix"}:
@@ -505,13 +578,9 @@ class EndpointFlowTrainer(SplitTrainer):
         )
         if self._validation_inference_num_batches <= 0:
             raise ValueError("Endpoint flow validation loader must be non-empty.")
-        endpoint_loss = partial(
-            coupled_frobenius_mse,
-            weight=self.flow_config.hamiltonian_weight,
-        )
         return super().train(
             num_epochs,
-            endpoint_loss,
+            loss_fxn,
             optimizer,
             scheduler,
             device,

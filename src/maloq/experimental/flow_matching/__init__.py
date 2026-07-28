@@ -19,7 +19,11 @@ from .objective import (
     EndpointFlowMatcher,
     JointEndpointFlowSample,
     EndpointFlowSample,
-    coupled_frobenius_mse,
+)
+from .prior import (
+    CoupledIrrepGaussianPrior,
+    TensorExpansionPrior,
+    build_coupled_prior,
 )
 from .sampler import (
     EndpointEulerResult,
@@ -39,6 +43,7 @@ __all__ = [
     "PROFILE_ID",
     "SUPPORTED_FLOW_BACKBONES",
     "CoupledNodeStateDecoder",
+    "CoupledIrrepGaussianPrior",
     "EndpointCorruptingLoader",
     "EndpointEulerResult",
     "EndpointEulerSampler",
@@ -52,5 +57,6 @@ __all__ = [
     "EndpointPrediction",
     "FlowMatchingConfig",
     "QHFlow2EndpointWorkflow",
-    "coupled_frobenius_mse",
+    "TensorExpansionPrior",
+    "build_coupled_prior",
 ]

@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path("/dataset/seongsu/shared-home/workspace/project")
+PROJECT_ROOT = Path("/dataset/seongsu/shared-home/workspace/project/MALOQ")
 SOURCE_ROOT = PROJECT_ROOT / "src"
 OUTPUTS_ROOT = PROJECT_ROOT / "outputs"
 DEFAULT_CONFIG = (
@@ -93,7 +93,7 @@ def validation_payload(config: EndpointFlowMaloqConfig) -> dict[str, object]:
             "prediction": "clean node and edge endpoints",
             "sampling_velocity": "(Hhat_1-H_t)/(1-t) for node and edge",
             "sampling": "three fixed joint Euler steps",
-            "loss": (f"{flow.hamiltonian_weight:g} * masked coupled Frobenius MSE"),
+            "loss": config.loss.train_loss,
         },
         "matrix_contract": {
             "ao_codec": "coupled <-> shell-pair-packed <-> padded dense AO",

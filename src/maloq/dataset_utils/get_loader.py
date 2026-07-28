@@ -94,7 +94,8 @@ def get_loader(database,
                 train_or_eval='train',
                 delta_learning=False,
                 load_delta_auxiliary_matrix=False,
-                shuffle=False):
+                shuffle=False,
+                compute_outside_cutoff_reference_stats=False):
     """
     Make dataloader with the given indices of the mocules in the input database
     Currently set up for three datasets: QM7, nablaDFT, omol. Need to modify for others.
@@ -156,6 +157,9 @@ def get_loader(database,
                     cutoff=rcut,
                     dtype=dtype,
                     scale_shift_data=scale_shift_data,
+                    compute_outside_cutoff_reference_stats=(
+                        compute_outside_cutoff_reference_stats
+                    ),
                 )
             dist.barrier()
         assert graph_dataset is not None
@@ -445,6 +449,9 @@ def get_loader(database,
                                                                     partition_type=partition_type,
                                                                     dtype=dtype, 
                                                                     dataset_name=dataset_name,
+                                                                    compute_outside_cutoff_reference_stats=(
+                                                                        compute_outside_cutoff_reference_stats
+                                                                    ),
                                                                     scale_shift_data=scale_shift_data,
                                                                     periodic_boxes=periodic_boxes[batch_idxs] if periodic_dataset else None,
                                                                     tiling_dims=tiling_dims,
@@ -543,6 +550,9 @@ def get_loader(database,
                         partition_type=partition_type,
                         dtype=dtype, 
                         dataset_name=dataset_name,
+                        compute_outside_cutoff_reference_stats=(
+                            compute_outside_cutoff_reference_stats
+                        ),
                         scale_shift_data=scale_shift_data,
                         periodic_boxes=b_periodic_boxes,
                         tiling_dims=tiling_dims,
@@ -584,6 +594,9 @@ def get_loader(database,
         graph_targets = fock_targets_batched.Fock_Targets(atomic_numbers, positions, rcut, orbital_basis, hamiltonians, 
                                                             dtype=dtype, 
                                                             dataset_name=dataset_name,
+                                                            compute_outside_cutoff_reference_stats=(
+                                                                compute_outside_cutoff_reference_stats
+                                                            ),
                                                             scale_shift_data=scale_shift_data,
                                                             periodic_boxes=periodic_boxes if periodic_dataset else None,
                                                             tiling_dims=tiling_dims)

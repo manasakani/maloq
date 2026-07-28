@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-PROJECT_ROOT = Path("/dataset/seongsu/shared-home/workspace/project")
+PROJECT_ROOT = Path("/dataset/seongsu/shared-home/workspace/project/MALOQ")
 SOURCE_ROOT = PROJECT_ROOT / "src"
 OUTPUTS_ROOT = PROJECT_ROOT / "outputs"
 DEFAULT_BASE_CONFIG = (
@@ -31,6 +31,9 @@ EXPECTED_SCALE_SHIFT_SHA256 = (
     "375167ad551fb0b60dbe9cd049a4995276b54ce075e09906639ef3daa4f79475"
 )
 WANDB_PROJECT = "MALOQ-nablaDFT-v2"
+SUITE_ID = "nabladft-flow-matching-e3-muon-shift-maloq-loss-v2"
+MALOQ_TRAIN_LOSS = "rmse_mse_padded_loss"
+MALOQ_TEST_LOSS = "l1_unpadded_loss"
 FULL_COUNTS = {"train": 12081, "val": 64, "test": 0}
 SMOKE_COUNTS = {"train": 20, "val": 20, "test": 0}
 
@@ -234,9 +237,10 @@ def _build_lane_config(
     output_root: Path,
 ) -> EndpointFlowMaloqConfig:
     payload = base.model_dump(mode="python")
-    run_name = f"nabladft-flow-matching-{lane.id}-v2"
+    run_name = f"nabladft-flow-matching-{lane.id}-maloq-loss-v2"
     display_name = (
-        f"NablaDFT | {lane.display_architecture} | Muon | SHIFT | FlowMatching | V2"
+        f"NablaDFT | {lane.display_architecture} | Muon | SHIFT | "
+        "FlowMatching | MALOQ-RMSE+MSE | V2"
     )
     counts = SMOKE_COUNTS if scope == "smoke" else FULL_COUNTS
 
@@ -268,6 +272,7 @@ def _build_lane_config(
         f"architecture:{lane.architecture}",
         "edge-layers:3",
         "head:muon",
+        "loss:maloq-rmse-plus-mse",
         "normalization:l0-shift-only",
         "axis:structure",
     ]
@@ -390,8 +395,8 @@ def _validate_lane_contract(
         raise ValueError("Endpoint flow must stay coupled and direct.")
     if (
         config.loss.loss_target != "fock_matrix"
-        or config.loss.train_loss != "mse_padded_loss"
-        or config.loss.test_loss != "mse_padded_loss"
+        or config.loss.train_loss != MALOQ_TRAIN_LOSS
+        or config.loss.test_loss != MALOQ_TEST_LOSS
     ):
         raise ValueError("Endpoint-flow matrix loss declarations drifted.")
     if (
@@ -442,6 +447,8 @@ def _config_preview(
         ),
         "scale_and_shift": config.loss.scale_and_shift,
         "scale_shift_mode": config.loss.scale_shift_mode,
+        "train_loss": config.loss.train_loss,
+        "test_loss": config.loss.test_loss,
         "qhflow3_grid_resolution": config.model.qhflow3_grid_resolution,
         "validation_matrix_metrics": config.tracking.validation_matrix_metrics,
         "flow_matching": config.flow_matching.model_dump(mode="json"),
@@ -507,7 +514,7 @@ def main() -> None:
         selected_lanes = (LANE_BY_ID[args.lane],)
 
     if scope == "validate":
-        preview_base = OUTPUTS_ROOT / "_config-preview/nabladft-flow-matching-e3"
+        preview_base = OUTPUTS_ROOT / f"_config-preview/{SUITE_ID}"
         previews = [
             _config_preview(
                 _build_lane_config(
@@ -523,7 +530,7 @@ def main() -> None:
         print(
             json.dumps(
                 {
-                    "suite": "nabladft-flow-matching-e3-muon-shift-v2",
+                    "suite": SUITE_ID,
                     "workflow": (
                         f"{FlowMatchingWorkflow.__module__}."
                         f"{FlowMatchingWorkflow.__name__}"
@@ -571,7 +578,7 @@ def main() -> None:
             raise SystemExit(f"Output already exists: {output_root}")
         output_root.mkdir(parents=True, exist_ok=False)
         resolved_payload = {
-            "suite": "nabladft-flow-matching-e3-muon-shift-v2",
+            "suite": SUITE_ID,
             "scope": scope,
             "lane": asdict(lane),
             "base_config": str(base_config_path),

@@ -22,6 +22,75 @@ import torch.distributed as dist
 from mpi4py import MPI
 from collections import defaultdict
 
+
+def compute_outside_cutoff_reference_error_sums(
+        fock_matrix,
+        block_starts,
+        neighbour_list):
+    """Return reference error sums where the cutoff model has no output block.
+
+    A cutoff-local Hamiltonian model predicts onsite blocks and the directed
+    interatomic blocks in ``neighbour_list``. Its prediction for every other AO
+    entry is therefore zero. The returned absolute and squared sums are the
+    exact error contribution from those unrepresented entries. One value is
+    returned per spin channel, while the entry count is shared by all spins.
+    """
+    if sp.issparse(fock_matrix):
+        matrix = fock_matrix.toarray()
+    elif isinstance(fock_matrix, torch.Tensor):
+        matrix = fock_matrix.detach().cpu().numpy()
+    else:
+        matrix = np.asarray(fock_matrix)
+
+    if matrix.ndim == 2:
+        matrix = matrix[np.newaxis, ...]
+    if matrix.ndim != 3 or matrix.shape[-2] != matrix.shape[-1]:
+        raise ValueError(
+            "Hamiltonian target must have shape [M, M] or [spin, M, M], "
+            f"got {matrix.shape}."
+        )
+
+    block_starts = np.asarray(block_starts, dtype=np.int64)
+    matrix_size = int(block_starts[-1])
+    if matrix.shape[-1] != matrix_size:
+        raise ValueError(
+            "Hamiltonian AO dimension does not match orbital block offsets: "
+            f"{matrix.shape[-1]} != {matrix_size}."
+        )
+
+    represented = np.zeros((matrix_size, matrix_size), dtype=np.bool_)
+    for block_start, block_end in zip(block_starts[:-1], block_starts[1:]):
+        represented[block_start:block_end, block_start:block_end] = True
+
+    neighbour_list = np.asarray(neighbour_list, dtype=np.int64)
+    if neighbour_list.ndim != 2 or neighbour_list.shape[0] != 2:
+        raise ValueError(
+            "neighbour_list must have shape [2, num_edges], "
+            f"got {neighbour_list.shape}."
+        )
+    for source_index, target_index in zip(
+            neighbour_list[0], neighbour_list[1]):
+        row_start = block_starts[source_index]
+        row_end = block_starts[source_index + 1]
+        col_start = block_starts[target_index]
+        col_end = block_starts[target_index + 1]
+        represented[row_start:row_end, col_start:col_end] = True
+
+    outside_cutoff = ~represented
+    matrix = matrix.astype(np.float64, copy=False)
+    matrix = (matrix + np.swapaxes(matrix, -1, -2)) / 2
+    outside_values = matrix[:, outside_cutoff]
+    absolute_error_sums = np.abs(outside_values).sum(axis=1, dtype=np.float64)
+    squared_error_sums = np.square(outside_values).sum(
+        axis=1, dtype=np.float64
+    )
+    return (
+        tuple(float(value) for value in absolute_error_sums),
+        tuple(float(value) for value in squared_error_sums),
+        int(outside_cutoff.sum()),
+    )
+
+
 class Fock_Targets:
     """
     Fock matrix analysis object, consists of two main components:
@@ -48,7 +117,8 @@ class Fock_Targets:
                 ls_list=None,
                 basis_transformation=None,
                 orbital_template_device_cache=None,
-                verbose=True):
+                verbose=True,
+                compute_outside_cutoff_reference_stats=False):
         """
         neighbor_list - H2O: [[0, 0, 1, 1, 2, 2], [1, 2, 2, 0, 0, 1]]
         orbital_basis - H2O: {8: [0, 0, 0, 1, 1, 2], 1: [0, 0, 1]} (ex. dzvp)
@@ -100,6 +170,20 @@ class Fock_Targets:
         self.orbitals_per_atom_list = []
         self.block_starts_list = []
         self.make_atomic_graphs(atomic_numbers, atomic_positions, cutoff, periodic_boxes)
+        # Keep only compact scalar statistics from the full dense references.
+        # Retaining every input Hamiltonian would substantially increase loader
+        # memory, while these sums are sufficient for exact full-matrix MAE/MSE
+        # when unrepresented (outside-cutoff) predictions are defined as zero.
+        self.outside_cutoff_reference_error_sums_list = []
+        if compute_outside_cutoff_reference_stats and fock_matrices is not None:
+            for graph_index, fock_matrix in enumerate(fock_matrices):
+                self.outside_cutoff_reference_error_sums_list.append(
+                    compute_outside_cutoff_reference_error_sums(
+                        fock_matrix,
+                        self.block_starts_list[graph_index],
+                        self.neighbour_list_list[graph_index],
+                    )
+                )
 
         # Create a merged distributed graph
         if self.distribute_graphs:

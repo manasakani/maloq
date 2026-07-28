@@ -57,8 +57,16 @@ MALOQ does not import it.
 
 ## Implemented contract
 
-- Coupled node and directed-edge priors: masked isotropic Gaussian with sigma
-  0.1. Canonical masks select unions of complete irreps.
+- Coupled node and directed-edge priors share one feature-owned factory for
+  training corruption and validation sampling. The backward-compatible
+  default is a masked full-rank coupled-irrep Gaussian with sigma 0.1.
+- `prior_type: tensor_expansion` selects the pinned-QHFlow2 unit-path Tensor
+  Expansion distribution. One latent per orbital degree is summed over shell
+  copies and reused across every compatible shell-pair path before the
+  canonical Wigner-3j decoder. The active Nabla 5s+4p+3d padded basis therefore
+  has 32 input features but covariance rank 9 (l=0,1,2); l=3,4 coupled output
+  sectors are zero. `tensor_expansion_normalization` is fixed to
+  `qhflow2_unit_path_sum`, and canonical masks must select complete irreps.
 - One graph-level time in `[0.01, 0.99]`, shared by every node and edge in that
   graph.
 - Joint paths: `Hnode_t=(1-t)Hnode_0+tHnode_1` and
@@ -68,7 +76,9 @@ MALOQ does not import it.
   reshape the shell-packed output of `e3TensorDecomp.get_H()`.
 - The coupled node state is installed as `batch.node_flow_t`, its decoded dense
   form as square `batch.init_ham_t`, the directed-edge state as
-  `batch.edge_flow_t`, and graph time as `batch.t`.
+  `batch.edge_flow_t`, and graph time as `batch.t`. In the active direct profile
+  the common conditioner consumes `node_flow_t`, `edge_flow_t`, and `t`;
+  `init_ham_t` is a decoded mirror and is not consumed by any native trunk.
 - `FlowConditionedBackbone` wraps `esen`, `maloq_nte_v2`, or `qhflow3` without
   architecture inheritance. Separate SO(3)-equivariant irrep linears map node
   and edge states into native embeddings; incoming projected edge state is
@@ -79,8 +89,10 @@ MALOQ does not import it.
 - `HamiltonianSymmetryProjector` applies `0.5*(Hii+Hii^T)` to node blocks and
   `0.5*(Hij+Hji^T)` to reverse-directed edge pairs, whose reverse map must be an
   involution.
-- Canonical padding masks filter components; objective is
-  `10 * masked Frobenius MSE`, without MAE or time scaling.
+- Canonical padding masks filter components before the configured MALOQ loss is
+  evaluated. The matched suite uses `rmse_mse_padded_loss`, i.e.
+  `sqrt(mean(error^2)) + mean(error^2)`, without training MAE, an extra factor
+  of 10, or time scaling.
 - Sampling derives `(Hhat_1-H_t)/(1-t)` for both state families and uses three
   fixed joint Euler steps with symmetry projection.
 - `EndpointFlowTrainer.sample_batch` connects a target-shaped validation batch
@@ -89,7 +101,12 @@ MALOQ does not import it.
 - Canonical validation matrix metrics call the joint Euler sampler from a fixed
   prior, then delegate SHIFT restoration, dense-AO reconstruction, denominators,
   and DDP aggregation to `SplitTrainer.compute_validation_matrix_error_sums`.
-  Random-time endpoint-matching validation loss remains the scheduler signal.
+  Existing `validation/matrix_*` names remain the configured ODE result.
+  The same values are explicitly aliased under
+  `validation/flow_matching_configured_ode/*`; an ODE1 one-head-evaluation result
+  from the exact same batch and prior sample is recorded under
+  `validation/flow_matching_one_shot/*`. Random-time endpoint-matching
+  validation loss remains the scheduler signal.
 - Workflow inherits `TrainingWorkflowV2Fixed`; trainer inherits `SplitTrainer`
   and delegates to `super().train` through corrupted loader wrappers.
 - Parity is a proper-rotation contract: canonical all-even target labels are
@@ -110,6 +127,11 @@ MALOQ does not import it.
 - [x] Checkpoint save during bounded smoke
 - [x] Three-lane two-rank CUDA smoke on server-1
 - [x] Deterministic Euler-endpoint matrix-metric adapter and RNG isolation
+- [x] Same-prior configured-ODE/one-shot validation metric variants and DDP sum
+- [x] QHFlow2 unit-path Tensor Expansion prior, Nabla basis generalization, RNG,
+  complete-irrep mask, and SO(3) regressions
+- [x] Separate node-H_t, edge-H_t, and time gradients plus real-wrapper
+  sensitivity for MALOQ, NTEV2, and QHFlow3
 - [x] FlowMatching QHFlow3 default resolves to the matched 10x11 eSEN grid
 - [ ] Matched parameter/memory/throughput comparison
 - [x] Corrected three-lane two-rank CUDA metric smoke on server-2 GPU0-3
@@ -122,19 +144,30 @@ MALOQ does not import it.
 | 2026-07-28 | `qhflow2_endpoint_flow_nabladft.yaml` | dirty development tree rooted at `fce4616`; QHFlow2 audit `2b51937` | none | 30 focused CPU tests plus 4 import-boundary/trainer-factory tests passed. They cover the joint loader/sampler, real QHFlow3 edge feedback, codec/projector covariance, and per-step symmetry projection. The full NablaDFT shell-unpack audit reduced rotation error from 2.49 to 3.1e-7. CUDA/DDP execution remains pending. |
 | 2026-07-28 | `flow_matching_e3_muon_shift_nabladft.yaml` | current dirty source rooted at `fce4616` | failed diagnostic evidence under `outputs/nabladft-flow-matching-maloq-...-040533-*` and `...-040705-*`; successful temporary smokes removed by launcher | 42 CPU/integration tests and all three typed configs pass. Diagnostics exposed and fixed a PATH-dependent torchrun wrapper plus ASE int32 edge indices. At 04:21-04:22 KST, MALOQ-E3, NTEV2-E3, and QHFlow3-E3 each passed a server-1 GPU6,7 two-rank train/validation/checkpoint smoke. |
 | 2026-07-28 | `flow_matching_e3_muon_shift_nabladft.yaml` | pre-commit metric-correction tree | preserved first-attempt outputs; MALOQ W&B `0skkk54x` | The initial MALOQ full attempt completed epoch 1 and checkpointed with finite train/validation loss, then MALOQ and a newly claimed NTEV2 attempt were stopped on request before adding Euler-endpoint matrix metrics. QHFlow3 was cancelled before start. All target PIDs, claims, and GPU locks were released while outputs remained intact. |
+| 2026-07-28 | corrected `flow_matching_e3_muon_shift_nabladft.yaml` | pre-commit corrected tree | temporary server-2 smokes cleaned by launcher | 43 focused CPU/canonical-metric tests passed. MALOQ, NTEV2, and QHFlow3 each completed two-rank train/validation/checkpoint smoke on server-2 GPU0-3 while 4-7 remained unselected. MALOQ endpoint matrix MAE/MSE was 0.272778/0.221840; QHFlow3 10x11 was 0.242831/0.198371. Both logged node/edge matrix metrics; the NTEV2 launcher completed the same enabled metric path with exit 0. |
+| 2026-07-28 | canonical-MALOQ-loss `flow_matching_e3_muon_shift_nabladft.yaml` | current source fingerprint | temporary server-1 smokes cleaned by launcher | 66 FlowMatching/canonical-metric CPU tests passed. MALOQ, NTEV2, and QHFlow3 each completed a fresh two-rank CUDA train/validation/checkpoint smoke with configured `rmse_mse_padded_loss`; `validation/matrix_mae` remained enabled. |
 
 ## Known limitations
-| 2026-07-28 | corrected `flow_matching_e3_muon_shift_nabladft.yaml` | pre-commit corrected tree | temporary server-2 smokes cleaned by launcher | 43 focused CPU/canonical-metric tests passed. MALOQ, NTEV2, and QHFlow3 each completed two-rank train/validation/checkpoint smoke on server-2 GPU0-3 while 4-7 remained unselected. MALOQ endpoint matrix MAE/MSE was 0.272778/0.221840; QHFlow3 10x11 was 0.242831/0.198371. Both logged node/edge matrix metrics; the NTEV2 launcher completed the same enabled metric path with exit 0. |
 
 - The working profile predicts full `H` directly (`delta_learning=false`). The
   audited QHFlow2 QH9 run predicts residual `H-Hinit`; that parameterization is
   documented but not ported.
 - Flowing directed edges is an intentional architecture-v2 extension beyond
   the active QHFlow2 QH9 executable, which integrates only node blocks.
-- The active QHFlow2 executable loss is `10*(MAE+MSE)`. This feature deliberately
-  uses pure Frobenius MSE because elementwise AO MAE is not rotation invariant.
+- The active QHFlow2 executable loss is `10*(MAE+MSE)`. The matched suite instead
+  uses MALOQ's coupled-coordinate `RMSE+MSE`: both terms depend only on the
+  squared norm and remain invariant under orthogonal SO(3) irrep actions.
+  Elementwise AO MAE is not used for optimization, but physical-space
+  `validation/matrix_mae` remains a reported endpoint metric.
 - Node/edge state is injected at the final native embedding level, not
-  recurrently into every internal message-passing block.
+  recurrently into every internal message-passing block. In particular,
+  QHFlow3 uses `default_hamiltonian_input="zero"` in this direct profile, so its
+  native trunk does not consume decoded dense `init_ham_t`; enabling that path
+  would create a second, deeper conditioning route and is a separate ablation.
+- The Tensor Expansion prior is intentionally singular and is an explicit
+  prior ablation, not the default. It follows the pinned QHFlow2 global sigma
+  and all-one path-sum convention; it does not add geometry, species, initial-H,
+  or empirical per-block scale conditioning.
 - The parity bridge is SO(3)-only; reflections and full O(3) are outside this
   profile's contract.
 - The matched FlowMatching suite deliberately sets QHFlow3's lmax=4 grid to the

@@ -25,8 +25,14 @@ class FlowMatchingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     parameterization: Literal["clean_endpoint"] = "clean_endpoint"
-    prior_type: Literal["coupled_irrep_gaussian"] = "coupled_irrep_gaussian"
+    prior_type: Literal[
+        "coupled_irrep_gaussian",
+        "tensor_expansion",
+    ] = "coupled_irrep_gaussian"
     sigma: float = Field(default=0.1, gt=0.0)
+    tensor_expansion_normalization: Literal[
+        "qhflow2_unit_path_sum"
+    ] = "qhflow2_unit_path_sum"
     time_distribution: Literal["uniform_per_graph"] = "uniform_per_graph"
     time_min: float = Field(default=0.01, ge=0.0, le=1.0)
     time_max: float = Field(default=0.99, ge=0.0, le=1.0)
@@ -34,9 +40,6 @@ class FlowMatchingConfig(BaseModel):
     state_scope: Literal["node_and_edge"] = "node_and_edge"
     edge_parameterization: Literal["ode_endpoint"] = "ode_endpoint"
     enforce_hamiltonian_symmetry: Literal[True] = True
-    endpoint_loss: Literal["masked_frobenius_mse"] = "masked_frobenius_mse"
-    hamiltonian_weight: float = Field(default=10.0, gt=0.0)
-    time_scaled_loss: Literal[False] = False
     architecture_version: Literal[2] = 2
     upstream_commit: Literal[UPSTREAM_COMMIT] = UPSTREAM_COMMIT
 

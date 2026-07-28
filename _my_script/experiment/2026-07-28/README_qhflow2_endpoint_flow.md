@@ -15,7 +15,7 @@ t ~ Uniform(0.01, 0.99), one scalar per molecular graph
 Hnode,t = (1 - t) Hnode,0 + t Hnode,1
 Hedge,t = (1 - t) Hedge,0 + t Hedge,1
 network target = clean node and edge endpoints
-loss = 10 * masked coupled Frobenius MSE
+training loss = canonical MALOQ RMSE + MSE over valid coupled coefficients
 ```
 
 Sampling uses three fixed joint Euler steps and derives both velocities only at
@@ -57,7 +57,7 @@ ported.
 Read-only typed config and inheritance validation:
 
 ```bash
-/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/90_qhflow2_endpoint_flow_nabladft_2gpu.sh validate
+/dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/90_qhflow2_endpoint_flow_nabladft_2gpu.sh validate
 ```
 
 Optional bounded real-data smoke (2 GPUs, 20 train + 20 validation molecules,
@@ -65,7 +65,7 @@ one epoch, W&B disabled):
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 \
-  /dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/90_qhflow2_endpoint_flow_nabladft_2gpu.sh smoke
+  /dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/90_qhflow2_endpoint_flow_nabladft_2gpu.sh smoke
 ```
 
 There is deliberately no `full` or queue mode. No CUDA, DDP, checkpoint-resume,
@@ -78,4 +78,4 @@ or scientific training run has been executed for architecture version 2.
 - `90_qhflow2_endpoint_flow_nabladft_2gpu.sh`: guarded validate/smoke launcher
 
 Failed or successful smoke outputs are retained under
-`/dataset/seongsu/shared-home/workspace/project/outputs/` for inspection.
+`/dataset/seongsu/shared-home/workspace/project/MALOQ/outputs/` for inspection.

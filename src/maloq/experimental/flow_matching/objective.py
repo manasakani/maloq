@@ -183,7 +183,16 @@ class EndpointFlowMatcher:
         entry_dim: int = 0,
         generator: torch.Generator | None = None,
     ) -> Tensor:
-        """Sample isotropic Gaussian noise in the coupled irrep basis."""
+        """Sample the basis-free default Gaussian coupled prior.
+
+        Structured priors need the basis transform and are constructed by the
+        feature-owned prior factory in the trainer/loader integration.
+        """
+        if self.config.prior_type != "coupled_irrep_gaussian":
+            raise ValueError(
+                "Tensor Expansion prior sampling requires a basis_transform; "
+                "use build_coupled_prior() or provide an explicit source."
+            )
         if not clean_target.is_floating_point():
             raise TypeError("Coupled-irrep targets must be floating point.")
         valid = broadcast_mask(mask, clean_target, entry_dim=entry_dim)
@@ -331,28 +340,6 @@ class EndpointFlowMatcher:
         return JointEndpointFlowSample(node=node, edge=edge, time=node.time)
 
     @staticmethod
-    def masked_frobenius_mse(
-        predicted_endpoint: Tensor,
-        clean_endpoint: Tensor,
-        *,
-        mask: Tensor | None = None,
-        entry_dim: int = 0,
-    ) -> Tensor:
-        """Rotation-invariant squared norm in the orthonormal irrep basis."""
-        if (
-            predicted_endpoint.shape != clean_endpoint.shape
-            or predicted_endpoint.dtype != clean_endpoint.dtype
-            or predicted_endpoint.device != clean_endpoint.device
-        ):
-            raise ValueError("Endpoint tensors must share shape/dtype/device.")
-        valid = broadcast_mask(mask, clean_endpoint, entry_dim=entry_dim)
-        squared = (predicted_endpoint - clean_endpoint).square()
-        selected = squared.masked_select(valid)
-        if selected.numel() == 0:
-            raise ValueError("Endpoint MSE requires at least one valid value.")
-        return selected.mean()
-
-    @staticmethod
     def derived_velocity(
         clean_endpoint_prediction: Tensor,
         current_state: Tensor,
@@ -374,19 +361,3 @@ class EndpointFlowMatcher:
         if bool((denominator <= 0).any()):
             raise ValueError("Endpoint-derived velocity requires t < 1.")
         return (clean_endpoint_prediction - current_state) / denominator
-
-
-def coupled_frobenius_mse(
-    prediction: Tensor,
-    target: Tensor,
-    _irreps: object = None,
-    *,
-    weight: float = 1.0,
-) -> Tensor:
-    """Canonical callback; SplitTrainer applies padding masks before this call."""
-    del _irreps
-    if prediction.shape != target.shape:
-        raise ValueError("Prediction and endpoint target must share a shape.")
-    if weight <= 0.0:
-        raise ValueError("Endpoint loss weight must be positive.")
-    return float(weight) * (prediction - target).square().mean()

@@ -1,9 +1,8 @@
 # NablaDFT E3/Muon/SHIFT FlowMatching
 
-Status: all three corrected server-2 two-rank CUDA smokes passed with endpoint
-matrix metrics enabled; GPU 4-7 remained reserved. The first full attempts were
-intentionally stopped before this correction, and their logs/checkpoints remain
-preserved while the jobs are prepared for committed-source retry.
+Status: all three canonical-MALOQ-loss lanes passed fresh server-1 two-rank CUDA
+smokes with endpoint matrix metrics enabled. Earlier runs and their
+logs/checkpoints remain preserved under distinct identities.
 
 ## Purpose
 
@@ -21,21 +20,22 @@ All non-architecture settings match the completed 2026-07-27 direct baselines:
 ranks, gradient accumulation 2, effective batch 20, Muon plus AuxAdamW,
 warmup-polynomial scheduling, float32, and seed 44.
 
-The only intended objective change is FlowMatching. Node and directed-edge
+The only intended modeling change is FlowMatching. Node and directed-edge
 coupled Hamiltonian blocks share one graph time, are both corrupted, and are
 both integrated with three endpoint-parameterized Euler steps. The trainer
-uses `10 * masked coupled Frobenius MSE`. Validation loss remains the random-time
-endpoint-matching loss used by the scheduler. Every epoch, the existing matrix,
-node/edge MAE, and corresponding MSE metrics are computed from joint Euler3
-inference with a fixed rank-and-batch prior, then delegated to canonical dense-AO
-accounting in physical SHIFT-restored units.
+delegates to the canonical MALOQ `rmse_mse_padded_loss` after canonical
+node/edge padding masks are removed. No MAE term is optimized. Validation loss
+uses the same random-time endpoint-matching objective for scheduling. Every
+epoch, the existing matrix and node/edge MAE/MSE metrics are still reported
+from joint Euler3 inference with a fixed rank-and-batch prior, then delegated
+to canonical dense-AO accounting in physical SHIFT-restored units.
 
 SHIFT subtracts the frozen elementwise mean from node `l=0` targets only. Edge
 targets remain unshifted, matching the completed direct baselines. The artifact
 is:
 
 ```text
-/dataset/seongsu/shared-home/workspace/project/outputs/scale-shift-statistics/nabladft-train12081-fock-l0-mean-std-rcut8-float32.pt
+/dataset/seongsu/shared-home/workspace/project/MALOQ/outputs/scale-shift-statistics/nabladft-train12081-fock-l0-mean-std-rcut8-float32.pt
 SHA-256: 375167ad551fb0b60dbe9cd049a4995276b54ce075e09906639ef3daa4f79475
 ```
 
@@ -46,14 +46,14 @@ W&B project: `MALOQ-nablaDFT-v2`
 Display names deliberately include `FlowMatching` so they cannot be confused
 with the completed direct V2 runs:
 
-- `NablaDFT | MALOQ-E3 | Muon | SHIFT | FlowMatching | V2`
-- `NablaDFT | NTEV2-E3 | Muon | SHIFT | FlowMatching | V2`
-- `NablaDFT | QHFlow3-E3 | Muon | SHIFT | FlowMatching | V2`
+- `NablaDFT | MALOQ-E3 | Muon | SHIFT | FlowMatching | MALOQ-RMSE+MSE | V2`
+- `NablaDFT | NTEV2-E3 | Muon | SHIFT | FlowMatching | MALOQ-RMSE+MSE | V2`
+- `NablaDFT | QHFlow3-E3 | Muon | SHIFT | FlowMatching | MALOQ-RMSE+MSE | V2`
 
 Full outputs use collision-resistant directories below:
 
 ```text
-/dataset/seongsu/shared-home/workspace/project/outputs/nabladft-flow-matching-<lane>-v2-2gpu-eb20-mb5-ga2-full-e20-<timestamp>-<pid>/
+/dataset/seongsu/shared-home/workspace/project/MALOQ/outputs/nabladft-flow-matching-maloq-loss-<lane>-v2-2gpu-eb20-mb5-ga2-full-e20-<timestamp>-<pid>/
 ```
 
 Each rank-shared run directory records `resolved_flow_matching_config.json`
@@ -67,19 +67,19 @@ Validate the immutable inputs and all three typed lane configs without
 training:
 
 ```bash
-/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/04_nabladft_flow_matching_e3_muon_shift_2gpu.sh validate all
+/dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/04_nabladft_flow_matching_e3_muon_shift_2gpu.sh validate all
 ```
 
 Run one full-size, one-epoch, two-GPU smoke:
 
 ```bash
-/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/04_nabladft_flow_matching_e3_muon_shift_2gpu.sh smoke qhflow3-e3-muon-shift 6,7
+/dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/04_nabladft_flow_matching_e3_muon_shift_2gpu.sh smoke qhflow3-e3-muon-shift 6,7
 ```
 
 Run one 20-epoch lane directly only after its smoke passes:
 
 ```bash
-/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/04_nabladft_flow_matching_e3_muon_shift_2gpu.sh full qhflow3-e3-muon-shift 6,7
+/dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/04_nabladft_flow_matching_e3_muon_shift_2gpu.sh full qhflow3-e3-muon-shift 6,7
 ```
 
 The launcher rejects duplicate, invalid, unavailable, or materially busy GPUs.
@@ -90,13 +90,13 @@ The launcher rejects duplicate, invalid, unavailable, or materially busy GPUs.
 The server-1 smoke manifest used for the three passed CUDA smokes is:
 
 ```text
-/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/queue_nabladft_flow_matching_e3_muon_shift_smoke_server1.yaml
+/dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/queue_nabladft_flow_matching_e3_muon_shift_smoke_server1.yaml
 ```
 
-The full-run manifest is:
+The canonical-MALOQ-loss full-run manifest is:
 
 ```text
-/dataset/seongsu/shared-home/workspace/project/_my_script/experiment/2026-07-28/queue_nabladft_flow_matching_e3_muon_shift.yaml
+/dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/queue_nabladft_flow_matching_e3_muon_shift_maloq_loss.yaml
 ```
 
 It defines exactly three two-GPU jobs, permits only `server-1` so server-2 GPUs
@@ -104,8 +104,12 @@ It defines exactly three two-GPU jobs, permits only `server-1` so server-2 GPUs
 pins the launcher, runner, base config, and SHIFT artifact as immutable inputs.
 All three CUDA smokes passed on server-1 GPU 6,7 at 04:21-04:22 KST. Initial
 full attempts were stopped on request so endpoint-inference metrics could be
-added before the comparison continued. Retry the preserved job IDs only after
-the corrected source is tested and committed.
+added before the comparison continued. The preserved original-loss job records
+remain blocked because their immutable launchers point to the pre-relocation
+repository root. The MALOQ-loss suite uses distinct queue IDs, W&B identities,
+and fresh timestamped output directories; historical requests and outputs are
+not rewritten or reused. Fresh MALOQ-loss smokes passed on 2026-07-28 at about
+21:27 KST for MALOQ on GPU 0-1, NTEV2 on GPU 2-3, and QHFlow3 on GPU 4-5.
 
 ## Source contract
 

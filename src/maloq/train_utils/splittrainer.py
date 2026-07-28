@@ -27,6 +27,110 @@ from ..fock_utils import basis_sets, matrix2labels_kernels
 
 
 DEFAULT_OUTPUT_FOLDER = str(Path(__file__).resolve().parents[3] / "outputs" / "run")
+MATRIX_EVAL_COLUMNS = (
+    "Total_MAE",
+    "Eigenvalue_MAE",
+    "Total_Energy_Error",
+    "Num_Atoms",
+    "Full_Dense_MAE",
+)
+
+
+def finalize_validation_matrix_error_sums(
+        matrix_stats,
+        metric_prefix="validation"):
+    """Build a backward-compatible W&B payload from global AO error sums.
+
+    The historical ``validation/matrix_*`` keys keep their original cutoff-
+    truncated numerator and full-dense denominator. Experimental callers may
+    select a nested prefix while reusing the same metric contract.
+    """
+    if matrix_stats.numel() != 12:
+        raise ValueError(
+            "Validation matrix statistics must contain 12 sums/counts, "
+            f"got {matrix_stats.numel()}."
+        )
+    if (
+            not isinstance(metric_prefix, str)
+            or re.fullmatch(
+                r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*",
+                metric_prefix,
+            ) is None):
+        raise ValueError(
+            "metric_prefix must be a non-empty slash-separated metric path."
+        )
+
+    def metric_key(name):
+        return f"{metric_prefix}/{name}"
+
+    def safe_ratio(numerator, denominator):
+        if denominator.item() <= 0:
+            return float('nan')
+        return (numerator / denominator).item()
+
+    represented_abs_error = matrix_stats[0]
+    represented_squared_error = matrix_stats[1]
+    full_entry_count = matrix_stats[2]
+    outside_abs_error = matrix_stats[9]
+    outside_squared_error = matrix_stats[10]
+    outside_entry_count = matrix_stats[11]
+    represented_entry_count = full_entry_count - outside_entry_count
+    if represented_entry_count.item() < 0:
+        raise RuntimeError(
+            "Outside-cutoff AO entry count exceeds full matrix size."
+        )
+
+    full_abs_error = represented_abs_error + outside_abs_error
+    matrix_mae = safe_ratio(represented_abs_error, full_entry_count)
+    matrix_mse = safe_ratio(represented_squared_error, full_entry_count)
+    full_squared_error = represented_squared_error + outside_squared_error
+    full_dense_matrix_mae = safe_ratio(full_abs_error, full_entry_count)
+    full_dense_matrix_mse = safe_ratio(full_squared_error, full_entry_count)
+    return {
+        metric_key("matrix_mae"): matrix_mae,
+        metric_key("matrix_mse"): matrix_mse,
+        metric_key("full_dense_matrix_mae"): full_dense_matrix_mae,
+        metric_key("full_dense_matrix_mse"): full_dense_matrix_mse,
+        metric_key("node_matrix_mae"): safe_ratio(
+            matrix_stats[3], matrix_stats[5]
+        ),
+        metric_key("node_matrix_mse"): safe_ratio(
+            matrix_stats[4], matrix_stats[5]
+        ),
+        metric_key("edge_matrix_mae"): safe_ratio(
+            matrix_stats[6], matrix_stats[8]
+        ),
+        metric_key("edge_matrix_mse"): safe_ratio(
+            matrix_stats[7], matrix_stats[8]
+        ),
+        metric_key("represented_block_matrix_mae"): safe_ratio(
+            represented_abs_error, represented_entry_count
+        ),
+        metric_key("represented_block_matrix_mse"): safe_ratio(
+            represented_squared_error, represented_entry_count
+        ),
+        metric_key("outside_cutoff_matrix_mae"): safe_ratio(
+            outside_abs_error, outside_entry_count
+        ),
+        metric_key("outside_cutoff_matrix_mse"): safe_ratio(
+            outside_squared_error, outside_entry_count
+        ),
+        metric_key("legacy_cutoff_truncated_matrix_mae"): matrix_mae,
+        metric_key("legacy_cutoff_truncated_matrix_mse"): matrix_mse,
+        metric_key("full_dense_matrix_absolute_error_sum"): full_abs_error.item(),
+        metric_key("full_dense_matrix_squared_error_sum"): (
+            full_squared_error.item()
+        ),
+        metric_key("full_dense_matrix_entry_count"): full_entry_count.item(),
+        metric_key("represented_block_matrix_entry_count"): (
+            represented_entry_count.item()
+        ),
+        metric_key("outside_cutoff_matrix_entry_count"): outside_entry_count.item(),
+        metric_key("represented_block_matrix_fraction"): safe_ratio(
+            represented_entry_count, full_entry_count
+        ),
+        metric_key("matrix_metrics_schema_version"): 2.0,
+    }
 
 
 def get_timestamp_uid() -> str:
@@ -449,6 +553,10 @@ class SplitTrainer():
             edge_matrix_abs_error = 0.0
             edge_matrix_squared_error = 0.0
             edge_matrix_num_elements = 0
+            outside_cutoff_matrix_abs_error = 0.0
+            outside_cutoff_matrix_squared_error = 0.0
+            outside_cutoff_matrix_num_elements = 0
+            matrix_metric_variant_stats = {}
             with torch.no_grad():
                 for batch in val_loader:
 
@@ -482,13 +590,18 @@ class SplitTrainer():
                         val_loss_edge += loss_edge.item()
 
                         if compute_matrix_metrics:
-                            batch_matrix_stats = self.compute_validation_matrix_error_sums(
-                                batch,
-                                node_output,
-                                edge_output,
-                                this_node_target,
-                                this_edge_target,
-                                basis_transform,
+                            (
+                                batch_matrix_stats,
+                                batch_matrix_metric_variants,
+                            ) = (
+                                self.compute_validation_matrix_error_sums_with_variants(
+                                    batch,
+                                    node_output,
+                                    edge_output,
+                                    this_node_target,
+                                    this_edge_target,
+                                    basis_transform,
+                                )
                             )
                             matrix_abs_error += batch_matrix_stats[0]
                             matrix_squared_error += batch_matrix_stats[1]
@@ -499,6 +612,43 @@ class SplitTrainer():
                             edge_matrix_abs_error += batch_matrix_stats[6]
                             edge_matrix_squared_error += batch_matrix_stats[7]
                             edge_matrix_num_elements += batch_matrix_stats[8]
+                            outside_cutoff_matrix_abs_error += (
+                                batch_matrix_stats[9]
+                            )
+                            outside_cutoff_matrix_squared_error += (
+                                batch_matrix_stats[10]
+                            )
+                            outside_cutoff_matrix_num_elements += batch_matrix_stats[11]
+                            for (
+                                    metric_prefix,
+                                    variant_stats,
+                            ) in batch_matrix_metric_variants.items():
+                                if torch.is_tensor(variant_stats):
+                                    variant_tensor = variant_stats.detach().to(
+                                        device=device,
+                                        dtype=torch.float64,
+                                    )
+                                else:
+                                    variant_tensor = torch.tensor(
+                                        variant_stats,
+                                        device=device,
+                                        dtype=torch.float64,
+                                    )
+                                if variant_tensor.numel() != 12:
+                                    raise ValueError(
+                                        "Validation matrix metric variant "
+                                        f"{metric_prefix!r} must contain 12 "
+                                        "sums/counts."
+                                    )
+                                variant_tensor = variant_tensor.reshape(12)
+                                if metric_prefix in matrix_metric_variant_stats:
+                                    matrix_metric_variant_stats[
+                                        metric_prefix
+                                    ].add_(variant_tensor)
+                                else:
+                                    matrix_metric_variant_stats[
+                                        metric_prefix
+                                    ] = variant_tensor.clone()
 
                     elif loss_target_string == 'forces':
                         node_output = self.head(backbone_out, batch)
@@ -551,12 +701,7 @@ class SplitTrainer():
             else:
                 track_loss_node_val.append(val_loss_node/num_val_batches)
 
-            matrix_mae = None
-            matrix_mse = None
-            node_matrix_mae = None
-            node_matrix_mse = None
-            edge_matrix_mae = None
-            edge_matrix_mse = None
+            matrix_metrics = None
             if compute_matrix_metrics:
                 matrix_stats = torch.tensor(
                     [
@@ -569,18 +714,40 @@ class SplitTrainer():
                         edge_matrix_abs_error,
                         edge_matrix_squared_error,
                         edge_matrix_num_elements,
+                        outside_cutoff_matrix_abs_error,
+                        outside_cutoff_matrix_squared_error,
+                        outside_cutoff_matrix_num_elements,
                     ],
                     dtype=torch.float64,
                     device=device,
                 )
                 if dist.is_initialized():
                     dist.all_reduce(matrix_stats, op=dist.ReduceOp.SUM)
-                matrix_mae = (matrix_stats[0] / matrix_stats[2]).item()
-                matrix_mse = (matrix_stats[1] / matrix_stats[2]).item()
-                node_matrix_mae = (matrix_stats[3] / matrix_stats[5]).item()
-                node_matrix_mse = (matrix_stats[4] / matrix_stats[5]).item()
-                edge_matrix_mae = (matrix_stats[6] / matrix_stats[8]).item()
-                edge_matrix_mse = (matrix_stats[7] / matrix_stats[8]).item()
+                matrix_metrics = finalize_validation_matrix_error_sums(
+                    matrix_stats
+                )
+                if matrix_metric_variant_stats:
+                    variant_prefixes = tuple(
+                        sorted(matrix_metric_variant_stats)
+                    )
+                    stacked_variant_stats = torch.stack([
+                        matrix_metric_variant_stats[metric_prefix]
+                        for metric_prefix in variant_prefixes
+                    ])
+                    if dist.is_initialized():
+                        dist.all_reduce(
+                            stacked_variant_stats,
+                            op=dist.ReduceOp.SUM,
+                        )
+                    for metric_prefix, variant_stats in zip(
+                            variant_prefixes,
+                            stacked_variant_stats):
+                        matrix_metrics.update(
+                            finalize_validation_matrix_error_sums(
+                                variant_stats,
+                                metric_prefix=metric_prefix,
+                            )
+                        )
 
             if rank == 0:   
                 if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
@@ -588,19 +755,46 @@ class SplitTrainer():
                 else:
                     print(f"Epoch {epoch+1}, Averaged Val Loss across ranks [total] {val_loss/num_val_batches} [node] {val_loss_node/num_val_batches}", flush=True)
                 if compute_matrix_metrics:
+                    assert matrix_metrics is not None
                     print(
-                        f"Epoch {epoch+1}, Validation Matrix MAE: {matrix_mae} "
-                        f"MSE: {matrix_mse}",
+                        f"Epoch {epoch+1}, Validation Matrix MAE: "
+                        f"{matrix_metrics['validation/matrix_mae']} MSE: "
+                        f"{matrix_metrics['validation/matrix_mse']}",
+                        flush=True,
+                    )
+                    print(
+                        f"Epoch {epoch+1}, Validation Full-Dense Matrix MAE: "
+                        f"{matrix_metrics['validation/full_dense_matrix_mae']} "
+                        f"MSE: "
+                        f"{matrix_metrics['validation/full_dense_matrix_mse']}",
+                        flush=True,
+                    )
+                    print(
+                        f"Epoch {epoch+1}, Validation Represented Block "
+                        f"Matrix MAE: "
+                        f"{matrix_metrics['validation/represented_block_matrix_mae']} "
+                        f"MSE: "
+                        f"{matrix_metrics['validation/represented_block_matrix_mse']}",
+                        flush=True,
+                    )
+                    print(
+                        f"Epoch {epoch+1}, Validation Outside-Cutoff "
+                        f"Matrix MAE: "
+                        f"{matrix_metrics['validation/outside_cutoff_matrix_mae']} "
+                        f"MSE: "
+                        f"{matrix_metrics['validation/outside_cutoff_matrix_mse']}",
                         flush=True,
                     )
                     print(
                         f"Epoch {epoch+1}, Validation Node Matrix MAE: "
-                        f"{node_matrix_mae} MSE: {node_matrix_mse}",
+                        f"{matrix_metrics['validation/node_matrix_mae']} MSE: "
+                        f"{matrix_metrics['validation/node_matrix_mse']}",
                         flush=True,
                     )
                     print(
                         f"Epoch {epoch+1}, Validation Edge Matrix MAE: "
-                        f"{edge_matrix_mae} MSE: {edge_matrix_mse}",
+                        f"{matrix_metrics['validation/edge_matrix_mae']} MSE: "
+                        f"{matrix_metrics['validation/edge_matrix_mse']}",
                         flush=True,
                     )
 
@@ -635,14 +829,8 @@ class SplitTrainer():
                         "validation/edge_loss": val_loss_edge / num_val_batches,
                     })
                 if compute_matrix_metrics:
-                    metrics.update({
-                        "validation/matrix_mae": matrix_mae,
-                        "validation/matrix_mse": matrix_mse,
-                        "validation/node_matrix_mae": node_matrix_mae,
-                        "validation/node_matrix_mse": node_matrix_mse,
-                        "validation/edge_matrix_mae": edge_matrix_mae,
-                        "validation/edge_matrix_mse": edge_matrix_mse,
-                    })
+                    assert matrix_metrics is not None
+                    metrics.update(matrix_metrics)
                 if torch.cuda.is_available():
                     metrics["system/gpu_peak_memory_mb"] = (
                         torch.cuda.max_memory_allocated() / (1024 * 1024)
@@ -732,6 +920,7 @@ class SplitTrainer():
         eigenvalue_maes = []
         total_energy_errors = []
         num_atoms_in_molecule_list = []
+        full_dense_matrix_maes = []
         if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
             edge_outputs = {}
             edge_labels = {}
@@ -741,6 +930,7 @@ class SplitTrainer():
                 str(index) if world_size == 1
                 else f"rank{rank}_{index}"
             )
+            evaluation_matrix_stats = None
             if rank == 0:
                 print(f"Processing molecule {index}...", flush=True)
                 print(f"Number of atoms in molecule {index}: {batch.num_nodes}", flush=True)
@@ -790,6 +980,27 @@ class SplitTrainer():
                     target_object, target_index = self._batch_target_reference(
                         batch,
                     )
+                    reference_stats_list = getattr(
+                        target_object,
+                        "outside_cutoff_reference_error_sums_list",
+                        (),
+                    )
+                    if (
+                            not distributed_graphs
+                            and target_index < len(reference_stats_list)):
+                        # Use the same ODE endpoint-aware/full-dense metric path
+                        # as training-time validation whenever the loader kept
+                        # the compact outside-cutoff target statistics.
+                        evaluation_matrix_stats = (
+                            self.compute_validation_matrix_error_sums(
+                                batch,
+                                node_output,
+                                edge_output,
+                                this_node_target,
+                                this_edge_target,
+                                basis_transform,
+                            )
+                        )
                     # When using the distributed solver, each batch has its own fock targets object (it's a supergraph)
                     if distributed_graphs:
                         neighbour_list = target_object.neighbour_list_list
@@ -1103,8 +1314,23 @@ class SplitTrainer():
                     output_fock_matrix = torch.tensor(output_fock_matrix)
                     label_fock_matrix = torch.tensor(label_fock_matrix)
 
-                    total_matrix_mae_loss = torch.abs(output_fock_matrix - label_fock_matrix).sum() / output_fock_matrix.numel()
+                    # Preserve the historical Total_MAE exactly. Full-dense
+                    # MAE is an additive metric with a separate output column.
+                    total_matrix_mae_loss = (
+                        torch.abs(output_fock_matrix - label_fock_matrix).sum()
+                        / output_fock_matrix.numel()
+                    )
+                    full_dense_matrix_mae = float("nan")
+                    if evaluation_matrix_stats is not None:
+                        full_dense_matrix_mae = (
+                            finalize_validation_matrix_error_sums(
+                                torch.as_tensor(
+                                    evaluation_matrix_stats, dtype=torch.float64
+                                )
+                            )["validation/full_dense_matrix_mae"]
+                        )
                     track_loss.append(total_matrix_mae_loss)
+                    full_dense_matrix_maes.append(full_dense_matrix_mae)
 
                 else:
                     track_loss.append(loss.item())
@@ -1131,9 +1357,17 @@ class SplitTrainer():
         # -- Output dump --
         if loss_target_string == 'fock_matrix' or loss_target_string == 'density_matrix':
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
-                f.write(f"Total_MAE\tEigenvalue_MAE\tTotal_Energy_Error\tNum_Atoms\n")
-                for total, eig, energy, num_atoms in zip(track_loss, eigenvalue_maes, total_energy_errors, num_atoms_in_molecule_list):
-                    f.write(f"{total:.10f}\t{eig:.10f}\t{energy:.10f}\t{num_atoms}\n")
+                f.write("\t".join(MATRIX_EVAL_COLUMNS) + "\n")
+                for total, eig, energy, num_atoms, full_dense in zip(
+                        track_loss,
+                        eigenvalue_maes,
+                        total_energy_errors,
+                        num_atoms_in_molecule_list,
+                        full_dense_matrix_maes):
+                    f.write(
+                        f"{total:.10f}\t{eig:.10f}\t{energy:.10f}\t"
+                        f"{num_atoms}\t{full_dense:.10f}\n"
+                    )
         else:
             with open(output_folder + "/" + 'model' + '_eval_' + str(rank) + '.txt', 'w') as f:
                 f.write(f"Energy_Error (Eh)\tNum_Atoms\n")
@@ -1622,6 +1856,31 @@ class SplitTrainer():
 
         return loss_node, loss_edge, loss
 
+    def compute_validation_matrix_error_sums_with_variants(
+            self,
+            batch,
+            node_output,
+            edge_output,
+            node_target,
+            edge_target,
+            basis_transform):
+        """Return the primary matrix stats and optional namespaced variants.
+
+        The default implementation is intentionally feature-neutral: it calls
+        the historical matrix-stat method exactly once and emits no extra
+        metrics. Experimental trainers can override this hook without adding
+        feature branches to the canonical training loop.
+        """
+        primary_stats = self.compute_validation_matrix_error_sums(
+            batch,
+            node_output,
+            edge_output,
+            node_target,
+            edge_target,
+            basis_transform,
+        )
+        return primary_stats, {}
+
     def compute_validation_matrix_error_sums(
             self,
             batch,
@@ -1630,7 +1889,11 @@ class SplitTrainer():
             node_target,
             edge_target,
             basis_transform):
-        """Returns total, node-block, and edge-block AO matrix error sums."""
+        """Return represented, node, edge, and outside-cutoff AO error sums.
+
+        Outside-cutoff blocks have no model output and are evaluated against a
+        zero prediction using compact statistics retained from the dense target.
+        """
         if self.open_shell:
             spin_tensors = zip(node_output, edge_output, node_target, edge_target)
         else:
@@ -1653,6 +1916,9 @@ class SplitTrainer():
         edge_abs_error_sum = 0.0
         edge_squared_error_sum = 0.0
         edge_num_elements = 0
+        outside_cutoff_abs_error_sum = 0.0
+        outside_cutoff_squared_error_sum = 0.0
+        outside_cutoff_num_elements = 0
 
         for spin_index, (
                 spin_node_output,
@@ -1702,6 +1968,32 @@ class SplitTrainer():
                     np.array([0]), np.cumsum(orbitals_per_atom)
                 ])
                 matrix_size = int(fock_block_offsets[-1])
+                reference_stats_list = getattr(
+                    target_object,
+                    "outside_cutoff_reference_error_sums_list",
+                    None,
+                )
+                if (
+                        reference_stats_list is None
+                        or target_index >= len(reference_stats_list)):
+                    raise RuntimeError(
+                        "Full-dense validation metrics require outside-cutoff "
+                        "reference statistics from the current data loader."
+                    )
+                (
+                    outside_abs_error_by_spin,
+                    outside_squared_error_by_spin,
+                    graph_outside_num_elements,
+                ) = reference_stats_list[target_index]
+                if spin_index >= len(outside_abs_error_by_spin):
+                    raise RuntimeError(
+                        "Outside-cutoff reference statistics do not contain "
+                        f"spin channel {spin_index}."
+                    )
+                if graph_outside_num_elements > matrix_size * matrix_size:
+                    raise RuntimeError(
+                        "Outside-cutoff AO entry count exceeds matrix size."
+                    )
                 error_matrix = np.zeros(
                     (matrix_size, matrix_size), dtype=np.float32
                 )
@@ -1725,6 +2017,13 @@ class SplitTrainer():
                 abs_error_sum += np.abs(error_matrix).sum()
                 squared_error_sum += np.square(error_matrix).sum()
                 num_elements += error_matrix.size
+                outside_cutoff_abs_error_sum += outside_abs_error_by_spin[
+                    spin_index
+                ]
+                outside_cutoff_squared_error_sum += (
+                    outside_squared_error_by_spin[spin_index]
+                )
+                outside_cutoff_num_elements += graph_outside_num_elements
 
                 for atom_index in range(num_atoms):
                     block_start = fock_block_offsets[atom_index]
@@ -1759,6 +2058,9 @@ class SplitTrainer():
             edge_abs_error_sum,
             edge_squared_error_sum,
             edge_num_elements,
+            outside_cutoff_abs_error_sum,
+            outside_cutoff_squared_error_sum,
+            outside_cutoff_num_elements,
         )
 
     def write_embeddings_to_file(self, backbone_out, batch, index, output_folder, rank):

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from functools import partial
-
 import pytest
 import torch
 from e3nn import o3
@@ -19,6 +17,7 @@ from maloq.experimental.flow_matching import (
     QHFlow2EndpointWorkflow,
 )
 from maloq.helm.qhf_layer.so3 import SO3_Grid
+from maloq.train_utils.loss import rmse_mse_padded_loss
 from maloq.train_utils.splittrainer import SplitTrainer
 from maloq.train_utils.training_workflow_v2 import TrainingWorkflowV2Fixed
 
@@ -126,7 +125,7 @@ def test_trainer_calls_canonical_super_loop_with_wrapped_loaders(
 
     result = trainer.train(
         2,
-        object(),
+        rmse_mse_padded_loss,
         object(),
         object(),
         "cpu",
@@ -144,8 +143,8 @@ def test_trainer_calls_canonical_super_loop_with_wrapped_loaders(
     kwargs = captured["kwargs"]
     assert isinstance(args, tuple)
     assert isinstance(kwargs, dict)
-    assert isinstance(args[1], partial)
-    assert args[1](torch.ones(2), torch.zeros(2), None).item() == pytest.approx(10.0)
+    assert args[1] is rmse_mse_padded_loss
+    assert args[1](torch.ones(2), torch.zeros(2), None).item() == pytest.approx(2.0)
     assert isinstance(kwargs["train_loader"], EndpointCorruptingLoader)
     assert isinstance(kwargs["val_loader"], EndpointCorruptingLoader)
     assert kwargs["validation_matrix_metrics"] is True
@@ -317,6 +316,87 @@ def test_validation_matrix_metrics_use_deterministic_euler_endpoints(
     assert not torch.equal(canonical_outputs[0][1], random_t_edge)
 
 
+def test_validation_matrix_metric_variants_share_prior_noise_and_keep_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Batch:
+        node_y = torch.zeros(1, 1)
+
+    trainer = EndpointFlowTrainer(
+        backbone=nn.Identity(),
+        head=nn.Identity(),
+        head_irreps="irreps",
+        config=FlowMatchingConfig(num_ode_steps=3),
+        validation_inference_seed=44,
+    )
+    samples: list[tuple[int | None, int, torch.Tensor]] = []
+
+    def fake_sample_batch(
+        batch,
+        *,
+        basis_transform,
+        device,
+        node_source=None,
+        edge_source=None,
+        generator=None,
+        num_ode_steps=None,
+    ) -> EndpointEulerResult:
+        del batch, basis_transform, device, node_source, edge_source
+        assert generator is not None
+        draw = torch.rand(2, generator=generator)
+        samples.append((num_ode_steps, generator.initial_seed(), draw.clone()))
+        step_marker = 3.0 if num_ode_steps is None else float(num_ode_steps)
+        return EndpointEulerResult(
+            node=torch.tensor([[draw[0].item(), step_marker]]),
+            edge=torch.tensor([[draw[1].item(), step_marker]]),
+            times=torch.tensor([0.01, 1.0]),
+        )
+
+    def fake_canonical_metrics(
+        self,
+        batch,
+        node_output,
+        edge_output,
+        node_target,
+        edge_target,
+        basis_transform,
+    ):
+        del self, batch, node_target, edge_target, basis_transform
+        return (
+            float(node_output[0, 1]),
+            float(edge_output[0, 1]),
+            *([1.0] * 10),
+        )
+
+    monkeypatch.setattr(trainer, "sample_batch", fake_sample_batch)
+    monkeypatch.setattr(
+        SplitTrainer,
+        "compute_validation_matrix_error_sums",
+        fake_canonical_metrics,
+    )
+    global_rng_before = torch.random.get_rng_state().clone()
+
+    primary, variants = (
+        trainer.compute_validation_matrix_error_sums_with_variants(
+            _Batch(),
+            torch.full((1, 2), -100.0),
+            torch.full((1, 2), -200.0),
+            torch.zeros(1, 2),
+            torch.zeros(1, 2),
+            _TwoShellScalarBasis(),
+        )
+    )
+
+    torch.testing.assert_close(torch.random.get_rng_state(), global_rng_before)
+    assert [sample[:2] for sample in samples] == [(None, 44), (1, 44)]
+    torch.testing.assert_close(samples[0][2], samples[1][2])
+    assert primary[:2] == (3.0, 3.0)
+    assert variants["validation/flow_matching_configured_ode"] is primary
+    assert variants["validation/flow_matching_one_shot"][:2] == (1.0, 1.0)
+    assert trainer.flow_config.num_ode_steps == 3
+    assert trainer._validation_inference_calls == 1
+
+
 def test_sample_batch_connects_three_step_euler_to_backbone_and_head() -> None:
     class _Batch:
         def __init__(self) -> None:
@@ -425,3 +505,18 @@ def test_sample_batch_connects_three_step_euler_to_backbone_and_head() -> None:
     torch.testing.assert_close(edge_dense[1], edge_dense[0].T)
     torch.testing.assert_close(edge_dense[3], edge_dense[2].T)
     assert backbone.training and head.training
+
+    backbone.calls.clear()
+    one_shot_result = trainer.sample_batch(
+        batch,
+        basis_transform=_TwoShellScalarBasis(),
+        device="cpu",
+        node_source=node_source,
+        edge_source=edge_source,
+        num_ode_steps=1,
+    )
+    assert len(backbone.calls) == 1
+    assert one_shot_result.times.numel() == 2
+    torch.testing.assert_close(one_shot_result.node, node_endpoint)
+    torch.testing.assert_close(one_shot_result.edge, edge_endpoint)
+    assert trainer.flow_config.num_ode_steps == 3

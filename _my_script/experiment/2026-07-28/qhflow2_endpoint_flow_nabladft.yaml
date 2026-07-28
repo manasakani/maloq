@@ -15,16 +15,13 @@ flow_matching:
   state_scope: node_and_edge
   edge_parameterization: ode_endpoint
   enforce_hamiltonian_symmetry: true
-  endpoint_loss: masked_frobenius_mse
-  hamiltonian_weight: 10.0
-  time_scaled_loss: false
   architecture_version: 2
   upstream_commit: 2b5193785c199dce57db43065142cc9a5759d556
 
 dataset:
   dataset_name: nablaDFT
   dbpath: /dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
-  output_folder: /dataset/seongsu/shared-home/workspace/project/outputs/_config-preview/full-matrix-endpoint-flow-nabladft-v2
+  output_folder: /dataset/seongsu/shared-home/workspace/project/MALOQ/outputs/_config-preview/full-matrix-endpoint-flow-nabladft-v2
   run_name: nabladft-full-matrix-endpoint-flow-qhflow3-e2-muon-raw-v2
   open_shell: false
   dataset_format: auto
@@ -97,9 +94,8 @@ optimization:
 
 loss:
   loss_target: fock_matrix
-  # EndpointFlowTrainer replaces this canonical callback with weighted pure MSE.
-  train_loss: mse_padded_loss
-  test_loss: mse_padded_loss
+  train_loss: rmse_mse_padded_loss
+  test_loss: l1_unpadded_loss
   scale_and_shift: false
   scale_shift_mode: shift_only
   scale_shift_path: null

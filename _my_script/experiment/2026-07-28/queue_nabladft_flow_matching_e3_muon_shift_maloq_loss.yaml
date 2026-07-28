@@ -1,31 +1,31 @@
 jobs:
-  - id: nabla-flow-matching-v2-maloq-e3-muon-shift-20260728b
-    description: NablaDFT MALOQ-E3 Muon SHIFT full-matrix endpoint flow after repository relocation
+  - id: nabla-flow-maloq-loss-v2-maloq-e3-muon-shift-20260728c
+    description: NablaDFT MALOQ-E3 Muon SHIFT FlowMatching with canonical MALOQ RMSE+MSE loss
     launcher: /dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/04_nabladft_flow_matching_e3_muon_shift_2gpu.sh
     args: [full, maloq-e3-muon-shift, "{gpus}"]
     gpu_count: 2
     allowed_hosts: [server-1]
     priority: 30
-    input_files: &flow_inputs
+    input_files: &flow_maloq_loss_inputs
       - /dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/04_nabladft_flow_matching_e3_muon_shift_2gpu.sh
       - /dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/run_flow_matching_e3_muon_shift_nabladft.py
       - /dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/flow_matching_e3_muon_shift_nabladft.yaml
       - /dataset/seongsu/shared-home/workspace/project/MALOQ/outputs/scale-shift-statistics/nabladft-train12081-fock-l0-mean-std-rcut8-float32.pt
 
-  - id: nabla-flow-matching-v2-ntev2-e3-muon-shift-20260728b
-    description: NablaDFT NTEV2-E3 Muon SHIFT full-matrix endpoint flow after repository relocation
+  - id: nabla-flow-maloq-loss-v2-ntev2-e3-muon-shift-20260728c
+    description: NablaDFT NTEV2-E3 Muon SHIFT FlowMatching with canonical MALOQ RMSE+MSE loss
     launcher: /dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/04_nabladft_flow_matching_e3_muon_shift_2gpu.sh
     args: [full, ntev2-e3-muon-shift, "{gpus}"]
     gpu_count: 2
     allowed_hosts: [server-1]
     priority: 30
-    input_files: *flow_inputs
+    input_files: *flow_maloq_loss_inputs
 
-  - id: nabla-flow-matching-v2-qhflow3-e3-muon-shift-20260728b
-    description: NablaDFT QHFlow3-E3 Muon SHIFT full-matrix endpoint flow after repository relocation
+  - id: nabla-flow-maloq-loss-v2-qhflow3-e3-muon-shift-20260728c
+    description: NablaDFT QHFlow3-E3 Muon SHIFT FlowMatching with canonical MALOQ RMSE+MSE loss
     launcher: /dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/04_nabladft_flow_matching_e3_muon_shift_2gpu.sh
     args: [full, qhflow3-e3-muon-shift, "{gpus}"]
     gpu_count: 2
     allowed_hosts: [server-1]
     priority: 30
-    input_files: *flow_inputs
+    input_files: *flow_maloq_loss_inputs

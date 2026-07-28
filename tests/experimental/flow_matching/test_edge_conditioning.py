@@ -13,6 +13,8 @@ from maloq.experimental.flow_matching.conditioning import (
     CoupledAOCodec,
     HamiltonianSymmetryProjector,
 )
+from maloq.helm.esen_osh import eSEN_Backbone
+from maloq.helm.esen_osh_v2 import MaloqNTEV2Backbone
 from maloq.fock_utils.utils_tensor_decomp import e3TensorDecomp
 from maloq.helm.qhflow3 import QHFlow3Backbone
 
@@ -515,6 +517,66 @@ def test_common_conditioner_separates_node_edge_incident_and_time_paths() -> Non
     )
 
 
+@pytest.mark.parametrize(
+    ("active_path", "expected_gradients"),
+    [
+        ("node", (True, False, False)),
+        ("edge", (False, True, False)),
+        ("time", (False, False, True)),
+    ],
+)
+def test_forward_has_separate_gradients_to_each_flow_condition(
+    active_path: str,
+    expected_gradients: tuple[bool, bool, bool],
+) -> None:
+    """Prove that batch.node_flow_t, edge_flow_t, and t reach the output."""
+    basis = _sp_basis()
+    wrapper = FlowConditionedBackbone(
+        _NativeEmbeddingBackbone(),
+        flow_irreps=basis.required_irreps_out,
+        node_flow_scale=1.0 if active_path == "node" else 0.0,
+        edge_flow_scale=1.0 if active_path == "edge" else 0.0,
+        incident_edge_scale=1.0 if active_path == "edge" else 0.0,
+        time_scale=1.0 if active_path == "time" else 0.0,
+    ).eval()
+    with torch.no_grad():
+        wrapper.node_flow_projection.weight.fill_(0.25)
+        wrapper.edge_flow_projection.weight.fill_(0.25)
+        wrapper.node_time_projection.weight.fill_(1.0)
+        wrapper.node_time_projection.bias.zero_()
+        wrapper.edge_time_projection.weight.fill_(1.0)
+        wrapper.edge_time_projection.bias.zero_()
+
+    batch = _generic_flow_batch(basis.required_irreps_out.dim)
+    generator = torch.Generator().manual_seed(732)
+    batch.node_flow_t = torch.randn(
+        batch.node_flow_t.shape,
+        dtype=torch.float64,
+        generator=generator,
+        requires_grad=True,
+    )
+    batch.edge_flow_t = torch.randn(
+        batch.edge_flow_t.shape,
+        dtype=torch.float64,
+        generator=generator,
+        requires_grad=True,
+    )
+    batch.t = torch.tensor([0.2, 0.8], dtype=torch.float64, requires_grad=True)
+
+    output = wrapper(batch)
+    loss = output["node_embeddings"].square().sum()
+    loss = loss + output["edge_embeddings"].square().sum()
+    gradients = torch.autograd.grad(
+        loss,
+        (batch.node_flow_t, batch.edge_flow_t, batch.t),
+        allow_unused=True,
+    )
+
+    for gradient, expected_nonzero in zip(gradients, expected_gradients, strict=True):
+        is_nonzero = gradient is not None and bool(torch.count_nonzero(gradient))
+        assert is_nonzero is expected_nonzero
+
+
 def test_common_conditioner_validates_state_dtype_time_and_edge_graph() -> None:
     basis = _sp_basis()
     wrapper = FlowConditionedBackbone(
@@ -551,10 +613,12 @@ def test_common_conditioner_validates_state_dtype_time_and_edge_graph() -> None:
 def _flow_forward_batch(
     node_flow_state: torch.Tensor,
     edge_flow_state: torch.Tensor,
+    *,
+    time: float = 0.37,
 ) -> Batch:
     positions = torch.tensor(
         [[0.13, -0.21, 0.08], [0.74, 0.35, -0.42]],
-        dtype=torch.float64,
+        dtype=node_flow_state.dtype,
     )
     atomic_numbers = torch.full((2,), 6, dtype=torch.long)
     edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
@@ -576,11 +640,103 @@ def _flow_forward_batch(
             )
         ]
     )
-    batch.overlap_matrix = [torch.eye(28, dtype=torch.float64).numpy()]
-    batch.t = torch.tensor([0.37], dtype=torch.float64)
+    batch.overlap_matrix = [torch.eye(28, dtype=node_flow_state.dtype).numpy()]
+    batch.t = torch.tensor([time], dtype=node_flow_state.dtype)
     batch.node_flow_t = node_flow_state
     batch.edge_flow_t = edge_flow_state
     return batch
+
+
+def _small_supported_flow_base(backbone_type: str) -> torch.nn.Module:
+    irreps = o3.Irreps("1x0e")
+    if backbone_type == "esen":
+        return eSEN_Backbone(
+            irreps,
+            sphere_channels=4,
+            hidden_channels=4,
+            lmax=0,
+            mmax=0,
+            cutoff=8.0,
+            edge_channels=4,
+            num_layers=1,
+            num_distance_basis=4,
+            include_edges=True,
+        )
+    if backbone_type == "maloq_nte_v2":
+        return MaloqNTEV2Backbone(
+            irreps,
+            sphere_channels=4,
+            hidden_channels=4,
+            lmax=0,
+            mmax=0,
+            cutoff=8.0,
+            edge_channels=4,
+            num_layers=1,
+            num_edge_layers=2,
+            num_distance_basis=4,
+            output_sphere_channels=4,
+            conditioning_basis="def2-svp",
+        )
+    if backbone_type == "qhflow3":
+        return QHFlow3Backbone(
+            sh_lmax=0,
+            hidden_size=4,
+            bottle_hidden_size=4,
+            num_gnn_layers=1,
+            num_ham_gnn_layers=1,
+            radius_embed_dim=4,
+            escn_edge_channels=4,
+            escn_num_distance_basis=4,
+            basis="def2-svp",
+            default_hamiltonian_input="zero",
+            use_block_H=False,
+            grid_resolution=4,
+            grid_ffn_chunk_size=None,
+        )
+    raise AssertionError(f"Unsupported test backbone: {backbone_type}")
+
+
+@pytest.mark.parametrize("backbone_type", ["esen", "maloq_nte_v2", "qhflow3"])
+def test_real_supported_backbone_wrapper_consumes_node_edge_and_time(
+    backbone_type: str,
+) -> None:
+    """Exercise the common H_t conditioner after each supported real backbone."""
+    torch.manual_seed(814)
+    flow_irreps = o3.Irreps("1x0e")
+    wrapper = FlowConditionedBackbone(
+        _small_supported_flow_base(backbone_type),
+        flow_irreps=flow_irreps,
+        embedding_lmax=0,
+        embedding_channels=4,
+    ).eval()
+    zero_node = torch.zeros(2, flow_irreps.dim)
+    zero_edge = torch.zeros_like(zero_node)
+    node_state = torch.tensor([[0.7], [-0.4]])
+    edge_state = torch.tensor([[0.3], [-0.8]])
+
+    with torch.no_grad():
+        reference = wrapper(_flow_forward_batch(zero_node, zero_edge))
+        node_changed = wrapper(_flow_forward_batch(node_state, zero_edge))
+        edge_changed = wrapper(_flow_forward_batch(zero_node, edge_state))
+        time_changed = wrapper(
+            _flow_forward_batch(zero_node, zero_edge, time=0.73)
+        )
+
+    assert (
+        node_changed["node_embeddings"] - reference["node_embeddings"]
+    ).abs().max() > 1.0e-8
+    assert (
+        edge_changed["edge_embeddings"] - reference["edge_embeddings"]
+    ).abs().max() > 1.0e-8
+    assert (
+        edge_changed["node_embeddings"] - reference["node_embeddings"]
+    ).abs().max() > 1.0e-8
+    assert (
+        time_changed["node_embeddings"] - reference["node_embeddings"]
+    ).abs().max() > 1.0e-8
+    assert (
+        time_changed["edge_embeddings"] - reference["edge_embeddings"]
+    ).abs().max() > 1.0e-8
 
 
 def test_real_qhflow3_wrapper_forward_consumes_joint_flow_state() -> None:

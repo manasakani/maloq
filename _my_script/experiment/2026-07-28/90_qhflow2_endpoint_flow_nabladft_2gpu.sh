@@ -5,7 +5,7 @@ SCOPE=${1:-validate}
 EXPECTED_HOST=${EXPECTED_HOST:-}
 CUDA_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
 
-PROJECT_ROOT=/dataset/seongsu/shared-home/workspace/project
+PROJECT_ROOT=/dataset/seongsu/shared-home/workspace/project/MALOQ
 SCRIPT_ROOT=${PROJECT_ROOT}/_my_script/experiment/2026-07-28
 ENV_ROOT=/dataset/seongsu/shared-home/conda/envs/proj-dft-baselines-maloq-sc26
 PY=${ENV_ROOT}/bin/python
