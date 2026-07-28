@@ -1,0 +1,126 @@
+# Matched baseline for the NTEV2-E3 Muon SHIFT matrix composite-loss axis.
+# The typed loss field remains the canonical baseline placeholder; the dated
+# runner explicitly replaces only train_loss_fxn through the experimental
+# matrix_composite_loss adapter.
+dataset:
+  dataset_name: nablaDFT
+  dbpath: /dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
+  output_folder: /dataset/seongsu/shared-home/workspace/project/MALOQ/outputs/_config-preview/nabladft-matrix-composite-loss
+  run_name: nabladft-matrix-composite-loss-base
+  open_shell: false
+  dataset_format: auto
+
+execution:
+  train_or_eval: train
+  train_backbone: true
+  train_head: true
+  compute_total_energy: false
+  compute_eigenvalues: true
+
+splits:
+  num_train: 12081
+  num_val: 64
+  num_test: 0
+  batch_size: 5
+  shuffle: false
+  distribute_graphs: false
+  partition_type: null
+  dist_backend: nccl
+
+model:
+  model_variant: nabladft-matrix-composite-loss-base
+  backbone_type: maloq_nte_v2
+  atom_scalar_embedding_mode: element_charge_spin
+  head_type: maloq_muon
+  wigner_backend: torch
+  l_embedding_dim: 128
+  hidden_dim: 128
+  output_l_embedding_dim: 64
+  num_distance_basis: 512
+  num_mp_layers: 3
+  num_edge_layers: 3
+  message_type: source-target
+  rcut_orbitals: 8.0
+  rcut_gaussian: 16.0
+  gaussian_width: 1.0
+  reduce_edge: false
+  reduce_node: true
+  reduce_node_intra: true
+  mlp_type: grid
+  esen_grid_resolution: null
+  qhflow3_max_radius: 12.0
+  qhflow3_radius_embed_dim: 32
+  qhflow3_grid_resolution: 48
+  qhflow3_grid_ffn_chunk_size: 512
+  qhflow3_use_overlap: true
+  qhflow3_muonize_output_projection: false
+
+optimization:
+  num_epochs: 20
+  lr_init: 0.0005
+  optimizer_type: muon
+  weight_decay: 0.0001
+  muon_lr: 0.02
+  muon_momentum: 0.95
+  muon_nesterov: true
+  muon_ns_steps: 5
+  muon_adamw_lr: 0.0005
+  muon_adamw_betas: [0.9, 0.95]
+  muon_adamw_eps: 1.0e-10
+  muon_output_projection_policy: shape_muon
+  gradient_clip_val: 1.0
+  gradient_accumulation_steps: 2
+  scheduler_type: warmup_polynomial
+  warmup_steps: 1000
+  scheduler_power: 1.0
+  min_lr_ratio: 0.0
+  step_every_epoch: false
+
+loss:
+  loss_target: fock_matrix
+  train_loss: rmse_mse_padded_loss
+  test_loss: l1_unpadded_loss
+  scale_and_shift: true
+  scale_shift_mode: shift_only
+  scale_shift_path: /dataset/seongsu/shared-home/workspace/project/MALOQ/outputs/scale-shift-statistics/nabladft-train12081-fock-l0-mean-std-rcut8-float32.pt
+  compute_uncoupled_loss: false
+  delta_learning: false
+
+checkpointing:
+  save_frequency: 1
+  restart_backbone: false
+  restart_head: false
+  restart_optimizer: false
+  backbone_checkpoint: backbone.pt
+  head_checkpoint: head.pt
+
+runtime:
+  dtype: float32
+  seed: 44
+
+tracking:
+  use_wandb: true
+  wandb_project: MALOQ-nablaDFT-v2
+  wandb_entity: kaist-korea
+  wandb_mode: online
+  wandb_run_name: null
+  wandb_group: nabladft-v2-loss-axis-seed44
+  wandb_job_type: full
+  wandb_tags:
+    - dataset:nabladft
+    - suite:matched-ofat-v2
+    - axis:loss
+    - optimizer:muon-auxadamw
+    - architecture:ntev2
+    - edge-layers:3
+    - head:muon
+    - normalization:l0-shift-only
+    - split:train12081-val64
+    - seed:44
+    - version:v2
+    - experimental:matrix-composite-loss
+    - sc26-seongsu
+  experiment_version: 2
+  wandb_log_every_n_steps: 10
+  validation_matrix_metrics: true
+  validation_matrix_metrics_frequency: 1
