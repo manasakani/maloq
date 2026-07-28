@@ -4,6 +4,7 @@ set -euo pipefail
 SCOPE=${1:-validate}
 LANE=${2:-all}
 GPUS=${3:-}
+LOSS_PROFILE=${4:-maloq-rmse-mse}
 EXPECTED_HOST=${EXPECTED_HOST:-}
 
 PROJECT_ROOT=/dataset/seongsu/shared-home/workspace/project/MALOQ
@@ -15,16 +16,16 @@ BASE_CONFIG=${SCRIPT_ROOT}/flow_matching_e3_muon_shift_nabladft.yaml
 NABLA_DB=/dataset/seongsu/shared-home/datasets/nablaDFT/hamiltonian_databases/train_2k.db
 SCALE_SHIFT=${PROJECT_ROOT}/outputs/scale-shift-statistics/nabladft-train12081-fock-l0-mean-std-rcut8-float32.pt
 SCALE_SHIFT_SHA256=375167ad551fb0b60dbe9cd049a4995276b54ce075e09906639ef3daa4f79475
-RUN_PREFIX=nabladft-flow-matching-maloq-loss
 
 LANES=(
   maloq-e3-muon-shift
   ntev2-e3-muon-shift
   qhflow3-e3-muon-shift
 )
+LOSS_PROFILES=(maloq-rmse-mse rmse-mse-mae)
 
 usage() {
-  echo "Usage: $0 {prepare|validate|smoke|full} {all|LANE} [GPU0,GPU1]" >&2
+  echo "Usage: $0 {prepare|validate|smoke|full} {all|LANE} [GPU0,GPU1] [LOSS_PROFILE]" >&2
 }
 
 is_lane() {
@@ -37,6 +38,32 @@ is_lane() {
   done
   return 1
 }
+
+is_loss_profile() {
+  local candidate=$1
+  local known
+  for known in "${LOSS_PROFILES[@]}"; do
+    if [[ "${candidate}" == "${known}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! is_loss_profile "${LOSS_PROFILE}"; then
+  echo "Unknown loss profile: ${LOSS_PROFILE}" >&2
+  usage
+  exit 2
+fi
+if [[ "${LOSS_PROFILE}" == "rmse-mse-mae" && "${LANE}" != "ntev2-e3-muon-shift" ]]; then
+  echo "rmse-mse-mae is an NTEV2-only FlowMatching ablation." >&2
+  exit 2
+fi
+
+case "${LOSS_PROFILE}" in
+  maloq-rmse-mse) RUN_PREFIX=nabladft-flow-matching-maloq-loss ;;
+  rmse-mse-mae) RUN_PREFIX=nabladft-flow-matching-rmse-mse-mae ;;
+esac
 
 for required in "${PY}" "${RUNNER}" "${BASE_CONFIG}" "${NABLA_DB}" "${SCALE_SHIFT}"; do
   if [[ ! -r "${required}" ]]; then
@@ -98,7 +125,8 @@ if [[ "${SCOPE}" == "prepare" || "${SCOPE}" == "validate" ]]; then
     "${PY}" "${RUNNER}" \
       --base-config "${BASE_CONFIG}" \
       --lane "${LANE}" \
-      --scope validate
+      --scope validate \
+      --loss-profile "${LOSS_PROFILE}"
 fi
 
 if [[ -z "${GPUS}" ]]; then
@@ -184,6 +212,7 @@ env \
     --base-config "${BASE_CONFIG}" \
     --lane "${LANE}" \
     --scope "${SCOPE}" \
+    --loss-profile "${LOSS_PROFILE}" \
     --output-root "${OUTPUT_ROOT}/run" \
     >"${OUTPUT_ROOT}/train.log" 2>&1
 EXIT_CODE=$?

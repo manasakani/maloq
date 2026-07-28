@@ -23,13 +23,16 @@ matched Muon/AuxAdamW schedule and global gradient clipping.
 
 ## Entry point
 
-- Import: `maloq.experimental.matrix_composite_loss.build_matrix_composite_loss_workflow`
+- Imports: `maloq.experimental.matrix_composite_loss.apply_matrix_composite_loss_profile`
+  and `build_matrix_composite_loss_workflow`
 - Experimental config namespace: `matrix_composite_loss_profile`
 - Resolved component/profile IDs: `rmse_mse_mae`, `10x_rmse_mse_mae`
 - Optional dependencies: none
 
-The dated experiment runner imports this package explicitly. Canonical MALOQ
-does not import or select these losses.
+Dated direct-regression and FlowMatching runners import this package
+explicitly. The pure profile adapter copies an arbitrary workflow config and
+replaces only its effective training callable plus provenance fields. Canonical
+MALOQ and canonical FlowMatching defaults do not import or select these losses.
 
 ## Checkpoint contract
 
@@ -47,7 +50,8 @@ does not import or select these losses.
 - [x] CUDA train step
 - [x] CUDA validation step
 - [ ] Checkpoint save/reload
-- [x] DDP smoke
+- [x] DDP smoke for direct NTEV2 regression
+- [ ] DDP smoke for the composed NTEV2 FlowMatching route
 - [ ] Matched parameter/memory/throughput comparison
 - [ ] Matched quality comparison
 

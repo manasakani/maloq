@@ -23,10 +23,14 @@ warmup-polynomial scheduling, float32, and seed 44.
 The only intended modeling change is FlowMatching. Node and directed-edge
 coupled Hamiltonian blocks share one graph time, are both corrupted, and are
 both integrated with three endpoint-parameterized Euler steps. The trainer
-delegates to the canonical MALOQ `rmse_mse_padded_loss` after canonical
-node/edge padding masks are removed. No MAE term is optimized. Validation loss
-uses the same random-time endpoint-matching objective for scheduling. Every
-epoch, the existing matrix and node/edge MAE/MSE metrics are still reported
+delegates by default to the canonical MALOQ `rmse_mse_padded_loss` after
+canonical node/edge padding masks are removed. A separate NTEV2-only
+`rmse-mse-mae` route composes the isolated `matrix_composite_loss` feature and
+optimizes `RMSE + MSE + componentwise MAE` over those same filtered coupled
+coordinates. It does not change the immutable typed YAML or either feature's
+default. Validation loss uses the selected random-time endpoint-matching
+objective for scheduling. Every epoch, the existing matrix and node/edge
+MAE/MSE metrics are still reported
 from joint Euler3 inference with a fixed rank-and-batch prior, then delegated
 to canonical dense-AO accounting in physical SHIFT-restored units.
 
@@ -49,11 +53,18 @@ with the completed direct V2 runs:
 - `NablaDFT | MALOQ-E3 | Muon | SHIFT | FlowMatching | MALOQ-RMSE+MSE | V2`
 - `NablaDFT | NTEV2-E3 | Muon | SHIFT | FlowMatching | MALOQ-RMSE+MSE | V2`
 - `NablaDFT | QHFlow3-E3 | Muon | SHIFT | FlowMatching | MALOQ-RMSE+MSE | V2`
+- `NablaDFT | NTEV2-E3 | Muon | SHIFT | FlowMatching | RMSE+MSE+MAE | V2`
+
+The last identity is a loss-axis ablation and is deliberately NTEV2-only.
+Its componentwise MAE term is coordinate dependent for `l>0`; the model forward
+remains SO(3)-equivariant, but the composite objective is not rotation
+invariant.
 
 Full outputs use collision-resistant directories below:
 
 ```text
 /dataset/seongsu/shared-home/workspace/project/MALOQ/outputs/nabladft-flow-matching-maloq-loss-<lane>-v2-2gpu-eb20-mb5-ga2-full-e20-<timestamp>-<pid>/
+/dataset/seongsu/shared-home/workspace/project/MALOQ/outputs/nabladft-flow-matching-rmse-mse-mae-ntev2-e3-muon-shift-v2-2gpu-eb20-mb5-ga2-full-e20-<timestamp>-<pid>/
 ```
 
 Each rank-shared run directory records `resolved_flow_matching_config.json`
@@ -82,6 +93,19 @@ Run one 20-epoch lane directly only after its smoke passes:
 /dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/04_nabladft_flow_matching_e3_muon_shift_2gpu.sh full qhflow3-e3-muon-shift 6,7
 ```
 
+Validate the NTEV2 composite route without training:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/04_nabladft_flow_matching_e3_muon_shift_2gpu.sh validate ntev2-e3-muon-shift '' rmse-mse-mae
+```
+
+The queue uses a guarded wrapper that runs an exact two-rank, one-epoch smoke
+before the 20-epoch job on the same claimed GPU pair:
+
+```bash
+/dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/10_nabladft_ntev2_flow_matching_rmse_mse_mae_2gpu.sh 0,1
+```
+
 The launcher rejects duplicate, invalid, unavailable, or materially busy GPUs.
 `EXPECTED_HOST` may optionally pin an interactive invocation to a hostname.
 
@@ -99,7 +123,15 @@ The canonical-MALOQ-loss full-run manifest is:
 /dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/queue_nabladft_flow_matching_e3_muon_shift_maloq_loss.yaml
 ```
 
-It defines exactly three two-GPU jobs, permits only `server-1` so server-2 GPUs
+The NTEV2 `RMSE+MSE+MAE` guarded full-run manifest is:
+
+```text
+/dataset/seongsu/shared-home/workspace/project/MALOQ/_my_script/experiment/2026-07-28/queue_nabladft_ntev2_flow_matching_rmse_mse_mae.yaml
+```
+
+It contains one server-1-only two-GPU job and exactly one `{gpus}` placeholder.
+The wrapper refuses to start the full run unless its exact composite-loss CUDA
+smoke succeeds. The canonical manifest defines exactly three two-GPU jobs, permits only `server-1` so server-2 GPUs
 4-7 remain reserved, contains exactly one `{gpus}` placeholder per job, and
 pins the launcher, runner, base config, and SHIFT artifact as immutable inputs.
 All three CUDA smokes passed on server-1 GPU 6,7 at 04:21-04:22 KST. Initial

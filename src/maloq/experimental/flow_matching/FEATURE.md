@@ -89,10 +89,15 @@ MALOQ does not import it.
 - `HamiltonianSymmetryProjector` applies `0.5*(Hii+Hii^T)` to node blocks and
   `0.5*(Hij+Hji^T)` to reverse-directed edge pairs, whose reverse map must be an
   involution.
-- Canonical padding masks filter components before the configured MALOQ loss is
-  evaluated. The matched suite uses `rmse_mse_padded_loss`, i.e.
+- Canonical padding masks filter components before the configured loss is
+  evaluated. The matched structure suite uses `rmse_mse_padded_loss`, i.e.
   `sqrt(mean(error^2)) + mean(error^2)`, without training MAE, an extra factor
   of 10, or time scaling.
+- The dated NTEV2 loss-axis route explicitly composes
+  `matrix_composite_loss.rmse_mse_mae`: `RMSE + MSE + MAE` over the same masked
+  coupled-irrep components. The immutable FlowMatching YAML and default route
+  remain canonical. Resolved provenance records the effective callable,
+  formula, scale, coordinate space, and coordinate-invariance limitation.
 - Sampling derives `(Hhat_1-H_t)/(1-t)` for both state families and uses three
   fixed joint Euler steps with symmetry projection.
 - `EndpointFlowTrainer.sample_batch` connects a target-shaped validation batch
@@ -135,6 +140,7 @@ MALOQ does not import it.
 - [x] FlowMatching QHFlow3 default resolves to the matched 10x11 eSEN grid
 - [ ] Matched parameter/memory/throughput comparison
 - [x] Corrected three-lane two-rank CUDA metric smoke on server-2 GPU0-3
+- [ ] NTEV2 FlowMatching `RMSE+MSE+MAE` guarded two-rank CUDA smoke
 - [ ] Matched quality comparison
 
 ## Evidence
@@ -154,11 +160,14 @@ MALOQ does not import it.
   documented but not ported.
 - Flowing directed edges is an intentional architecture-v2 extension beyond
   the active QHFlow2 QH9 executable, which integrates only node blocks.
-- The active QHFlow2 executable loss is `10*(MAE+MSE)`. The matched suite instead
-  uses MALOQ's coupled-coordinate `RMSE+MSE`: both terms depend only on the
-  squared norm and remain invariant under orthogonal SO(3) irrep actions.
-  Elementwise AO MAE is not used for optimization, but physical-space
-  `validation/matrix_mae` remains a reported endpoint metric.
+- The active QHFlow2 executable loss is `10*(MAE+MSE)`. The matched structure
+  suite instead uses MALOQ's coupled-coordinate `RMSE+MSE`: both terms depend
+  only on the squared norm and remain invariant under orthogonal SO(3) irrep
+  actions. The optional NTEV2 `RMSE+MSE+MAE` route uses componentwise MAE in
+  flattened coupled-irrep coordinates, not QHFlow2 AO-space MAE. For `l>0`
+  that term is coordinate dependent and not generally SO(3)-invariant, even
+  though the model forward remains equivariant. Physical-space
+  `validation/matrix_mae` remains a common reported endpoint metric.
 - Node/edge state is injected at the final native embedding level, not
   recurrently into every internal message-passing block. In particular,
   QHFlow3 uses `default_hamiltonian_input="zero"` in this direct profile, so its

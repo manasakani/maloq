@@ -16,6 +16,7 @@ from maloq.experimental.flow_matching import (
     FlowMatchingConfig,
     QHFlow2EndpointWorkflow,
 )
+from maloq.experimental.matrix_composite_loss import rmse_mse_mae_padded_loss
 from maloq.helm.qhf_layer.so3 import SO3_Grid
 from maloq.train_utils.loss import rmse_mse_padded_loss
 from maloq.train_utils.splittrainer import SplitTrainer
@@ -104,8 +105,17 @@ def test_typed_config_rejects_standardization_for_flow_coordinates() -> None:
         EndpointFlowMaloqConfig.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("train_loss", "expected_unit_error"),
+    [
+        (rmse_mse_padded_loss, 2.0),
+        (rmse_mse_mae_padded_loss, 3.0),
+    ],
+)
 def test_trainer_calls_canonical_super_loop_with_wrapped_loaders(
     monkeypatch: pytest.MonkeyPatch,
+    train_loss,
+    expected_unit_error: float,
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -125,7 +135,7 @@ def test_trainer_calls_canonical_super_loop_with_wrapped_loaders(
 
     result = trainer.train(
         2,
-        rmse_mse_padded_loss,
+        train_loss,
         object(),
         object(),
         "cpu",
@@ -143,8 +153,10 @@ def test_trainer_calls_canonical_super_loop_with_wrapped_loaders(
     kwargs = captured["kwargs"]
     assert isinstance(args, tuple)
     assert isinstance(kwargs, dict)
-    assert args[1] is rmse_mse_padded_loss
-    assert args[1](torch.ones(2), torch.zeros(2), None).item() == pytest.approx(2.0)
+    assert args[1] is train_loss
+    assert args[1](torch.ones(2), torch.zeros(2), None).item() == pytest.approx(
+        expected_unit_error
+    )
     assert isinstance(kwargs["train_loader"], EndpointCorruptingLoader)
     assert isinstance(kwargs["val_loader"], EndpointCorruptingLoader)
     assert kwargs["validation_matrix_metrics"] is True

@@ -31,7 +31,7 @@ EXPECTED_SCALE_SHIFT_SHA256 = (
     "375167ad551fb0b60dbe9cd049a4995276b54ce075e09906639ef3daa4f79475"
 )
 WANDB_PROJECT = "MALOQ-nablaDFT-v2"
-SUITE_ID = "nabladft-flow-matching-e3-muon-shift-maloq-loss-v2"
+DEFAULT_LOSS_PROFILE = "maloq-rmse-mse"
 MALOQ_TRAIN_LOSS = "rmse_mse_padded_loss"
 MALOQ_TEST_LOSS = "l1_unpadded_loss"
 FULL_COUNTS = {"train": 12081, "val": 64, "test": 0}
@@ -81,9 +81,15 @@ from maloq.experimental.flow_matching import (  # noqa: E402
     EndpointFlowMaloqConfig,
     FlowMatchingWorkflow,
 )
+from maloq.experimental.matrix_composite_loss import (  # noqa: E402
+    apply_matrix_composite_loss_profile,
+    get_composite_loss_profile,
+)
+from maloq.train_utils.loss import rmse_mse_padded_loss  # noqa: E402
 
 Architecture = Literal["maloq", "ntev2", "qhflow3"]
 Scope = Literal["validate", "smoke", "full"]
+LossProfileId = Literal["maloq-rmse-mse", "rmse-mse-mae"]
 
 
 @dataclass(frozen=True)
@@ -94,6 +100,58 @@ class Lane:
     backbone_type: Literal["esen", "maloq_nte_v2", "qhflow3"]
     output_l_embedding_dim: int | None
     mlp_type: Literal["spectral", "grid"]
+
+
+@dataclass(frozen=True)
+class TrainingLossRoute:
+    id: LossProfileId
+    suite_id: str
+    run_suffix: str
+    display_label: str
+    formula: str
+    scale: float
+    callable_path: str
+    coordinate_space: str
+    coordinate_invariance: str
+    axis_tag: str
+    allowed_architectures: frozenset[Architecture]
+    wandb_group: str
+    composite_profile_id: str | None = None
+    replace_tag_prefixes: tuple[str, ...] = ()
+    extra_tags: tuple[str, ...] = ()
+
+    def apply(self, config: dict[str, object]) -> dict[str, object]:
+        if self.composite_profile_id is None:
+            workflow_config = dict(config)
+        else:
+            workflow_config = apply_matrix_composite_loss_profile(
+                config,
+                profile_id=self.composite_profile_id,
+            )
+        effective_loss = workflow_config.get("train_loss_fxn")
+        actual_callable = (
+            f"{effective_loss.__module__}.{effective_loss.__name__}"
+            if callable(effective_loss)
+            else None
+        )
+        if actual_callable != self.callable_path:
+            raise ValueError(
+                "Effective FlowMatching train loss drifted: "
+                f"{actual_callable!r} != {self.callable_path!r}."
+            )
+        return workflow_config
+
+    def metadata(self) -> dict[str, object]:
+        return {
+            "route_id": self.id,
+            "composite_profile_id": self.composite_profile_id,
+            "typed_train_loss_placeholder": MALOQ_TRAIN_LOSS,
+            "effective_callable": self.callable_path,
+            "formula": self.formula,
+            "scale": self.scale,
+            "coordinate_space": self.coordinate_space,
+            "coordinate_invariance": self.coordinate_invariance,
+        }
 
 
 LANES = (
@@ -123,6 +181,71 @@ LANES = (
     ),
 )
 LANE_BY_ID = {lane.id: lane for lane in LANES}
+
+_COMPOSITE_PROFILE = get_composite_loss_profile("rmse_mse_mae")
+LOSS_ROUTES = (
+    TrainingLossRoute(
+        id="maloq-rmse-mse",
+        suite_id="nabladft-flow-matching-e3-muon-shift-maloq-loss-v2",
+        run_suffix="maloq-loss-v2",
+        display_label="MALOQ-RMSE+MSE",
+        formula="rmse+mse",
+        scale=1.0,
+        callable_path=(
+            f"{rmse_mse_padded_loss.__module__}."
+            f"{rmse_mse_padded_loss.__name__}"
+        ),
+        coordinate_space="masked_coupled_irrep_components",
+        coordinate_invariance="so3_invariant_orthogonal_irrep_norm",
+        axis_tag="axis:structure",
+        allowed_architectures=frozenset({"maloq", "ntev2", "qhflow3"}),
+        wandb_group=(
+            "nabladft-flow-matching-e3-muon-shift-maloq-loss-v2-seed44"
+        ),
+    ),
+    TrainingLossRoute(
+        id="rmse-mse-mae",
+        suite_id=(
+            "nabladft-flow-matching-ntev2-e3-muon-shift-rmse-mse-mae-v2"
+        ),
+        run_suffix="rmse-mse-mae-v2",
+        display_label="RMSE+MSE+MAE",
+        formula=_COMPOSITE_PROFILE.formula,
+        scale=_COMPOSITE_PROFILE.scale,
+        callable_path=(
+            f"{_COMPOSITE_PROFILE.loss.__module__}."
+            f"{_COMPOSITE_PROFILE.loss.__name__}"
+        ),
+        coordinate_space="masked_coupled_irrep_components",
+        coordinate_invariance="componentwise_mae_coordinate_dependent",
+        axis_tag="axis:loss",
+        allowed_architectures=frozenset({"ntev2"}),
+        wandb_group=(
+            "nabladft-flow-matching-ntev2-e3-muon-shift-"
+            "rmse-mse-mae-v2-seed44"
+        ),
+        composite_profile_id=_COMPOSITE_PROFILE.id,
+        replace_tag_prefixes=(
+            "suite:",
+            "loss:",
+            "loss-profile:",
+            "loss-scale:",
+            "loss-space:",
+            "loss-equivariance:",
+        ),
+        extra_tags=(
+            "experimental:matrix-composite-loss",
+            "composition:flow-matching+matrix-composite-loss",
+            "suite:matched-ntev2-e3-muon-shift-flow-rmse-mse-mae-v2",
+            "loss:rmse-plus-mse-plus-mae",
+            "loss-profile:rmse_mse_mae",
+            "loss-scale:1",
+            "loss-space:coupled-irrep-components",
+            "loss-equivariance:componentwise-mae-coordinate-dependent",
+        ),
+    ),
+)
+LOSS_ROUTE_BY_ID = {route.id: route for route in LOSS_ROUTES}
 
 
 def _sha256(path: Path) -> str:
@@ -235,12 +358,18 @@ def _build_lane_config(
     lane: Lane,
     scope: Scope,
     output_root: Path,
+    loss_route: TrainingLossRoute,
 ) -> EndpointFlowMaloqConfig:
+    if lane.architecture not in loss_route.allowed_architectures:
+        raise ValueError(
+            f"Loss profile {loss_route.id!r} does not support "
+            f"architecture {lane.architecture!r}."
+        )
     payload = base.model_dump(mode="python")
-    run_name = f"nabladft-flow-matching-{lane.id}-maloq-loss-v2"
+    run_name = f"nabladft-flow-matching-{lane.id}-{loss_route.run_suffix}"
     display_name = (
         f"NablaDFT | {lane.display_architecture} | Muon | SHIFT | "
-        "FlowMatching | MALOQ-RMSE+MSE | V2"
+        f"FlowMatching | {loss_route.display_label} | V2"
     )
     counts = SMOKE_COUNTS if scope == "smoke" else FULL_COUNTS
 
@@ -268,13 +397,18 @@ def _build_lane_config(
         scale_shift_mode="shift_only",
         scale_shift_path=str(EXPECTED_SCALE_SHIFT),
     )
+    base_tags = [
+        tag
+        for tag in payload["tracking"]["wandb_tags"]
+        if not tag.startswith(loss_route.replace_tag_prefixes)
+    ]
     lane_tags = [
         f"architecture:{lane.architecture}",
         "edge-layers:3",
         "head:muon",
-        "loss:maloq-rmse-plus-mse",
         "normalization:l0-shift-only",
-        "axis:structure",
+        loss_route.axis_tag,
+        *loss_route.extra_tags,
     ]
     if lane.architecture in {"ntev2", "qhflow3"}:
         lane_tags.append("grid:10x11")
@@ -283,14 +417,13 @@ def _build_lane_config(
         use_wandb=scope == "full",
         wandb_project=WANDB_PROJECT,
         wandb_run_name=display_name,
+        wandb_group=loss_route.wandb_group,
         wandb_job_type=scope,
-        wandb_tags=tuple(
-            dict.fromkeys([*payload["tracking"]["wandb_tags"], *lane_tags])
-        ),
+        wandb_tags=tuple(dict.fromkeys([*base_tags, *lane_tags])),
     )
 
     config = EndpointFlowMaloqConfig.model_validate(payload)
-    _validate_lane_contract(config, lane, scope)
+    _validate_lane_contract(config, lane, scope, loss_route)
     return config
 
 
@@ -298,7 +431,10 @@ def _validate_lane_contract(
     config: EndpointFlowMaloqConfig,
     lane: Lane,
     scope: Scope,
+    loss_route: TrainingLossRoute,
 ) -> None:
+    if lane.architecture not in loss_route.allowed_architectures:
+        raise ValueError("Loss profile/architecture contract drifted.")
     if config.model.backbone_type != lane.backbone_type:
         raise ValueError("Lane architecture/backbone mismatch.")
     if config.model.num_mp_layers != 3 or config.model.num_edge_layers != 3:
@@ -424,7 +560,9 @@ def _validate_lane_contract(
 def _config_preview(
     config: EndpointFlowMaloqConfig,
     lane: Lane,
+    loss_route: TrainingLossRoute,
 ) -> dict[str, object]:
+    loss_route.apply(config.to_workflow_config())
     return {
         **asdict(lane),
         "run_name": config.dataset.run_name,
@@ -448,6 +586,7 @@ def _config_preview(
         "scale_and_shift": config.loss.scale_and_shift,
         "scale_shift_mode": config.loss.scale_shift_mode,
         "train_loss": config.loss.train_loss,
+        "effective_training_loss": loss_route.metadata(),
         "test_loss": config.loss.test_loss,
         "qhflow3_grid_resolution": config.model.qhflow3_grid_resolution,
         "validation_matrix_metrics": config.tracking.validation_matrix_metrics,
@@ -474,6 +613,11 @@ def _parse_args() -> argparse.Namespace:
         "--scope",
         choices=("validate", "smoke", "full"),
         required=True,
+    )
+    parser.add_argument(
+        "--loss-profile",
+        choices=tuple(LOSS_ROUTE_BY_ID),
+        default=DEFAULT_LOSS_PROFILE,
     )
     parser.add_argument("--output-root", type=Path)
     return parser.parse_args()
@@ -504,6 +648,7 @@ def main() -> None:
         raise SystemExit(f"Base config not found: {base_config_path}")
     base = EndpointFlowMaloqConfig.from_file(base_config_path)
     input_metadata = _validate_suite_inputs(base)
+    loss_route = LOSS_ROUTE_BY_ID[args.loss_profile]
 
     scope: Scope = args.scope
     if args.lane == "all":
@@ -513,8 +658,19 @@ def main() -> None:
     else:
         selected_lanes = (LANE_BY_ID[args.lane],)
 
+    unsupported = [
+        lane.id
+        for lane in selected_lanes
+        if lane.architecture not in loss_route.allowed_architectures
+    ]
+    if unsupported:
+        raise SystemExit(
+            f"Loss profile {loss_route.id!r} does not support lanes: "
+            f"{', '.join(unsupported)}"
+        )
+
     if scope == "validate":
-        preview_base = OUTPUTS_ROOT / f"_config-preview/{SUITE_ID}"
+        preview_base = OUTPUTS_ROOT / f"_config-preview/{loss_route.suite_id}"
         previews = [
             _config_preview(
                 _build_lane_config(
@@ -522,15 +678,18 @@ def main() -> None:
                     lane,
                     scope,
                     preview_base / lane.id,
+                    loss_route,
                 ),
                 lane,
+                loss_route,
             )
             for lane in selected_lanes
         ]
         print(
             json.dumps(
                 {
-                    "suite": SUITE_ID,
+                    "suite": loss_route.suite_id,
+                    "effective_training_loss": loss_route.metadata(),
                     "workflow": (
                         f"{FlowMatchingWorkflow.__module__}."
                         f"{FlowMatchingWorkflow.__name__}"
@@ -559,7 +718,13 @@ def main() -> None:
         )
 
     lane = selected_lanes[0]
-    typed_config = _build_lane_config(base, lane, scope, output_root)
+    typed_config = _build_lane_config(
+        base,
+        lane,
+        scope,
+        output_root,
+        loss_route,
+    )
     launch_token = os.environ.get("MALOQ_FLOW_LAUNCH_TOKEN")
     if (
         not launch_token
@@ -578,8 +743,9 @@ def main() -> None:
             raise SystemExit(f"Output already exists: {output_root}")
         output_root.mkdir(parents=True, exist_ok=False)
         resolved_payload = {
-            "suite": SUITE_ID,
+            "suite": loss_route.suite_id,
             "scope": scope,
+            "effective_training_loss": loss_route.metadata(),
             "lane": asdict(lane),
             "base_config": str(base_config_path),
             "base_config_sha256": _sha256(base_config_path),
@@ -610,7 +776,8 @@ def main() -> None:
                 )
             time.sleep(0.1)
 
-    FlowMatchingWorkflow(typed_config.to_workflow_config()).run()
+    workflow_config = loss_route.apply(typed_config.to_workflow_config())
+    FlowMatchingWorkflow(workflow_config).run()
 
 
 if __name__ == "__main__":

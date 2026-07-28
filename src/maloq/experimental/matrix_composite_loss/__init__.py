@@ -6,10 +6,14 @@ from .loss import (
     rmse_mse_mae_padded_loss,
     ten_x_rmse_mse_mae_padded_loss,
 )
-from .workflow import build_matrix_composite_loss_workflow
+from .workflow import (
+    apply_matrix_composite_loss_profile,
+    build_matrix_composite_loss_workflow,
+)
 
 __all__ = [
     "CompositeLossProfile",
+    "apply_matrix_composite_loss_profile",
     "build_matrix_composite_loss_workflow",
     "get_composite_loss_profile",
     "rmse_mse_mae_padded_loss",

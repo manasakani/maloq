@@ -39,3 +39,8 @@ The scale-1 full run is submitted through
 Status: CPU tests and the scale-1 two-rank CUDA smoke passed. The 20-epoch run
 is active on server-1 GPU 6,7 as queue job
 `nabla-v2-ntev2-e3-muon-shift-rmse-mse-mae-20260728a`; W&B run `xvx2sdyl`.
+
+The active job above is direct regression, not FlowMatching. The separate
+FlowMatching composition uses
+`queue_nabladft_ntev2_flow_matching_rmse_mse_mae.yaml`, a distinct W&B name,
+and the `nabladft-flow-matching-rmse-mse-mae-*` output prefix.
