@@ -259,6 +259,11 @@ class TritonE3TensorDecomp:
         self.MAX_IN_DIM = next_power_of_2(max_in_dim)
         self.MAX_H_DIM = next_power_of_2(max_h_dim)
 
+    @property
+    def required_irreps_out(self):
+        """Forwarded from the wrapped object so this stays a drop-in for e3TensorDecomp."""
+        return self._decomp_obj.required_irreps_out
+
     def _compute_group_kernel_dims(self, max_group_in, max_group_h):
         """Compute grouped kernel compile-time dimensions with power-of-two padding."""
         self.TARGET_GROUP_IN_DIM = max(16, next_power_of_2(max_group_in))
