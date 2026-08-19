@@ -141,6 +141,12 @@ class TrainingWorkflow:
             self.config['basis_transform_backend'] = 'torch'
             print(f"basis_transform_backend not specified; defaulting to 'torch'")
 
+        # configs built as plain dicts bypass the pydantic model, so the value is
+        # checked here too rather than silently falling back to torch downstream
+        if self.config['basis_transform_backend'] not in ('torch', 'triton'):
+            raise ValueError(f"basis_transform_backend must be 'torch' or 'triton', "
+                             f"got '{self.config['basis_transform_backend']}'")
+
     def _handle_scale_shift(self, database=None):
         """Manages the computation or loading of scale/shift factors."""
         if not self.config.get('scale_and_shift'):

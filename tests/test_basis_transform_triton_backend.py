@@ -3,10 +3,10 @@ import time
 import statistics
 
 # import sys
-from fock_utils.utils_tensor_decomp import e3TensorDecomp, make_output_irreps
-import fock_utils.triton_backend as foo2
+from maloq.fock_utils.utils_tensor_decomp import e3TensorDecomp, make_output_irreps
+import maloq.fock_utils.basis_transform_triton_backend as foo2
 import pytest
-from fock_utils import basis_sets as basis_sets_module
+from maloq.fock_utils import basis_sets as basis_sets_module
 
 def test_triton_backend_get_H_matches_torch():
     if not torch.cuda.is_available():
