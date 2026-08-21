@@ -65,6 +65,8 @@ def _split_defaults() -> dict[str, Any]:
 def _model_defaults() -> dict[str, Any]:
     return {
         "wigner_backend": "torch",
+        "compile": False,
+        "flash_esen_block": None,
         "l_embedding_dim": 128,
         "num_distance_basis": 128,
         "num_mp_layers": 3,
@@ -152,6 +154,19 @@ class ModelConfig(BaseModel):
 
     wigner_backend: Literal["torch", "triton"] = "torch"
     basis_transform_backend: Literal["torch", "triton"] = "torch"
+    flash_esen_block: (
+        Literal["auto", "fp32", "tf32", "bf16", "emu1", "emu2", "emu3", "emu4"] | None
+    ) = None
+    # torch.compile the backbone and head. True uses torch's "default" mode; a
+    # mode string picks one directly. Refused at build time with
+    # distribute_graphs, whose message passing calls into MPI. See
+    # maloq.helm.common.compile.
+    compile: (
+        bool
+        | Literal[
+            "default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"
+        ]
+    ) = False
     l_embedding_dim: int = 128
     num_distance_basis: int = 128
     num_mp_layers: int = 3
@@ -251,6 +266,8 @@ class MaloqConfig(BaseModel):
             "dist_backend": "splits",
             # model
             "wigner_backend": "model",
+            "compile": "model",
+            "flash_esen_block": "model",
             "l_embedding_dim": "model",
             "num_distance_basis": "model",
             "num_mp_layers": "model",

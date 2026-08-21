@@ -6,6 +6,8 @@ See LICENSES/MIT-fairchem.md for license information.
 
 from __future__ import annotations
 
+from functools import partial
+
 import matplotlib.pyplot as plt # remove
 import os, sys
 import torch
@@ -53,9 +55,10 @@ from .nn.so3_layers import SO3_Linear
 from .nn.activation import GateActivation
 
 from .common.irreps_utils import get_reduced_to_all_indices, get_parity_multiplier, get_product_irreps, get_subspace_remix_permutation
+from .common.compile import CompiledCoreMixin
 
 @registry.register_model("esen_backbone")
-class eSEN_Backbone(nn.Module):
+class eSEN_Backbone(CompiledCoreMixin, nn.Module):
     def __init__(
         self,
         irreps_out,
@@ -83,7 +86,8 @@ class eSEN_Backbone(nn.Module):
         open_shell=False,
         wigner_backend: str = "torch",
         distributed_graph_training=False,
-        message_type='source-target'
+        message_type='source-target',
+        flash_esen_block: str | None = None,
     ):
         super().__init__()
 
@@ -91,6 +95,34 @@ class eSEN_Backbone(nn.Module):
             f"wigner_backend must be 'torch' or 'triton', got '{wigner_backend}'"
         self.wigner_backend = wigner_backend
         self._wigner_buf = None  # upper-bound pre-allocated, grown only when num_edges exceeds capacity
+        # Kept for enable_compile: the distributed path reaches through a
+        # partition object inside every block, which is not traceable.
+        self.distributed_graph_training = distributed_graph_training
+        self.flash_esen_block = flash_esen_block
+        block_constructor = eSEN_Block
+        if self.flash_esen_block is not None:
+            if wigner_backend != "triton":
+                raise ValueError(
+                    "flash_esen_block requires wigner_backend='triton': FlashSO2 consumes "
+                    "the packed block-diagonal Wigner form, which the Triton kernel "
+                    f"writes directly. Got wigner_backend='{wigner_backend}'"
+                )
+            if distributed_graph_training:
+                raise ValueError(
+                    "flash_esen_block is not wired to maloq's distributed graph "
+                    "partitions yet: the message-passing blocks exchange node "
+                    "features through a partition object that FlashSO2 knows "
+                    "nothing about. Set distribute_graphs=False, or use the "
+                    "native eSEN blocks"
+                )
+            from .flash_esen_block import Flash_eSEN_Block
+
+            # Pre-bind the Flash-only setting while keeping the node and edge
+            # construction calls below identical to the native eSEN path.
+            block_constructor = partial(
+                Flash_eSEN_Block,
+                precision=self.flash_esen_block,
+            )
 
         if not include_edges:
             print("Note: Initializing eSEN backbone without edge_embeddings!")
@@ -219,7 +251,7 @@ class eSEN_Backbone(nn.Module):
 
 
         for _ in range(self.num_layers):
-            node_block = eSEN_Block(
+            node_block = block_constructor(
                 self.sphere_channels,
                 self.hidden_channels,
                 self.lmax,
@@ -238,7 +270,7 @@ class eSEN_Backbone(nn.Module):
             self.node_blocks.append(node_block)
 
             if self.include_edges:
-                edge_block = eSEN_Block(
+                edge_block = block_constructor(
                     self.sphere_channels,
                     self.hidden_channels,
                     self.lmax,
@@ -263,26 +295,95 @@ class eSEN_Backbone(nn.Module):
             num_channels=self.sphere_channels
         )
 
+    def _check_compilable(self) -> None:
+        """Reject the configuration whose core provably cannot be traced.
+
+        Better to say so at build time than to let Dynamo discover it batch
+        after batch and quietly fall back to eager.
+
+        Only the distributed path is refused. flash_esen_block is left permitted:
+        FlashSO2's stages are ``torch.library.custom_op``s with registered
+        fakes and ``register_autograd``, which is exactly the shape Dynamo can
+        put in a graph -- so it is worth attempting, and ``fullgraph=True`` will
+        say plainly if some part of that path does not hold up.
+        """
+
+        if self.distributed_graph_training:
+            raise ValueError(
+                "torch.compile is not supported with distribute_graphs=True: the "
+                "message-passing blocks reach through a partition object and call "
+                "into MPI, neither of which Dynamo can trace"
+            )
+
     def _get_rotmat_and_wigner(self, edge_distance_vecs):
+        """Return ``(wigner, wigner_inv, wigner_dense, wigner_inv_dense)``.
+
+        The first pair is whatever the message-passing blocks consume: the
+        packed block-diagonal form when FlashSO2 is running the Edgewise path,
+        the dense matrices otherwise. The second pair is always dense, for the
+        edge-degree embedding and for the heads that rotate with ``torch.bmm``.
+        On the native path both pairs are the same two tensors.
+        """
+
         Jd_buffers = [
             getattr(self, f"Jd_{l}").type(edge_distance_vecs.dtype)
             for l in range(self.lmax + 1)
         ]
 
-        if self.wigner_backend == "triton":
-            from .triton_kernels import edge_vec_to_wigner_fused
+        if self.flash_esen_block is not None:
+            # FlashSO2 wants the packed block-diagonal form and the blocks are
+            # the only consumer of it -- but the edge-degree embedding below
+            # still rotates with the dense wigner_inv, so both layouts are
+            # produced, from a single gamma draw so they share a gauge.
+            from .triton import wigner_fused_dense_and_packed
+
             num_edges = edge_distance_vecs.shape[0]
             out_dim = (self.lmax + 1) ** 2
-            if self._wigner_buf is None or num_edges > self._wigner_buf.shape[0]:
-                self._wigner_buf = torch.zeros(
-                    num_edges, out_dim, out_dim,
-                    device=edge_distance_vecs.device,
-                    dtype=torch.float32,
+            if torch.compiler.is_compiling():
+                wigner, packed, packed_inv = (
+                    torch.ops.maloq.wigner_fused_dense_and_packed(
+                        edge_distance_vecs, Jd_buffers, self.lmax
+                    )
                 )
-            wigner = edge_vec_to_wigner_fused(
-                edge_distance_vecs, Jd_buffers, lmax=self.lmax,
-                out=self._wigner_buf[:num_edges],
-            )
+            else:
+                if self._wigner_buf is None or num_edges > self._wigner_buf.shape[0]:
+                    self._wigner_buf = torch.zeros(
+                        num_edges, out_dim, out_dim,
+                        device=edge_distance_vecs.device,
+                        dtype=torch.float32,
+                    )
+                wigner, packed, packed_inv = wigner_fused_dense_and_packed(
+                    edge_distance_vecs, Jd_buffers, lmax=self.lmax,
+                    out=self._wigner_buf[:num_edges],
+                )
+            wigner_inv = torch.transpose(wigner, 1, 2).contiguous()
+            return packed, packed_inv, wigner, wigner_inv
+
+        if self.wigner_backend == "triton":
+            from .triton import edge_vec_to_wigner_fused
+
+            if torch.compiler.is_compiling():
+                # Under tracing use the custom op: the plain function draws its
+                # gamma seed in eager Python, which breaks the graph at every
+                # call. The op cannot reuse the buffer below (a custom op must
+                # not return an alias of persistent state), so eager keeps the
+                # buffered call and pays nothing for this.
+                wigner = torch.ops.maloq.wigner_fused(
+                    edge_distance_vecs, Jd_buffers, self.lmax
+                )
+            else:
+                num_edges = edge_distance_vecs.shape[0]
+                out_dim = (self.lmax + 1) ** 2
+                if self._wigner_buf is None or num_edges > self._wigner_buf.shape[0]:
+                    self._wigner_buf = torch.zeros(
+                        num_edges, out_dim, out_dim,
+                        device=edge_distance_vecs.device,
+                        dtype=torch.float32,
+                    )
+                wigner = edge_vec_to_wigner_fused(
+                    edge_distance_vecs, Jd_buffers, lmax=self.lmax,
+                    out=self._wigner_buf[:num_edges],
+                )
         else:
             euler_angles = init_edge_rot_euler_angles(edge_distance_vecs)
             wigner = eulers_to_wigner(
@@ -293,11 +394,23 @@ class eSEN_Backbone(nn.Module):
             )
         wigner_inv = torch.transpose(wigner, 1, 2).contiguous()
 
-        return wigner, wigner_inv
+        return wigner, wigner_inv, wigner, wigner_inv
 
+    def forward(self, batch, batch_index=None, output_dir=None):
+        """Dispatch to the implementation, compiled or not.
+
+        Only reason this indirection exists: ``nn.Module.__call__`` invokes
+        ``self.forward`` by name, so a compiled ``forward`` would never be
+        reached. ``enable_compile`` swaps in a compiled ``_forward_impl``
+        instead, and this hands off to whichever is current. Compiling the bound
+        method rather than the module is what keeps ``state_dict`` free of
+        ``_orig_mod.`` prefixes -- see ``maloq.helm.common.compile``.
+        """
+
+        return self._core_fn(batch, batch_index, output_dir)
 
     @conditional_grad(torch.enable_grad())
-    def forward(self, batch, batch_index=None, output_dir=None):
+    def _forward_impl(self, batch, batch_index=None, output_dir=None):
 
 
         distributed_graph_training = batch.distributed_graph_training if "distributed_graph_training" in batch else False
@@ -326,8 +439,8 @@ class eSEN_Backbone(nn.Module):
         }
 
 
-        wigner, wigner_inv = self._get_rotmat_and_wigner(
-            graph_dict["edge_distance_vec"]
+        wigner, wigner_inv, wigner_dense, wigner_inv_dense = (
+            self._get_rotmat_and_wigner(graph_dict["edge_distance_vec"])
         )
 
         # --> Rotation test:
@@ -360,12 +473,47 @@ class eSEN_Backbone(nn.Module):
             spin_emb = self.spin_embedding(data_dict["spin_multiplicity"])
 
         else:
+            # Seperate batch nodes into their molecules: counts [c0, c1, ...]
+            # -> [0]*c0 + [1]*c1 + ...
+            #
+            # This was a Python loop of torch.full + cat. It sized each piece
+            # from a tensor element, forcing a host sync per molecule, and it
+            # bound the loop variable to data_dict['natoms'], clobbering the
+            # total atom count set above as a side effect.
+            #
+            # output_size is what keeps this traceable: without it the length
+            # depends on tensor values, so torch.compile breaks on a
+            # data-dependent shape (and repeat_interleave does an internal
+            # cumsum-and-sync to discover it). Here it is just the node count,
+            # since this branch covers the whole batch and the result indexes
+            # charges/spin_multiplicity once per node.
+            _device = data_dict["pos"].device
+            _natoms = data_dict["pos"].shape[0]
+            _counts = data_dict["num_atoms_in_molecule"].to(device=_device)
 
-            # Seperate batch nodes into their molecules
-            molecule_indices = torch.cat([
-                torch.full((data_dict['natoms'],), i, dtype=torch.long, device=data_dict["pos"].device)
-                for i, data_dict['natoms'] in enumerate(data_dict["num_atoms_in_molecule"])
-            ])
+            # output_size is a promise, not a request. Eager torch does
+            # verify it (a TORCH_CHECK on CPU, a CUDA_KERNEL_ASSERT in
+            # Repeat.cu), and today inductor keeps that kernel as a fallback --
+            # but it is free to lower repeat_interleave itself, and a graph
+            # where it does was measured returning wrong indices for mismatched
+            # counts with no error at all, i.e. charges and spins silently
+            # attached to the wrong molecules. State the invariant here rather
+            # than inherit it, so it holds on every batch in every mode and
+            # fails with a message that names the field. _assert_async keeps
+            # that sync-free and traceable: ~3 us inside a compiled graph, no
+            # graph break, a RuntimeError on CPU and a device-side assert on
+            # CUDA.
+            torch._assert_async(
+                _counts.sum() == _natoms,
+                "num_atoms_in_molecule does not sum to the number of rows in "
+                "pos; molecule_indices cannot be built for this batch",
+            )
+
+            molecule_indices = torch.repeat_interleave(
+                torch.arange(_counts.numel(), dtype=torch.long, device=_device),
+                _counts,
+                output_size=_natoms,
+            )
             atom_charges = data_dict["charges"][molecule_indices] + self.abs_max_charge         # shape: [total_num_atoms]
             atom_spins = data_dict["spin_multiplicity"][molecule_indices]                       # shape: [total_num_atoms]
 
@@ -411,12 +559,13 @@ class eSEN_Backbone(nn.Module):
         x_edge = torch.cat((source_embedding, edge_distance_embedding, target_embedding), dim=1) 
 
         # do edge degree embeddings for both nodes and edges:
+        # (dense: this rotates with torch.bmm, unlike the blocks below)
         x_message_node = self.edge_degree_embedding( 
             x_message_node,
             x_edge,
             graph_dict["edge_distance"],
             graph_dict["edge_index"],
-            wigner_inv,
+            wigner_inv_dense,
             node_or_edge='node',
             partition=graph_dict["partition"]
         )
@@ -427,7 +576,7 @@ class eSEN_Backbone(nn.Module):
                 x_edge,
                 graph_dict["edge_distance"],
                 graph_dict["edge_index"],
-                wigner_inv,
+                wigner_inv_dense,
                 node_or_edge='edge',
                 partition=None
             )
@@ -478,8 +627,8 @@ class eSEN_Backbone(nn.Module):
             out = {
                     "node_embeddings": x_message_node, 
                     "x_edge": x_edge,
-                    "wigner": wigner,
-                    "wigner_inv": wigner_inv
+                    "wigner": wigner_dense,
+                    "wigner_inv": wigner_inv_dense
                 }
         out.update(graph_dict)
         return out
@@ -519,7 +668,7 @@ class eSEN_Backbone(nn.Module):
 
 
 @registry.register_model("fock_irreps_head")
-class Fock_Irreps_Head(nn.Module):
+class Fock_Irreps_Head(CompiledCoreMixin, nn.Module):
     """
     Takes an input irrep like 64x0e+64x1e+64x2e ... and nonlinearly maps it to the output irreps of arbitrary size and l-multiplicity
     """
@@ -890,8 +1039,31 @@ class Fock_Irreps_Head(nn.Module):
                 gated.append((mul, ir))
         return Irreps(scalars), Irreps(gated)
 
+    def _check_compilable(self) -> None:
+        """Refuse reduce_edge, whose output shape depends on tensor values.
+
+        ``create_half_antisym_edge_pairs`` selects the canonical half of the
+        edges with a boolean mask, ``edge_embeddings[half_mask]``. How many rows
+        that produces is only known once the mask is evaluated, so the traced
+        graph would carry an unbacked size and either break or need
+        ``capture_dynamic_output_shape_ops``. Say that here rather than let
+        Dynamo report it as an anonymous data-dependent-shape failure.
+        """
+
+        if self.reduce_edge:
+            raise ValueError(
+                "torch.compile is not supported with reduce_edge=True: the head "
+                "halves the edge list with a boolean mask, whose output shape is "
+                "data-dependent and cannot be traced. Set reduce_edge=False, or "
+                "run the head eager"
+            )
 
     def forward(self, emb, batch):
+        """Dispatch to the implementation, compiled or not. See the backbone."""
+
+        return self._core_fn(emb, batch)
+
+    def _forward_impl(self, emb, batch):
 
         node_embeddings = emb["node_embeddings"]
         edge_embeddings = emb["edge_embeddings"]

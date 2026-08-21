@@ -65,9 +65,12 @@ class SplitTrainer():
         print(f"Loss Targets: {node_target_name}, {edge_target_name}", flush=True)
         dist.barrier()
 
-        # Torch compile:
-        # self.backbone = torch.compile(self.backbone, fullgraph=True)
-        # self.head = torch.compile(self.head, fullgraph=True)
+        # Torch compile is applied in TrainingWorkflow.build_model, via the
+        # `compile` config key -- not here. Compiling the modules at this point
+        # would wrap them in an OptimizedModule, and save_training_state below
+        # writes model.state_dict(), so every checkpoint key would gain an
+        # "_orig_mod." prefix and stop loading into an eager run. It would also
+        # miss eval, which never reaches this function.
 
         if not val_loader:
             print("Note: using training dataset for scheduler updates")

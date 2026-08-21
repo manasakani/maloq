@@ -16,6 +16,7 @@ from ..dataset_utils.ASEDataset import distribute_data, ASEDataset, ASEAtomsData
 from ..dataset_utils.nablaDFT_dataset_utils import HamiltonianDatabase
 from ..dataset_utils.omol_csh_58k_dataset_utils import OMol_CSH_58k_Database
 from ..helm.esen_osh import eSEN_Backbone, Fock_Irreps_Head, HELM_Force_Head, HELM_Energy_Head
+from ..helm.common.compile import describe as compile_describe
 
 class TrainingWorkflow:
 
@@ -25,6 +26,8 @@ class TrainingWorkflow:
         "open_shell": False,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "wigner_backend": "torch",
+        "compile": False,
+        "flash_esen_block": None,
         "distribute_graphs": False,
         "partition_type": None,
         "tiling_dims": None,
@@ -117,6 +120,17 @@ class TrainingWorkflow:
         if self.config['distribute_graphs'] and self.config['partition_type'] is None:
             self.config['partition_type'] = 'linear-edgewise'
             print("No partition type specified for distributed graph training; defaulting to 'linear-edgewise'.")   
+
+        # torch.compile cannot trace the distributed message-passing path: it
+        # reaches through a partition object and calls into MPI. Say so here,
+        # before the loaders and the model get built.
+        if self.config.get('compile', False) and self.config['distribute_graphs']:
+            raise ValueError("compile and distribute_graphs cannot both be set, as the distributed message passing calls into MPI, which torch.compile cannot trace.")
+
+        # The head halves the edge list with a boolean mask when reduce_edge is
+        # set, and the resulting row count is only known at runtime.
+        if self.config.get('compile', False) and self.config['reduce_edge']:
+            raise ValueError("compile and reduce_edge cannot both be set, as the output head selects the canonical half of the edges with a boolean mask, whose output shape is data-dependent and cannot be traced.")
 
         # if both reduce_edge and distribute graphs are true, print that there is a known bug!:
         if self.config['reduce_edge'] and self.config['distribute_graphs']:
@@ -510,7 +524,8 @@ class TrainingWorkflow:
             open_shell=c['open_shell'],
             wigner_backend=c.get('wigner_backend', 'torch'),
             distributed_graph_training=c['distribute_graphs'],
-            message_type=c['message_type'] 
+            message_type=c['message_type'],
+            flash_esen_block=c.get('flash_esen_block'),
         ).to(self.device)
 
         # 2. Head
@@ -531,6 +546,27 @@ class TrainingWorkflow:
             head = HELM_Energy_Head(backbone)
         
         head = head.to(self.device)
+
+        # 2b. torch.compile, if the run asked for it.
+        #
+        # Applied here rather than in the trainer because it has to be applied
+        # to the models' tensor cores, not to the modules: torch.compile(module)
+        # returns an OptimizedModule whose state_dict prefixes every key with
+        # "_orig_mod.", so a compiled run would write checkpoints an eager run
+        # cannot load. enable_compile leaves the module -- and the checkpoint --
+        # untouched. Doing it here also covers eval, which the trainer does not.
+        compile_ = c.get('compile', False)
+        spec = None
+        for model in (backbone, head):
+            if hasattr(model, 'enable_compile'):
+                spec = model.enable_compile(compile_)
+            elif compile_ and self.rank == 0:
+                # HELM_Force_Head / HELM_Energy_Head wrap the backbone and have
+                # no separate core; the backbone above is already compiled.
+                print(f"Note: {type(model).__name__} has no compiled core; "
+                      "running it eager.")
+        if spec is not None and self.rank == 0:
+            print(f"torch.compile enabled -- {compile_describe(spec)}", flush=True)
 
         # 3. Optimizer
         params = []

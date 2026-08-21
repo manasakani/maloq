@@ -53,7 +53,7 @@ where = ["src"]
 include = ["maloq*"]
 
 [tool.setuptools.package-data]
-"maloq.helm" = ["*.pt", "triton_kernels/*.cuh", "triton_kernels/*.cu"]
+"maloq.helm" = ["*.pt"]
 "maloq.fock_utils" = ["*.pt"]
 "maloq.dataset_utils" = ["stats_nablaDFT/*.npz"]
 

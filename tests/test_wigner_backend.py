@@ -15,7 +15,13 @@ from maloq.helm.common.rotation import (
     eulers_to_wigner,
     wigner_D,
 )
-from maloq.helm.triton_kernels import edge_vec_to_wigner_fused, extract_euler_angles
+from maloq.helm.triton import (
+    edge_vec_to_wigner_fused,
+    edge_vec_to_wigner_packed,
+    extract_euler_angles,
+    packed_wigner_width,
+    wigner_fused_dense_and_packed,
+)
 
 import maloq.helm
 helm_path = os.path.dirname(maloq.helm.__file__)
@@ -212,3 +218,126 @@ class TestEdgeCases:
         product = torch.bmm(wigner, wigner.transpose(1, 2))
         eye = torch.eye(25, device=device).unsqueeze(0).expand_as(product)
         assert (product - eye).abs().max() < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# Packed (compact block-diagonal) kernel
+#
+#    The packed kernel computes the same tiles as the dense one and stores them
+#    straight into the layout FlashSO2 consumes. Because the algebra is shared
+#    verbatim, "close" is not good enough here -- for one seed the two outputs
+#    must be bit-identical, and that is what pins the two layouts together.
+# ---------------------------------------------------------------------------
+def _block_indices(lmax, device):
+    """Dense flat indices of the per-degree diagonal blocks, row-major."""
+    indices, start = [], 0
+    coefficients = (lmax + 1) ** 2
+    for l in range(lmax + 1):
+        size = 2 * l + 1
+        for row in range(start, start + size):
+            indices.extend(range(row * coefficients + start,
+                                 row * coefficients + start + size))
+        start += size
+    return torch.tensor(indices, dtype=torch.long, device=device)
+
+
+class TestPackedLayout:
+
+    @pytest.mark.parametrize("lmax", list(range(0, 9)))
+    def test_matches_gathered_dense(self, lmax, device, jd_list):
+        if len(jd_list) <= lmax:
+            pytest.skip(f"Jd.pt has only {len(jd_list)} entries, need {lmax+1}")
+
+        seed = 4242
+        edge_vecs = _make_edge_vecs(256, device, seed=lmax * 13 + 5)
+        dense = edge_vec_to_wigner_fused(edge_vecs, jd_list, lmax=lmax, seed=seed)
+        packed, packed_inv = edge_vec_to_wigner_packed(
+            edge_vecs, jd_list, lmax=lmax, seed=seed
+        )
+
+        indices = _block_indices(lmax, device)
+        assert torch.equal(packed, dense.flatten(1).index_select(1, indices))
+        assert torch.equal(
+            packed_inv,
+            dense.transpose(1, 2).contiguous().flatten(1).index_select(1, indices),
+        )
+
+    @pytest.mark.parametrize("lmax", [2, 4, 8])
+    def test_dense_holds_nothing_outside_the_blocks(self, lmax, device, jd_list):
+        """The compact form is lossless only if the rest is exactly zero."""
+        if len(jd_list) <= lmax:
+            pytest.skip(f"Jd.pt has only {len(jd_list)} entries, need {lmax+1}")
+
+        dense = edge_vec_to_wigner_fused(
+            _make_edge_vecs(64, device, seed=7), jd_list, lmax=lmax, seed=11
+        ).flatten(1)
+        dense[:, _block_indices(lmax, device)] = 0.0
+        assert dense.abs().max().item() == 0.0
+
+    @pytest.mark.parametrize("lmax", [0, 4, 7, 8])
+    def test_width(self, lmax, device, jd_list):
+        if len(jd_list) <= lmax:
+            pytest.skip(f"Jd.pt has only {len(jd_list)} entries, need {lmax+1}")
+        packed, packed_inv = edge_vec_to_wigner_packed(
+            _make_edge_vecs(8, device), jd_list, lmax=lmax, seed=1
+        )
+        expected = sum((2 * l + 1) ** 2 for l in range(lmax + 1))
+        assert packed_wigner_width(lmax) == expected
+        assert packed.shape == packed_inv.shape == (8, expected)
+
+    def test_caller_buffers_are_written_in_place(self, device, jd_list):
+        """Every element is written, so the buffers need no pre-zeroing."""
+        lmax = 4
+        edge_vecs = _make_edge_vecs(32, device, seed=3)
+        width = packed_wigner_width(lmax)
+        buf = torch.full((32, width), float("nan"), device=device)
+        buf_inv = torch.full((32, width), float("nan"), device=device)
+
+        packed, packed_inv = edge_vec_to_wigner_packed(
+            edge_vecs, jd_list, lmax=lmax, seed=5, out=buf, out_inv=buf_inv
+        )
+        assert packed.data_ptr() == buf.data_ptr()
+        assert packed_inv.data_ptr() == buf_inv.data_ptr()
+        assert buf.isfinite().all() and buf_inv.isfinite().all()
+
+    def test_inverse_is_the_per_degree_transpose(self, device, jd_list):
+        """W_l^T W_l = I for every degree, read straight out of the packed rows."""
+        lmax = 6
+        if len(jd_list) <= lmax:
+            pytest.skip("Jd.pt too short")
+        packed, packed_inv = edge_vec_to_wigner_packed(
+            _make_edge_vecs(16, device, seed=9), jd_list, lmax=lmax, seed=13
+        )
+        offset = 0
+        for l in range(lmax + 1):
+            size = 2 * l + 1
+            block = packed[:, offset:offset + size * size].view(-1, size, size)
+            block_inv = packed_inv[:, offset:offset + size * size].view(-1, size, size)
+            assert torch.equal(block_inv, block.transpose(1, 2))
+            identity = torch.bmm(block_inv, block)
+            expected = torch.eye(size, device=device).expand_as(identity)
+            assert (identity - expected).abs().max().item() < 1e-4
+            offset += size * size
+
+    @pytest.mark.parametrize("lmax", [4, 6, 8])
+    def test_dense_and_packed_share_one_gauge(self, lmax, device, jd_list):
+        """The flash path rotates with both layouts, so they must agree.
+
+        The edge-degree embedding uses the dense wigner_inv while the blocks use
+        the packed pair. Two independent gamma draws would put them in different
+        frames -- silently, since each is internally consistent -- so they are
+        produced by one call from one draw. This is that guarantee.
+        """
+        if len(jd_list) <= lmax:
+            pytest.skip(f"Jd.pt has only {len(jd_list)} entries, need {lmax+1}")
+
+        edge_vecs = _make_edge_vecs(128, device, seed=lmax * 3)
+        dense, packed, packed_inv = wigner_fused_dense_and_packed(
+            edge_vecs, jd_list, lmax=lmax
+        )
+        indices = _block_indices(lmax, device)
+        assert torch.equal(packed, dense.flatten(1).index_select(1, indices))
+        assert torch.equal(
+            packed_inv,
+            dense.transpose(1, 2).contiguous().flatten(1).index_select(1, indices),
+        )
