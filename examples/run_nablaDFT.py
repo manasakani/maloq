@@ -10,7 +10,7 @@ config = {
     # Dataset Paths & Naming
     "dataset_name": 'nablaDFT',
     "dbpath": "/capstor/store/cscs/pasc/c33/manasa/nablaDFT_datasets/train_2k.db",
-    "output_folder": 'outputs_nablaDFT_test',
+    "output_folder": "outputs_nablaDFT_FP32",
     "run_name": 'nabla_2k',          
     "open_shell": False,
     
@@ -20,8 +20,8 @@ config = {
     "train_head": True,
     
     # Data Splitting
-    "num_train": 12081,
-    "num_val": 1,
+    "num_train": 12000,
+    "num_val": 32,
     "num_test": 1,
     "batch_size": 10,                
     "distribute_graphs": False,      
@@ -34,7 +34,7 @@ config = {
     "reduce_node_intra": True,      
     
     # Training Hyperparameters
-    "num_epochs": 700,
+    "num_epochs": 1200,
     "dtype": torch.float32,         
     "lr_init": 1e-4,
     "optimizer_type": "adam",        
@@ -49,7 +49,7 @@ config = {
     "loss_target": 'fock_matrix',
     "train_loss_fxn": loss.rmse_mse_padded_loss,
     "test_loss_fxn": loss.l1_unpadded_loss,
-    "save_frequency": 10,
+    "save_frequency": 100,
     "restart_backbone": False,      
     "restart_head": False,
     "restart_optimizer": False,      
@@ -62,6 +62,7 @@ config = {
 
     # Model Architecture
     "wigner_backend": "triton", 
+    "flash_esen_block": "fp32",
     "basis_transform_backend": "torch",
     "l_embedding_dim": 128,
     "num_distance_basis": 128,
