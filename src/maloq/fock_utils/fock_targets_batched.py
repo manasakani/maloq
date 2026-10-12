@@ -158,8 +158,11 @@ class Fock_Targets:
         if basis_transform_backend == 'triton':
             from ..fock_utils.basis_transform_triton_backend import BalancedTritonE3TensorDecompL2
             self.basis_transformation = BalancedTritonE3TensorDecompL2(base_decomp)
-        else:
+        elif basis_transform_backend == 'torch':
             self.basis_transformation = base_decomp
+        else:
+            raise ValueError(f"unknown basis_transform_backend '{basis_transform_backend}', "
+                             f"expected 'torch' or 'triton'")
 
         # print(f'Required irreps to represent orbital interactions: {self.req_output_irreps}')
         self.scale_shift_data = scale_shift_data

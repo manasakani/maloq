@@ -11,46 +11,29 @@ def next_power_of_2(n):
         return 1
     return 1 << (n - 1).bit_length()
 
+
+# Autotune search space. These kernels load one padded WMS tile, multiply and
+# reduce over K; there is no deep pipelined loop to overlap, so num_stages was
+# measured to be irrelevant (spread below 0.5% across 2/3/4 on every basis and
+# edge count tried) and is pinned to 2. BLOCK_M and GROUP_SIZE_M are the two
+# parameters that actually move the runtime.
+_BLOCK_AUTOTUNE_CONFIGS = [
+    triton.Config({'BLOCK_M': bs}, num_warps=warps, num_stages=2)
+    for bs in (32, 64, 128, 256)
+    for warps in (2, 4)
+]
+
+_AUTOTUNE_CONFIGS = [
+    triton.Config({'BLOCK_M': bs, 'GROUP_SIZE_M': gs}, num_warps=warps, num_stages=2)
+    for bs in (32, 64, 128, 256)
+    for gs in (1, 8)
+    for warps in (2, 4)
+]
+
 @triton.autotune(
-    configs=[
-        triton.Config({'BLOCK_M': 32}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 32}, num_warps=2, num_stages=3),
-        triton.Config({'BLOCK_M': 32}, num_warps=2, num_stages=4),
-        triton.Config({'BLOCK_M': 32}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 32}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 32}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 32}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_M': 32}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 32}, num_warps=8, num_stages=4),
-        triton.Config({'BLOCK_M': 64}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 64}, num_warps=2, num_stages=3),
-        triton.Config({'BLOCK_M': 64}, num_warps=2, num_stages=4),
-        triton.Config({'BLOCK_M': 64}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 64}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 64}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 64}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_M': 64}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 64}, num_warps=8, num_stages=4),
-        triton.Config({'BLOCK_M': 128}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 128}, num_warps=2, num_stages=3),
-        triton.Config({'BLOCK_M': 128}, num_warps=2, num_stages=4),
-        triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 128}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_M': 128}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 128}, num_warps=8, num_stages=4),
-        triton.Config({'BLOCK_M': 256}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 256}, num_warps=2, num_stages=3),
-        triton.Config({'BLOCK_M': 256}, num_warps=2, num_stages=4),
-        triton.Config({'BLOCK_M': 256}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 256}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 256}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 256}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_M': 256}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 256}, num_warps=8, num_stages=4)
-    ],
-    key=['num_edges', 'max_in_dim_key', 'max_h_dim_key'],
+    configs=_BLOCK_AUTOTUNE_CONFIGS,
+    key=['num_edges_bucket_key', 'max_in_dim_key', 'max_h_dim_key'],
+    cache_results=True,
 )
 @triton.jit
 def get_H_triton_block_kernel(
@@ -66,6 +49,7 @@ def get_H_triton_block_kernel(
     num_edges,
     total_in_dim,
     total_h_dim,
+    num_edges_bucket_key,
     max_in_dim_key,
     max_h_dim_key,
     BLOCK_M: tl.constexpr,
@@ -109,45 +93,9 @@ def get_H_triton_block_kernel(
 
 
 @triton.autotune(
-    configs=[
-        triton.Config({'BLOCK_M': 32}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 32}, num_warps=2, num_stages=3),
-        triton.Config({'BLOCK_M': 32}, num_warps=2, num_stages=4),
-        triton.Config({'BLOCK_M': 32}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 32}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 32}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 32}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_M': 32}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 32}, num_warps=8, num_stages=4),
-        triton.Config({'BLOCK_M': 64}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 64}, num_warps=2, num_stages=3),
-        triton.Config({'BLOCK_M': 64}, num_warps=2, num_stages=4),
-        triton.Config({'BLOCK_M': 64}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 64}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 64}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 64}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_M': 64}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 64}, num_warps=8, num_stages=4),
-        triton.Config({'BLOCK_M': 128}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 128}, num_warps=2, num_stages=3),
-        triton.Config({'BLOCK_M': 128}, num_warps=2, num_stages=4),
-        triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 128}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 128}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_M': 128}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 128}, num_warps=8, num_stages=4),
-        triton.Config({'BLOCK_M': 256}, num_warps=2, num_stages=2),
-        triton.Config({'BLOCK_M': 256}, num_warps=2, num_stages=3),
-        triton.Config({'BLOCK_M': 256}, num_warps=2, num_stages=4),
-        triton.Config({'BLOCK_M': 256}, num_warps=4, num_stages=2),
-        triton.Config({'BLOCK_M': 256}, num_warps=4, num_stages=3),
-        triton.Config({'BLOCK_M': 256}, num_warps=4, num_stages=4),
-        triton.Config({'BLOCK_M': 256}, num_warps=8, num_stages=2),
-        triton.Config({'BLOCK_M': 256}, num_warps=8, num_stages=3),
-        triton.Config({'BLOCK_M': 256}, num_warps=8, num_stages=4)
-    ],
-    key=['num_edges', 'max_group_in_dim_key', 'max_group_h_dim_key'],
+    configs=_BLOCK_AUTOTUNE_CONFIGS,
+    key=['num_edges_bucket_key', 'max_group_in_dim_key', 'max_group_h_dim_key'],
+    cache_results=True,
 )
 @triton.jit
 def get_H_triton_grouped_kernel(
@@ -163,6 +111,7 @@ def get_H_triton_grouped_kernel(
     num_edges,
     total_in_dim,
     total_h_dim,
+    num_edges_bucket_key,
     max_group_in_dim_key,
     max_group_h_dim_key,
     BLOCK_M: tl.constexpr,
@@ -309,6 +258,11 @@ class TritonE3TensorDecomp:
         # Saved for potential future autotuning/padding paths.
         self.MAX_IN_DIM = next_power_of_2(max_in_dim)
         self.MAX_H_DIM = next_power_of_2(max_h_dim)
+
+    @property
+    def required_irreps_out(self):
+        """Forwarded from the wrapped object so this stays a drop-in for e3TensorDecomp."""
+        return self._decomp_obj.required_irreps_out
 
     def _compute_group_kernel_dims(self, max_group_in, max_group_h):
         """Compute grouped kernel compile-time dimensions with power-of-two padding."""
@@ -600,6 +554,7 @@ class TritonE3TensorDecomp:
                 num_edges,
                 total_in_dim,
                 total_h_dim,
+                next_power_of_2(num_edges),
                 self.MAX_GROUP_IN_DIM,
                 self.MAX_GROUP_H_DIM,
                 MAX_GROUP_IN_DIM=self.MAX_GROUP_IN_DIM,
@@ -625,6 +580,7 @@ class TritonE3TensorDecomp:
                 num_edges,
                 total_in_dim,
                 total_h_dim,
+                next_power_of_2(num_edges),
                 self.MAX_IN_DIM,
                 self.MAX_H_DIM,
                 MAX_IN_DIM=self.MAX_IN_DIM,
@@ -878,6 +834,7 @@ class BalancedTritonE3TensorDecomp(TritonE3TensorDecomp):
                 num_edges,
                 total_in_dim,
                 total_h_dim,
+                next_power_of_2(num_edges),
                 self.MAX_GROUP_IN_DIM,
                 self.MAX_GROUP_H_DIM,
                 MAX_GROUP_IN_DIM=self.MAX_GROUP_IN_DIM,
@@ -893,16 +850,10 @@ class BalancedTritonE3TensorDecomp(TritonE3TensorDecomp):
 
 _CACHE = {}
 
-_AUTOTUNE_CONFIGS = []
-for bs in [32, 64, 128, 256]:
-    for gs in [1, 4, 8]:
-        for warps in [2, 4, 8]:
-            for stages in [2, 3, 4]:
-                _AUTOTUNE_CONFIGS.append(triton.Config({'BLOCK_M': bs, 'GROUP_SIZE_M': gs}, num_warps=warps, num_stages=stages))
-
 @triton.autotune(
     configs=_AUTOTUNE_CONFIGS,
-    key=['num_edges', 'num_pid_n', 'max_in_dim_key', 'max_h_dim_key'],
+    key=['num_edges_bucket_key', 'num_pid_n', 'max_in_dim_key', 'max_h_dim_key'],
+    cache_results=True,
 )
 @triton.jit
 def get_H_triton_block_kernel_l2(
@@ -910,7 +861,7 @@ def get_H_triton_block_kernel_l2(
     in_col_indices_ptr, in_starts_ptr, in_dims_ptr,
     h_starts_ptr, h_dims_ptr, wm_starts_ptr,
     num_edges, total_in_dim, total_h_dim, num_pid_n,
-    max_in_dim_key, max_h_dim_key,
+    num_edges_bucket_key, max_in_dim_key, max_h_dim_key,
     BLOCK_M: tl.constexpr, GROUP_SIZE_M: tl.constexpr,
     MAX_IN_DIM: tl.constexpr, MAX_H_DIM: tl.constexpr,
 ):
@@ -953,7 +904,8 @@ def get_H_triton_block_kernel_l2(
 
 @triton.autotune(
     configs=_AUTOTUNE_CONFIGS,
-    key=['num_edges', 'num_pid_n', 'max_group_in_dim_key', 'max_group_h_dim_key'],
+    key=['num_edges_bucket_key', 'num_pid_n', 'max_group_in_dim_key', 'max_group_h_dim_key'],
+    cache_results=True,
 )
 @triton.jit
 def get_H_triton_grouped_kernel_l2(
@@ -961,7 +913,7 @@ def get_H_triton_grouped_kernel_l2(
     in_col_indices_ptr, group_in_starts_ptr, group_in_dims_ptr,
     group_h_starts_ptr, group_h_dims_ptr, group_wm_starts_ptr,
     num_edges, total_in_dim, total_h_dim, num_pid_n,
-    max_group_in_dim_key, max_group_h_dim_key,
+    num_edges_bucket_key, max_group_in_dim_key, max_group_h_dim_key,
     BLOCK_M: tl.constexpr, GROUP_SIZE_M: tl.constexpr,
     MAX_GROUP_IN_DIM: tl.constexpr, MAX_GROUP_H_DIM: tl.constexpr,
 ):
@@ -1004,7 +956,8 @@ def get_H_triton_grouped_kernel_l2(
 
 @triton.autotune(
     configs=_AUTOTUNE_CONFIGS,
-    key=['num_edges', 'num_pid_n', 'max_in_dim_key', 'max_h_dim_key'],
+    key=['num_edges_bucket_key', 'num_pid_n', 'max_in_dim_key', 'max_h_dim_key'],
+    cache_results=True,
 )
 @triton.jit
 def get_net_out_triton_block_kernel_l2(
@@ -1012,7 +965,7 @@ def get_net_out_triton_block_kernel_l2(
     in_col_indices_ptr, in_starts_ptr, in_dims_ptr,
     h_starts_ptr, h_dims_ptr, wm_starts_ptr,
     num_edges, total_in_dim, total_h_dim, num_pid_n,
-    max_in_dim_key, max_h_dim_key,
+    num_edges_bucket_key, max_in_dim_key, max_h_dim_key,
     BLOCK_M: tl.constexpr, GROUP_SIZE_M: tl.constexpr,
     MAX_IN_DIM: tl.constexpr, MAX_H_DIM: tl.constexpr,
 ):
@@ -1056,7 +1009,8 @@ def get_net_out_triton_block_kernel_l2(
 
 @triton.autotune(
     configs=_AUTOTUNE_CONFIGS,
-    key=['num_edges', 'num_pid_n', 'max_group_in_dim_key', 'max_group_h_dim_key'],
+    key=['num_edges_bucket_key', 'num_pid_n', 'max_group_in_dim_key', 'max_group_h_dim_key'],
+    cache_results=True,
 )
 @triton.jit
 def get_net_out_triton_grouped_kernel_l2(
@@ -1064,7 +1018,7 @@ def get_net_out_triton_grouped_kernel_l2(
     in_col_indices_ptr, group_in_starts_ptr, group_in_dims_ptr,
     group_h_starts_ptr, group_h_dims_ptr, group_wm_starts_ptr,
     num_edges, total_in_dim, total_h_dim, num_pid_n,
-    max_group_in_dim_key, max_group_h_dim_key,
+    num_edges_bucket_key, max_group_in_dim_key, max_group_h_dim_key,
     BLOCK_M: tl.constexpr, GROUP_SIZE_M: tl.constexpr,
     MAX_GROUP_IN_DIM: tl.constexpr, MAX_GROUP_H_DIM: tl.constexpr,
 ):
@@ -1250,7 +1204,7 @@ class TritonE3TensorDecompL2(TritonE3TensorDecomp):
                 self.in_col_indices, self.group_in_starts, self.group_in_dims,
                 self.group_h_starts, self.group_h_dims, self.group_wm_starts,
                 num_edges, total_in_dim, total_h_dim, num_pid_n,
-                self.MAX_GROUP_IN_DIM, self.MAX_GROUP_H_DIM,
+                next_power_of_2(num_edges), self.MAX_GROUP_IN_DIM, self.MAX_GROUP_H_DIM,
                 MAX_GROUP_IN_DIM=self.MAX_GROUP_IN_DIM, MAX_GROUP_H_DIM=self.MAX_GROUP_H_DIM,
             )
         else:
@@ -1261,7 +1215,7 @@ class TritonE3TensorDecompL2(TritonE3TensorDecomp):
                 self.in_col_indices, self.in_starts, self.in_dims,
                 self.h_starts, self.h_dims, self.wm_starts,
                 num_edges, total_in_dim, total_h_dim, num_pid_n,
-                self.MAX_IN_DIM, self.MAX_H_DIM,
+                next_power_of_2(num_edges), self.MAX_IN_DIM, self.MAX_H_DIM,
                 MAX_IN_DIM=self.MAX_IN_DIM, MAX_H_DIM=self.MAX_H_DIM,
             )
         return out
@@ -1281,7 +1235,7 @@ class TritonE3TensorDecompL2(TritonE3TensorDecomp):
                 self.in_col_indices, self.group_in_starts, self.group_in_dims,
                 self.group_h_starts, self.group_h_dims, self.group_wm_starts,
                 num_edges, total_in_dim, total_h_dim, num_pid_n,
-                self.MAX_GROUP_IN_DIM, self.MAX_GROUP_H_DIM,
+                next_power_of_2(num_edges), self.MAX_GROUP_IN_DIM, self.MAX_GROUP_H_DIM,
                 MAX_GROUP_IN_DIM=self.MAX_GROUP_IN_DIM, MAX_GROUP_H_DIM=self.MAX_GROUP_H_DIM,
             )
         else:
@@ -1292,7 +1246,7 @@ class TritonE3TensorDecompL2(TritonE3TensorDecomp):
                 self.in_col_indices, self.in_starts, self.in_dims,
                 self.h_starts, self.h_dims, self.wm_starts,
                 num_edges, total_in_dim, total_h_dim, num_pid_n,
-                self.MAX_IN_DIM, self.MAX_H_DIM,
+                next_power_of_2(num_edges), self.MAX_IN_DIM, self.MAX_H_DIM,
                 MAX_IN_DIM=self.MAX_IN_DIM, MAX_H_DIM=self.MAX_H_DIM,
             )
         return out
@@ -1424,7 +1378,7 @@ class BalancedTritonE3TensorDecompL2(BalancedTritonE3TensorDecomp):
                 self.in_col_indices_balanced, self.group_in_starts, self.group_in_dims,
                 self.group_h_starts, self.group_h_dims, self.group_wm_starts,
                 num_edges, total_in_dim, total_h_dim, num_pid_n,
-                self.MAX_GROUP_IN_DIM, self.MAX_GROUP_H_DIM,
+                next_power_of_2(num_edges), self.MAX_GROUP_IN_DIM, self.MAX_GROUP_H_DIM,
                 MAX_GROUP_IN_DIM=self.MAX_GROUP_IN_DIM, MAX_GROUP_H_DIM=self.MAX_GROUP_H_DIM,
             )
             return out_perm[:, self.h_restore_indices]
@@ -1438,7 +1392,7 @@ class BalancedTritonE3TensorDecompL2(BalancedTritonE3TensorDecomp):
                 self.in_col_indices, self.in_starts, self.in_dims,
                 self.h_starts, self.h_dims, self.wm_starts,
                 num_edges, total_in_dim, total_h_dim, num_pid_n,
-                self.MAX_IN_DIM, self.MAX_H_DIM,
+                next_power_of_2(num_edges), self.MAX_IN_DIM, self.MAX_H_DIM,
                 MAX_IN_DIM=self.MAX_IN_DIM, MAX_H_DIM=self.MAX_H_DIM,
             )
             return out
@@ -1466,7 +1420,7 @@ class BalancedTritonE3TensorDecompL2(BalancedTritonE3TensorDecomp):
                 self.in_col_indices_balanced, self.group_in_starts, self.group_in_dims,
                 self.group_h_starts, self.group_h_dims, self.group_wm_starts,
                 num_edges, total_in_dim, total_h_dim, num_pid_n,
-                self.MAX_GROUP_IN_DIM, self.MAX_GROUP_H_DIM,
+                next_power_of_2(num_edges), self.MAX_GROUP_IN_DIM, self.MAX_GROUP_H_DIM,
                 MAX_GROUP_IN_DIM=self.MAX_GROUP_IN_DIM, MAX_GROUP_H_DIM=self.MAX_GROUP_H_DIM,
             )
         else:
@@ -1477,7 +1431,7 @@ class BalancedTritonE3TensorDecompL2(BalancedTritonE3TensorDecomp):
                 self.in_col_indices, self.in_starts, self.in_dims,
                 self.h_starts, self.h_dims, self.wm_starts,
                 num_edges, total_in_dim, total_h_dim, num_pid_n,
-                self.MAX_IN_DIM, self.MAX_H_DIM,
+                next_power_of_2(num_edges), self.MAX_IN_DIM, self.MAX_H_DIM,
                 MAX_IN_DIM=self.MAX_IN_DIM, MAX_H_DIM=self.MAX_H_DIM,
             )
             
