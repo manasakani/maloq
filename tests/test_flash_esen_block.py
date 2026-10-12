@@ -404,9 +404,8 @@ class TestRefusals:
         with pytest.raises(ValueError, match="message_type"):
             _backbone(device, flash="fp32", message_type="source-target-message")
 
-    def test_distributed_graph_training_is_refused(self, device):
-        with pytest.raises(ValueError, match="distribut"):
-            _backbone(device, flash="fp32", distributed_graph_training=True)
+    def test_distributed_graph_training_constructs(self, device):
+        _backbone(device, flash="fp32", distributed_graph_training=True)
 
     @pytest.mark.parametrize("precision", ["fp32", "tf32", "bf16"])
     def test_supported_precisions_construct(self, device, precision):

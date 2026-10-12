@@ -17,6 +17,7 @@ except ImportError as exc:  # pragma: no cover - depends on the optional package
     ) from exc
 
 from .esen_block import eSEN_Block
+from .nn.communication import ExchangeHaloNodes
 
 _SUPPORTED_LMAX = frozenset({4, 6, 8})
 
@@ -50,6 +51,32 @@ def _gate_activation_name(gate_module: torch.nn.Module) -> str:
     if isinstance(activation, torch.nn.Sigmoid):
         return "sigmoid"
     raise ValueError(f"FlashSO2 does not support gate activation {activation!r}")
+
+
+def _halo_edge_index(partition, num_local: int) -> torch.Tensor:
+    """This rank's edges renumbered into ExchangeHaloNodes' [local; received] rows.
+
+    Built from the partition's existing communication plan and cached on it, so
+    every block, layer and step hands FlashSO2 the same tensor -- its topology
+    cache is keyed on that tensor's storage and version counter. It is built
+    outside inference mode, as SplitTrainer.infer() runs the model under
+    torch.inference_mode() and an inference tensor has no version counter.
+    """
+
+    edge_index = getattr(partition, "_flash_so2_edge_index", None)
+    if edge_index is None:
+        with torch.inference_mode(False):
+            source = partition.expand_edge_0
+            target_rows = partition.expand_edge_1["local_indices_torch"]  # targets are always local
+            device = target_rows.device
+            source_rows = torch.empty_like(target_rows)
+            source_rows[torch.as_tensor(source["is_local"], device=device)] = source["local_indices_torch"]
+            source_rows[torch.as_tensor(source["is_remote"], device=device)] = (
+                num_local + source["remote_indices_torch"]
+            )
+            edge_index = torch.stack([source_rows, target_rows])
+        partition._flash_so2_edge_index = edge_index
+    return edge_index
 
 
 class Flash_eSEN_Block(eSEN_Block):
@@ -142,15 +169,24 @@ class Flash_eSEN_Block(eSEN_Block):
         reduce: str,
         partition,
     ) -> torch.Tensor:
-        if partition is not None:
-            # The backbone refuses distribute_graphs at construction, so this
-            # only fires if a partition reaches a block that was built without
-            # one -- a mismatch worth catching rather than silently ignoring.
-            raise ValueError(
-                "FlashSO2 is not wired to Maloq's distributed graph partitions yet"
-            )
         if not x_node.is_cuda:
             raise RuntimeError("FlashSO2 execution requires CUDA tensors")
+
+        num_local = x_node.shape[0]
+        if partition is not None:
+            # Distributed graph: this rank owns every edge whose target it owns,
+            # but a source may live on another rank. FlashSO2 gathers node rows
+            # itself, so append the received source nodes to the local ones and
+            # renumber this rank's edges into that tensor (same edge order, so
+            # x_edge and the Wigner rows still line up).
+            local_edge_index = _halo_edge_index(partition, num_local)
+            if local_edge_index.shape[1] != edge_index.shape[1]:
+                raise ValueError(
+                    "the partition's edge list does not match this batch's edges: "
+                    f"{local_edge_index.shape[1]} vs {edge_index.shape[1]}"
+                )
+            x_node = ExchangeHaloNodes.apply(x_node, partition.expand_edge_0)
+            edge_index = local_edge_index
 
         output = self._flash_so2_convolution(
             x_edge,
@@ -160,6 +196,9 @@ class Flash_eSEN_Block(eSEN_Block):
             edge_index,
             reduce=reduce,
         )
+        if reduce == "node" and output.shape[0] != num_local:
+            # Targets are always local, so the received rows get no messages.
+            output = output[:num_local]
         return output if output.dtype == x_node.dtype else output.to(x_node.dtype)
 
     def train(self, mode: bool = True):

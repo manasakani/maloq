@@ -339,6 +339,82 @@ class ExchangeNodes(torch.autograd.Function):
 
         return grad_embedding, None, None
 
+class ExchangeHaloNodes(torch.autograd.Function):
+    """
+    Same exchange as ExchangeNodes, but returns node rows rather than edge rows:
+    [local nodes; received nodes], each received node once, in the order of
+    communication_dict['nodes_to_recv'] (the order 'remote_indices_torch' indexes).
+    Used by the FlashSO2 block, which gathers each edge's source and target rows itself.
+    """
+
+    @staticmethod
+    def forward(ctx, embedding, communication_dict):
+
+        ctx.communication_dict = communication_dict
+        ctx.num_local = embedding.shape[0]
+
+        nodes_to_send = communication_dict['nodes_to_send']
+        indices_to_send = communication_dict['indices_to_send']
+        nodes_to_recv = communication_dict['nodes_to_recv']
+
+        num_received = sum(len(nodes) for nodes in nodes_to_recv.values())
+        extended = embedding.new_empty((ctx.num_local + num_received,) + embedding.shape[1:])
+        extended[:ctx.num_local] = embedding
+
+        p2p_ops = []
+
+        # Receive straight into the rows after the local nodes
+        start = ctx.num_local
+        for source_rank, nodes in nodes_to_recv.items():
+            if nodes:
+                p2p_ops.append(dist.P2POp(dist.irecv, extended[start:start + len(nodes)], source_rank))
+                start += len(nodes)
+
+        # Sends (NCCL requires contiguous memory)
+        for target_rank, nodes in nodes_to_send.items():
+            if nodes:
+                send_tensor = embedding[indices_to_send[target_rank]].contiguous()
+                p2p_ops.append(dist.P2POp(dist.isend, send_tensor, target_rank))
+
+        if p2p_ops:
+            for req in dist.batch_isend_irecv(p2p_ops):
+                req.wait()
+
+        return extended
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        comm_dict = ctx.communication_dict
+        grad_output = grad_output.contiguous()
+        grad_embedding = grad_output[:ctx.num_local].clone()
+
+        p2p_ops = []
+        recv_grad_bufs = {}
+
+        # RECV: gradients for the nodes SENT in forward
+        for target_rank, nodes in comm_dict['nodes_to_send'].items():
+            if nodes:
+                buf = grad_output.new_empty((len(nodes),) + grad_output.shape[1:])
+                recv_grad_bufs[target_rank] = buf
+                p2p_ops.append(dist.P2POp(dist.irecv, buf, target_rank))
+
+        # SEND: gradients of the rows RECEIVED in forward, back to their owners
+        start = ctx.num_local
+        for source_rank, nodes in comm_dict['nodes_to_recv'].items():
+            if nodes:
+                p2p_ops.append(dist.P2POp(dist.isend, grad_output[start:start + len(nodes)], source_rank))
+                start += len(nodes)
+
+        if p2p_ops:
+            for req in dist.batch_isend_irecv(p2p_ops):
+                req.wait()
+
+        # Accumulate received gradients
+        for target_rank, buf in recv_grad_bufs.items():
+            grad_embedding.index_add_(0, comm_dict['indices_to_send'][target_rank], buf)
+
+        return grad_embedding, None
+
 def flatten_embedding(embedding):
     """
     Flattens the embedding for communication 

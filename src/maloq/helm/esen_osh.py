@@ -107,14 +107,6 @@ class eSEN_Backbone(CompiledCoreMixin, nn.Module):
                     "the packed block-diagonal Wigner form, which the Triton kernel "
                     f"writes directly. Got wigner_backend='{wigner_backend}'"
                 )
-            if distributed_graph_training:
-                raise ValueError(
-                    "flash_esen_block is not wired to maloq's distributed graph "
-                    "partitions yet: the message-passing blocks exchange node "
-                    "features through a partition object that FlashSO2 knows "
-                    "nothing about. Set distribute_graphs=False, or use the "
-                    "native eSEN blocks"
-                )
             from .flash_esen_block import Flash_eSEN_Block
 
             # Pre-bind the Flash-only setting while keeping the node and edge
